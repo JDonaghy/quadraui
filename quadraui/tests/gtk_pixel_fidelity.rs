@@ -99,6 +99,7 @@ fn bordered_list() -> ListView {
         h_scroll: 0,
         max_content_width: None,
         show_v_scrollbar: false,
+        striped: false,
     }
 }
 
@@ -352,7 +353,10 @@ fn tree_view_lays_out_and_paints_with_the_live_style() {
         );
         let row = [0usize, 1, 3][i];
         assert_eq!(
-            layout.hit_test(painted.x + painted.width / 2.0, painted.y + painted.height / 2.0),
+            layout.hit_test(
+                painted.x + painted.width / 2.0,
+                painted.y + painted.height / 2.0
+            ),
             quadraui::TreeViewHit::Row(row),
             "a click on painted {label:?} lands on its row"
         );

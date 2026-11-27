@@ -490,6 +490,7 @@ fn overlong_list_row(style: Style) -> String {
         h_scroll: 0,
         max_content_width: None,
         show_v_scrollbar: false,
+        striped: false,
     };
     let d = TuiDriver::new(StyledList { list, style }, 12, 2);
     d.screen().lines().next().unwrap_or_default().to_string()
