@@ -3527,8 +3527,8 @@ impl InteractionEngine {
 
     /// Routes an uncaptured pointer move's hover change to the generic
     /// leaves involved, through their own [`DynWidget::handle`]: a `Leave`
-    /// to the leaf the pointer was over when it is no longer over it, and
-    /// an `Enter` to the leaf it arrives on — the same hover tracking the
+    /// to the leaf the pointer has just left, and an `Enter` to the leaf
+    /// it arrives on — the same hover tracking the
     /// native runtime does, so both report the same events. Each event a
     /// leaf reports (a `Canvas` region's `RegionHovered`, say) reaches
     /// `sink` alongside the generic `MouseEntered`/`MouseLeft` pair.
