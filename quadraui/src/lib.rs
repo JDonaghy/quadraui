@@ -973,16 +973,22 @@ pub use compose::{
     ShellViewLayout, ShellViewState, SidebarEvent, SidebarPanelBody, SidebarPanelBodyLayout,
     SidebarPanelChrome, SidebarSectionDef, SidebarSystem, StatusBarInteraction, TabGroupController,
     TabGroupEvent, TabGroupLayout, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, TreeHoverTracker, TreeTableController,
-    TreeTableControllerEvent, TreeTableNodeData, ViewHelp, Workspace, WorkspaceController,
-    WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout, WorkspaceState,
-    PALETTE_CHROME_ROWS,
+    TreeController, TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace,
+    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
+    WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
     FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
     HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
 };
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.

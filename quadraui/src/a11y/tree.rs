@@ -3088,6 +3088,72 @@ mod tests {
         );
     }
 
+    /// A tree table's body rows carry their tree level, sibling position
+    /// and expand state alongside the wrapped table's row semantics and
+    /// cells.
+    #[test]
+    fn tree_table_rows_carry_tree_level_and_expand_state() {
+        use crate::primitives::tree_table::{TreeTable, TreeTableNode};
+
+        let row = |label: &str| DataRow {
+            cells: vec![StyledText::plain(label), StyledText::plain("1")],
+            decoration: Decoration::default(),
+        };
+        let table = DataTable {
+            id: WidgetId::new("files"),
+            columns: vec![
+                Column {
+                    title: "Name".to_string(),
+                    width: ColumnWidth::default(),
+                    align: ColumnAlign::default(),
+                },
+                Column {
+                    title: "Size".to_string(),
+                    width: ColumnWidth::default(),
+                    align: ColumnAlign::default(),
+                },
+            ],
+            rows: vec![row("src"), row("main.rs"), row("docs")],
+            selected_idx: Some(1),
+            scroll_offset: 0,
+            sort: None,
+            has_focus: false,
+            show_scrollbar: false,
+            min_total_width: None,
+            h_scroll: 0.0,
+            column_overrides: Vec::new(),
+            footer: None,
+            bordered: false,
+            striped: false,
+            glyphs: None,
+        };
+        let tt = TreeTable::new(
+            table.clone(),
+            vec![
+                TreeTableNode::new(vec![0], 0).with_expanded(true),
+                TreeTableNode::new(vec![0, 0], 1),
+                TreeTableNode::new(vec![1], 0).with_expanded(false),
+            ],
+        );
+        let children = tt.a11y_children();
+        // The header row, then the three body rows.
+        assert_eq!(children.len(), 4);
+        let src = &children[1].info;
+        assert_eq!(src.a11y_role, Some(A11yRole::Row));
+        assert_eq!(src.level, Some(1));
+        assert_eq!(src.expanded, Some(true));
+        assert_eq!((src.position_in_set, src.set_size), (Some(1), Some(2)));
+        let main = &children[2].info;
+        assert_eq!(main.level, Some(2));
+        assert_eq!(main.expanded, None);
+        assert_eq!(main.selected, Some(true));
+        assert_eq!((main.position_in_set, main.set_size), (Some(1), Some(1)));
+        assert_eq!(children[3].info.expanded, Some(false));
+        assert_eq!(children[2].children.len(), 2, "cells stay row children");
+        assert_eq!(tt.a11y_info(), table.a11y_info());
+        assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
+    }
+
     #[test]
     fn data_table_maps_rows_cells_and_a_footer_with_no_position() {
         let table = DataTable {

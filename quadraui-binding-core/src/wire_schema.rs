@@ -800,6 +800,8 @@ pub fn schema() -> Vec<DefJson> {
             field("indent", int_()),
             field("is_expanded", nullable(bool_())),
             field("icon", nullable(icon.clone())),
+            field_opt("children_pending", bool_()),
+            field_opt("placeholder", bool_()),
         ],
     ));
     let tree_table_descriptor = b.define(obj(
@@ -807,6 +809,7 @@ pub fn schema() -> Vec<DefJson> {
         vec![
             field("table", data_table_descriptor.clone()),
             field("tree", list(tree_table_node_descriptor)),
+            field_opt("vim_keys", bool_()),
         ],
     ));
 
@@ -3277,17 +3280,18 @@ pub fn schema() -> Vec<DefJson> {
             ("Scroll", data_table_scroll_payload.clone()),
             ("ColumnResized", column_resized_payload.clone()),
             ("SelectionSet", data_table_selection_set_payload),
-            ("ScrollChanged", data_table_scroll_changed_payload),
-            ("ColumnFocused", col_payload.clone()),
+            ("ScrollChanged", data_table_scroll_changed_payload.clone()),
+            ("ColumnFocused", col_payload),
             ("ContextMenuRequested", data_table_context_menu_payload),
         ],
         vec![],
     ));
 
     // ── `TreeTableEvent` -- `DataTableEvent`'s shapes, plus `path`
-    // alongside every `idx` (matching `TreeView::rows[idx].path`) and
-    // `ToggleExpanded` for the chevron/Left-Right interaction
-    // `DataTable` has no counterpart for.
+    // alongside every `idx` (matching `TreeView::rows[idx].path`), the
+    // sort a header click asks for, and `ToggleExpanded` /
+    // `ChildrenRequested` for the chevron/Left-Right interaction and lazy
+    // loading `DataTable` has no counterpart for.
     let tree_table_idx_path_payload = b.define(obj(
         "_TreeTableIdxPathPayload",
         vec![field("idx", int_()), field("path", re("TreePath"))],
@@ -3303,17 +3307,32 @@ pub fn schema() -> Vec<DefJson> {
         "_TreeTableToggleExpandedPayload",
         vec![field("path", re("TreePath")), field("expand", bool_())],
     ));
+    let tree_table_sort_changed_payload = b.define(obj(
+        "_TreeTableSortChangedPayload",
+        vec![field("col", int_()), field("ascending", bool_())],
+    ));
+    let tree_table_context_menu_payload = b.define(obj(
+        "_TreeTableContextMenuPayload",
+        vec![
+            field("idx", int_()),
+            field("path", re("TreePath")),
+            field("position", re("Point")),
+        ],
+    ));
     b.define(flat(
         "TreeTableEvent",
         &[
-            ("HeaderClicked", col_payload),
+            ("SortChanged", tree_table_sort_changed_payload),
             ("RowActivated", tree_table_idx_path_payload.clone()),
             ("RowSelected", tree_table_idx_path_payload.clone()),
-            ("RowDoubleClicked", tree_table_idx_path_payload),
+            ("RowDoubleClicked", tree_table_idx_path_payload.clone()),
             ("Scroll", data_table_scroll_payload),
+            ("ScrollChanged", data_table_scroll_changed_payload),
             ("ColumnResized", column_resized_payload),
             ("SelectionSet", tree_table_selection_set_payload),
             ("ToggleExpanded", tree_table_toggle_expanded_payload),
+            ("ChildrenRequested", tree_table_idx_path_payload),
+            ("ContextMenuRequested", tree_table_context_menu_payload),
         ],
         vec![],
     ));

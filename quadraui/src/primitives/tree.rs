@@ -577,6 +577,17 @@ pub type TreePaintState = RowPaintState;
 /// is the one source both widgets, both unit systems and both layout and
 /// paint read; the pixel painter sits beside it.
 pub(crate) mod tree_cell {
+    // The cell-grid geometry and the floor are read only by the backends'
+    // own layouts.
+    #![cfg_attr(
+        not(any(
+            feature = "gtk",
+            feature = "tui",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
     use crate::primitives::layout_metrics::TextMeasure;
     use crate::types::TreeStyle;
 
@@ -694,6 +705,7 @@ pub(crate) mod tree_cell {
         feature = "win",
         all(feature = "macos", target_os = "macos")
     ))]
+    #[allow(dead_code)]
     mod paint {
         use crate::paint_surface::PaintSurface;
         use crate::types::{Color, Icon};

@@ -332,6 +332,11 @@ impl EventHost for TableHost<'_, '_> {
 }
 
 impl TreeTable {
+    /// Whether row `idx` is a loading placeholder.
+    fn is_placeholder(&self, idx: usize) -> bool {
+        self.tree.get(idx).is_some_and(|n| n.placeholder)
+    }
+
     /// Row `idx`'s tree path; a row past `tree`'s end has the empty path.
     fn path_of(&self, idx: usize) -> TreePath {
         self.tree
@@ -544,7 +549,7 @@ impl TreeTable {
         for emitted in emitted {
             match emitted {
                 UiEvent::DataTable(_, ev) => {
-                    if let Handled::Event(ev) = self.from_table_event(state, ev) {
+                    if let Handled::Event(ev) = self.tree_event_for(state, ev) {
                         cx.emit(ev.into_ui_event(self.table.id));
                     }
                 }
@@ -552,7 +557,7 @@ impl TreeTable {
             }
         }
         match handled {
-            Handled::Event(ev) => self.from_table_event(state, ev),
+            Handled::Event(ev) => self.tree_event_for(state, ev),
             Handled::Consumed => Handled::Consumed,
             Handled::Ignored => Handled::Ignored,
         }
@@ -561,7 +566,7 @@ impl TreeTable {
     /// The tree-table event a wrapped-table event becomes. A header click
     /// becomes the sort it asks for; a row event gains its tree path; an
     /// event on a loading placeholder is swallowed.
-    fn from_table_event(
+    fn tree_event_for(
         &self,
         state: &mut TreeTableState,
         event: DataTableEvent,

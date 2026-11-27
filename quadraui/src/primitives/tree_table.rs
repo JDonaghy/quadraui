@@ -33,12 +33,6 @@
 
 use crate::behaviour::nav::NavRow;
 use crate::event::Rect;
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::primitives::data_table::DataTablePaintState;
 use crate::primitives::data_table::{
     Column, ColumnMeasure, DataTable, DataTableHit, DataTableLayout,
 };
@@ -52,6 +46,12 @@ use serde::{Deserialize, Serialize};
     all(feature = "macos", target_os = "macos")
 ))]
 mod contract;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 mod layout;
 #[cfg(feature = "tui")]
 pub(crate) mod paint_cells;
@@ -247,11 +247,6 @@ impl TreeTable {
         table.columns.truncate(kept);
         table.column_overrides.truncate(kept);
         table
-    }
-
-    /// Whether row `idx` is a loading placeholder.
-    pub(crate) fn is_placeholder(&self, idx: usize) -> bool {
-        self.tree.get(idx).is_some_and(|n| n.placeholder)
     }
 
     /// Compute layout from viewport dimensions plus column and
@@ -719,6 +714,7 @@ pub(crate) mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
+            fills: Vec<(Rect, Color)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -736,7 +732,9 @@ pub(crate) mod native_surface_paint {
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
                 (text.chars().count() as f32 * 8.0, 16.0)
             }
-            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
             fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
             fn surface_fill_rect_alpha(&mut self, _rect: Rect, _color: Color, _alpha: f32) {}
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
@@ -799,10 +797,7 @@ pub(crate) mod native_surface_paint {
         /// paints, just through [`PaintSurface`] instead of a `Buffer`.
         #[test]
         fn branch_row_paints_chevron_then_label_offset_past_it() {
-            let tt = TreeTable {
-                table: table(&["src"]),
-                tree: vec![node(&[0], 0, Some(true))],
-            };
+            let tt = TreeTable::new(table(&["src"]), vec![node(&[0], 0, Some(true))]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -847,10 +842,7 @@ pub(crate) mod native_surface_paint {
         /// still paints its label.
         #[test]
         fn leaf_row_paints_no_chevron_but_still_paints_label() {
-            let tt = TreeTable {
-                table: table(&["main.rs"]),
-                tree: vec![node(&[0], 0, None)],
-            };
+            let tt = TreeTable::new(table(&["main.rs"]), vec![node(&[0], 0, None)]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -882,14 +874,8 @@ pub(crate) mod native_surface_paint {
         /// own tests assert for `TreeView`.
         #[test]
         fn deeper_indent_shifts_the_chevron_right() {
-            let shallow = TreeTable {
-                table: table(&["a"]),
-                tree: vec![node(&[0], 0, Some(true))],
-            };
-            let deep = TreeTable {
-                table: table(&["a"]),
-                tree: vec![node(&[0], 2, Some(true))],
-            };
+            let shallow = TreeTable::new(table(&["a"]), vec![node(&[0], 0, Some(true))]);
+            let deep = TreeTable::new(table(&["a"]), vec![node(&[0], 2, Some(true))]);
             let chevron_x = |tt: &TreeTable| -> f32 {
                 let mut surface = RecordingSurface::default();
                 let theme = Theme::default();
@@ -923,10 +909,7 @@ pub(crate) mod native_surface_paint {
         fn row_missing_a_tree_entry_still_paints_its_label() {
             let mut t = table(&["a", "b"]);
             t.rows[1].cells = vec![StyledText::plain("orphan")];
-            let tt = TreeTable {
-                table: t,
-                tree: vec![node(&[0], 0, Some(true))], // shorter than `table.rows`
-            };
+            let tt = TreeTable::new(t, vec![node(&[0], 0, Some(true))]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -942,15 +925,45 @@ pub(crate) mod native_surface_paint {
             assert!(surface.text_runs.iter().any(|(_, t, _)| t == "orphan"));
         }
 
+        /// The descriptor's `striped` tints every other tree row, the same
+        /// as on a plain `DataTable`.
+        #[test]
+        fn striped_tints_alternate_tree_rows() {
+            let theme = Theme::default();
+            let stripe = theme.row_alt_bg(theme.background);
+            let stripes = |striped: bool| {
+                let mut t = table(&["a", "b", "c"]);
+                t.striped = striped;
+                let tt = TreeTable::new(
+                    t,
+                    vec![
+                        node(&[0], 0, Some(true)),
+                        node(&[0, 0], 1, None),
+                        node(&[1], 0, None),
+                    ],
+                );
+                let mut surface = RecordingSurface::default();
+                paint(
+                    &tt,
+                    &mut surface,
+                    &theme,
+                    Rect::new(0.0, 0.0, 200.0, 100.0),
+                    16.0,
+                    &DataTablePaintState::default(),
+                    false,
+                );
+                surface.fills.iter().filter(|(_, c)| *c == stripe).count()
+            };
+            assert_eq!(stripes(false), 0);
+            assert_eq!(stripes(true), 1, "row 1 of three is the one odd row");
+        }
+
         /// An icon paints between the chevron and the label.
         #[test]
         fn icon_paints_between_chevron_and_label() {
             let mut tree_node = node(&[0], 0, Some(true));
             tree_node.icon = Some(Icon::new("f", "f"));
-            let tt = TreeTable {
-                table: table(&["main.rs"]),
-                tree: vec![tree_node],
-            };
+            let tt = TreeTable::new(table(&["main.rs"]), vec![tree_node]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -1018,10 +1031,7 @@ pub(crate) mod native_surface_paint {
                 StyledText::plain("—"),
                 StyledText::plain("—"),
             ];
-            let tt = TreeTable {
-                table: t,
-                tree: vec![node(&[0], 0, None)],
-            };
+            let tt = TreeTable::new(t, vec![node(&[0], 0, None)]);
             let surface = RecordingSurface::default();
             let layout =
                 pixel_tree_table_layout(&tt, 2000.0, 10.0, 16.0, &SurfaceTextMeasure(&surface));
@@ -1089,38 +1099,6 @@ mod tests {
             striped: false,
             glyphs: None,
         }
-    }
-
-    /// Each body row reports its tree level and expand state alongside
-    /// the wrapped table's row semantics and cells.
-    #[test]
-    fn a11y_rows_carry_tree_level_and_expand_state() {
-        use crate::a11y::{A11yPrimitive, A11yRole};
-
-        let mut dt = table(3);
-        dt.selected_idx = Some(1);
-        let tree = vec![
-            node(&[0], 0, Some(true)),
-            node(&[0, 0], 1, None),
-            node(&[1], 0, Some(false)),
-        ];
-        let tt = TreeTable::new(dt.clone(), tree);
-        let children = tt.a11y_children();
-        // The header row, then the three body rows.
-        assert_eq!(children.len(), 4);
-        let row0 = &children[1].info;
-        assert_eq!(row0.a11y_role, Some(A11yRole::Row));
-        assert_eq!(row0.level, Some(1));
-        assert_eq!(row0.expanded, Some(true));
-        assert_eq!((row0.position_in_set, row0.set_size), (Some(1), Some(2)));
-        let row1 = &children[2].info;
-        assert_eq!(row1.level, Some(2));
-        assert_eq!(row1.expanded, None);
-        assert_eq!(row1.selected, Some(true));
-        assert_eq!(children[3].info.expanded, Some(false));
-        assert_eq!(children[2].children.len(), 2, "cells stay row children");
-        assert_eq!(tt.a11y_info(), dt.a11y_info());
-        assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
     }
 
     /// A `TreeTable` with every row at indent 0 and all leaves lays out
@@ -1362,7 +1340,9 @@ mod primitive_parity_tests {
     use crate::backend::ImagePaintResult;
     use crate::event::{Point, Viewport};
     use crate::primitive::{LayoutCtx, Primitive};
-    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
+    use crate::primitives::data_table::{
+        Column, ColumnAlign, ColumnWidth, DataRow, DataTablePaintState,
+    };
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText, WidgetId};
@@ -1512,7 +1492,7 @@ mod primitive_parity_tests {
         // metrics — catches a `Primitive::layout` that estimated a glyph
         // width (e.g. the chevron) differently than the measurer `paint`
         // actually used, even though both still painted identical verbs.
-        let resolver_layout = crate::primitives::layout_metrics::pixel_tree_table_layout(
+        let resolver_layout = native_surface_paint::pixel_tree_table_layout(
             &tt,
             rect.width,
             rect.height,

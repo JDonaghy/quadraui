@@ -95,6 +95,14 @@ pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
+// Drives `TreeTable`'s `Interactive` impl, which exists only where a
+// backend does.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod tree_table_controller;
 pub(crate) mod widget_host;
 pub mod workspace;
@@ -201,6 +209,12 @@ pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHover
 pub use tree_controller::{
     classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
 };
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use tree_table_controller::{
     NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
 };

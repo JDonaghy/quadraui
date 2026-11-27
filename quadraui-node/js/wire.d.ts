@@ -309,11 +309,14 @@ export interface TreeTableNodeDescriptor {
   indent: number;
   is_expanded: boolean | null;
   icon: Icon | null;
+  children_pending?: boolean;
+  placeholder?: boolean;
 }
 
 export interface TreeTableDescriptor {
   table: DataTableDescriptor;
   tree: TreeTableNodeDescriptor[];
+  vim_keys?: boolean;
 }
 
 export interface TreeTableControllerNodeDescriptor {
@@ -2228,7 +2231,18 @@ export interface _TreeTableToggleExpandedPayload {
   expand: boolean;
 }
 
-export type TreeTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _TreeTableIdxPathPayload; } | { RowSelected: _TreeTableIdxPathPayload; } | { RowDoubleClicked: _TreeTableIdxPathPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _TreeTableSelectionSetPayload; } | { ToggleExpanded: _TreeTableToggleExpandedPayload; };
+export interface _TreeTableSortChangedPayload {
+  col: number;
+  ascending: boolean;
+}
+
+export interface _TreeTableContextMenuPayload {
+  idx: number;
+  path: TreePath;
+  position: Point;
+}
+
+export type TreeTableEvent = { SortChanged: _TreeTableSortChangedPayload; } | { RowActivated: _TreeTableIdxPathPayload; } | { RowSelected: _TreeTableIdxPathPayload; } | { RowDoubleClicked: _TreeTableIdxPathPayload; } | { Scroll: _DataTableScrollPayload; } | { ScrollChanged: _DataTableScrollChangedPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _TreeTableSelectionSetPayload; } | { ToggleExpanded: _TreeTableToggleExpandedPayload; } | { ChildrenRequested: _TreeTableIdxPathPayload; } | { ContextMenuRequested: _TreeTableContextMenuPayload; };
 
 export interface _CellGridCursorMovedPayload {
   row: number;
