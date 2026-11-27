@@ -144,14 +144,40 @@ impl MenuOverlay {
         on_event: impl Fn(Handled<AppMenuEvent>) + 'static + Clone,
     ) {
         self.wire_draw(menu.clone(), backend.clone(), bar_rect.clone(), font);
-        self.wire_click(
-            menu.clone(),
-            menu_state.clone(),
-            backend.clone(),
-            bar_rect.clone(),
-            on_event.clone(),
-        );
-        self.wire_motion(menu, menu_state, backend, bar_rect, on_event);
+        let host = Rc::new(OverlayHost {
+            menu,
+            menu_state,
+            backend,
+            bar_rect,
+        });
+        let (click_host, on_click) = (host.clone(), on_event.clone());
+        let gesture = GestureClick::new();
+        gesture.set_button(1);
+        gesture.connect_pressed(move |g, _, x, y| {
+            on_click(click_host.dispatch(
+                g,
+                UiEvent::MouseDown {
+                    widget: None,
+                    button: MouseButton::Left,
+                    position: Point::new(x as f32, y as f32),
+                    modifiers: Modifiers::default(),
+                },
+            ));
+        });
+        self.da.add_controller(gesture);
+        let motion = EventControllerMotion::new();
+        motion.connect_motion(move |m, x, y| {
+            if host.menu.borrow().is_open() {
+                on_event(host.dispatch(
+                    m,
+                    UiEvent::MouseMoved {
+                        position: Point::new(x as f32, y as f32),
+                        buttons: ButtonMask::default(),
+                    },
+                ));
+            }
+        });
+        self.da.add_controller(motion);
     }
 
     fn wire_draw(
@@ -198,85 +224,42 @@ impl MenuOverlay {
             });
         });
     }
+}
 
-    fn wire_click(
-        &self,
-        menu: Rc<RefCell<AppMenu>>,
-        menu_state: Rc<RefCell<AppMenuState>>,
-        backend: Rc<RefCell<GtkBackend>>,
-        bar_rect: Rc<Cell<Rect>>,
-        on_event: impl Fn(Handled<AppMenuEvent>) + 'static,
-    ) {
-        let gesture = GestureClick::new();
-        gesture.set_button(1);
-        gesture.connect_pressed(move |g, _, x, y| {
-            // `EventControllerExt::widget()` returns `Option<Widget>` as of
-            // gtk4 0.11 — `None` only when the controller has been
-            // detached, which can't happen while its own callback is
-            // firing, so a realized widget is guaranteed here.
-            let widget = g
-                .widget()
-                .expect("event controller has a widget while its callback runs");
-            let w = widget.width() as f32;
-            let h = widget.height() as f32;
-            let mut b = backend.borrow_mut();
-            b.begin_frame(Viewport::new(w, h, 1.0));
-            let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
-            let ev = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(x as f32, y as f32),
-                modifiers: Modifiers::default(),
-            };
-            let menu_event = menu.borrow_mut().handle_ui_event(
-                &mut menu_state.borrow_mut(),
-                &ev,
-                &mut *b,
-                overlay_rect,
-            );
-            drop(b);
-            on_event(menu_event);
-        });
-        self.da.add_controller(gesture);
-    }
+/// What the overlay's pointer handlers share: the menu, its state, the
+/// backend and the bar's rect.
+struct OverlayHost {
+    menu: Rc<RefCell<AppMenu>>,
+    menu_state: Rc<RefCell<AppMenuState>>,
+    backend: Rc<RefCell<GtkBackend>>,
+    bar_rect: Rc<Cell<Rect>>,
+}
 
-    fn wire_motion(
+impl OverlayHost {
+    /// Hand `ev`, in the overlay's coordinates, to the menu, framed at
+    /// the size of the controller's widget (always attached while its own
+    /// callback runs).
+    fn dispatch(
         &self,
-        menu: Rc<RefCell<AppMenu>>,
-        menu_state: Rc<RefCell<AppMenuState>>,
-        backend: Rc<RefCell<GtkBackend>>,
-        bar_rect: Rc<Cell<Rect>>,
-        on_event: impl Fn(Handled<AppMenuEvent>) + 'static,
-    ) {
-        let motion = EventControllerMotion::new();
-        motion.connect_motion(move |m, x, y| {
-            if !menu.borrow().is_open() {
-                return;
-            }
-            // See the `connect_pressed` note above: `widget()` is
-            // `Option` since gtk4 0.11, but is always `Some` here.
-            let widget = m
-                .widget()
-                .expect("event controller has a widget while its callback runs");
-            let w = widget.width() as f32;
-            let h = widget.height() as f32;
-            let mut b = backend.borrow_mut();
-            b.begin_frame(Viewport::new(w, h, 1.0));
-            let overlay_rect = Self::bar_rect_in_overlay(bar_rect.get());
-            let ev = UiEvent::MouseMoved {
-                position: Point::new(x as f32, y as f32),
-                buttons: ButtonMask::default(),
-            };
-            let menu_event = menu.borrow_mut().handle_ui_event(
-                &mut menu_state.borrow_mut(),
-                &ev,
-                &mut *b,
-                overlay_rect,
-            );
-            drop(b);
-            on_event(menu_event);
-        });
-        self.da.add_controller(motion);
+        controller: &impl IsA<gtk4::EventController>,
+        ev: UiEvent,
+    ) -> Handled<AppMenuEvent> {
+        let widget = controller
+            .widget()
+            .expect("event controller has a widget while its callback runs");
+        let mut b = self.backend.borrow_mut();
+        b.begin_frame(Viewport::new(
+            widget.width() as f32,
+            widget.height() as f32,
+            1.0,
+        ));
+        let overlay_rect = MenuOverlay::bar_rect_in_overlay(self.bar_rect.get());
+        self.menu.borrow_mut().handle_ui_event(
+            &mut self.menu_state.borrow_mut(),
+            &ev,
+            &mut *b,
+            overlay_rect,
+        )
     }
 }
 
