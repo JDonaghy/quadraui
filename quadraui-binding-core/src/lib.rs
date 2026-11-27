@@ -273,17 +273,21 @@ where
 }
 
 pub use deferred::{apply_deferred_action, DeferredAction, DeferredError};
+pub use deferred::{
+    decode_overlay, overlay_anchor_from_value, ContextMenuOverlayDescriptor,
+    MessageDialogOverlayDescriptor, OVERLAY_KINDS,
+};
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
     InteractionEngine, TreeTableControllerWireEvent,
 };
-pub use extra_paint::widget_leaf_kinds;
 pub use extra_paint::{
     decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
     TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
 };
+pub use extra_paint::{register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds};
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};

@@ -154,14 +154,15 @@ use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
 #[cfg(test)]
+use quadraui::Point;
+#[cfg(test)]
 use quadraui::Scrollbar;
 use quadraui::{
     A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, Backend, BackendCaps,
-    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
-    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, LayoutCtx, Notification,
-    Point, PointerShape, Reaction, Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp,
-    ShellConfig, ShellContext, ShellEvent, ShellLayout, Theme, Toast, ToastCorner, Tooltip,
-    UiEvent, UserPayload, WidgetId,
+    BottomPanelEvent, ContextMenu, ContextMenuItem, FileDialogOptions, GlobalShortcutId,
+    ImageSource, LayoutCtx, Notification, PointerShape, Reaction, Rect, RgbaImage, ServiceResult,
+    ShellApp, ShellConfig, ShellContext, ShellEvent, ShellLayout, Theme, UiEvent, UserPayload,
+    WidgetId,
 };
 use quadraui::{CanvasRegion, DrawOp};
 
@@ -179,22 +180,21 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
     clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
-    dialog_severity, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    draw_bands, end_power_save_block, font_role, guarded as core_guarded,
     is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    merge_overrides, paint_layout_windowed, pointer_shape, record_pending_error,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path,
     resolve_layout_node_windowed, resolve_render_refs, set_as_default_protocol_client,
     set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, tree_table_controller_nodes_from_wire, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, widget_state_snapshot,
-    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
-    EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf, LayoutNode,
-    LeafDescriptor, OverrideError, RenderOutput, RowsRequestedEvent, ServiceError, StyleContext,
-    TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
+    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
+    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, RenderOutput,
+    RowsRequestedEvent, ServiceError, StyleContext, TreeTableControllerNode,
+    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
 };
-use quadraui_binding_core::{apply_deferred_action, DeferredAction, DeferredError};
-use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
+use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{
     ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
     ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
@@ -878,119 +878,32 @@ fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
     record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
-/// Decodes `QuiApp::show_overlay`'s `"message_dialog"` `severity` string
-/// into a [`DialogSeverity`] via [`quadraui_binding_core::dialog_severity`],
-/// mapping its `Err` into this binding's own `InvalidDescriptorError`
-/// (prefixed with `what`, the calling method's own name).
-fn parse_dialog_severity(what: &str, value: &str) -> PyResult<DialogSeverity> {
-    dialog_severity(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
-}
-
-/// Decodes `QuiApp::show_overlay`'s `"toast"` `corner` string into a
-/// [`ToastCorner`] via [`quadraui_binding_core::toast_corner`], the same
-/// [`parse_dialog_severity`] error-mapping shape.
-fn parse_toast_corner(what: &str, value: &str) -> PyResult<ToastCorner> {
-    toast_corner(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
-}
-
 /// Decodes `QuiApp::set_cursor`'s `shape`/`edge` strings into a
-/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], the same
-/// [`parse_dialog_severity`] error-mapping shape.
+/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], raising
+/// `InvalidDescriptorError` prefixed with `what`.
 fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<PointerShape> {
     pointer_shape(shape, edge)
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
-/// Which of [`QuiApp::show_overlay`]'s nine in-canvas overlay kinds a
-/// `kind` string names; see that method's own doc (and
-/// [`QuiApp::dismiss_overlay`]'s) for the shared `descriptor`/`anchor` shape
-/// each variant below expects.
-#[derive(Clone, Copy)]
-enum OverlayKind {
-    ContextMenu,
-    MessageDialog,
-    Toast,
-    Tooltip,
-    Completions,
-    Float,
-    RichTextPopup,
-    /// A float with a layout subtree painted inside it, whose leaves take
-    /// focus and emit events exactly as in the main tree — see
-    /// [`quadraui_binding_core::InteractionEngine::show_popover_layout`].
-    Popover,
-    /// A modal dialog with a layout subtree painted in its body — see
-    /// [`quadraui_binding_core::InteractionEngine::open_layout_dialog`].
-    LayoutDialog,
-}
-
-impl OverlayKind {
-    /// Parses one of `show_overlay`'s seven recognized `kind` strings,
-    /// prefixing an unrecognized one's error with `what` (the calling
-    /// method's own name).
-    fn parse(what: &str, kind: &str) -> PyResult<Self> {
-        match kind {
-            "context_menu" => Ok(Self::ContextMenu),
-            "message_dialog" => Ok(Self::MessageDialog),
-            "toast" => Ok(Self::Toast),
-            "tooltip" => Ok(Self::Tooltip),
-            "completions" => Ok(Self::Completions),
-            "float" => Ok(Self::Float),
-            "rich_text_popup" => Ok(Self::RichTextPopup),
-            "popover" => Ok(Self::Popover),
-            "layout_dialog" => Ok(Self::LayoutDialog),
-            other => Err(InvalidDescriptorError::new_err(format!(
-                "{what}: unknown overlay kind {other:?}; expected one of \"context_menu\", \
-                 \"message_dialog\", \"toast\", \"tooltip\", \"completions\", \"float\", \
-                 \"rich_text_popup\", \"popover\", \"layout_dialog\""
-            ))),
-        }
-    }
-}
-
-/// Looks up `key` in `dict`, raising `InvalidDescriptorError` (prefixed
-/// with `what`) rather than panicking or silently defaulting if it's
-/// missing. `show_overlay`'s own per-kind `descriptor` fields that have no
-/// primitive-level default (`"items"`, `"title"`, `"body"`, `"buttons"`)
-/// all read through this.
-fn dict_item<'py>(what: &str, dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
-    dict.get_item(key)?
-        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing {key:?} key")))
-}
-
-/// Requires `anchor` to be `Some` for a `show_overlay` `kind` that needs
-/// one (every kind but `"message_dialog"`/`"toast"`), raising
-/// `InvalidDescriptorError` otherwise.
-fn require_anchor(
-    what: &str,
+/// Decodes one `show_overlay(kind, descriptor, anchor)` call through
+/// [`quadraui_binding_core::decode_overlay`] into the action that opens the
+/// overlay and the id it is dismissed by; a malformed call raises
+/// `InvalidDescriptorError`.
+fn decode_show_overlay(
     kind: &str,
+    descriptor: &Bound<'_, PyDict>,
     anchor: Option<(f32, f32, f32, f32)>,
-) -> PyResult<(f32, f32, f32, f32)> {
-    anchor.ok_or_else(|| {
-        InvalidDescriptorError::new_err(format!("{what}: {kind:?} overlay needs an anchor"))
-    })
-}
-
-/// Reads `value[chrome_key]["id"]` out of a `show_overlay` descriptor
-/// already converted to JSON, without running the rest of
-/// [`decode_popover`]/[`decode_layout_dialog`]'s own validation —
-/// [`QuiAppActions::show_overlay`]'s only way to return a `"popover"`/
-/// `"layout_dialog"` overlay's id synchronously, since the full decode
-/// needs a live backend's theme that only exists once
-/// [`flush_deferred_actions`] runs (see [`DeferredAction::Popover`]'s own
-/// doc).
-fn peek_overlay_content_id(
-    what: &str,
-    value: &serde_json::Value,
-    chrome_key: &str,
-) -> PyResult<String> {
-    value
-        .get(chrome_key)
-        .and_then(|chrome| chrome.get("id"))
-        .and_then(|id| id.as_str())
-        .map(|id| id.to_string())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!("{what}: missing {chrome_key:?}.\"id\" string"))
-        })
+) -> PyResult<(DeferredAction, String)> {
+    let value = pyany_to_json(descriptor.as_any())
+        .map_err(|err| InvalidDescriptorError::new_err(format!("show_overlay: {err}")))?;
+    decode_overlay(
+        "show_overlay",
+        kind,
+        &value,
+        anchor.map(|(a, b, c, d)| [a, b, c, d]),
+    )
+    .map_err(InvalidDescriptorError::new_err)
 }
 
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
@@ -2739,134 +2652,9 @@ impl QuiAppActions {
         descriptor: &Bound<'_, PyDict>,
         anchor: Option<(f32, f32, f32, f32)>,
     ) -> PyResult<String> {
-        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
-        match overlay_kind {
-            OverlayKind::ContextMenu => {
-                let items: Vec<ContextMenuItem> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid items: {err}"
-                            ))
-                        })?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::ContextMenu(items, Point::new(x, y)));
-                Ok(kind.to_string())
-            }
-            OverlayKind::MessageDialog => {
-                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
-                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
-                let buttons: Vec<DialogButton> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid buttons: {err}"
-                            ))
-                        })?;
-                let severity: Option<String> = descriptor
-                    .get_item("severity")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let severity = severity
-                    .map(|s| parse_dialog_severity("show_overlay", &s))
-                    .transpose()?;
-                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
-                    .map_err(|err| {
-                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                    })?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::MessageDialog(opts));
-                Ok(kind.to_string())
-            }
-            OverlayKind::Toast => {
-                let toast: Toast = decode("show_overlay", descriptor)?;
-                let corner: Option<String> = descriptor
-                    .get_item("corner")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let corner = corner
-                    .map(|c| parse_toast_corner("show_overlay", &c))
-                    .transpose()?;
-                let id = toast.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Toast(toast, corner.unwrap_or_default()));
-                Ok(id)
-            }
-            OverlayKind::Tooltip => {
-                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
-                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
-                let id = tooltip.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Tooltip(tooltip, Rect::new(x, y, w, h)));
-                Ok(id)
-            }
-            OverlayKind::Completions => {
-                let completions: Completions = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = completions.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Completions(completions, Point::new(x, y)));
-                Ok(id)
-            }
-            OverlayKind::Float => {
-                let float: Float = decode("show_overlay", descriptor)?;
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = float.id.to_string();
-                self.queue.borrow_mut().push_back(DeferredAction::Float(
-                    float,
-                    FloatMeasure::new(width, height),
-                ));
-                Ok(id)
-            }
-            OverlayKind::RichTextPopup => {
-                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = popup.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::RichTextPopup(popup, Point::new(x, y)));
-                Ok(id)
-            }
-            OverlayKind::Popover => {
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
-                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                })?;
-                let id = peek_overlay_content_id("show_overlay", &value, "float")?;
-                self.queue.borrow_mut().push_back(DeferredAction::Popover(
-                    value,
-                    FloatMeasure::new(width, height),
-                ));
-                Ok(id)
-            }
-            OverlayKind::LayoutDialog => {
-                // Unlike every other anchored kind, the anchor is
-                // optional here: it sizes the dialog's content slot, and
-                // omitting it takes `DialogContentSize`'s own
-                // viewport-relative defaults.
-                let size = match anchor {
-                    Some((width, height, ..)) => DialogContentSize {
-                        width: Some(width),
-                        height: Some(height),
-                    },
-                    None => DialogContentSize::default(),
-                };
-                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
-                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                })?;
-                let id = peek_overlay_content_id("show_overlay", &value, "dialog")?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::LayoutDialog(value, size));
-                Ok(id)
-            }
-        }
+        let (action, id) = decode_show_overlay(kind, descriptor, anchor)?;
+        self.queue.borrow_mut().push_back(action);
+        Ok(id)
     }
 
     /// Queues a [`DeferredAction::DismissOverlay`] — same `id` vocabulary
@@ -6226,31 +6014,11 @@ impl QuiApp {
         self.clipboard.get_or_insert_with(TuiBackend::new)
     }
 
-    /// Shared body of every [`Self::show_overlay_impl`] match arm: runs
-    /// `open` against this app's live `(Backend, PyAppLogic)` pair, then
-    /// re-renders so `screen()`/`screen_contains()` reflect the newly
-    /// opened overlay without a separate step.
-    fn open_overlay(
-        &mut self,
-        open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic),
-    ) -> PyResult<()> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            open(backend, app_logic);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
-    }
-
-    /// [`Self::open_overlay`] for a kind whose descriptor can only be
-    /// decoded once the live `(Backend, PyAppLogic)` pair is in hand —
-    /// `"popover"`/`"layout_dialog"`, whose `"content"` subtree resolves
-    /// its `"class"` keys against the backend's current theme and this
-    /// app's own registered style sets. `open` reports a decode failure
-    /// as the same `InvalidDescriptorError` every other kind raises
-    /// before ever reaching the engine, and nothing is rendered when it
-    /// does.
+    /// Shared body of `show_overlay`: runs `open` against this app's live
+    /// `(Backend, PyAppLogic)` pair, then re-renders so the screen reflects the newly
+    /// opened overlay without a separate step. A failure `open` reports
+    /// (a popover or layout-dialog content subtree that does not decode)
+    /// raises, and nothing is rendered.
     fn open_overlay_try(
         &mut self,
         open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic) -> PyResult<()>,
@@ -6295,176 +6063,18 @@ impl QuiApp {
         descriptor: &Bound<'_, PyDict>,
         anchor: Option<(f32, f32, f32, f32)>,
     ) -> PyResult<String> {
-        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
-        match overlay_kind {
-            OverlayKind::ContextMenu => {
-                let items: Vec<ContextMenuItem> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid items: {err}"
-                            ))
-                        })?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                self.open_overlay(|backend, app_logic| {
-                    app_logic
-                        .engine
-                        .open_context_menu(items, Point::new(x, y), backend);
-                })?;
-                Ok(kind.to_string())
-            }
-            OverlayKind::MessageDialog => {
-                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
-                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
-                let buttons: Vec<DialogButton> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid buttons: {err}"
-                            ))
-                        })?;
-                let severity: Option<String> = descriptor
-                    .get_item("severity")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let severity = severity
-                    .map(|s| parse_dialog_severity("show_overlay", &s))
-                    .transpose()?;
-                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
-                    .map_err(|err| {
-                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                    })?;
-                self.open_overlay(|backend, app_logic| {
-                    app_logic.engine.open_message_dialog(opts, backend);
-                })?;
-                Ok(kind.to_string())
-            }
-            OverlayKind::Toast => {
-                let toast: Toast = decode("show_overlay", descriptor)?;
-                let corner: Option<String> = descriptor
-                    .get_item("corner")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let corner = corner
-                    .map(|c| parse_toast_corner("show_overlay", &c))
-                    .transpose()?;
-                let id = toast.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_toast(toast, corner.unwrap_or_default());
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Tooltip => {
-                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
-                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
-                let id = tooltip.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_tooltip(tooltip, Rect::new(x, y, w, h));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Completions => {
-                let completions: Completions = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = completions.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_completions(completions, Point::new(x, y));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Float => {
-                let float: Float = decode("show_overlay", descriptor)?;
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let measure = FloatMeasure::new(width, height);
-                let id = float.id.to_string();
-                self.open_overlay(|backend, app_logic| {
-                    app_logic.engine.show_float(float, measure, backend);
-                })?;
-                Ok(id)
-            }
-            OverlayKind::RichTextPopup => {
-                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = popup.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_rich_text_popup(popup, Point::new(x, y));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Popover => {
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let measure = FloatMeasure::new(width, height);
-                let mut id = String::new();
-                self.open_overlay_try(|backend, app_logic| {
-                    let decoded = {
-                        let theme = backend.theme();
-                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_popover(
-                            "show_overlay",
-                            &mut de,
-                            styles,
-                            &app_logic.host.wire_diagnostics,
-                        )
-                        .map_err(decode_error_to_py)?
-                    };
-                    id = decoded.chrome.id.to_string();
-                    app_logic.engine.show_popover_layout(
-                        decoded.chrome,
-                        measure,
-                        decoded.content,
-                        backend,
-                    );
-                    Ok(())
-                })?;
-                Ok(id)
-            }
-            OverlayKind::LayoutDialog => {
-                // Unlike every other anchored kind, the anchor is
-                // optional here: it sizes the dialog's content slot, and
-                // omitting it takes `DialogContentSize`'s own
-                // viewport-relative defaults.
-                let size = match anchor {
-                    Some((width, height, ..)) => DialogContentSize {
-                        width: Some(width),
-                        height: Some(height),
-                    },
-                    None => DialogContentSize::default(),
-                };
-                let mut id = String::new();
-                self.open_overlay_try(|backend, app_logic| {
-                    let decoded = {
-                        let theme = backend.theme();
-                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_layout_dialog(
-                            "show_overlay",
-                            &mut de,
-                            styles,
-                            &app_logic.host.wire_diagnostics,
-                        )
-                        .map_err(decode_error_to_py)?
-                    };
-                    id = decoded.chrome.id.to_string();
-                    app_logic.engine.open_layout_dialog(
-                        decoded.chrome,
-                        decoded.content,
-                        size,
-                        backend,
-                    );
-                    Ok(())
-                })?;
-                Ok(id)
-            }
-        }
+        let (action, id) = decode_show_overlay(kind, descriptor, anchor)?;
+        self.open_overlay_try(|backend, app_logic| {
+            apply_deferred_action(
+                action,
+                backend,
+                &mut app_logic.engine,
+                &mut app_logic.host,
+                "show_overlay",
+            )
+            .map_err(deferred_error_to_py)
+        })?;
+        Ok(id)
     }
 
     /// The whole body of [`QuiApp::dismiss_overlay`], on an ordinary `&mut

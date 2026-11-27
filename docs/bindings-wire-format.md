@@ -430,6 +430,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ContextMenu`](#wire-contextmenu)
 - [`ContextMenuGlyphs`](#wire-contextmenuglyphs)
 - [`ContextMenuItem`](#wire-contextmenuitem)
+- [`ContextMenuOverlayDescriptor`](#wire-contextmenuoverlaydescriptor)
 - [`ContextMenuPlacement`](#wire-contextmenuplacement)
 - [`ControlWidth`](#wire-controlwidth)
 - [`CursorPos`](#wire-cursorpos)
@@ -528,6 +529,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`Markdown`](#wire-markdown)
 - [`MenuBar`](#wire-menubar)
 - [`MenuBarItem`](#wire-menubaritem)
+- [`MessageDialogOverlayDescriptor`](#wire-messagedialogoverlaydescriptor)
 - [`MessageList`](#wire-messagelist)
 - [`MessageListEvent`](#wire-messagelistevent)
 - [`MessageRow`](#wire-messagerow)
@@ -1657,6 +1659,15 @@ One entry in a `ContextMenu`. Also re-exported as `MenuItem` for use as the shar
 | `key_equivalent` | `Accelerator \| null` | no | Structured keyboard shortcut for the item. |
 | `label` | `StyledText` | yes | Label for the item. |
 | `submenu` | `ContextMenuItem[] \| null` | no | Nested submenu. |
+
+<a id="wire-contextmenuoverlaydescriptor"></a>
+#### `ContextMenuOverlayDescriptor`
+
+The `"context_menu"` `show_overlay` descriptor: the menu's items.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | `ContextMenuItem[]` | yes |  |
 
 <a id="wire-contextmenuplacement"></a>
 #### `ContextMenuPlacement`
@@ -2894,6 +2905,18 @@ One top-level menu entry.
 | `id` | `WidgetId` | yes |  |
 | `label` | `string` | yes | Display label, e.g. |
 | `submenu` | `ContextMenuItem[] \| null` | no | Declarative dropdown items. |
+
+<a id="wire-messagedialogoverlaydescriptor"></a>
+#### `MessageDialogOverlayDescriptor`
+
+The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `string` | yes |  |
+| `buttons` | `DialogButton[]` | yes |  |
+| `severity` | `string \| null` | no |  |
+| `title` | `string` | yes |  |
 
 <a id="wire-messagelist"></a>
 #### `MessageList`

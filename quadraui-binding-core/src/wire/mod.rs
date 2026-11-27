@@ -102,6 +102,22 @@ pub(crate) use value::{decode_value_checked, decode_widget_checked};
 pub use layout::LAYOUT_NODE_KEYS;
 pub use value::StaticTabContent;
 
+/// Whether `key` already means something in a layout-tree node dict: the
+/// leaf `"id"`, a layout container, a fixed leaf or extra-primitive kind, or
+/// a node sibling key. A widget kind registered under such a name would be
+/// shadowed by that meaning and never decode as the registered kind.
+pub fn is_reserved_node_key(key: &str) -> bool {
+    key == "id"
+        || LAYOUT_NODE_KEYS.contains(&key)
+        || crate::layout::LEAF_KIND_KEYS.contains(&key)
+        || crate::extra_paint::EXTRA_PRIMITIVE_KINDS.contains(&key)
+        || value::UNIVERSAL_NODE_SIBLING_KEYS.contains(&key)
+        || value::WINDOWED_LEAF_EXTRA_KEYS.contains(&key)
+        || value::TEXT_DISPLAY_EXTRA_KEYS.contains(&key)
+        || value::DRAG_ROLE_KEYS.contains(&key)
+        || value::A11Y_KEYS.contains(&key)
+}
+
 use frame::{check_wire_version, is_layout_tree};
 use layout::layout_node_from_value;
 use shell::shell_config_from_value;

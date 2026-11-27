@@ -404,6 +404,10 @@ class ContextMenuItem(TypedDict):
     label: StyledText  # Label for the item.
     submenu: NotRequired[Optional[List[ContextMenuItem]]]  # Nested submenu.
 
+class ContextMenuOverlayDescriptor(TypedDict):
+    """The `"context_menu"` `show_overlay` descriptor: the menu's items."""
+    items: List[ContextMenuItem]
+
 # Preferred placement of a `ContextMenu` relative to its anchor.
 ContextMenuPlacement = Literal['AnchorPoint', 'Below', 'Above']
 
@@ -1215,6 +1219,13 @@ class MenuBarItem(TypedDict):
     id: WidgetId
     label: str  # Display label, e.g.
     submenu: NotRequired[Optional[List[ContextMenuItem]]]  # Declarative dropdown items.
+
+class MessageDialogOverlayDescriptor(TypedDict):
+    """The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`."""
+    body: str
+    buttons: List[DialogButton]
+    severity: NotRequired[Optional[str]]
+    title: str
 
 class MessageList(TypedDict):
     """Declarative description of a scrollable styled-row list."""

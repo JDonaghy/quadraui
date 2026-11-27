@@ -5,6 +5,11 @@
 //! stored widget state into it, paints it through a `TuiBackend`, and
 //! routes input back through the engine to a host-side event sink.
 //!
+//! Overlays take the same route: a `show_overlay(kind, descriptor, anchor)`
+//! call decodes through `decode_overlay` and opens through
+//! `apply_deferred_action`, and each frame paints them with
+//! `render_overlays`.
+//!
 //! The tree mixes a built-in kind (`"button"`) with a kind the host
 //! registers at runtime (`"host_toggle"`), so the same frame proves both
 //! halves of the generic leaf: the static `widget_kinds!` table and the
@@ -18,8 +23,9 @@ use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{AppLogic, Backend, FormEvent, Reaction, Rect, UiEvent, WidgetId};
 use quadraui_binding_core::{
-    decode_layout_node, paint_layout_windowed, resolve_layout_node_windowed, widget_leaf_kinds,
-    EventSink, HitDetail, InteractionEngine, LayoutNode,
+    apply_deferred_action, decode_layout_node, decode_overlay, paint_layout_windowed,
+    render_overlays, resolve_layout_node_windowed, widget_leaf_kinds, BindingHost, EventSink,
+    HitDetail, InteractionEngine, LayoutNode,
 };
 
 const HOST_KIND: &str = "host_toggle";
@@ -29,7 +35,7 @@ const HOST_KIND: &str = "host_toggle";
 fn register_host_kind() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        quadraui::register_widget_kind(HOST_KIND, |value| {
+        quadraui_binding_core::register_widget_kind(HOST_KIND, |_kind, value| {
             serde_json::from_value::<quadraui::Checkbox>(value)
                 .map(|checkbox| Box::new(checkbox) as Box<dyn DynWidget>)
         })
@@ -55,6 +61,7 @@ impl EventSink for HostSink {
 struct HostApp {
     view: serde_json::Value,
     engine: InteractionEngine,
+    host: BindingHost,
     sink: RefCell<HostSink>,
 }
 
@@ -64,6 +71,7 @@ impl HostApp {
         Self {
             view,
             engine: InteractionEngine::new(),
+            host: BindingHost::default(),
             sink: RefCell::new(HostSink::default()),
         }
     }
@@ -90,7 +98,7 @@ impl AppLogic for HostApp {
         );
         let mut hits = Vec::new();
         paint_layout_windowed(backend, area, &node, &mut hits, &windows);
-        self.engine.set_hits(hits);
+        render_overlays(&self.engine, backend, hits);
     }
 
     fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -185,4 +193,82 @@ fn the_derived_wire_schema_lists_a_runtime_registered_kind() {
     let schema = quadraui_binding_core::wire::schema::wire_schema();
     assert!(schema["kinds"].get(HOST_KIND).is_some());
     assert!(schema["kinds"].get("button").is_some());
+}
+
+/// A runtime kind named after a layout container, a fixed leaf kind, an
+/// extra primitive or a node sibling key would be shadowed during decode,
+/// so binding-core refuses to register it at all.
+#[test]
+fn registering_a_reserved_node_key_as_a_kind_is_refused() {
+    fn decode(
+        _kind: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn DynWidget>, serde_json::Error> {
+        serde_json::from_value::<quadraui::Checkbox>(value)
+            .map(|checkbox| Box::new(checkbox) as Box<dyn DynWidget>)
+    }
+    for reserved in [
+        "grid",
+        "tabs",
+        "text_input",
+        "text_display",
+        "scripted_widget",
+        "style",
+        "a11y",
+        "id",
+    ] {
+        assert!(
+            matches!(
+                quadraui_binding_core::register_widget_kind(reserved, decode),
+                Err(quadraui::widget_kinds::KindError::Duplicate(_))
+            ),
+            "{reserved:?} must be refused"
+        );
+        assert!(!quadraui::widget_kinds::runtime_widget_kinds().contains(&reserved));
+    }
+}
+
+/// A host's `show_overlay("context_menu", ...)` decodes, opens, paints and
+/// delivers its activation through binding-core alone.
+#[test]
+fn a_host_opens_a_context_menu_and_receives_its_activation() {
+    let mut driver = TuiDriver::new(HostApp::new(host_view()), 30, 10);
+    driver.render();
+    let descriptor = serde_json::json!({
+        "items": [{"id": "copy", "label": {"spans": [{"text": "Copy", "fg": null, "bg": null}]}}]
+    });
+    let (action, id) = decode_overlay(
+        "show_overlay",
+        "context_menu",
+        &descriptor,
+        Some([2.0, 2.0, 0.0, 0.0]),
+    )
+    .expect("the context menu decodes");
+    assert_eq!(id, "context_menu");
+    {
+        let (backend, app) = driver.parts_mut();
+        apply_deferred_action(
+            action,
+            backend,
+            &mut app.engine,
+            &mut app.host,
+            "show_overlay",
+        )
+        .expect("the context menu opens");
+    }
+    driver.render();
+    let (copy_x, copy_y) = driver
+        .find("Copy")
+        .unwrap_or_else(|| panic!("{}", driver.screen()));
+    driver.click(copy_x, copy_y);
+    assert!(
+        driver
+            .app()
+            .sink
+            .borrow()
+            .events
+            .contains(&UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
 }

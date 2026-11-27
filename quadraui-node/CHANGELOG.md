@@ -209,3 +209,18 @@ fragment step for this package (that mechanism, and
   | `dismissFloat()` | `dismissOverlay("float")` | n/a (`QuiAppActions` never had one) |
   | `showRichTextPopup(popup, anchor)` | `showOverlay("rich_text_popup", popup, anchor)` | n/a (`QuiAppActions` never had one) |
   | `dismissRichTextPopup()` | `dismissOverlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
+
+### Fixed
+
+- A layout-tree render keeps the stored state of a subtree that is not
+  painted this frame -- an unselected `"tabs"` entry, a `"scroll"` child
+  outside the viewport -- instead of dropping it, so switching tabs away
+  and back restores a tree's cursor, a nested tab's active index and a
+  split's ratio.
+
+- `showOverlay` decodes through binding-core's `decode_overlay`, shared
+  with `quadraui-py`; kinds, descriptor shapes, anchors, returned ids and
+  `InvalidDescriptorError` for a malformed call are unchanged. The
+  `"context_menu"` and `"message_dialog"` descriptors are now typed in
+  `wire.d.ts` (`ContextMenuOverlayDescriptor`,
+  `MessageDialogOverlayDescriptor`).

@@ -270,6 +270,8 @@ pub fn wire_schema() -> Value {
     root::<RenderOutputShape>(&mut generator, &mut roots);
     root::<PopoverDescriptor>(&mut generator, &mut roots);
     root::<LayoutDialogDescriptor>(&mut generator, &mut roots);
+    root::<crate::deferred::ContextMenuOverlayDescriptor>(&mut generator, &mut roots);
+    root::<crate::deferred::MessageDialogOverlayDescriptor>(&mut generator, &mut roots);
     root::<ShellConfigDescriptor>(&mut generator, &mut roots);
     root::<crate::hit::HitDetail>(&mut generator, &mut roots);
     root::<crate::semantic::DragGestureWireEvent>(&mut generator, &mut roots);
@@ -448,6 +450,7 @@ mod tests {
     #[test]
     fn a_runtime_kind_joins_the_kinds_map_with_its_schema() {
         fn decode(
+            _kind: &str,
             value: serde_json::Value,
         ) -> Result<Box<dyn quadraui::primitive::DynWidget>, serde_json::Error> {
             let bar: quadraui::ProgressBar = serde_json::from_value(value)?;

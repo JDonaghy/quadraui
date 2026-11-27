@@ -835,22 +835,56 @@ pub const WIDGET_KINDS: [&str; 36] = [
 
 /// Every kind a layout leaf or a flat render dict decodes into a generic
 /// [`crate::layout::LeafDescriptor::Widget`]: [`WIDGET_KINDS`], then every
-/// kind registered at runtime through [`quadraui::register_widget_kind`]
-/// whose name no fixed leaf key or [`EXTRA_PRIMITIVE_KINDS`] entry already
-/// claims. A binding (or any crate linking this one) that registers a kind
-/// gets it decoded, painted and routed with no table edit here.
+/// kind registered at runtime whose name is not a reserved node key (see
+/// [`crate::wire::is_reserved_node_key`]). A binding (or any crate linking
+/// this one) that registers a kind through [`register_widget_kind`] gets it
+/// decoded, painted and routed with no table edit here.
 pub fn widget_leaf_kinds() -> Vec<&'static str> {
     let mut kinds = WIDGET_KINDS.to_vec();
     kinds.extend(
         quadraui::widget_kinds::runtime_widget_kinds()
             .into_iter()
             .filter(|kind| {
-                !crate::layout::LEAF_KIND_KEYS.contains(kind)
-                    && !EXTRA_PRIMITIVE_KINDS.contains(kind)
-                    && !WIDGET_KINDS.contains(kind)
+                !crate::wire::is_reserved_node_key(kind) && !WIDGET_KINDS.contains(kind)
             }),
     );
     kinds
+}
+
+/// Registers a widget kind a binding defines at runtime, so a layout leaf
+/// `{"id": .., kind: {..}}` decodes through `decode` into a generic
+/// [`crate::layout::LeafDescriptor::Widget`]. Fails with
+/// [`quadraui::widget_kinds::KindError::Duplicate`] when `kind` is a
+/// reserved node key ([`crate::wire::is_reserved_node_key`]) as well as
+/// when [`quadraui::register_widget_kind`] itself refuses it, so a name
+/// that layout decoding would shadow is rejected rather than silently
+/// never used.
+pub fn register_widget_kind(
+    kind: &'static str,
+    decode: quadraui::widget_kinds::DecodeFn,
+) -> Result<(), quadraui::widget_kinds::KindError> {
+    reject_reserved_kind(kind)?;
+    quadraui::register_widget_kind(kind, decode)
+}
+
+/// [`register_widget_kind`] plus the JSON Schema of the kind's payload,
+/// which [`crate::wire::schema::wire_schema`] lists alongside the static kinds.
+pub fn register_widget_kind_with_schema(
+    kind: &'static str,
+    decode: quadraui::widget_kinds::DecodeFn,
+    schema: quadraui::widget_kinds::SchemaFn,
+) -> Result<(), quadraui::widget_kinds::KindError> {
+    reject_reserved_kind(kind)?;
+    quadraui::register_widget_kind_with_schema(kind, decode, schema)
+}
+
+fn reject_reserved_kind(kind: &str) -> Result<(), quadraui::widget_kinds::KindError> {
+    if crate::wire::is_reserved_node_key(kind) {
+        return Err(quadraui::widget_kinds::KindError::Duplicate(
+            kind.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased

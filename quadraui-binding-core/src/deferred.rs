@@ -10,6 +10,8 @@
 //! and what each action does live here, once, for every binding.
 
 use std::path::PathBuf;
+
+use serde::Deserialize;
 use std::time::Duration;
 
 use quadraui::{
@@ -86,6 +88,211 @@ pub enum DeferredAction {
     DefineStyle(String, Box<StyleOverride>),
     SetTreeTableChildren(WidgetId, String, Vec<TreeTableNodeData>),
     SetTreeTableSortOverride(WidgetId, Vec<TreeTableNodeData>),
+}
+
+/// The `"context_menu"` `show_overlay` descriptor: the menu's items.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ContextMenuOverlayDescriptor {
+    pub items: Vec<ContextMenuItem>,
+}
+
+/// The `"message_dialog"` `show_overlay` descriptor. `severity` is
+/// `"info"`, `"question"`, `"warning"` or `"error"`.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct MessageDialogOverlayDescriptor {
+    pub title: String,
+    pub body: String,
+    pub buttons: Vec<quadraui::DialogButton>,
+    #[serde(default)]
+    pub severity: Option<String>,
+}
+
+/// The `"corner"` key a `"toast"` `show_overlay` descriptor carries beside
+/// the [`Toast`] fields: `"bottom_right"`, `"bottom_left"`, `"top_right"`
+/// or `"top_left"`.
+#[derive(serde::Deserialize)]
+struct ToastCornerField {
+    #[serde(default)]
+    corner: Option<String>,
+}
+
+/// Every `kind` [`decode_overlay`] accepts.
+pub const OVERLAY_KINDS: [&str; 9] = [
+    "context_menu",
+    "message_dialog",
+    "toast",
+    "tooltip",
+    "completions",
+    "float",
+    "rich_text_popup",
+    "popover",
+    "layout_dialog",
+];
+
+/// Decodes one `show_overlay(kind, descriptor, anchor)` call into the
+/// [`DeferredAction`] that opens it, plus the id the overlay is dismissed
+/// by: the descriptor's own id, the popover/layout-dialog chrome id, or
+/// `kind` itself for `"context_menu"`/`"message_dialog"`.
+///
+/// `anchor` is positional: `[x, y, _, _]` for `"context_menu"`,
+/// `"completions"` and `"rich_text_popup"`; `[x, y, width, height]` for
+/// `"tooltip"`; `[width, height, _, _]` for `"float"`, `"popover"` and
+/// `"layout_dialog"` (optional for the last). `"message_dialog"` and
+/// `"toast"` ignore it. A binding whose anchor is an object converts it
+/// with [`overlay_anchor_from_value`]. Errors carry `what: ` as prefix.
+pub fn decode_overlay(
+    what: &str,
+    kind: &str,
+    descriptor: &serde_json::Value,
+    anchor: Option<[f32; 4]>,
+) -> Result<(DeferredAction, String), String> {
+    fn parse<T: serde::de::DeserializeOwned>(
+        what: &str,
+        value: &serde_json::Value,
+    ) -> Result<T, String> {
+        T::deserialize(value).map_err(|err| format!("{what}: {err}"))
+    }
+    let need_anchor = || anchor.ok_or_else(|| format!("{what}: {kind:?} overlay needs an anchor"));
+    let peek_chrome_id = |chrome_key: &str| {
+        descriptor
+            .get(chrome_key)
+            .and_then(|chrome| chrome.get("id"))
+            .and_then(|id| id.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("{what}: missing {chrome_key:?}.\"id\" string"))
+    };
+    match kind {
+        "context_menu" => {
+            let parsed: ContextMenuOverlayDescriptor = parse(what, descriptor)?;
+            let [x, y, ..] = need_anchor()?;
+            Ok((
+                DeferredAction::ContextMenu(parsed.items, Point::new(x, y)),
+                kind.to_string(),
+            ))
+        }
+        "message_dialog" => {
+            let parsed: MessageDialogOverlayDescriptor = parse(what, descriptor)?;
+            let severity = parsed
+                .severity
+                .map(|s| crate::dialog_severity(&s).map_err(|err| format!("{what}: {err}")))
+                .transpose()?;
+            let opts = crate::message_dialog_options_from_buttons(
+                parsed.title,
+                parsed.body,
+                parsed.buttons,
+                severity,
+            )
+            .map_err(|err| format!("{what}: {err}"))?;
+            Ok((DeferredAction::MessageDialog(opts), kind.to_string()))
+        }
+        "toast" => {
+            let toast: Toast = parse(what, descriptor)?;
+            let corner: ToastCornerField = parse(what, descriptor)?;
+            let corner = corner
+                .corner
+                .map(|c| crate::toast_corner(&c).map_err(|err| format!("{what}: {err}")))
+                .transpose()?
+                .unwrap_or_default();
+            let id = toast.id.to_string();
+            Ok((DeferredAction::Toast(toast, corner), id))
+        }
+        "tooltip" => {
+            let tooltip: Tooltip = parse(what, descriptor)?;
+            let [x, y, width, height] = need_anchor()?;
+            let id = tooltip.id.to_string();
+            Ok((
+                DeferredAction::Tooltip(tooltip, Rect::new(x, y, width, height)),
+                id,
+            ))
+        }
+        "completions" => {
+            let completions: Completions = parse(what, descriptor)?;
+            let [x, y, ..] = need_anchor()?;
+            let id = completions.id.to_string();
+            Ok((
+                DeferredAction::Completions(completions, Point::new(x, y)),
+                id,
+            ))
+        }
+        "float" => {
+            let float: Float = parse(what, descriptor)?;
+            let [width, height, ..] = need_anchor()?;
+            let id = float.id.to_string();
+            Ok((
+                DeferredAction::Float(float, FloatMeasure::new(width, height)),
+                id,
+            ))
+        }
+        "rich_text_popup" => {
+            let popup: RichTextPopup = parse(what, descriptor)?;
+            let [x, y, ..] = need_anchor()?;
+            let id = popup.id.to_string();
+            Ok((DeferredAction::RichTextPopup(popup, Point::new(x, y)), id))
+        }
+        "popover" => {
+            let [width, height, ..] = need_anchor()?;
+            let id = peek_chrome_id("float")?;
+            Ok((
+                DeferredAction::Popover(descriptor.clone(), FloatMeasure::new(width, height)),
+                id,
+            ))
+        }
+        "layout_dialog" => {
+            let size = match anchor {
+                Some([width, height, ..]) => DialogContentSize {
+                    width: Some(width),
+                    height: Some(height),
+                },
+                None => DialogContentSize::default(),
+            };
+            let id = peek_chrome_id("dialog")?;
+            Ok((DeferredAction::LayoutDialog(descriptor.clone(), size), id))
+        }
+        other => Err(format!(
+            "{what}: unknown overlay kind {other:?}; expected one of {}",
+            OVERLAY_KINDS
+                .iter()
+                .map(|kind| format!("{kind:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Converts an object-shaped `show_overlay` anchor into [`decode_overlay`]'s
+/// positional one, reading the shape `kind` expects: `{x, y}` for
+/// `"context_menu"`/`"completions"`/`"rich_text_popup"`, `{x, y, width,
+/// height}` for `"tooltip"`, `{width, height}` for `"float"`/`"popover"`/
+/// `"layout_dialog"`. `"message_dialog"`, `"toast"` and an unknown kind read
+/// nothing and yield `[0.0; 4]`; [`decode_overlay`] reports the unknown kind.
+pub fn overlay_anchor_from_value(
+    what: &str,
+    kind: &str,
+    anchor: &serde_json::Value,
+) -> Result<[f32; 4], String> {
+    #[derive(serde::Deserialize)]
+    struct Size {
+        width: f32,
+        height: f32,
+    }
+    let err = |err: serde_json::Error| format!("{what}: {err}");
+    match kind {
+        "context_menu" | "completions" | "rich_text_popup" => {
+            let point = Point::deserialize(anchor).map_err(err)?;
+            Ok([point.x, point.y, 0.0, 0.0])
+        }
+        "tooltip" => {
+            let rect = Rect::deserialize(anchor).map_err(err)?;
+            Ok([rect.x, rect.y, rect.width, rect.height])
+        }
+        "float" | "popover" | "layout_dialog" => {
+            let size = Size::deserialize(anchor).map_err(err)?;
+            Ok([size.width, size.height, 0.0, 0.0])
+        }
+        _ => Ok([0.0; 4]),
+    }
 }
 
 /// Why [`apply_deferred_action`] could not complete an action. `op` names
@@ -381,6 +588,59 @@ mod tests {
         )
         .expect_err("a popover without content does not decode");
         assert!(matches!(err, DeferredError::Decode(_)));
+    }
+
+    #[test]
+    fn decode_overlay_returns_each_kinds_dismiss_id() {
+        let menu = serde_json::json!({"items": []});
+        let (action, id) = decode_overlay("t", "context_menu", &menu, Some([1.0, 2.0, 0.0, 0.0]))
+            .expect("decodes");
+        assert!(matches!(action, DeferredAction::ContextMenu(_, p) if p == Point::new(1.0, 2.0)));
+        assert_eq!(id, "context_menu");
+
+        let tip = serde_json::json!({"id": "tip:1", "text": "hi"});
+        let (action, id) =
+            decode_overlay("t", "tooltip", &tip, Some([1.0, 2.0, 3.0, 4.0])).expect("decodes");
+        assert!(
+            matches!(action, DeferredAction::Tooltip(_, r) if r == Rect::new(1.0, 2.0, 3.0, 4.0))
+        );
+        assert_eq!(id, "tip:1");
+
+        let popover = serde_json::json!({"float": {"id": "pop:1"}, "content": {}});
+        let (_, id) =
+            decode_overlay("t", "popover", &popover, Some([10.0, 4.0, 0.0, 0.0])).expect("decodes");
+        assert_eq!(id, "pop:1");
+    }
+
+    #[test]
+    fn decode_overlay_rejects_an_unknown_kind_and_a_missing_anchor() {
+        let err = decode_overlay("show_overlay", "nope", &serde_json::json!({}), None)
+            .err()
+            .expect("unknown kind");
+        assert!(
+            err.starts_with("show_overlay: unknown overlay kind \"nope\""),
+            "{err}"
+        );
+        let tip = serde_json::json!({"id": "tip:1", "text": "hi"});
+        let err = decode_overlay("show_overlay", "tooltip", &tip, None)
+            .err()
+            .expect("tooltip needs an anchor");
+        assert!(err.contains("needs an anchor"), "{err}");
+    }
+
+    #[test]
+    fn overlay_anchor_from_value_reads_the_shape_each_kind_expects() {
+        let point = serde_json::json!({"x": 3.0, "y": 4.0});
+        assert_eq!(
+            overlay_anchor_from_value("t", "completions", &point),
+            Ok([3.0, 4.0, 0.0, 0.0])
+        );
+        let size = serde_json::json!({"width": 20.0, "height": 6.0});
+        assert_eq!(
+            overlay_anchor_from_value("t", "float", &size),
+            Ok([20.0, 6.0, 0.0, 0.0])
+        );
+        assert!(overlay_anchor_from_value("t", "float", &point).is_err());
     }
 
     #[test]

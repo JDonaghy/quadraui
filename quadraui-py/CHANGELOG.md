@@ -237,7 +237,18 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   leaf's state is keyed by the leaf's own `"id"` even when its descriptor
   carries a different `"id"` (a tree leaf in that shape used to snap its
   keyboard cursor back to the first row), and a leaf's first-frame scroll
-  is sized against the rect it is about to paint into.
+  is sized against the rect it is about to paint into. State owned by a
+  subtree that is not painted this frame -- an unselected `"tabs"` entry,
+  a `"scroll"` child outside the viewport -- is kept, so switching tabs
+  away and back restores a tree's cursor, a nested tab's active index and
+  a split's ratio.
+
+- `show_overlay` decodes through binding-core's `decode_overlay`, shared
+  with `quadraui-node`; kinds, descriptor shapes, anchors, returned ids and
+  `InvalidDescriptorError` for a malformed call are unchanged. The
+  `"context_menu"` and `"message_dialog"` descriptors are now typed in
+  `wire.pyi` (`ContextMenuOverlayDescriptor`,
+  `MessageDialogOverlayDescriptor`).
 
 - `QuiApp.show_overlay`/`dismiss_overlay`, called reentrantly from inside
   the registered event handler or render callback, now raise

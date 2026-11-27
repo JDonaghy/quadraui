@@ -277,9 +277,9 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     A11yChild, A11yInfo, AppLogic, Backend, BackendCaps, BottomPanelEvent, CanvasRegion,
-    ContextMenuItem, DialogButton, DrawOp, FloatMeasure, ImageSource, LayoutCtx, Notification,
-    Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext,
-    ShellEvent, ShellLayout, Toast, UiEvent, UserPayload, WidgetId,
+    ContextMenuItem, DrawOp, ImageSource, LayoutCtx, Notification, PointerShape, Reaction, Rect,
+    RgbaImage, ShellApp, ShellConfig, ShellContext, ShellEvent, ShellLayout, UiEvent, UserPayload,
+    WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -308,22 +308,21 @@ use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
     add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction_for_render,
     caret_shape, clear_recent_documents, click_down_up_events, collect_leaf_tooltips,
-    color_depth_name, decode_layout_dialog, decode_popover, decode_render_output_with_styles,
-    decode_shell_config, decode_style_overrides, dialog_severity, draw_bands, end_power_save_block,
-    font_role, guarded as core_guarded, install_crash_handler, is_default_protocol_client,
-    key_pressed_event, login_item_enabled, menu_for_surface, merge_overrides,
-    message_dialog_options_from_buttons, paint_layout_windowed, pointer_shape,
-    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
+    color_depth_name, decode_overlay, decode_render_output_with_styles, decode_shell_config,
+    decode_style_overrides, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    install_crash_handler, is_default_protocol_client, key_pressed_event, login_item_enabled,
+    menu_for_surface, merge_overrides, overlay_anchor_from_value, paint_layout_windowed,
+    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
+    resolve_app_path, resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, tree_table_controller_nodes_from_wire, update_apply_on_quit,
-    update_check_for_update, update_download_and_stage, validate_style_set_name,
-    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
-    DialogContentSize, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
-    ScriptedSize, ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
+    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, validate_style_set_name, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
+    EventSink, ExtraPaint, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
+    RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y, ScriptedConstraints,
+    ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize,
+    ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
     TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
 };
 #[cfg(test)]

@@ -79,9 +79,12 @@ impl std::error::Error for KindError {
 }
 
 /// Decodes one runtime-registered widget kind's JSON payload into a boxed,
-/// type-erased widget. Registered through [`register_widget_kind`].
+/// type-erased widget. Registered through [`register_widget_kind`]. The
+/// first argument is the kind being decoded, so one decoder can serve many
+/// kinds: a scripting host registers each script-defined kind against the
+/// same function and looks the kind's constructor up by name.
 pub type DecodeFn =
-    fn(serde_json::Value) -> Result<Box<dyn crate::primitive::DynWidget>, serde_json::Error>;
+    fn(&str, serde_json::Value) -> Result<Box<dyn crate::primitive::DynWidget>, serde_json::Error>;
 
 /// Returns the JSON Schema of a runtime-registered widget kind's payload.
 /// Registered through [`register_widget_kind_with_schema`]; a binding's
@@ -211,7 +214,7 @@ pub fn decode_registered_widget(
         .get(kind)
         .map(|entry| entry.decode);
     match decode {
-        Some(decode) => decode(value).map_err(|source| KindError::Decode {
+        Some(decode) => decode(kind, value).map_err(|source| KindError::Decode {
             kind: kind.to_string(),
             source,
         }),
@@ -542,10 +545,50 @@ mod tests {
     use super::*;
 
     fn decode_test_progress(
+        _kind: &str,
         value: serde_json::Value,
     ) -> Result<Box<dyn crate::primitive::DynWidget>, serde_json::Error> {
         let bar: crate::ProgressBar = serde_json::from_value(value)?;
         Ok(Box::new(bar))
+    }
+
+    /// Labels the decoded bar with the kind it was decoded as, so a test can
+    /// tell which registration's name reached the shared decoder.
+    fn decode_kind_labelled_progress(
+        kind: &str,
+        value: serde_json::Value,
+    ) -> Result<Box<dyn crate::primitive::DynWidget>, serde_json::Error> {
+        let mut bar: crate::ProgressBar = serde_json::from_value(value)?;
+        bar.label = kind.to_string();
+        Ok(Box::new(bar))
+    }
+
+    #[test]
+    fn one_decoder_registered_for_two_kinds_receives_each_kind_name() {
+        register_widget_kind("test_runtime_alpha", decode_kind_labelled_progress)
+            .expect("registers");
+        register_widget_kind("test_runtime_beta", decode_kind_labelled_progress)
+            .expect("registers");
+        let payload = serde_json::json!({"id": "bar", "value": 0.5});
+        let labels: Vec<Option<String>> = ["test_runtime_alpha", "test_runtime_beta"]
+            .into_iter()
+            .map(|kind| {
+                let widget = decode_widget(kind, payload.clone()).expect("decodes");
+                widget
+                    .as_any()
+                    .downcast_ref::<crate::ProgressBar>()
+                    .map(|bar| bar.label.clone())
+            })
+            .collect();
+        unregister_widget_kind("test_runtime_alpha");
+        unregister_widget_kind("test_runtime_beta");
+        assert_eq!(
+            labels,
+            vec![
+                Some("test_runtime_alpha".to_string()),
+                Some("test_runtime_beta".to_string())
+            ]
+        );
     }
 
     #[test]

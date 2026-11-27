@@ -408,6 +408,11 @@ export interface ContextMenuItem {
   submenu?: ContextMenuItem[] | null; // Nested submenu.
 }
 
+/** The `"context_menu"` `show_overlay` descriptor: the menu's items. */
+export interface ContextMenuOverlayDescriptor {
+  items: ContextMenuItem[];
+}
+
 /** Preferred placement of a `ContextMenu` relative to its anchor. */
 export type ContextMenuPlacement = "AnchorPoint" | "Below" | "Above";
 
@@ -1187,6 +1192,14 @@ export interface MenuBarItem {
   id: WidgetId;
   label: string; // Display label, e.g.
   submenu?: ContextMenuItem[] | null; // Declarative dropdown items.
+}
+
+/** The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`. */
+export interface MessageDialogOverlayDescriptor {
+  body: string;
+  buttons: DialogButton[];
+  severity?: string | null;
+  title: string;
 }
 
 /** Declarative description of a scrollable styled-row list. */
