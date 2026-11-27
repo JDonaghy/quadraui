@@ -5,6 +5,11 @@ existing one with parameters?" decisions for the quadraui crate. Each
 entry records the question, the call, and the reasoning so we don't
 re-litigate and so the design stays coherent.
 
+Entries are dated and kept as decided; a later entry that changes a
+decision says so in the earlier entry's **Status** line. Code blocks are
+the sketches agreed at the time, so they are marked `ignore` and are not
+checked against the current API.
+
 ---
 
 ## D-001 — `ListView` is a distinct primitive (not `TreeView` with depth 0)
@@ -204,7 +209,7 @@ admin dashboard.
 `SectionBody` is an **enum of supported quadraui primitives** plus a
 `Custom(WidgetId)` escape hatch:
 
-```rust
+```rust,ignore
 pub enum SectionBody {
     Tree(TreeView),
     List(ListView),
@@ -226,7 +231,7 @@ indirection through trait objects.
 
 #### 2. Scroll model
 
-```rust
+```rust,ignore
 pub enum ScrollMode {
     PerSection,             // each body owns its scrollbar
     WholePanel,             // single scrollbar; sections size to content
@@ -252,7 +257,7 @@ actually complain.
 
 #### 4. Axis
 
-```rust
+```rust,ignore
 pub enum Axis { Vertical, Horizontal }
 ```
 
@@ -270,7 +275,7 @@ matches a legal layout state. No "snap back on release" surprise.
 
 #### 6. Header hit-test
 
-```rust
+```rust,ignore
 pub enum HeaderHit {
     Chevron,                // explicit collapse/expand
     TitleArea,              // icon, title, badge — host decides intent
@@ -288,7 +293,7 @@ toggle); simple apps wire both to toggle.
 
 Rich struct from day one:
 
-```rust
+```rust,ignore
 pub struct EmptyBody {
     pub icon: Option<Icon>,
     pub text: StyledText,
@@ -1193,7 +1198,7 @@ them into `Result` would spend a breaking change on a distinction the
 crate already has a non-breaking answer for. See "Why not
 Result-ify draw_* / the CSD bools" below.
 
-```rust
+```rust,ignore
 /// A backend-reported failure at a frame, event-loop, or
 /// PlatformServices seam. Not used by draw_* (see D-009) or by the
 /// four CSD bool methods (BackendCaps already disambiguates their
@@ -1242,7 +1247,7 @@ loop has to become a `match` before it compiles, for a failure mode
 (TUI: crossterm's terminal FD closing; GTK: none, callback-driven) that
 is vanishingly rare. Instead:
 
-```rust
+```rust,ignore
 /// The most recent BackendError this backend recorded, if any, since
 /// the last time this method was called. Default: always None — a
 /// backend that never sets an internal error field (TUI, GTK today)
@@ -1284,7 +1289,7 @@ a default body that just wraps the old one, so no implementor (in-tree:
 `PRIMITIVE_RULES.md` rule 8's consumer table) has to change to keep
 compiling:
 
-```rust
+```rust,ignore
 type ServiceResult<T> = Result<T, BackendError>;
 
 fn show_file_open_dialog_result(&self, opts: FileDialogOptions) -> ServiceResult<Option<PathBuf>> {

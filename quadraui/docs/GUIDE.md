@@ -12,15 +12,13 @@ cargo run --example hello --features tui
 That's `quadraui/examples/hello.rs` — under 100 lines including its doc
 comments, no shared helper module. It's a `ShellApp` (see Step 0 below)
 rather than the `AppLogic` this guide's Step 1–3 walks through, and it
-paints with `ScreenLayout`/`Surface` — pushing declarative `Surface`
-entries and calling `ScreenLayout::draw` — rather than the hand-computed
-`Rect` + `Backend::draw_split`/`draw_tree` calls Step 3 below uses.
-Both are valid: Step 3's raw `Backend::draw_*` calls are the low-level
-path every primitive supports, while `ScreenLayout`/`Surface` is the
-canonical way to assemble a multi-primitive screen from one call site
-and get a click hit-map back for free — see "Frame composition" in
-`docs/ARCHITECTURE.md` and `docs/decisions/DECISIONS.md` D-006 for why
-both exist and when to reach for each.
+paints with `ScreenLayout`/`Surface` — pushing declarative
+`Surface::Widget` entries and calling `ScreenLayout::draw`. That is the
+canonical way to paint a screen: one call site paints every widget, and
+the same widgets returned from `AppLogic::frame_tree` receive their
+input. Step 3 below also paints some widgets by hand at a `Rect` it
+computes itself. See "How a host paints, routes and tests a widget" in
+[`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) for the whole host side.
 
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root
@@ -77,6 +75,7 @@ instead.
 
 ```rust,ignore
 use quadraui::prelude::*;
+use quadraui::DrawsPrimitives; // draw_dyn
 
 struct TwoPane {
     split: Split,
@@ -136,6 +135,13 @@ into the rectangles it hands back.
 
 ## Step 3: rendering
 
+<!-- TODO(0.12 final pass): after W5 (Split/SplitTree ported) and W9 (#2981
+legacy Backend removal), rewrite this step's render() and handle() so the split
+and tree paint through Surface::Widget / draw_dyn and route through
+AppLogic::frame_tree; draw_split, draw_tree, split_layout and tree_layout are
+on the W9 deletion list. Then check the sample compiles (it is `ignore`
+today). -->
+
 ```rust,ignore
 impl AppLogic for TwoPane {
     type AreaId = ();
@@ -168,7 +174,7 @@ impl AppLogic for TwoPane {
             title: None,
             show_scrollbar: false,
         };
-        backend.draw_text_display(layout.second_bounds, &body);
+        backend.draw_dyn(layout.second_bounds, &body, &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

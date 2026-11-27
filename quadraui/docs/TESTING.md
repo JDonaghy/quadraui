@@ -201,8 +201,10 @@ no per-backend code to test separately: the same `paint` runs on GTK,
 macOS and Win, and the same `paint_cells` on TUI. Test it in four layers.
 
 The examples below use one small widget, `Chip`: a one-row label that a
-click or Enter activates. It is written the way a widget outside the
-crate would be (requires quadraui's `tui` feature for `paint_cells`):
+click or Enter activates — a smaller cousin of the toggle chip in
+[`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md#writing-a-widget)'s worked
+example. It is written the way a widget outside the crate would be (requires
+quadraui's `tui` feature for `paint_cells`):
 
 ```rust
 use quadraui::{
@@ -550,7 +552,10 @@ TTY, no window, no display server: deterministic and `cargo test`-native.
 | `quadraui::macos::testing::MacDriver` | `macos`, on macOS | `macos::headless::BitmapSurface` (CGBitmapContext) | pixels | same as GTK |
 | `quadraui::win::testing::WinDriver` | `win`, on Windows | Direct2D `HeadlessSurface` | pixels | same as GTK |
 
-```rust
+The shape of a driver test (a fragment: `PipelineApp` stands for any
+`AppLogic`):
+
+```rust,ignore
 let mut d = TuiDriver::new(PipelineApp::new(), 100, 30);
 let (x, y) = d.find("Go").unwrap();   // locate the painted action button
 d.click(x, y);                         // MouseDown in cell coords
@@ -662,7 +667,7 @@ backends get pixel checks. Don't try to share these.
 backend feature gate) is the backend-neutral answer to "what did this
 frame paint, and where":
 
-```rust
+```rust,ignore
 pub struct TextRun { pub text: String, pub bounds: Rect }
 pub struct ZoneRec { pub id: WidgetId, pub bounds: Rect }
 pub struct FrameInventory { /* text_runs(), zones() */ }
@@ -686,9 +691,9 @@ gets zones without calling `register_zone` itself — `draw_dyn` and
 structural fix for CLAUDE.md's no-hardcoded-coordinates rule, since
 every one of these is computed on the `Rect`s the inventory already
 reports, in the backend's own units, so a shared test body never writes
-a coordinate itself:
+a coordinate itself (a fragment; `driver` is any `ConformanceDriver`):
 
-```rust
+```rust,ignore
 let inv = driver.inventory();
 inv.screen_has("EXPLORER");             // any text run contains this substring
 inv.absent("SOURCE CONTROL");           // no text run does
@@ -1028,9 +1033,10 @@ Two gotchas when writing needles:
 
 ### Adding a backend = one driver impl + one registration line
 
-`tests/conformance.rs`:
+`tests/conformance.rs` (a fragment; `my::testing::MyDriver` stands for the
+new backend's driver):
 
-```rust
+```rust,ignore
 struct MyFactory;
 impl runner::DriverFactory for MyFactory {
     fn make<A: AppLogic + 'static>(app: A, vp: LogicalViewport) -> Box<dyn runner::DynDriver> {
