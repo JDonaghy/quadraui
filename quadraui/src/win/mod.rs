@@ -1,31 +1,21 @@
-//! Win-GUI backend: Direct2D + DirectWrite rasterisers.
+//! Win-GUI backend: Direct2D + DirectWrite.
 //!
 //! The Win32 window + Direct2D render-target bootstrap
 //! (`run.rs`'s message loop, `backend.rs`'s `begin_frame`/`end_frame`)
 //! uses real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
-//! `win` feature comment). Chrome strips (menu, status and
-//! activity bars) paint through their widget contracts; content-area
-//! rasterisers include `list`/`form`/`data_table`/`editor`/`chart`;
-//! overlay/popup rasterisers include `tooltip`/`dialog`/
-//! `palette`/`completions`/`rich_text_popup`; container/
-//! indicator rasterisers include `split`/`toast`/`progress`/
-//! `spinner`; text-heavy rasterisers include `text_display`/
-//! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a
-//! `todo!()` stub; implement each one against Direct2D / DirectWrite and
-//! the compiler will tell you when you're done.
+//! `win` feature comment). Every widget paints through its widget
+//! contract on `WinBackend`'s `PaintSurface`; this module carries only the
+//! platform plumbing (window, events, text, services, tray).
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
 //! as the reference implementation for a pixel-based backend.
 //!
-//! Most of the free functions re-exported at the bottom of this module are
-//! painter internals, not a documented API: **unstable, not covered by
-//! semver** — they can move, split, or disappear between any two 0.1.x
-//! releases with no version bump. The few re-exports with doc comments on
-//! this page (`WinBackend`, `run`, …) are the stable, consumer-depended-on
-//! subset; everything else is `#[doc(hidden)]`.
+//! The re-exports with doc comments on this page (`WinBackend`, `run`, …)
+//! are the stable, consumer-depended-on subset; everything else is
+//! `#[doc(hidden)]`: **unstable, not covered by semver**.
 
 pub mod backend;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
@@ -58,10 +48,10 @@ pub mod services;
 /// run` above — see this module's own doc.
 pub mod shell_runner;
 /// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
-/// Windows-only — same gating as the per-primitive
-/// rasteriser modules above that consume it.
+/// Windows-only. `pub(crate)` so the widgets' own Windows paint tests
+/// can paint through it.
 #[cfg(target_os = "windows")]
-mod surface;
+pub(crate) mod surface;
 /// Headless Direct2D test surface: an offscreen `ID2D1DCRenderTarget`
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.

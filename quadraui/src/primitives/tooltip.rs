@@ -2395,13 +2395,11 @@ mod macos_tests {
         use std::cell::{Cell, RefCell};
         use std::rc::Rc;
 
+        use super::*;
         use crate::compose::HoverTooltipTracker;
-        use crate::macos::super::testing::MacDriver;
-        use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
+        use crate::macos::testing::MacDriver;
         use crate::runner::Reaction;
-        use crate::theme::Theme;
         use crate::{AppLogic, ButtonMask, Point, UiEvent};
-        use core_text::font::CTFont;
 
         const DELAY_MS: u64 = 500;
 

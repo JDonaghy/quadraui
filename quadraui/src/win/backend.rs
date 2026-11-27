@@ -7158,7 +7158,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
@@ -7206,7 +7206,7 @@ mod tests {
              hardcoded `Theme::default()` would pass this test too"
         );
 
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
@@ -7918,7 +7918,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_spinner_layout_measures_label_in_the_chrome_fonts_size() {
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
