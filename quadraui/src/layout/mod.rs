@@ -39,7 +39,14 @@
 use std::collections::BTreeMap;
 
 use crate::event::{Point, Rect};
+use crate::primitives::multi_section_view::SectionSize;
 use serde::{Deserialize, Serialize};
+
+pub mod stack;
+
+use stack::{
+    quantise_horizontal, quantise_vertical, resolve_main_axis_sizes, MainAxisSpec, Spacing,
+};
 
 // ── Anchor: shared overlay positioning ──────────────────────────────────
 
@@ -365,8 +372,8 @@ pub fn visible_range_walk(
 /// Generalises `quadraui::SectionSize`'s `Fixed`/`Percent`/`Weight`/`Content`
 /// vocabulary (single-axis, one dimension of sections) to a 2D grid: columns
 /// and rows each resolve independently, through the same
-/// Fixed+Content → Percent → Weight pass order `resolve_main_axis_sizes`
-/// uses for a `LayoutContainer`'s children. No `min`/`max` clamp and no
+/// Fixed+Content → Percent → Weight pass order a stacked child resolves
+/// under, through the same [`stack::resolve_main_axis_sizes`]. No `min`/`max` clamp and no
 /// `EqualShare` variant yet — a grid track adds them if a consumer needs
 /// them, same as `SectionSize` did.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -388,86 +395,26 @@ pub enum GridTrack {
     Content(f32),
 }
 
-/// Three-pass single-axis track resolution shared by [`resolve_grid_tracks`]'s
-/// column pass and row pass.
-///
-/// Pass 1 resolves every `Fixed`/`Content` track exactly. Pass 2 resolves
-/// every `Percent` track against `container_extent` (the axis's full
-/// extent, before any track consumed part of it); if the percentages
-/// overflow what's left after pass 1, every `Percent` track scales down
-/// proportionally. Pass 3 splits whatever remains across every `Weight`
-/// track by weight ratio; with no `Weight` track, the remainder goes
-/// unused. Same pass order as
-/// `quadraui_binding_core::layout::resolve_main_axis_sizes`, without that
-/// function's `min`/`max` clamp (no such concept on a `GridTrack` today)
-/// or its separately-reserved `usable_main` (a grid track has no gap
-/// parameter yet — a caller wanting a gutter shrinks the container or
-/// inserts a `Fixed` spacer track).
+/// Single-axis track resolution shared by [`resolve_grid_tracks`]'s column
+/// pass and row pass: each track becomes a [`MainAxisSpec`] for the stack
+/// solver [`resolve_main_axis_sizes`]. A `Fixed`/`Content` track resolves
+/// exactly (as a `Content` spec carrying its value), a `Percent` track
+/// against the axis's full extent, and `Weight` tracks share whatever
+/// remains. A track has no `min`/`max` clamp and no gap — a caller wanting
+/// a gutter shrinks the container or inserts a `Fixed` spacer track.
 fn resolve_track_sizes(tracks: &[GridTrack], container_extent: f32) -> Vec<f32> {
-    let n = tracks.len();
-    let mut out = vec![0.0_f32; n];
-    let mut done = vec![false; n];
-    let mut consumed = 0.0_f32;
-
-    // Pass 1: Fixed + Content.
-    for (i, track) in tracks.iter().enumerate() {
-        let raw = match track {
-            GridTrack::Fixed(v) | GridTrack::Content(v) => *v,
-            GridTrack::Percent(_) | GridTrack::Weight(_) => continue,
-        };
-        let v = raw.max(0.0);
-        out[i] = v;
-        consumed += v;
-        done[i] = true;
-    }
-
-    // Pass 2: Percent, against the original container_extent.
-    let mut percent_indices = Vec::new();
-    let mut percent_raw = Vec::new();
-    for (i, track) in tracks.iter().enumerate() {
-        if done[i] {
-            continue;
-        }
-        if let GridTrack::Percent(p) = track {
-            percent_indices.push(i);
-            percent_raw.push(p.clamp(0.0, 1.0) * container_extent);
-        }
-    }
-    let percent_total: f32 = percent_raw.iter().sum();
-    let percent_budget = (container_extent - consumed).max(0.0);
-    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
-        percent_budget / percent_total
-    } else {
-        1.0
-    };
-    for (k, &i) in percent_indices.iter().enumerate() {
-        let v = (percent_raw[k] * percent_scale).max(0.0);
-        out[i] = v;
-        consumed += v;
-        done[i] = true;
-    }
-
-    // Pass 3: Weight shares whatever remains.
-    let remainder = (container_extent - consumed).max(0.0);
-    let mut weight_indices = Vec::new();
-    let mut weights = Vec::new();
-    for (i, track) in tracks.iter().enumerate() {
-        if done[i] {
-            continue;
-        }
-        if let GridTrack::Weight(w) = track {
-            weight_indices.push(i);
-            weights.push(w.max(0.0));
-        }
-    }
-    let weight_sum: f32 = weights.iter().sum();
-    if !weight_indices.is_empty() && weight_sum > 0.0 {
-        for (k, &i) in weight_indices.iter().enumerate() {
-            out[i] = remainder * (weights[k] / weight_sum);
-        }
-    }
-
-    out
+    let specs: Vec<MainAxisSpec> = tracks
+        .iter()
+        .map(|track| match *track {
+            GridTrack::Fixed(v) | GridTrack::Content(v) => MainAxisSpec {
+                content: v,
+                ..MainAxisSpec::new(SectionSize::Content)
+            },
+            GridTrack::Percent(p) => MainAxisSpec::new(SectionSize::Percent(p)),
+            GridTrack::Weight(w) => MainAxisSpec::new(SectionSize::Weight(w)),
+        })
+        .collect();
+    resolve_main_axis_sizes(&specs, container_extent, container_extent)
 }
 
 /// Resolves `columns` and `rows` against `container` into a 2D grid of
@@ -501,6 +448,49 @@ pub fn resolve_grid_tracks(
         row_y += row_h;
     }
     grid
+}
+
+/// Quantises every `Fixed`/`Content` track in `tracks` from portable
+/// surface-native pixels into `metric`'s native unit, the same conversion
+/// [`Spacing`]'s fields go through. `Percent` and `Weight` are unitless
+/// ratios and pass through untouched.
+fn native_tracks(
+    tracks: &[GridTrack],
+    metric: f32,
+    quantise: fn(f32, f32) -> f32,
+) -> Vec<GridTrack> {
+    tracks
+        .iter()
+        .map(|track| match *track {
+            GridTrack::Fixed(v) => GridTrack::Fixed(quantise(v, metric)),
+            GridTrack::Content(v) => GridTrack::Content(quantise(v, metric)),
+            GridTrack::Percent(p) => GridTrack::Percent(p),
+            GridTrack::Weight(w) => GridTrack::Weight(w),
+        })
+        .collect()
+}
+
+/// A spaced grid's cell rects inside `area`, flattened row-major (left to
+/// right within a row, then top to bottom): insets `area` by `spacing`'s
+/// `padding`/`margin`, quantises both track lists from portable
+/// surface-native pixels into the backend's native units (`char_width`
+/// for columns, `line_height` for rows), then resolves them through
+/// [`resolve_grid_tracks`].
+pub fn grid_cell_rects(
+    columns: &[GridTrack],
+    rows: &[GridTrack],
+    spacing: &Spacing,
+    area: Rect,
+    char_width: f32,
+    line_height: f32,
+) -> Vec<Rect> {
+    let inner = spacing.inset(area, char_width, line_height);
+    let columns = native_tracks(columns, char_width, quantise_horizontal);
+    let rows = native_tracks(rows, line_height, quantise_vertical);
+    resolve_grid_tracks(&columns, &rows, inner)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Inclusive row/col index range an area name spans within a
@@ -833,6 +823,68 @@ mod tests {
         assert_eq!(grid.len(), 1);
         assert_eq!(grid[0].len(), 1);
         assert_eq!(grid[0][0], Rect::new(0.0, 0.0, 20.0, 10.0));
+    }
+
+    // `TuiBackend`'s architectural `1.0` char/line metrics.
+    const TUI_CHAR_WIDTH: f32 = 1.0;
+    const TUI_LINE_HEIGHT: f32 = 1.0;
+
+    #[test]
+    fn grid_cell_rects_are_flattened_row_major() {
+        let cells = grid_cell_rects(
+            &[GridTrack::Weight(1.0), GridTrack::Weight(1.0)],
+            &[GridTrack::Weight(1.0), GridTrack::Weight(1.0)],
+            &Spacing::default(),
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        assert_eq!(
+            cells,
+            vec![
+                Rect::new(0.0, 0.0, 40.0, 12.0),
+                Rect::new(40.0, 0.0, 40.0, 12.0),
+                Rect::new(0.0, 12.0, 40.0, 12.0),
+                Rect::new(40.0, 12.0, 40.0, 12.0),
+            ],
+            "cells read left-to-right within a row, then top-to-bottom"
+        );
+    }
+
+    #[test]
+    fn grid_cell_rects_quantise_a_fixed_track_against_its_own_axis_metric() {
+        let cells = grid_cell_rects(
+            &[GridTrack::Fixed(16.0), GridTrack::Weight(1.0)],
+            &[GridTrack::Fixed(16.0), GridTrack::Weight(1.0)],
+            &Spacing::default(),
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        // On a cell-grid backend a `Fixed` track is in portable
+        // surface-native pixels: 16px is `ceil(16 / 8) = 2` cells wide and
+        // `ceil(16 / 16) = 1` cell tall.
+        assert_eq!(cells[0], Rect::new(0.0, 0.0, 2.0, 1.0));
+        // The `Weight` tracks take whatever the `Fixed` ones left.
+        assert_eq!(cells[3], Rect::new(2.0, 1.0, 78.0, 23.0));
+    }
+
+    #[test]
+    fn grid_cell_rects_inset_by_the_spacing_padding_first() {
+        let cells = grid_cell_rects(
+            &[GridTrack::Weight(1.0)],
+            &[GridTrack::Weight(1.0)],
+            &Spacing {
+                padding: stack::EdgeInsets::uniform(8.0),
+                margin: 0.0,
+                gap: 0.0,
+            },
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            TUI_CHAR_WIDTH,
+            TUI_LINE_HEIGHT,
+        );
+        // 8px padding is one cell horizontally, one row vertically.
+        assert_eq!(cells, vec![Rect::new(1.0, 1.0, 78.0, 22.0)]);
     }
 
     #[test]

@@ -304,18 +304,16 @@ pub use host::{
     WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
     SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
-pub use layout::{grid_cell_rects, LayoutGrid};
-pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
+pub use layout::LayoutGrid;
+pub use layout::{validate_unique_leaf_ids, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{FontWeight, InteractionState, StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use layout::{LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
-pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
+pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS};
 pub use render::{
     collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
-    split_rects,
 };
 pub use render::{
-    data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
-    RenderFrame, RenderRefs,
+    data_table_viewport_rows, list_viewport_rows, tree_viewport_rows, RenderFrame, RenderRefs,
 };
 pub use render::{
     draw_tree_with_scrollbar_and_state_windowed, items_window_from_value, paint_layout_windowed,

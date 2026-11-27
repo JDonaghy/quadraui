@@ -284,15 +284,6 @@ pub mod visibility;
 #[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
 
-// ── Optional flex/grid layout module ──────────────────────────────────────
-// Gated behind the `layout` feature so apps that hand-compute every `Rect`
-// today don't pull in `taffy`. Unit-agnostic (plain `f32` in, plain `f32`
-// out) and pairs with any backend feature, or none — see `flex`'s module
-// doc.
-#[cfg(feature = "layout")]
-#[cfg_attr(docsrs, doc(cfg(feature = "layout")))]
-pub mod flex;
-
 // Small LRU cache for decoded image rasterisations, shared by every
 // surface's `PaintSurface::surface_draw_image` (and TUI's graphics
 // channel). Crate-internal — only backend modules need it. `gtk` needs no
@@ -955,6 +946,8 @@ pub use interaction::InteractionState;
 // these yet — each primitive converges onto them in its own PR behind a
 // `#[deprecated]` shim per `docs/PRIMITIVE_RULES.md` rule 8.
 pub use layout::{visible_range_walk, Anchor, Axis, NaturalSize, ResolvedSide, Side, VisibleItem};
+// The stack layout solver's public vocabulary.
+pub use layout::stack::{Align, EdgeInsets, Justify, Spacing};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.

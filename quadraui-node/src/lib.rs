@@ -5230,7 +5230,7 @@ mod tests {
 
     /// A `"row"`'s `"padding"`/`"gap"` spacing keys are siblings of the
     /// `"row"` key in the same node dict, decoded into
-    /// [`quadraui_binding_core::layout::Spacing`] alongside the children —
+    /// [`quadraui::Spacing`] alongside the children —
     /// see [`decode_layout_node_round_trips_a_row_of_leaves`]'s doc for why
     /// this needs no live napi `Env`.
     #[test]
@@ -5261,7 +5261,7 @@ mod tests {
     /// this needs no live napi `Env`.
     #[test]
     fn decode_layout_node_round_trips_row_child_sizing_and_container_justify_align() {
-        use quadraui_binding_core::layout::{Align, Justify};
+        use quadraui::{Align, Justify};
 
         let value = serde_json::json!({
             "row": [

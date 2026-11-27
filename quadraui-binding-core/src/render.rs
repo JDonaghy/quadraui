@@ -13,9 +13,9 @@ use serde::{Deserialize, Deserializer};
 use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
     ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
-    SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout, TabChrome, TextDisplay,
-    TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath, TreeRow,
-    TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Style, StyledText, TabBar, TabBarLayout, TabChrome, TextDisplay, TextDisplayHit,
+    TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeView,
+    TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -25,10 +25,14 @@ use quadraui::DrawsPrimitives;
 use crate::extra_paint::ExtraPaint;
 use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit};
 use crate::layout::{
-    align_cross, apply_min_max, grid_cell_rects, justify_starts, quantise_horizontal,
-    quantise_vertical, resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf,
-    LayoutNode, LayoutScroll, LayoutStyled, LeafDescriptor, MainAxisSpec,
+    LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutStyled,
+    LeafDescriptor,
 };
+use quadraui::layout::stack::{
+    apply_min_max, apply_split_gap, quantise_horizontal, quantise_vertical, shrink_main_axis,
+    stack_rects, MainAxisSpec, StackChild, StackStyle,
+};
+use quadraui::layout::NaturalSize;
 
 /// Owned decode of a render callback's returned descriptor set — one
 /// optional descriptor per slot, keyed by `"text_display"`,
@@ -510,7 +514,7 @@ fn text_display_region(
 
 /// Paints a layout tree into `area`. A `Row`/`Column` first shrinks `area`
 /// by its own `padding`/`margin` and reserves `gap` between children (see
-/// [`inset_for_spacing`]/[`split_rects_with_gap`] — a no-spacing container
+/// [`inset_for_spacing`]/[`quadraui::layout::stack::split_rects_with_gap`] — a no-spacing container
 /// behaves exactly as before these existed), then divides what's left into
 /// equal shares — one per child, side by side or stacked — and recurses;
 /// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
@@ -532,7 +536,7 @@ fn text_display_region(
 /// for their own chrome (divider / toolbar button), same as `Split`,
 /// so a later pointer event can resolve against it. A `Grid` resolves its
 /// `columns`/`rows` tracks into cell rects via
-/// [`crate::layout::grid_cell_rects`] and recurses into each with the
+/// [`LayoutGrid::cell_rects`](crate::layout::LayoutGrid::cell_rects) and recurses into each with the
 /// matching row-major child; it paints no chrome of its own, so it records
 /// no hit. Per-child flex weights on `Row`/`Column` are a follow-up; every
 /// `Row`/`Column` child gets the same share for now.
@@ -583,7 +587,7 @@ pub fn paint_layout_windowed(
             }
         }
         LayoutNode::Grid(grid) => {
-            let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
+            let rects = grid.cell_rects(area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter().zip(rects) {
                 paint_layout_windowed(backend, rect, child, hits, windows);
             }
@@ -1265,6 +1269,7 @@ fn matching_axis_child_length(
             min: child.min.map(|v| quantise_main(v, main_metric)),
             max: child.max.map(|v| quantise_main(v, main_metric)),
             content: 0.0,
+            floor: 0.0,
         };
         return apply_min_max(&spec, quantise_main(raw as f32, main_metric));
     }
@@ -1467,39 +1472,10 @@ fn clip_main_axis(
     (clipped_origin, (end - clipped_origin).max(0.0))
 }
 
-/// A node's intrinsic `(width, height)`, each `None` when no cheap
-/// measurement exists for that axis on this node kind — see
-/// [`natural_size`], the only producer of this type.
-struct NaturalSize {
-    width: Option<f32>,
-    height: Option<f32>,
-}
-
-impl NaturalSize {
-    /// The extent along whichever axis is `horizontal`'s container's main
-    /// axis (width for a `Row`, height for a `Column`).
-    fn main(&self, horizontal: bool) -> Option<f32> {
-        if horizontal {
-            self.width
-        } else {
-            self.height
-        }
-    }
-
-    /// [`Self::main`]'s counterpart on the container's cross axis.
-    fn cross(&self, horizontal: bool) -> Option<f32> {
-        if horizontal {
-            self.height
-        } else {
-            self.width
-        }
-    }
-}
-
 /// Best-effort intrinsic size of `node`, consulted by
 /// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
 /// child's main-axis size and for a non-`Stretch`
-/// [`crate::layout::Align`]'s cross-axis size. Measured directly off the
+/// [`quadraui::Align`]'s cross-axis size. Measured directly off the
 /// descriptor already decoded for painting: `TabBar` via
 /// `Backend::measure_text` (the same measurer `quadraui::compose::
 /// menu_system` already leans on for its own label widths), `TextDisplay`
@@ -1615,330 +1591,52 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
     }
 }
 
-/// Resolves a [`LayoutContainer`]'s children into their final paint rects:
-/// each child's [`quadraui::SectionSize`] main-axis size (clamped by its
-/// own `min`/`max`, both quantised into native units here — the same
-/// treatment [`crate::layout::Spacing`]'s own fields get), the container's
-/// [`crate::layout::Justify`] distributing any leftover main-axis space,
-/// and the container's [`crate::layout::Align`] sizing/positioning each
-/// child on the cross axis. `area` is already the container's own inset
-/// area (post `padding`/`margin` — see [`inset_for_spacing`]); `horizontal`
-/// is `true` for a `Row` (main axis = width), `false` for a `Column` (main
-/// axis = height). The one call site each in [`paint_layout`] and
-/// `crate::host::resolve_layout_node` share this so a click always
-/// resolves against the exact geometry just painted.
-///
-/// `container.wrap` delegates the whole resolution to
-/// [`layout_container_rects_wrapped`] instead — see that function's own
-/// doc for the multi-line shape.
+/// Resolves a [`LayoutContainer`]'s children into their final paint rects
+/// through the core stack solver [`stack_rects`], measuring each child's
+/// natural size on demand with [`natural_size`]. `area` is the
+/// container's own inset area (post `padding`/`margin` — see
+/// [`inset_for_spacing`]); `horizontal` is `true` for a `Row`, `false` for
+/// a `Column`. [`paint_layout`] and `crate::host::resolve_layout_node`
+/// share this so a click resolves against the exact geometry just painted.
 pub fn layout_container_rects(
     backend: &mut dyn Backend,
     area: Rect,
     container: &LayoutContainer,
     horizontal: bool,
 ) -> Vec<Rect> {
-    let n = container.children.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    if container.wrap {
-        return layout_container_rects_wrapped(backend, area, container, horizontal);
-    }
     let char_width = backend.char_width();
     let line_height = backend.line_height();
-    let (main_metric, quantise_main): (f32, fn(f32, f32) -> f32) = if horizontal {
-        (char_width, quantise_horizontal)
-    } else {
-        (line_height, quantise_vertical)
-    };
-    let gap = quantise_main(container.spacing.gap, main_metric);
-    let container_main = if horizontal { area.width } else { area.height };
-    let usable_main = (container_main - gap * (n - 1) as f32).max(0.0);
-
-    let specs: Vec<MainAxisSpec> = container
+    let children: Vec<StackChild> = container
         .children
         .iter()
-        .map(|child| {
-            // `SectionSize::Fixed`'s own `u16` is decoded in the same
-            // portable surface-native-pixel unit as `min`/`max` below —
-            // quantise it into native units the same way before
-            // `resolve_main_axis_sizes` ever sees it.
-            let size = match child.size {
-                SectionSize::Fixed(raw) => {
-                    SectionSize::Fixed(quantise_main(raw as f32, main_metric).round() as u16)
-                }
-                other => other,
-            };
-            let content = if matches!(size, SectionSize::Content) {
-                natural_size(backend, &child.node, line_height)
-                    .main(horizontal)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            MainAxisSpec {
-                size,
-                min: child.min.map(|v| quantise_main(v, main_metric)),
-                max: child.max.map(|v| quantise_main(v, main_metric)),
-                content,
-            }
+        .map(|child| StackChild {
+            size: child.size,
+            min: child.min,
+            max: child.max,
         })
         .collect();
-
-    let sizes = resolve_main_axis_sizes(&specs, container_main, usable_main);
-    // `justify_starts` wants the container's full main-axis extent, not
-    // `usable_main` (already gap-reduced for `resolve_main_axis_sizes`'s
-    // own budget) — it reinserts the full gap total itself when computing
-    // its own `leftover`, so passing the gap-reduced value here would
-    // subtract the gap twice.
-    let starts = justify_starts(&sizes, container_main, gap, container.justify);
-
-    let cross_extent = if horizontal { area.height } else { area.width };
-    container
-        .children
-        .iter()
-        .zip(sizes.iter())
-        .zip(starts.iter())
-        .map(|((child, &size), &start)| {
-            // `align_cross` ignores `natural_cross` entirely under the
-            // default `Align::Stretch` -- skip the measurement (a `String`
-            // allocation plus a `Backend::measure_text` call for a
-            // `TextDisplay`) so the pre-`align` default path stays free of
-            // it, the same way the main-axis `Content` size already skips
-            // `natural_size` for every other `SectionSize`.
-            let natural_cross = if container.align == Align::Stretch {
-                None
-            } else {
-                natural_size(backend, &child.node, line_height).cross(horizontal)
-            };
-            let (cross_offset, cross_size) =
-                align_cross(cross_extent, natural_cross, container.align);
-            if horizontal {
-                Rect::new(area.x + start, area.y + cross_offset, size, cross_size)
-            } else {
-                Rect::new(area.x + cross_offset, area.y + start, cross_size, size)
-            }
-        })
-        .collect()
+    let style = StackStyle {
+        gap: container.spacing.gap,
+        justify: container.justify,
+        align: container.align,
+        wrap: container.wrap,
+    };
+    stack_rects(
+        area,
+        &children,
+        style,
+        horizontal,
+        char_width,
+        line_height,
+        &mut |i| natural_size(backend, &container.children[i].node, line_height),
+    )
 }
 
-/// [`layout_container_rects`]'s multi-line path for a `wrap: true`
-/// container: greedily packs children onto main-axis lines (a line always
-/// takes at least one child, even one wider than the container on its
-/// own — CSS flex-wrap never drops an item for being too big to fit),
-/// then resolves each line's own main-axis sizes/positions through the
-/// same [`resolve_main_axis_sizes`]/[`justify_starts`] the single-line
-/// path uses — `justify` distributes each *line's* own leftover space,
-/// not the whole container's. Lines stack along the cross axis, each
-/// sized to the tallest (`Row`) / widest (`Column`) child it holds —
-/// [`Align::Stretch`] fills that line's own extent, not the container's,
-/// since a wrapped container's total cross extent is however many lines
-/// it took, not a fixed budget to divide up front. Lines are separated by
-/// the same `spacing.gap` the main axis uses between children — there is
-/// no separate "row gap"/"column gap" wire key.
-///
-/// A child's own [`quadraui::SectionSize`] still governs its *size*
-/// within whichever line it lands on (`Fixed`/`Percent`/`Content` resolve
-/// exactly, `Weight`/`EqualShare` share that line's own leftover space),
-/// but the line-assignment pass bins by each child's natural extent
-/// instead: `Fixed`/`Percent`/`Content` use the same value they go on to
-/// resolve to, while `Weight`/`EqualShare` use [`natural_size`], falling
-/// back to one `main_metric` unit with no cheap measurement — there is no
-/// "leftover space" to bin a `Weight`/`EqualShare` child against before
-/// the lines themselves exist.
-fn layout_container_rects_wrapped(
-    backend: &mut dyn Backend,
-    area: Rect,
-    container: &LayoutContainer,
-    horizontal: bool,
-) -> Vec<Rect> {
-    let n = container.children.len();
-    let char_width = backend.char_width();
-    let line_height = backend.line_height();
-    let (main_metric, cross_metric, quantise_main): (f32, f32, fn(f32, f32) -> f32) = if horizontal
-    {
-        (char_width, line_height, quantise_horizontal)
-    } else {
-        (line_height, char_width, quantise_vertical)
-    };
-    let quantise_cross: fn(f32, f32) -> f32 = if horizontal {
-        quantise_vertical
-    } else {
-        quantise_horizontal
-    };
-    let gap = quantise_main(container.spacing.gap, main_metric);
-    // The distance between lines runs along the *cross* axis (vertically
-    // between rows of a wrapped `Row`, horizontally between columns of a
-    // wrapped `Column`), so it is quantised by the cross-axis rule against
-    // the cross metric -- not `quantise_main`/`main_metric`, which govern
-    // the gap *within* a line, between a line's own children.
-    let cross_gap = quantise_cross(container.spacing.gap, cross_metric);
-    let container_main = if horizontal { area.width } else { area.height };
-
-    // Each child's main-axis spec (same shape the single-line path builds)
-    // plus its own natural cross size, computed once up front and reused
-    // by both the line-assignment pass below and the per-line
-    // `resolve_main_axis_sizes`/`align_cross` calls.
-    let mut specs: Vec<MainAxisSpec> = Vec::with_capacity(n);
-    let mut natural_cross: Vec<Option<f32>> = Vec::with_capacity(n);
-    let mut bin_hints: Vec<f32> = Vec::with_capacity(n);
-    for child in &container.children {
-        let natural = natural_size(backend, &child.node, line_height);
-        let size = match child.size {
-            SectionSize::Fixed(raw) => {
-                SectionSize::Fixed(quantise_main(raw as f32, main_metric).round() as u16)
-            }
-            other => other,
-        };
-        let content = if matches!(size, SectionSize::Content) {
-            natural.main(horizontal).unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let spec = MainAxisSpec {
-            size,
-            min: child.min.map(|v| quantise_main(v, main_metric)),
-            max: child.max.map(|v| quantise_main(v, main_metric)),
-            content,
-        };
-        let hint = match size {
-            SectionSize::Fixed(raw) => raw as f32,
-            SectionSize::Content => spec.content,
-            SectionSize::Percent(p) => p.clamp(0.0, 1.0) * container_main,
-            SectionSize::Weight(_) | SectionSize::EqualShare => {
-                natural.main(horizontal).unwrap_or(main_metric)
-            }
-        };
-        bin_hints.push(apply_min_max(&spec, hint));
-        natural_cross.push(natural.cross(horizontal));
-        specs.push(spec);
-    }
-
-    // Greedy line assignment: a line always holds at least its first
-    // child regardless of overflow.
-    let mut lines: Vec<Vec<usize>> = Vec::new();
-    let mut line_main = 0.0_f32;
-    for (i, &hint) in bin_hints.iter().enumerate() {
-        let starts_new_line = match lines.last() {
-            Some(last) if !last.is_empty() => line_main + gap + hint > container_main,
-            _ => true,
-        };
-        if starts_new_line {
-            lines.push(Vec::new());
-            line_main = 0.0;
-        }
-        let current = lines.last_mut().expect("a line was just pushed if empty");
-        if !current.is_empty() {
-            line_main += gap;
-        }
-        current.push(i);
-        line_main += hint;
-    }
-
-    let mut rects = vec![Rect::new(0.0, 0.0, 0.0, 0.0); n];
-    let mut cross_pos = 0.0_f32;
-    for line in &lines {
-        let line_usable_main = (container_main - gap * (line.len() - 1) as f32).max(0.0);
-        let line_specs: Vec<MainAxisSpec> = line.iter().map(|&i| specs[i]).collect();
-        let sizes = resolve_main_axis_sizes(&line_specs, container_main, line_usable_main);
-        let starts = justify_starts(&sizes, container_main, gap, container.justify);
-        let line_cross = line
-            .iter()
-            .map(|&i| natural_cross[i].unwrap_or(cross_metric))
-            .fold(0.0_f32, f32::max);
-        for (local, &i) in line.iter().enumerate() {
-            let (cross_offset, cross_size) =
-                align_cross(line_cross, natural_cross[i], container.align);
-            let main_start = starts[local];
-            let main_size = sizes[local];
-            rects[i] = if horizontal {
-                Rect::new(
-                    area.x + main_start,
-                    area.y + cross_pos + cross_offset,
-                    main_size,
-                    cross_size,
-                )
-            } else {
-                Rect::new(
-                    area.x + cross_pos + cross_offset,
-                    area.y + main_start,
-                    cross_size,
-                    main_size,
-                )
-            };
-        }
-        cross_pos += line_cross + cross_gap;
-    }
-
-    rects
-}
-
-/// Shrinks `area`'s main-axis extent by `gap`, anchored at the same
-/// origin — the rect [`paint_layout`]'s `Split` arm feeds `draw_primitive`
-/// so `Split::layout`'s own ratio/min-size clamping evaluates against the
-/// space actually available once the gap between panes is carved out,
-/// matching `Split::first_min`/`second_min`'s "a minimum applies to the
-/// pane" contract. [`apply_split_gap`] reinserts the carved-out space
-/// after painting.
-pub(crate) fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
-    if horizontal {
-        Rect::new(area.x, area.y, (area.width - gap).max(0.0), area.height)
-    } else {
-        Rect::new(area.x, area.y, area.width, (area.height - gap).max(0.0))
-    }
-}
-
-/// Reinserts `gap` between a [`SplitLayout`]'s two panes after
-/// `draw_primitive` painted it into [`shrink_main_axis`]'s
-/// gap-reduced rect: the divider and first pane stay exactly where they
-/// were painted (so the divider's own visuals/hit region are untouched),
-/// and the second pane — its `second_bounds` plus its `SplitHit::SecondPane`
-/// hit region — shifts forward by `gap` along the main axis, so the two
-/// panes end up visually separated by blank space rather than both
-/// touching the divider. A no-op when `gap` is `0.0`, the overwhelmingly
-/// common case.
-pub(crate) fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f32) {
-    if gap <= 0.0 {
-        return;
-    }
-    let shift = |rect: Rect| -> Rect {
-        if horizontal {
-            Rect::new(rect.x + gap, rect.y, rect.width, rect.height)
-        } else {
-            Rect::new(rect.x, rect.y + gap, rect.width, rect.height)
-        }
-    };
-    layout.second_bounds = shift(layout.second_bounds);
-    for (rect, hit) in layout.hit_regions.iter_mut() {
-        if matches!(hit, SplitHit::SecondPane(_)) {
-            *rect = shift(*rect);
-        }
-    }
-    // Widen `bounds` back out so it reports the real (pre-shrink) area
-    // this split occupies, not the gap-reduced rect fed to `draw_primitive`.
-    layout.bounds = if horizontal {
-        Rect::new(
-            layout.bounds.x,
-            layout.bounds.y,
-            layout.bounds.width + gap,
-            layout.bounds.height,
-        )
-    } else {
-        Rect::new(
-            layout.bounds.x,
-            layout.bounds.y,
-            layout.bounds.width,
-            layout.bounds.height + gap,
-        )
-    };
-}
-
-/// Shrinks `area` by `container.spacing` — see [`crate::layout::Spacing::inset`]
+/// Shrinks `area` by `container.spacing` — see [`quadraui::Spacing::inset`]
 /// for the margin-then-padding rule and why `char_width`/`line_height` (the
 /// painting backend's own `Backend::char_width()`/`Backend::line_height()`)
-/// are needed. Kept as its own name for every `Row`/`Column` call site;
-/// `Split`/`Tabs` call `Spacing::inset` directly since they have no
-/// [`LayoutContainer`] to unwrap it from.
+/// are needed. `Split`/`Tabs` call `Spacing::inset` directly since they
+/// have no [`LayoutContainer`] to unwrap it from.
 fn inset_for_spacing(
     area: Rect,
     container: &LayoutContainer,
@@ -1946,65 +1644,6 @@ fn inset_for_spacing(
     line_height: f32,
 ) -> Rect {
     container.spacing.inset(area, char_width, line_height)
-}
-
-/// Divides `area` into `n` equal shares, side by side when `horizontal` or
-/// stacked top-to-bottom otherwise, with `gap` native units of space
-/// between adjacent shares — quantised via [`quantise_horizontal`] (using
-/// `char_width`) when `horizontal`, or [`crate::layout::quantise_vertical`]
-/// (using `line_height`) otherwise, so the *distance* between two adjacent
-/// shares is always a whole number of TUI cells. The shares themselves
-/// stay fractional (`(area's main-axis extent - total_gap) / n`), so an
-/// individual share's own start position is not guaranteed to land on a
-/// cell boundary — only the gap carved out of the space between shares
-/// is quantised. Returns an empty `Vec` for `n == 0`. `gap: 0.0` behaves
-/// exactly like the equal-share split this replaced. When `gap` alone
-/// consumes the whole of `area` (so every share clamps to `0.0`), every
-/// returned rect's origin is clamped to `area`'s own far edge instead of
-/// marching past it — a share is always zero-width/height in that case,
-/// so nothing paints either way, but the geometry itself never escapes
-/// `area`.
-pub fn split_rects_with_gap(
-    area: Rect,
-    n: usize,
-    horizontal: bool,
-    gap: f32,
-    char_width: f32,
-    line_height: f32,
-) -> Vec<Rect> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let gap = if horizontal {
-        quantise_horizontal(gap, char_width)
-    } else {
-        quantise_vertical(gap, line_height)
-    };
-    let n_f = n as f32;
-    let total_gap = gap * (n.saturating_sub(1)) as f32;
-    (0..n)
-        .map(|i| {
-            let i_f = i as f32;
-            if horizontal {
-                let share = ((area.width - total_gap) / n_f).max(0.0);
-                let x = (area.x + (share + gap) * i_f).min(area.x + area.width);
-                Rect::new(x, area.y, share, area.height)
-            } else {
-                let share = ((area.height - total_gap) / n_f).max(0.0);
-                let y = (area.y + (share + gap) * i_f).min(area.y + area.height);
-                Rect::new(area.x, y, area.width, share)
-            }
-        })
-        .collect()
-}
-
-/// Divides `area` into `n` equal shares with no gap between them —
-/// [`split_rects_with_gap`] with `gap: 0.0`, kept as its own name for
-/// every caller that has no [`LayoutContainer`] spacing to thread
-/// through. `gap: 0.0` never consults either metric, so `char_width`/
-/// `line_height` here are nominal.
-pub fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
-    split_rects_with_gap(area, n, horizontal, 0.0, 1.0, 1.0)
 }
 
 /// How many rows of `tree` fit in `rect` at a zero scroll offset — the
@@ -2930,11 +2569,13 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::layout::{EdgeInsets, Spacing, StyleOverride};
+    use crate::layout::StyleOverride;
+    use quadraui::layout::stack::split_rects_with_gap;
     use quadraui::{Decoration, StyledSpan, TextDisplayLine};
+    use quadraui::{EdgeInsets, Spacing};
 
     /// A real font's reported char/line metrics (GTK/macOS/Win) — any
-    /// value `> 1.0` takes [`crate::layout::quantise_horizontal`]/
+    /// value `> 1.0` takes [`quadraui::layout::stack::quantise_horizontal`]/
     /// [`quantise_vertical`]'s pixel-backend passthrough branch, so these
     /// particular numbers aren't load-bearing, just plausible ones.
     const PIXEL_CHAR_WIDTH: f32 = 8.0;
@@ -3110,161 +2751,9 @@ mod tests {
         }
     }
 
-    /// When `gap` alone consumes the whole area, every share clamps to
-    /// `0.0` but the geometry itself must still stay inside `area` — see
-    /// [`split_rects_with_gap`]'s doc for why marching origins past the
-    /// far edge is a latent hit-test/overdraw hazard even though nothing
-    /// actually paints into a zero-sized rect.
-    #[test]
-    fn split_rects_with_gap_clamps_origins_when_gap_exceeds_the_area() {
-        let area = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let rects = split_rects_with_gap(area, 5, true, 4.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
-        assert_eq!(rects.len(), 5);
-        for rect in &rects {
-            assert_eq!(rect.width, 0.0);
-            assert!(
-                rect.x <= area.x + area.width,
-                "origin must not escape area: {rect:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn split_rects_with_gap_leaves_whole_unit_gaps_between_shares() {
-        let area = Rect::new(0.0, 0.0, 33.0, 10.0);
-        let rects = split_rects_with_gap(area, 3, true, 3.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
-        assert_eq!(rects.len(), 3);
-        // 33 width, 2 gaps of 3 => 27 left for 3 equal shares of 9 each.
-        assert_eq!(rects[0], Rect::new(0.0, 0.0, 9.0, 10.0));
-        assert_eq!(rects[1], Rect::new(12.0, 0.0, 9.0, 10.0));
-        assert_eq!(rects[2], Rect::new(24.0, 0.0, 9.0, 10.0));
-    }
-
-    #[test]
-    fn split_rects_with_gap_zero_matches_the_plain_equal_split() {
-        let area = Rect::new(0.0, 0.0, 30.0, 10.0);
-        assert_eq!(
-            split_rects_with_gap(area, 3, true, 0.0, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT),
-            split_rects(area, 3, true)
-        );
-    }
-
-    #[test]
-    fn split_rects_with_gap_quantises_a_fractional_gap_up() {
-        let area = Rect::new(0.0, 0.0, 20.0, 10.0);
-        let rects = split_rects_with_gap(area, 2, true, 0.4, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
-        // 0.4 rounds up to a whole unit of gap (1.0).
-        assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
-    }
-
-    /// The same fractional gap from a cell-grid backend's own metrics:
-    /// `0.4` surface-native pixels is nowhere near one nominal 8px-wide
-    /// cell, so it still rounds up to exactly one whole TUI cell of gap —
-    /// same outcome as the pixel-backend case above, by a different route.
-    #[test]
-    fn split_rects_with_gap_quantises_a_fractional_gap_up_on_tui() {
-        let area = Rect::new(0.0, 0.0, 20.0, 10.0);
-        let rects = split_rects_with_gap(area, 2, true, 0.4, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
-        assert_eq!(rects[1].x - (rects[0].x + rects[0].width), 1.0);
-    }
-
     // ── Split/Tabs spacing ───────────────────────────────────────────────
 
     use quadraui::SplitMeasure;
-
-    /// A `"split"` node's `margin`/`padding` inset the whole split area
-    /// before `Split::layout` divides it — the exact [`Spacing::inset`]
-    /// call `paint_layout`'s `LayoutNode::Split` arm makes, on a pixel
-    /// backend where the padding/margin values pass straight through.
-    #[test]
-    fn split_spacing_insets_the_whole_area_on_a_pixel_backend() {
-        let area = Rect::new(0.0, 0.0, 100.0, 50.0);
-        let spacing = Spacing {
-            padding: EdgeInsets::uniform(5.0),
-            margin: 3.0,
-            gap: 0.0,
-        };
-        let inset = spacing.inset(area, PIXEL_CHAR_WIDTH, PIXEL_LINE_HEIGHT);
-        assert_eq!(inset, Rect::new(8.0, 8.0, 100.0 - 16.0, 50.0 - 16.0));
-    }
-
-    /// The same inset on TUI shrinks the pixel padding/margin into whole
-    /// cells, same rule as a `"row"`/`"column"` node's own spacing.
-    #[test]
-    fn split_spacing_insets_the_whole_area_on_tui() {
-        let area = Rect::new(0.0, 0.0, 80.0, 24.0);
-        let spacing = Spacing {
-            padding: EdgeInsets::uniform(12.0),
-            margin: 0.0,
-            gap: 0.0,
-        };
-        let inset = spacing.inset(area, TUI_CHAR_WIDTH, TUI_LINE_HEIGHT);
-        // ceil(12 / 8) = 2 columns each side, ceil(12 / 16) = 1 row each side.
-        assert_eq!(inset, Rect::new(2.0, 1.0, 80.0 - 4.0, 24.0 - 2.0));
-    }
-
-    /// [`shrink_main_axis`]/[`apply_split_gap`] together implement a
-    /// split's `gap`: the available space `Split::layout` divides is
-    /// reduced by the gap first (so `first_min`/`second_min` are evaluated
-    /// against the space left AFTER the gap, not before), and the second
-    /// pane is shifted forward by exactly the gap afterwards, landing it
-    /// flush with the original area's far edge.
-    #[test]
-    fn split_gap_is_carved_out_before_dividing_then_reinserted() {
-        let area = Rect::new(0.0, 0.0, 100.0, 40.0);
-        let gap = 10.0;
-        let draw_area = shrink_main_axis(area, true, gap);
-        assert_eq!(draw_area, Rect::new(0.0, 0.0, 90.0, 40.0));
-
-        let split = Split {
-            id: WidgetId::new("s"),
-            direction: SplitDirection::Horizontal,
-            ratio: 0.5,
-            first_min: 0.0,
-            second_min: 0.0,
-        };
-        let mut layout = split.layout(draw_area, SplitMeasure::new(1.0));
-        let first_width_before = layout.first_bounds.width;
-        let second_x_before = layout.second_bounds.x;
-
-        apply_split_gap(&mut layout, true, gap);
-
-        // The divider/first pane painted into `draw_area` stay exactly
-        // where they were -- only the second pane and its hit region move.
-        assert_eq!(layout.first_bounds.width, first_width_before);
-        assert_eq!(layout.second_bounds.x, second_x_before + gap);
-        // The second pane now reaches exactly the far edge of the
-        // original (pre-shrink) area -- the gap didn't leak room outside
-        // it, and didn't leave any slack short of it either.
-        assert_eq!(
-            layout.second_bounds.x + layout.second_bounds.width,
-            area.x + area.width
-        );
-        let second_hit = layout
-            .hit_regions
-            .iter()
-            .find(|(_, hit)| matches!(hit, SplitHit::SecondPane(_)))
-            .expect("a second-pane hit region");
-        assert_eq!(second_hit.0.x, second_x_before + gap);
-    }
-
-    /// `gap: 0.0` is a no-op — [`apply_split_gap`] leaves every rect and
-    /// hit region exactly as `draw_primitive` returned it.
-    #[test]
-    fn split_gap_zero_is_a_no_op() {
-        let area = Rect::new(0.0, 0.0, 100.0, 40.0);
-        let split = Split {
-            id: WidgetId::new("s"),
-            direction: SplitDirection::Horizontal,
-            ratio: 0.5,
-            first_min: 0.0,
-            second_min: 0.0,
-        };
-        let mut layout = split.layout(area, SplitMeasure::new(1.0));
-        let before = layout.clone();
-        apply_split_gap(&mut layout, true, 0.0);
-        assert_eq!(layout, before);
-    }
 
     /// Minimal [`quadraui::AppLogic`] around a `LayoutNode::Split` of two
     /// empty `Row` children, with `first_min`/`second_min` both set to
@@ -3882,8 +3371,9 @@ mod tests {
     // terminal sizes per mode so a mode's own math isn't accidentally
     // pinned to one viewport.
 
-    use crate::layout::{Align, Justify, LayoutChild};
+    use crate::layout::LayoutChild;
     use quadraui::tui::TuiBackend;
+    use quadraui::{Align, Justify};
 
     fn tui() -> TuiBackend {
         TuiBackend::new()

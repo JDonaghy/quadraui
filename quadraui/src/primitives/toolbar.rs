@@ -2494,27 +2494,6 @@ where
 /// shrinking — items past the available width still get a cursor position
 /// (the full cumulative sum), so overflow is clipped by the caller
 /// afterwards rather than by squeezing items to fit.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine (a `Row` of fixed-width, `flex_shrink: 0.0` leaves) so
-/// `Toolbar` composes with the same engine [`crate::primitives::Form`] and
-/// [`crate::compose::ShellView`] use. Without it, the same arithmetic is
-/// done by hand. Both arms are covered by this module's exact-value tests
-/// (`layout_places_buttons_left_to_right`, `layout_clips_to_bar_width`,
-/// `origin_offset_propagates`) to guarantee they agree bit-for-bit.
-#[cfg(feature = "layout")]
-fn item_cursor_positions(origin_x: f32, bar_height: f32, widths: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Row,
-        origin_x,
-        widths,
-        0.0,
-        bar_height,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec<f32> {
     let mut cursor = origin_x;
     let mut cursors = Vec::with_capacity(widths.len());

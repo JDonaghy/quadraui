@@ -33,7 +33,7 @@ fn round_trips_a_split_node() {
 
 /// A `"row"`'s `"padding"`/`"margin"`/`"gap"` keys are siblings of
 /// the `"row"` key in the same node dict, decoded into
-/// [`crate::layout::Spacing`] alongside the children. `"padding"` as
+/// [`quadraui::Spacing`] alongside the children. `"padding"` as
 /// a bare number applies uniformly to every edge.
 #[test]
 fn round_trips_a_row_node_s_spacing_keys() {
@@ -119,7 +119,7 @@ fn round_trips_a_row_childs_size_min_max_keys() {
 
 /// `{"Percent": 25}` is a plausible "25 percent" typo -- rejected at
 /// decode rather than silently read as `2500%` and clamped to `100%`
-/// by `crate::layout::resolve_main_axis_sizes`.
+/// by `quadraui::layout::stack::resolve_main_axis_sizes`.
 #[test]
 fn rejects_a_child_percent_size_outside_zero_to_one() {
     let value = json!({

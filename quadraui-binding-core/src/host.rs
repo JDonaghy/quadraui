@@ -44,16 +44,16 @@ use quadraui::{
 
 use crate::engine::InteractionEngine;
 use crate::hit::PaintedHit;
-use crate::layout::{
-    grid_cell_rects, quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs,
-    LeafDescriptor, StyleSets,
-};
+use crate::layout::{LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor, StyleSets};
 use crate::render::{
-    apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
-    natural_main_length, scroll_content_slots, scroll_viewport_and_track, shrink_main_axis,
-    tree_viewport_rows, ItemsWindow, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
+    data_table_viewport_rows, layout_container_rects, list_viewport_rows, natural_main_length,
+    scroll_content_slots, scroll_viewport_and_track, tree_viewport_rows, ItemsWindow, RenderFrame,
+    RenderRefs, ScrollMetrics, ScrollSlots,
 };
 use crate::widget_state::WidgetState;
+use quadraui::layout::stack::{
+    apply_split_gap, quantise_horizontal, quantise_vertical, shrink_main_axis,
+};
 
 /// Slot id of the host's `Button` descriptor.
 pub const SLOT_BUTTON: i64 = 0;
@@ -1931,7 +1931,7 @@ pub fn resolve_layout_node_windowed(
             }
         }
         LayoutNode::Grid(grid) => {
-            let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
+            let rects = grid.cell_rects(area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter_mut().zip(rects) {
                 resolve_layout_node_windowed(widget_state, backend, rect, child, windows);
             }
@@ -3062,9 +3062,9 @@ mod tests {
     use crate::engine::EventSink;
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutSplit, LayoutTabEntry, LeafDescriptor,
-        Spacing,
     };
     use crate::render::{collect_leaf_tooltips, draw_bands, paint_layout};
+    use quadraui::Spacing;
 
     /// A [`BindingHost::widgets`] map holding just `button` under its
     /// `"button"` key — the test fixtures' own shorthand for the single

@@ -398,7 +398,7 @@ jobs:
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     # #1292: apt-get install + `cargo doc` across
-    # tui,tui-images,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
+    # tui,tui-images,gtk,win,terminal,a11y,control, normally under 10 minutes
     # with a warm cache.
     timeout-minutes: 25
     steps:
@@ -412,7 +412,7 @@ jobs:
       - name: cargo doc --no-deps -D warnings (tui, tui-images, gtk, win, terminal, layout, a11y, control)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,tui-images,gtk,win,terminal,layout,a11y,control
+        run: cargo doc --no-deps -p quadraui --features tui,tui-images,gtk,win,terminal,a11y,control
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
@@ -1167,25 +1167,6 @@ jobs:
       # already covers.
       - name: Test (terminal_engine unit tests, tui + terminal features)
         run: cargo test -p quadraui --features tui,terminal --lib terminal_engine
-      # Optional flex/grid layout module (quadraui#1103, `quadraui::flex`).
-      # Deliberately standalone — no `tui`/`gtk`/`win` feature alongside it
-      # — because the whole point of `layout` is that it's unit-agnostic
-      # and pairs with any backend feature *or none*: `--features layout`
-      # alone proves it builds, tests and lints clean with zero rasteriser
-      # in the mix, the posture its own module doc promises. Mirrors the
-      # `terminal`-feature steps above (same "own feature, own steps, same
-      # job" shape), not folded into the plain `--features tui` step near
-      # the top of this job since that step never turns `layout` on at
-      # all, so `src/flex.rs` would otherwise never compile under CI on
-      # either OS in this matrix.
-      - name: Build (layout feature)
-        run: cargo build -p quadraui --features layout
-      - name: Test (layout feature)
-        run: 'cargo test -p quadraui --features layout --lib flex::'
-      - name: Doctest (layout feature)
-        run: cargo test -p quadraui --features layout --doc flex
-      - name: Clippy (layout feature)
-        run: cargo clippy -p quadraui --features layout -- -D warnings
       # Optional AccessKit conversions (quadraui#1310, `quadraui::a11y`).
       # `A11yRole`/`A11yInfo` are always compiled; only the
       # `From<_> for accesskit::_` impls in `a11y::accesskit_convert` sit
