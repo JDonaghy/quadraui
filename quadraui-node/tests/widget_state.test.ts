@@ -280,3 +280,49 @@ test("a tree leaf whose outer id differs from its own descriptor id still resolv
   );
   assert.deepEqual(afterAnotherFrame.selectedPath, [40]);
 });
+
+test("a tree in an unselected tab keeps its cursor across a tab switch", () => {
+  const app = new QuiApp(30, 12);
+  app.setHandler(() => {});
+  let selected = 0;
+  app.setRender(() => ({
+    tabs: {
+      id: "tabs:1",
+      selected,
+      tabs: [
+        {
+          id: "one",
+          title: "One",
+          content: {
+            id: "tree:1",
+            tree: { id: "tree:1", rows: treeRows(30), selection_mode: "Single", selected_path: null, style: TREE_STYLE },
+          },
+        },
+        { id: "two", title: "Two", content: { id: "text:2", text_display: { id: "text:2", lines: [] } } },
+      ],
+    },
+  }));
+  app.screen();
+  // The strip takes the top three rows; one in from the tree's bordered
+  // frame lands on its first row.
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: 1, y: 4 }, modifiers: {} },
+  });
+  app.run(1);
+  for (let i = 0; i < 5; i++) {
+    app.pushEvent({
+      KeyPressed: { key: { Named: "Down" }, modifiers: {}, repeat: false },
+    });
+  }
+  app.run(5);
+  const before = app.widgetState("tree:1");
+  assert.ok(before && before.selectedPath, `the tree must hold a cursor: ${JSON.stringify(before)}`);
+
+  selected = 1;
+  app.screen();
+  app.screen();
+  selected = 0;
+  app.screen();
+
+  assert.deepEqual(app.widgetState("tree:1").selectedPath, before.selectedPath);
+});

@@ -273,3 +273,38 @@ def test_a_tree_leaf_keeps_its_cursor_when_its_descriptor_id_differs_from_the_le
         _press(app, _DOWN)
 
     assert app.widget_state("files")["selected_path"] == [3]
+
+
+def test_a_tree_in_an_unselected_tab_keeps_its_cursor_across_a_tab_switch():
+    """A tree leaf whose tab is hidden for a few frames keeps the cursor
+    the user moved it to: switching to another tab and back restores it."""
+    rows = _tree_rows(30)
+    selected = {"tab": 0}
+
+    def render():
+        return {
+            "tabs": {
+                "id": "tabs:1",
+                "selected": selected["tab"],
+                "tabs": [
+                    {"id": "one", "title": "One", "content": {"id": "tree:1", "tree": _tree_descriptor(rows)}},
+                    {"id": "two", "title": "Two", "content": {"id": "text:2", "text_display": {"id": "text:2", "lines": []}}},
+                ],
+            }
+        }
+
+    app = QuiApp(30, 12, render=render, on_event=_NOOP_HANDLER)
+    _press(app, _TAB)
+    _press(app, _TAB)
+    for _ in range(5):
+        _press(app, _DOWN)
+    before = app.widget_state("tree:1")["selected_path"]
+    assert before is not None
+
+    selected["tab"] = 1
+    app.step()
+    app.step()
+    selected["tab"] = 0
+    app.step()
+
+    assert app.widget_state("tree:1")["selected_path"] == before
