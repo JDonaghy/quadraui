@@ -187,12 +187,11 @@ use quadraui_binding_core::{
     resolve_layout_node_windowed, resolve_render_refs, set_as_default_protocol_client,
     set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, RenderOutput,
-    RowsRequestedEvent, ServiceError, StyleContext, TreeTableControllerNode,
-    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
+    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, RowsRequestedEvent, ServiceError,
+    StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{
@@ -1287,57 +1286,12 @@ impl EventSink for PyEventSink<'_> {
         })
     }
 
-    /// Delivers a `"tree_table_controller"` extra's
-    /// [`TreeTableControllerWireEvent`] to the same registered Python
-    /// handler [`Self::dispatch`] calls, as `{"TreeTableController": (id,
-    /// event)}` — `id` is the extra's own id (a plain `str`), `event` the
-    /// pythonized wire event (e.g. `{"RowSelected": {"id": "..."}}`),
-    /// mirroring the `{"TreeTable": (table_id, event)}` shape a flat-slot
-    /// `TreeTable`'s own `TreeTableEvent` already reaches the handler as.
-    /// A `"ChildrenRequested"` here is answered with
-    /// `QuiApp.set_tree_table_children`; a `"SortChanged"` may be answered
-    /// with `QuiApp.set_tree_table_sort_override` to replace the engine's
-    /// default comparator's result with a host-chosen order.
-    fn dispatch_tree_table_controller(
-        &mut self,
-        id: WidgetId,
-        event: TreeTableControllerWireEvent,
-    ) -> Reaction {
-        Python::attach(|py| {
-            let event_value = match pythonize::pythonize(py, &event) {
-                Ok(value) => value,
-                Err(err) => {
-                    record_error(
-                        self.pending_error,
-                        InternalError::new_err(format!(
-                            "failed to pythonize tree table controller event: {err}"
-                        )),
-                    );
-                    return Reaction::Exit;
-                }
-            };
-            let dict = PyDict::new(py);
-            if let Err(err) = dict.set_item("TreeTableController", (id.as_str(), event_value)) {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-            match self.handler.call1(py, (dict,)) {
-                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
-                Err(err) => {
-                    record_error(self.pending_error, err);
-                    Reaction::Exit
-                }
-            }
-        })
-    }
-
     /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
     /// leaf's [`RowsRequestedEvent`] to the same registered Python handler
     /// [`Self::dispatch`] calls, as `{"RowsRequested": {"id": ..., "start":
     /// ..., "count": ...}}` — the synthesized-event shape
     /// `docs/bindings-wire-format.md`'s own `RowsRequestedEvent` entry
-    /// describes, mirroring [`Self::dispatch_tree_table_controller`]'s
-    /// `{"TreeTableController": ...}`.
+    /// describes.
     ///
     /// The app answers by re-rendering that leaf with
     /// `items_window = {"start": start, "total": <unchanged>}` and the
@@ -2587,8 +2541,7 @@ impl QuiAppWaker {
 /// `set_login_item`, `set_as_default_protocol_client`,
 /// `remove_as_default_protocol_client`, `begin_drag_out`,
 /// `add_recent_document`, `clear_recent_documents`, `set_dock_menu`,
-/// `set_jump_list`, `set_tree_table_children`,
-/// `set_tree_table_sort_override` — plus [`Self::apply_tab_activated`], a
+/// `set_jump_list` — plus [`Self::apply_tab_activated`], a
 /// write into the engine's own widget-state store with no restricted
 /// `QuiApp` method of its own at all (see its own doc) — so a registered
 /// event handler can request one of them without re-entering `QuiApp`'s
@@ -2983,64 +2936,6 @@ impl QuiAppActions {
             .push_back(DeferredAction::DefineStyle(
                 name.to_string(),
                 Box::new(parsed),
-            ));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::SetTreeTableChildren`] — same arguments
-    /// and the same decoding (via [`tree_table_controller_nodes_from_wire`])
-    /// as `QuiApp::set_tree_table_children`, which this is the only way to
-    /// answer from inside a registered event handler: a
-    /// `"tree_table_controller"` extra's `"ChildrenRequested"` event is
-    /// only ever delivered there, and a direct `app.set_tree_table_children(...)`
-    /// call from that same dispatch raises [`ReentrantCallError`]. `children`
-    /// decodes and converts synchronously, so a malformed descriptor still
-    /// raises immediately from the handler's own call; only the write into
-    /// the cached controller (a no-op if `id` names no cached controller)
-    /// waits for [`flush_deferred_actions`].
-    fn set_tree_table_children(
-        &self,
-        id: &str,
-        node_id: &str,
-        children: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let children: Vec<TreeTableControllerNode> = pythonize::depythonize(children.as_any())
-            .map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_children: invalid descriptor: {err}"
-                ))
-            })?;
-        let children = tree_table_controller_nodes_from_wire(children);
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::SetTreeTableChildren(
-                WidgetId::new(id),
-                node_id.to_string(),
-                children,
-            ));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::SetTreeTableSortOverride`] — same
-    /// arguments and the same decoding as
-    /// `QuiApp::set_tree_table_sort_override`, which this is the only way
-    /// to answer from inside a registered event handler, for the same
-    /// reason [`Self::set_tree_table_children`]'s own doc gives: a
-    /// `"tree_table_controller"` extra's `"SortChanged"` event is only ever
-    /// delivered there.
-    fn set_tree_table_sort_override(&self, id: &str, nodes: &Bound<'_, PyList>) -> PyResult<()> {
-        let nodes: Vec<TreeTableControllerNode> =
-            pythonize::depythonize(nodes.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_sort_override: invalid descriptor: {err}"
-                ))
-            })?;
-        let nodes = tree_table_controller_nodes_from_wire(nodes);
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::SetTreeTableSortOverride(
-                WidgetId::new(id),
-                nodes,
             ));
         Ok(())
     }
@@ -3454,8 +3349,7 @@ impl QuiApp {
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_overlay`/`dismiss_overlay`/`send_notification`/
     /// `open_path`/
-    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`/
-    /// `set_tree_table_children`/`set_tree_table_sort_override` on
+    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
     /// instead of this `QuiApp` itself, since the handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
     /// it and a direct call on `self` from there raises "already
@@ -4545,88 +4439,6 @@ impl QuiApp {
                         .map_err(|err| InternalError::new_err(format!("widget_state: {err}")))
                 })
                 .transpose()
-        })
-    }
-
-    /// Answers a `"tree_table_controller"` extra's `"ChildrenRequested"`
-    /// event — delivered to the registered handler as
-    /// `{"TreeTableController": (id, {"ChildrenRequested": {"id":
-    /// node_id}})}` — by attaching `children` (a list of wire nodes, the
-    /// same `{"id": ..., "cells": [...], "icon": ..., "has_children":
-    /// ..., "children": ...}` shape a `"tree_table_controller"` extra's
-    /// own `"nodes"` list takes) under `node_id`, found anywhere in the
-    /// tree, not just at the top level. A no-op if `id` names no cached
-    /// controller (it hasn't been painted this frame, or at all yet).
-    ///
-    /// Call this from top-level script code only (e.g. after
-    /// `step`/`step_once`/`run` returns, having seen a `ChildrenRequested`
-    /// event land), never from inside the registered event handler or
-    /// render callback — the only place `ChildrenRequested` is ever
-    /// actually delivered: both already hold this `QuiApp`'s one mutable
-    /// borrow for the whole dispatch, so a reentrant call here raises
-    /// [`ReentrantCallError`] — see [`guard_against_reentrant_call`]'s own
-    /// doc. From inside a handler, call
-    /// [`QuiAppActions::set_tree_table_children`] (via [`Self::actions`])
-    /// instead.
-    fn set_tree_table_children(
-        slf: Py<Self>,
-        py: Python<'_>,
-        id: &str,
-        node_id: &str,
-        children: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let children: Vec<TreeTableControllerNode> = pythonize::depythonize(children.as_any())
-            .map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_children: invalid descriptor: {err}"
-                ))
-            })?;
-        let children = tree_table_controller_nodes_from_wire(children);
-        let mut this = guard_against_reentrant_call(&slf, py, "set_tree_table_children")?;
-        this.guarded(|app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_children(WidgetId::new(id), node_id, children);
-            Ok(())
-        })
-    }
-
-    /// Overrides the comparator a `"tree_table_controller"` extra's
-    /// `{"TreeTableController": (id, {"SortChanged": {"col": ...,
-    /// "ascending": ...}})}` event already applied by default: replaces
-    /// every loaded node under `id`'s cached controller with `nodes` (the
-    /// same wire-node shape [`Self::set_tree_table_children`]'s own
-    /// `children` takes), already ordered however the host likes
-    /// (numeric, locale-aware, ...). Selection survives by node id, not
-    /// position. A no-op if `id` names no cached controller.
-    ///
-    /// Same "top-level script code only, never from inside the registered
-    /// event handler or render callback" restriction as
-    /// [`Self::set_tree_table_children`], for the same reason — see that
-    /// method's own doc. From inside a handler, call
-    /// [`QuiAppActions::set_tree_table_sort_override`] (via
-    /// [`Self::actions`]) instead.
-    fn set_tree_table_sort_override(
-        slf: Py<Self>,
-        py: Python<'_>,
-        id: &str,
-        nodes: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let nodes: Vec<TreeTableControllerNode> =
-            pythonize::depythonize(nodes.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_sort_override: invalid descriptor: {err}"
-                ))
-            })?;
-        let nodes = tree_table_controller_nodes_from_wire(nodes);
-        let mut this = guard_against_reentrant_call(&slf, py, "set_tree_table_sort_override")?;
-        this.guarded(|app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_sort_override(WidgetId::new(id), nodes);
-            Ok(())
         })
     }
 

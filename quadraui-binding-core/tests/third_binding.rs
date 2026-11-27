@@ -13,7 +13,9 @@
 //! The tree mixes a built-in kind (`"button"`) with a kind the host
 //! registers at runtime (`"host_toggle"`), so the same frame proves both
 //! halves of the generic leaf: the static `widget_kinds!` table and the
-//! runtime kind registry.
+//! runtime kind registry. A stateful built-in kind (`"tree_table_controller"`)
+//! shows the engine keeping widget state across frames a host decodes
+//! afresh each time.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -268,6 +270,54 @@ fn a_host_opens_a_context_menu_and_receives_its_activation() {
             .borrow()
             .events
             .contains(&UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+}
+
+/// A built-in kind whose behaviour lives in its own `Interactive::State`:
+/// the host decodes the same view every frame, yet the branch the user
+/// expanded stays expanded, because the engine keeps the widget's state
+/// across frames and paint reads it back. The expand reaches the host as
+/// an ordinary `UiEvent`.
+#[test]
+fn a_stateful_kind_keeps_its_state_across_freshly_decoded_frames() {
+    let label = |text: &str| serde_json::json!([{"spans": [{"text": text}]}]);
+    let view = serde_json::json!({
+        "column": [{"id": "files", "tree_table_controller": {
+            "id": "files",
+            "columns": [{"title": "Name", "width": {"Flex": 1.0}}],
+            "nodes": [{
+                "id": "src", "cells": label("src"), "has_children": true,
+                "children": [{"id": "src/lib.rs", "cells": label("lib.rs")}],
+            }],
+            "selected_id": "src",
+        }}]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 8);
+    driver.render();
+    assert!(!driver.screen_contains("lib.rs"), "{}", driver.screen());
+
+    let (x, y) = driver.find("src").expect("the root row paints");
+    driver.click(x, y);
+    driver.type_char(' ');
+    driver.render();
+    driver.render();
+
+    assert!(driver.screen_contains("lib.rs"), "{}", driver.screen());
+    assert!(
+        driver
+            .app()
+            .sink
+            .borrow()
+            .events
+            .contains(&UiEvent::TreeTableModel(
+                WidgetId::new("files"),
+                quadraui::TreeTableModelEvent::ToggleExpand {
+                    id: "src".to_string(),
+                    expand: true,
+                }
+            )),
         "{:?}",
         driver.app().sink.borrow().events
     );

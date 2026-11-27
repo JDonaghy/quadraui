@@ -1192,6 +1192,12 @@ pub enum UiEvent {
     /// already returns — so a binding resolves this without duplicating
     /// chevron-bounds math.
     TreeTable(WidgetId, TreeTableEvent),
+    /// A `TreeTableModel` (wire kind
+    /// `"tree_table_controller"`) row, chevron or header interaction,
+    /// naming rows by the app's node ids. Serialized as
+    /// `{"TreeTableController": [id, event]}`.
+    #[serde(rename = "TreeTableController")]
+    TreeTableModel(WidgetId, crate::TreeTableModelEvent),
     /// A [`crate::CellGrid`] cell was clicked, moving the cursor to its
     /// absolute `(row, col)` — see [`CellGridEvent::CursorMoved`]. Built
     /// by [`crate::a11y::route_action`] for an assistive-technology

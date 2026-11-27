@@ -68,6 +68,31 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- **Breaking:** a `"tree_table_controller"` leaf's `"nodes"` are content
+  read every frame (#2978, 0.12 rec 14), no longer a seed read once on
+  the leaf's first frame. The widget keeps only what the user does to the
+  tree -- expanded branches, the selection, the scroll position and the
+  header sort -- keyed by node id. So:
+  - lazily loaded children reach the widget as that node's `"children"`
+    in the next `render`, not through a method call;
+  - `"selected_id"` selects that node whenever the app changes it
+    (between changes the user's own selection stands);
+  - the new `"sort_override": True` says `"nodes"` already arrive in the
+    app's own order for the current sort, so a header click reports
+    `SortChanged` and moves the sort indicator but does not re-order the
+    rows;
+  - `"has_focus"` paints as sent; keyboard focus no longer forces the
+    focused look on.
+
+  Events keep their `{"TreeTableController": (id, event)}` shape and
+  variants, and now reach the handler through the ordinary `UiEvent` path,
+  so `push_event` accepts that shape too. See *Removed* for the migration.
+- A generic widget leaf lays out and paints with the `Interactive` state
+  its own events left (#2978): binding-core keeps that state in the same
+  per-thread store the Rust runtime paints from. A widget whose paint
+  reads its state (a caret, a text selection, an open section) now shows
+  it in a `quadraui-py` app as it does in a Rust one.
+
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
   on a row reports `{"List": (id, {"SelectionChanged": {"idx": n}})}` and
@@ -202,6 +227,62 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 - `QuiApp.list_char_width()` and `QuiApp.scrollbar_reserve()` (#2979,
   0.12 rec 14), part of the 0.12 binding API cleanup. Budget row text
   with `char_width()` or `measure_text()` instead.
+
+- `QuiApp.set_tree_table_children(id, node_id, children)`,
+  `QuiApp.set_tree_table_sort_override(id, nodes)` and their
+  `QuiAppActions` twins (#2978, 0.12 rec 14). Lazily loaded children and
+  a host sort order are `"tree_table_controller"` descriptor content now:
+  keep them in the app's own model and send them from `render`. Before:
+
+  ```python
+  def on_event(event):
+      if "TreeTableController" in event:
+          table_id, payload = event["TreeTableController"]
+          if "ChildrenRequested" in payload:
+              node_id = payload["ChildrenRequested"]["id"]
+              actions.set_tree_table_children(table_id, node_id, load(node_id))
+          elif "SortChanged" in payload:
+              col = payload["SortChanged"]["col"]
+              asc = payload["SortChanged"]["ascending"]
+              actions.set_tree_table_sort_override(table_id, my_sorted_nodes(col, asc))
+  ```
+
+  After -- the handler only records what the app now knows, and `render`
+  builds the whole tree from it:
+
+  ```python
+  loaded = {}          # node id -> list of child nodes the app has loaded
+  sort = None          # (col, ascending) when the app sorts rows itself
+
+  def on_event(event):
+      global sort
+      if "TreeTableController" in event:
+          _, payload = event["TreeTableController"]
+          if "ChildrenRequested" in payload:
+              node_id = payload["ChildrenRequested"]["id"]
+              loaded[node_id] = load(node_id)
+          elif "SortChanged" in payload:
+              sort = (payload["SortChanged"]["col"], payload["SortChanged"]["ascending"])
+
+  def node(n):
+      out = {"id": n.id, "cells": n.cells}
+      if n.is_branch:
+          out["has_children"] = True
+          if n.id in loaded:        # omit "children" until loaded: a lazy branch
+              out["children"] = [node(c) for c in my_order(loaded[n.id], sort)]
+      return out
+
+  def render():
+      return {"row": [{"id": "files", "tree_table_controller": {
+          "id": "files", "columns": columns, "nodes": [node(r) for r in my_order(roots, sort)],
+          "sort_override": sort is not None,   # drop to keep the built-in text sort
+      }}]}
+  ```
+
+  An app that is happy with the built-in sort (cell text, branches first
+  with `"folders_first"`) leaves `"sort_override"` out and ignores
+  `SortChanged`. The handler can update the model directly, so neither
+  answer needs `QuiApp.actions()` any more.
 
 - `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
   `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/

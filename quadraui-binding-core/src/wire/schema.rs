@@ -275,7 +275,7 @@ pub fn wire_schema() -> Value {
     root::<ShellConfigDescriptor>(&mut generator, &mut roots);
     root::<crate::hit::HitDetail>(&mut generator, &mut roots);
     root::<crate::semantic::DragGestureWireEvent>(&mut generator, &mut roots);
-    root::<crate::engine::TreeTableControllerWireEvent>(&mut generator, &mut roots);
+    root::<quadraui::TreeTableModelEvent>(&mut generator, &mut roots);
     root::<crate::host::WidgetStateSnapshot>(&mut generator, &mut roots);
     root::<crate::services::UpdateInfoWire>(&mut generator, &mut roots);
     root::<crate::render::RowsRequestedEvent>(&mut generator, &mut roots);

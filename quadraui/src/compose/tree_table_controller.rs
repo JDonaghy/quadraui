@@ -46,11 +46,18 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore};
-use crate::compose::widget_host;
-use crate::interactive::{Interactive, PointerKind, RoutedEvent};
+use crate::compose::widget_host::{self, ChildHost};
+use crate::interactive::{EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget};
+use crate::primitive::{LayoutCtx, PaintEnv, Primitive};
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
-use crate::primitives::tree_table::{TreeTable, TreeTableEvent, TreeTableNode, TreeTableState};
+use crate::primitives::tree_table::{
+    TreeTable, TreeTableEvent, TreeTableModelEvent, TreeTableNode, TreeTablePrimitiveLayout,
+    TreeTableState,
+};
 use crate::types::{Decoration, Icon, StyledText, TreePath};
 use crate::{Backend, DrawsPrimitives, Handled, Rect, UiEvent, WidgetId};
 
@@ -70,12 +77,23 @@ pub type NodeId = String;
 /// flag [`crate::TreeTableNode::is_expanded`] needs even while `children`
 /// is still `None`, so a lazy branch's chevron paints before its children
 /// ever arrive.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// On the wire a node is `{"id", "cells", "icon", "has_children",
+/// "children"}`: a leaf by default, a lazy branch with `has_children` and
+/// no `children`, and a loaded branch with both. `children` on a node
+/// without `has_children` is never shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "TreeTableControllerNode"))]
 pub struct TreeTableNodeData {
     id: NodeId,
+    #[serde(default)]
     cells: Vec<StyledText>,
+    #[serde(default)]
     icon: Option<Icon>,
+    #[serde(default)]
     has_children: bool,
+    #[serde(default)]
     children: Option<Vec<TreeTableNodeData>>,
 }
 
@@ -253,8 +271,12 @@ pub struct TreeTableController {
 
 impl TreeTableController {
     pub fn new(id: impl Into<String>) -> Self {
+        Self::with_id(WidgetId::new(id))
+    }
+
+    fn with_id(id: WidgetId) -> Self {
         Self {
-            id: WidgetId::new(id),
+            id,
             roots: Vec::new(),
             expanded: HashSet::new(),
             requested: HashSet::new(),
@@ -359,11 +381,20 @@ impl TreeTableController {
     /// `set_columns` cached on the controller would across a resize that
     /// doesn't otherwise touch the model.
     pub fn flatten(&self, columns: Vec<Column>) -> TreeTable {
-        let rows = self.flatten_rows();
-        let selected_idx = self
-            .selected_id
-            .as_ref()
-            .and_then(|id| rows.iter().position(|r| &r.id == id));
+        self.flatten_with(&self.roots, self.selected_id.as_ref(), columns)
+    }
+
+    /// [`Self::flatten`] for `roots` and `selected` in place of the stored
+    /// model and selection, keeping this controller's expanded set, sort
+    /// indicator, scroll position and flags.
+    fn flatten_with(
+        &self,
+        roots: &[TreeTableNodeData],
+        selected: Option<&NodeId>,
+        columns: Vec<Column>,
+    ) -> TreeTable {
+        let rows = self.flatten_rows_of(roots);
+        let selected_idx = selected.and_then(|id| rows.iter().position(|r| &r.id == id));
         let mut table_rows = Vec::with_capacity(rows.len());
         let mut tree = Vec::with_capacity(rows.len());
         for row in &rows {
@@ -465,23 +496,39 @@ impl TreeTableController {
                 }
             }
         };
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let (outcome, _) = widget_host::with_cx(table.table.id, units, |cx| {
+            self.handle_routed(&table, &routed, &layout, cx)
+        });
+        outcome
+    }
+
+    /// Drive `table` — this model flattened, laid out as `layout` — with
+    /// one routed event against `cx`, and apply what it reports to the
+    /// model. Focus, pointer-capture and cursor requests go to `cx`; the
+    /// table's own events are translated into the one event this
+    /// controller reports.
+    fn handle_routed(
+        &mut self,
+        table: &TreeTable,
+        routed: &RoutedEvent,
+        layout: &TreeTablePrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> TreeTableControllerEvent {
         // The controller claims the tree's navigation keys only; the
         // wrapped table's type-to-jump and select-all keys stay the app's
         // shortcuts.
-        if let RoutedEvent::Key(key) = &routed {
+        if let RoutedEvent::Key(key) = routed {
             if !TreeNavCore::claims_key(key, table.vim_keys) {
                 return TreeTableControllerEvent::Ignored;
             }
         }
-        let units = crate::backend::primitive_layout_ctx(backend).units();
-        let driven = widget_host::drive(
-            &table,
-            table.table.id,
-            &mut self.state,
-            &routed,
-            &layout,
-            units,
-        );
+        let mut host = ChildHost::same(cx).collecting();
+        let handled = {
+            let mut table_cx = EventCx::new(table.table.id, &mut host);
+            Interactive::handle(table, &mut self.state, routed, layout, &mut table_cx)
+        };
+        let emitted = host.take_collected();
         let pressed = matches!(
             routed,
             RoutedEvent::Pointer {
@@ -490,12 +537,12 @@ impl TreeTableController {
             }
         );
         let rows = self.flatten_rows();
-        let mut outcome = match driven.handled {
+        let mut outcome = match handled {
             Handled::Event(ev) => self.apply(ev, &rows, pressed),
             Handled::Consumed => TreeTableControllerEvent::Consumed,
             Handled::Ignored => TreeTableControllerEvent::Ignored,
         };
-        for emitted in driven.emitted {
+        for emitted in emitted {
             if let UiEvent::TreeTable(_, ev) = emitted {
                 let applied = self.apply(ev, &rows, pressed);
                 if matches!(
@@ -777,8 +824,12 @@ impl TreeTableController {
     }
 
     fn flatten_rows(&self) -> Vec<FlatRow> {
+        self.flatten_rows_of(&self.roots)
+    }
+
+    fn flatten_rows_of(&self, roots: &[TreeTableNodeData]) -> Vec<FlatRow> {
         let mut out = Vec::new();
-        Self::flatten_into(&self.roots, 0, &[], &self.expanded, &mut out);
+        Self::flatten_into(roots, 0, &[], &self.expanded, &mut out);
         out
     }
 
@@ -839,6 +890,263 @@ impl TreeTableController {
             .into_iter()
             .filter(|r| !r.loading)
             .collect()
+    }
+}
+
+// ── The hierarchical model as a contract widget ──────────────────────
+
+/// `serde(default = ...)` for [`TreeTableModel`]'s flags whose default
+/// is `true`.
+fn default_true() -> bool {
+    true
+}
+
+/// A hierarchical tree table as a contract widget — the wire kind
+/// `"tree_table_controller"`.
+///
+/// The descriptor is content: the app sends the whole node tree every
+/// frame, lazily loaded children included, in the order it wants when it
+/// sorts rows itself (`sort_override`). The widget keeps what the user
+/// does to that tree — which branches are expanded, the selection, the
+/// scroll position and the header sort — in its [`TreeTableModelState`],
+/// keyed by node id so it survives a re-sort or a refresh, and reports
+/// each change as a [`TreeTableModelEvent`].
+///
+/// Behaviour is [`TreeTableController`]'s: the state holds one, synced
+/// to the descriptor before every event, and layout, paint and routing
+/// all go through the [`TreeTable`] it flattens to.
+///
+/// `selected_id` selects a node whenever the app changes it; between
+/// changes the user's own selection stands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "TreeTableControllerDescriptor"))]
+pub struct TreeTableModel {
+    pub id: WidgetId,
+    #[serde(default)]
+    pub columns: Vec<Column>,
+    #[serde(default)]
+    pub nodes: Vec<TreeTableNodeData>,
+    #[serde(default)]
+    pub selected_id: Option<NodeId>,
+    #[serde(default = "default_true")]
+    pub has_focus: bool,
+    #[serde(default = "default_true")]
+    pub show_scrollbar: bool,
+    #[serde(default)]
+    pub bordered: bool,
+    /// Sort branches before leaves at every level when a header click
+    /// sorts.
+    #[serde(default)]
+    pub folders_first: bool,
+    /// `nodes` already arrive in the app's own order for the current
+    /// sort: a header click still toggles the sort indicator and reports
+    /// [`TreeTableModelEvent::SortChanged`], but the widget does not
+    /// re-order the rows itself.
+    #[serde(default)]
+    pub sort_override: bool,
+}
+
+/// [`Interactive::State`] for [`TreeTableModel`]: the controller holding
+/// the user's expand, selection, scroll and sort state, created on the
+/// first event, and the descriptor `selected_id` it last adopted.
+#[derive(Default)]
+pub struct TreeTableModelState {
+    controller: Option<TreeTableController>,
+    adopted_selection: Option<Option<NodeId>>,
+}
+
+impl TreeTableModelState {
+    /// The controller, brought up to date with `model`: its nodes (sorted
+    /// by the current header sort unless the app sorts them), its flags,
+    /// a changed `selected_id`, and the pending child requests still
+    /// unanswered.
+    fn sync(&mut self, model: &TreeTableModel) -> &mut TreeTableController {
+        let selection = model.selection(self).cloned();
+        let adopted = Some(model.selected_id.clone());
+        let ctl = self
+            .controller
+            .get_or_insert_with(|| TreeTableController::with_id(model.id));
+        ctl.id = model.id;
+        ctl.roots = model.ordered_nodes(ctl.sort);
+        ctl.selected_id = selection;
+        ctl.folders_first = model.folders_first;
+        ctl.has_focus = model.has_focus;
+        ctl.show_scrollbar = model.show_scrollbar;
+        ctl.bordered = model.bordered;
+        let roots = &ctl.roots;
+        ctl.requested.retain(|id| {
+            TreeTableNodeData::find(roots, id)
+                .is_some_and(|n| n.has_children && n.children.is_none())
+        });
+        self.adopted_selection = adopted;
+        ctl
+    }
+}
+
+impl TreeTableModel {
+    /// `nodes` in the order the widget shows them: sorted by `sort`'s
+    /// column the way a header click sorts, unless the app sorts them
+    /// itself or nothing is sorted yet.
+    fn ordered_nodes(&self, sort: Option<(usize, bool)>) -> Vec<TreeTableNodeData> {
+        let mut nodes = self.nodes.clone();
+        if let (Some((col, ascending)), false) = (sort, self.sort_override) {
+            TreeTableController::sort_level(&mut nodes, col, ascending, self.folders_first);
+        }
+        nodes
+    }
+
+    /// The node the widget shows selected: `selected_id` when the app
+    /// changed it since the widget last adopted it, else the user's own
+    /// selection.
+    fn selection<'a>(&'a self, state: &'a TreeTableModelState) -> Option<&'a NodeId> {
+        match (&state.controller, &state.adopted_selection) {
+            (Some(ctl), Some(adopted)) if *adopted == self.selected_id => ctl.selected_id.as_ref(),
+            _ => self.selected_id.as_ref(),
+        }
+    }
+
+    /// The flat [`TreeTable`] this model shows for `state` (no state yet:
+    /// every branch collapsed, unsorted, scrolled to the top).
+    fn flatten(&self, state: Option<&TreeTableModelState>) -> TreeTable {
+        let fresh;
+        let ctl = match state.and_then(|s| s.controller.as_ref()) {
+            Some(ctl) => ctl,
+            None => {
+                fresh = TreeTableController::with_id(self.id);
+                &fresh
+            }
+        };
+        let selected = match state {
+            Some(state) => self.selection(state),
+            None => self.selected_id.as_ref(),
+        };
+        let roots = self.ordered_nodes(ctl.sort);
+        let mut table = ctl.flatten_with(&roots, selected, self.columns.clone());
+        table.table.id = self.id;
+        table.table.has_focus = self.has_focus;
+        table.table.show_scrollbar = self.show_scrollbar;
+        table.table.bordered = self.bordered;
+        table
+    }
+
+    /// [`Self::flatten`] against this widget's stored state.
+    fn flatten_stored(&self) -> TreeTable {
+        crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            self.flatten(state.and_then(|s| s.downcast_ref::<TreeTableModelState>()))
+        })
+    }
+}
+
+/// [`Primitive::Layout`] for [`TreeTableModel`]: the flat table the model
+/// was laid out as, and that table's own layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TreeTableModelLayout {
+    /// The model flattened against the widget's state at layout time.
+    pub table: TreeTable,
+    /// [`Self::table`]'s layout.
+    pub inner: TreeTablePrimitiveLayout,
+}
+
+impl A11yPrimitive for TreeTableModel {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yPrimitive::a11y_info(&self.flatten_stored())
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        A11yPrimitive::a11y_children(&self.flatten_stored())
+    }
+}
+
+impl Primitive for TreeTableModel {
+    type Layout = TreeTableModelLayout;
+    type Event = TreeTableModelEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Lays out the model as flattened against the widget's stored state,
+    /// which decides the rows a layout has: the expanded branches, the
+    /// sort and the scroll position.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        let table = self.flatten_stored();
+        let inner = Primitive::layout(&table, ctx, rect);
+        TreeTableModelLayout { table, inner }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &PaintEnv,
+    ) {
+        Primitive::paint(&layout.table, &layout.inner, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &PaintEnv,
+    ) {
+        Primitive::paint_cells(&layout.table, &layout.inner, cells, env);
+    }
+}
+
+impl Interactive for TreeTableModel {
+    type State = TreeTableModelState;
+    type Action = TreeTableModelEvent;
+
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::Stop
+    }
+
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, SubTarget)> {
+        Interactive::sub_regions(&layout.table, &layout.inner)
+    }
+
+    fn handle(
+        &self,
+        state: &mut TreeTableModelState,
+        event: &RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<TreeTableModelEvent> {
+        let outcome = state
+            .sync(self)
+            .handle_routed(&layout.table, event, &layout.inner, cx);
+        let event = match outcome {
+            TreeTableControllerEvent::Ignored => return Handled::Ignored,
+            TreeTableControllerEvent::Consumed => None,
+            TreeTableControllerEvent::RowSelected { id } => {
+                Some(TreeTableModelEvent::RowSelected { id })
+            }
+            TreeTableControllerEvent::RowActivated { id } => {
+                Some(TreeTableModelEvent::RowActivated { id })
+            }
+            TreeTableControllerEvent::ToggleExpand { id, expand } => {
+                Some(TreeTableModelEvent::ToggleExpand { id, expand })
+            }
+            TreeTableControllerEvent::ChildrenRequested { id } => {
+                Some(TreeTableModelEvent::ChildrenRequested { id })
+            }
+            TreeTableControllerEvent::SortChanged { col, ascending } => {
+                Some(TreeTableModelEvent::SortChanged { col, ascending })
+            }
+        };
+        // The rows, selection or scroll the widget paints from its own
+        // state may have moved even when the app is told nothing.
+        cx.request_redraw();
+        match event {
+            Some(event) => Handled::Event(event),
+            None => Handled::Consumed,
+        }
+    }
+
+    fn a11y_actions(&self, state: &TreeTableModelState) -> Vec<crate::a11y::A11yAction> {
+        Interactive::a11y_actions(&self.flatten(Some(state)), &TreeTableState::default())
     }
 }
 
@@ -1470,6 +1778,138 @@ mod tests {
                     id: "a".to_string()
                 }
             );
+        }
+    }
+
+    // ── TreeTableModel: the descriptor is content, the state is the user's ──
+
+    mod model {
+        use super::*;
+        use crate::event::{Key, NamedKey, Point};
+        use crate::interactive::KeyEvent;
+        use crate::types::Modifiers;
+
+        fn model(nodes: Vec<TreeTableNodeData>) -> TreeTableModel {
+            TreeTableModel {
+                id: WidgetId::new("tt"),
+                columns: columns(),
+                nodes,
+                selected_id: None,
+                has_focus: true,
+                show_scrollbar: false,
+                bordered: false,
+                folders_first: false,
+                sort_override: false,
+            }
+        }
+
+        fn layout(m: &TreeTableModel, state: &TreeTableModelState) -> TreeTableModelLayout {
+            let table = m.flatten(Some(state));
+            let inner = Primitive::layout(
+                &table,
+                &LayoutCtx::new(1.0, 1.0, false),
+                Rect::new(0.0, 0.0, 30.0, 12.0),
+            );
+            TreeTableModelLayout { table, inner }
+        }
+
+        fn run(
+            m: &TreeTableModel,
+            state: &mut TreeTableModelState,
+            event: RoutedEvent,
+        ) -> Handled<TreeTableModelEvent> {
+            let layout = layout(m, state);
+            let (handled, _) = widget_host::with_cx(m.id, crate::primitive::Units::Cells, |cx| {
+                Interactive::handle(m, state, &event, &layout, cx)
+            });
+            handled
+        }
+
+        fn key(key: Key) -> RoutedEvent {
+            RoutedEvent::Key(KeyEvent {
+                key,
+                modifiers: Modifiers::default(),
+                repeat: false,
+            })
+        }
+
+        fn header_click() -> RoutedEvent {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                sub: None,
+                local: Point::new(2.0, 0.0),
+                mods: Modifiers::default(),
+            }
+        }
+
+        fn shown(m: &TreeTableModel, state: &TreeTableModelState) -> Vec<String> {
+            labels(&m.flatten(Some(state)))
+        }
+
+        #[test]
+        fn lazy_children_arrive_as_descriptor_content() {
+            let mut m = model(vec![lazy("root", "root")]);
+            m.selected_id = Some("root".into());
+            let mut state = TreeTableModelState::default();
+            assert_eq!(
+                run(&m, &mut state, key(Key::Char(' '))),
+                Handled::Event(TreeTableModelEvent::ChildrenRequested { id: "root".into() })
+            );
+            assert_eq!(shown(&m, &state), vec!["root", "…"]);
+            // Expanding again before the app answers asks nothing more.
+            let _ = run(&m, &mut state, key(Key::Named(NamedKey::Left)));
+            assert_eq!(
+                run(&m, &mut state, key(Key::Named(NamedKey::Right))),
+                Handled::Consumed
+            );
+
+            m.nodes = vec![branch("root", "root", vec![leaf("b", "b"), leaf("a", "a")])];
+            assert_eq!(shown(&m, &state), vec!["root", "b", "a"]);
+            assert_eq!(
+                run(&m, &mut state, key(Key::Named(NamedKey::Down))),
+                Handled::Event(TreeTableModelEvent::RowSelected { id: "b".into() })
+            );
+        }
+
+        #[test]
+        fn a_header_click_sorts_the_sent_nodes_unless_the_app_sorts_them() {
+            let mut m = model(vec![leaf("b", "b"), leaf("c", "c"), leaf("a", "a")]);
+            let mut state = TreeTableModelState::default();
+            assert_eq!(
+                run(&m, &mut state, header_click()),
+                Handled::Event(TreeTableModelEvent::SortChanged {
+                    col: 0,
+                    ascending: true
+                })
+            );
+            assert_eq!(shown(&m, &state), vec!["a", "b", "c"]);
+
+            m.sort_override = true;
+            m.nodes = vec![leaf("c", "c"), leaf("a", "a"), leaf("b", "b")];
+            assert_eq!(shown(&m, &state), vec!["c", "a", "b"]);
+        }
+
+        #[test]
+        fn the_user_selection_stands_until_the_app_changes_selected_id() {
+            let mut m = model(vec![leaf("a", "a"), leaf("b", "b"), leaf("c", "c")]);
+            m.selected_id = Some("a".into());
+            let mut state = TreeTableModelState::default();
+            let _ = run(&m, &mut state, key(Key::Named(NamedKey::Down)));
+            assert_eq!(m.selection(&state), Some(&"b".to_string()));
+
+            m.selected_id = Some("c".into());
+            assert_eq!(m.selection(&state), Some(&"c".to_string()));
+            assert_eq!(
+                run(&m, &mut state, key(Key::Named(NamedKey::Up))),
+                Handled::Event(TreeTableModelEvent::RowSelected { id: "b".into() })
+            );
+        }
+
+        #[test]
+        fn letter_keys_stay_the_apps() {
+            let m = model(vec![leaf("a", "a")]);
+            let mut state = TreeTableModelState::default();
+            assert_eq!(run(&m, &mut state, key(Key::Char('x'))), Handled::Ignored);
         }
     }
 }
