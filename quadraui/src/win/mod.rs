@@ -7,7 +7,7 @@
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
 //! `win` feature comment). Chrome strips (menu, status and
 //! activity bars) paint through their widget contracts; content-area
-//! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
+//! rasterisers include `list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
@@ -28,15 +28,6 @@
 //! subset; everything else is `#[doc(hidden)]`.
 
 pub mod backend;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::board::BoardModel`]. Windows-only in full —
-/// see its module docs.
-#[cfg(target_os = "windows")]
-mod board;
-/// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod chart;
 /// Windows tests for [`crate::ComboBox`]. All painting delegates to
 /// [`crate::primitives::combo_box::native_surface_paint`] via
 /// [`crate::DrawsPrimitives::draw_dyn`], so this module carries no
@@ -51,9 +42,6 @@ mod command_line;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod completions;
-/// Direct2D / DirectWrite rasteriser for [`crate::DataTable`]. Issue
-/// Only its paint fn is Windows-only — see its module docs.
-mod data_table;
 /// Windows rasteriser for [`crate::DatePicker`]. All painting delegates
 /// to [`crate::primitives::date_picker::native_surface_paint::paint`] via
 /// [`crate::Backend::draw_date_picker`], so this module carries no
@@ -63,11 +51,6 @@ mod date_picker;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod dialog;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::diff_view::DiffView`]. Windows-only in
-/// full — see its module docs.
-#[cfg(target_os = "windows")]
-mod diff_view;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
 /// focus). Pure free functions, host-independent and unit-tested off
 /// Windows — mirrors `crate::gtk::events` / `crate::macos::events`. See
@@ -79,29 +62,16 @@ pub mod events;
 /// everywhere; only [`list::draw_list`] is Windows-only — see that
 /// module's docs.
 mod list;
-/// Direct2D / DirectWrite rasteriser for [`crate::MessageList`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod message_list;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
 /// unit-tested off Windows. See its module docs.
 pub(crate) mod msg;
-/// Direct2D / DirectWrite rasteriser for [`crate::MultiSectionView`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod multi_section_view;
 /// Windows rasteriser for [`crate::NumberInput`]. All painting delegates
 /// to [`crate::primitives::number_input::native_surface_paint::paint`]
 /// via [`crate::Backend::draw_number_input`], so this module carries no
 /// production code of its own — see its module docs.
 mod number_input;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::pipeline_view::PipelineView`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod pipeline_view;
 /// Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -120,16 +90,12 @@ mod rich_text_popup;
 // surface to parity with the other three backends.
 #[doc(hidden)]
 pub mod run;
-/// Win painter for [`crate::ScrollView`]: `paint_clipped` +
-/// `draw_scrollbar_for`, generic over [`crate::Backend`] like its GTK
-/// counterpart — see its module docs.
-pub mod scroll_view;
 /// Direct2D rasteriser for [`crate::Scrollbar`]. Windows-only in
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod scrollbar;
 pub mod services;
-/// `run_with_shell()`: composes a [`crate::ShellApp`] into an `AppShell`
+/// `run_with_shell()`: composes a [`crate::ShellApp`] into a `ShellView`
 /// and drives it through the Win32 message loop — the Windows
 /// analogue of `gtk::shell_runner` / `tui::shell_runner` /
 /// `macos::shell_runner`. `pub` (not target-gated) for the same
@@ -139,14 +105,6 @@ pub mod shell_runner;
 /// Direct2D / DirectWrite rasteriser for [`crate::Spinner`]. Issue
 /// Only its paint fn is Windows-only — see its module docs.
 mod spinner;
-/// Direct2D rasteriser for [`crate::Split`]. Windows-only in
-/// full — see its module docs.
-#[cfg(target_os = "windows")]
-mod split;
-/// Direct2D rasteriser for [`crate::primitives::split_tree::SplitTree`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod split_tree;
 /// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
 /// Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
@@ -208,10 +166,6 @@ mod tooltip;
 /// Windows" reason as `backend`/`services`/`run` above — see this
 /// module's own doc and `tray`'s module doc.
 pub(crate) mod tray;
-/// Direct2D / DirectWrite rasteriser for [`crate::TreeView`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod tree;
 
 // The flat re-exports below split into two groups, verified by grepping
 // `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
@@ -225,21 +179,10 @@ mod tree;
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use board::win_board_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use chart::win_chart_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use completions::draw_completions;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use data_table::draw_data_table;
-#[doc(hidden)]
-pub use data_table::win_data_table_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use dialog::draw_dialog;
@@ -248,15 +191,6 @@ pub use dialog::draw_dialog;
 pub use list::draw_list;
 #[doc(hidden)]
 pub use list::win_list_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use message_list::draw_message_list;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use pipeline_view::win_pipeline_view_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use progress::win_progress_layout;
@@ -276,12 +210,6 @@ pub use services::WinPlatformServices;
 pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use split::win_split_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use split_tree::win_split_tree_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use text_display::win_text_display_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -291,9 +219,6 @@ pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use tree::{draw_tree, win_tree_layout, win_tree_layout_measured};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide Windows clipboard**.

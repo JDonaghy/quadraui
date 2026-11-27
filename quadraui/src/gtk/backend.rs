@@ -57,8 +57,8 @@ use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ListView, ModalStack,
-    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TreeView,
-    UiEvent, UserPayload, Viewport,
+    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, SystemTheme, UiEvent, UserPayload,
+    Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -107,9 +107,8 @@ pub(crate) fn default_ui_font_desc() -> String {
 
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
-/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`].
-/// Either a whole logical label by the trait method that painted it,
-/// or per painted glyph run by [`super::painted_text`].
+/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`],
+/// one per painted glyph run by [`super::painted_text`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PaintedText {
     pub(crate) text: String,
@@ -346,21 +345,15 @@ pub struct GtkBackend {
     /// an overlay drawn earlier in the same frame — tooltip/toast must stay
     /// topmost (see that method's own doc for the regression this guards).
     overlay_bounds_this_frame: Vec<QRect>,
-    /// The `(text, bounds)` map painted this frame — recorded by trait
-    /// methods that compute a label's on-surface rect so
+    /// The `(text, bounds)` map painted this frame, so
     /// [`super::testing::GtkDriver::find`] can locate a control without
     /// hardcoded coordinates. Cleared at the start of each frame by
-    /// [`Self::begin_frame`]; mirrors `text_regions`' lifecycle. Coverage
-    /// is incremental — only widgets whose trait method has been updated
-    /// to call [`Self::record_painted_text`] appear here; see that method's docs.
+    /// [`Self::begin_frame`]; mirrors `text_regions`' lifecycle.
     ///
-    /// Also fed, per painted glyph run, by [`super::painted_text::show_layout`]
-    /// — the choke point every GTK rasteriser routes its Pango painting through
-    /// — so every text-bearing primitive reports in, not just those whose trait
-    /// methods hand-roll a `record_painted_text` call. Hand-rolled (logical,
-    /// hit-test-aligned) records land here first, ahead of the frame's glyph runs,
-    /// so `find_bounds` keeps resolving them to the label rect a click needs.
-    /// Requires [`Self::set_painted_text_recording`].
+    /// Fed, per painted glyph run, by [`super::painted_text::show_layout`]
+    /// — the choke point every GTK rasteriser routes its Pango painting
+    /// through — so every text-bearing primitive reports in. Requires
+    /// [`Self::set_painted_text_recording`].
     pub(crate) painted_text: Vec<PaintedText>,
     /// Whether the per-glyph-run recording described on
     /// [`Self::painted_text`] is active. Off by default: a live app never
@@ -486,27 +479,6 @@ impl Drop for GtkBackend {
         // be destroyed if a `GtkBackend` is itself parked in a
         // thread-local. Nothing to clean up in that case.
         let _ = WAKE_CALLBACKS.try_with(|slots| slots.borrow_mut().remove(&self.wake_id));
-    }
-}
-
-/// Adapts a live `pango::Layout` (falling back to `char_w` when no
-/// Pango context is available, e.g. in headless tests) to the shared
-/// [`crate::primitives::layout_metrics::TextMeasure`] trait so shared
-/// layout code never has to name a Pango type.
-struct PangoTextMeasure<'a> {
-    layout: &'a Option<pango::Layout>,
-    char_w: f32,
-}
-
-impl crate::primitives::layout_metrics::TextMeasure for PangoTextMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        if let Some(pl) = self.layout {
-            pl.set_text(text);
-            let (w, _) = pl.pixel_size();
-            w as f32
-        } else {
-            (text.chars().count() as f32 * self.char_w).ceil() + 2.0
-        }
     }
 }
 
@@ -918,8 +890,7 @@ impl GtkBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
-    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome font taller than the token isn't clipped — see
     /// `MacBackend::resolved_row_height`'s identical rationale.
@@ -1041,20 +1012,6 @@ impl GtkBackend {
         self.pango_ctx.as_ref().map(pango::Layout::new)
     }
 
-    /// A fresh layout on the stored Pango context carrying the chrome
-    /// font (`chrome_font_description(&self.ui_font)`), for the no-paint
-    /// `*_layout` twins of chrome rasterisers that paint in `ui_font`.
-    /// Measuring with the context's own font instead lets the layout's
-    /// column/label widths diverge from what the painter resolves on
-    /// platforms where the two descriptions shape differently.
-    fn chrome_measure_layout(&self) -> Option<pango::Layout> {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let pl = self.pango_ctx.as_ref().map(pango::Layout::new)?;
-        pl.set_font_description(Some(&crate::gtk::chrome_font_description(&self.ui_font)));
-        Some(pl)
-    }
-
     /// Enter the frame-scope: stash the cairo context + pango layout
     /// pointers, run `f`, then clear them. **Must** be called from
     /// inside a `set_draw_func(...)` closure where `cr` is alive.
@@ -1153,35 +1110,6 @@ impl GtkBackend {
         })
     }
 
-    /// Builds a [`super::surface::CairoSurface`] over the current
-    /// frame's `(cr, layout)`, swapping `layout`'s font to
-    /// [`crate::gtk::chrome_font_description`]`(&self.ui_font)` for the
-    /// duration of `paint` and restoring it (and clearing any attributes
-    /// `paint` left behind) afterward. Centralizes the save/swap/restore
-    /// dance every chrome-surface painter in this file needs — `caller`
-    /// is only for the "outside `enter_frame_scope`" panic message.
-    fn with_chrome_surface<R>(
-        &mut self,
-        caller: &str,
-        paint: impl FnOnce(&mut super::surface::CairoSurface<'_>) -> R,
-    ) -> R {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .unwrap_or_else(|| panic!("GtkBackend::{caller} called outside enter_frame_scope"));
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        let mut surface = super::surface::CairoSurface {
-            cr,
-            layout: Some(layout),
-            translucent_fill: true,
-        };
-        let result = paint(&mut surface);
-        layout.set_attributes(None);
-        layout.set_font_description(saved_font.as_ref());
-        result
-    }
-
     // ── Text selection ─────────────────────────────────────────────────────
     //
     // The region registry + active-selection state machine, plus the
@@ -1267,16 +1195,8 @@ impl GtkBackend {
     /// `bounds` is in backend (pixel) coordinates, matching what
     /// [`super::testing::GtkDriver::click`] expects.
     ///
-    /// Two kinds of caller:
-    /// 1. Trait methods that already compute a label's rect for
-    ///    hit-testing ([`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
-    ///    These record the *logical* label — whole segment, whole cell —
-    ///    at the rect the primitive's own `hit_test` uses, which is what
-    ///    a `find`-driven click wants.
-    /// 2. [`Self::enter_frame_scope`], draining the per-glyph-run sink
-    ///    [`super::painted_text`] fills for *every* text-bearing
-    ///    rasteriser. This is the coverage path; the
-    ///    logical records above stay ahead of it in the map.
+    /// Called by [`Self::enter_frame_scope`], draining the per-glyph-run
+    /// sink [`super::painted_text`] fills for every text-bearing paint.
     ///
     /// Skips blank `text` so alignment pads and placeholder segments
     /// don't pollute `find` matches.
@@ -1288,107 +1208,6 @@ impl GtkBackend {
             text: text.to_string(),
             bounds,
         });
-    }
-
-    /// Record header + visible body + footer cell text into the
-    /// painted-text map that `GtkDriver::find` scans, for
-    /// [`Backend::draw_data_table_with_glyphs`] / [`Backend::draw_data_table_with_state`].
-    /// Bounds are derived from `table_layout` + the declarative `table`,
-    /// not by re-deriving Cairo/Pango geometry, so they can't drift from
-    /// what was actually drawn. `scroll_offset`/`sub_row_px` are the
-    /// resolved (possibly `scroll_px`-aware) body-row starting index and
-    /// sub-row pixel shift the caller painted at — `0.0` from
-    /// `draw_data_table_with_glyphs` reproduces the pre-existing
-    /// whole-row bookkeeping exactly.
-    fn record_data_table_painted_text(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        table_layout: &crate::DataTableLayout,
-        scroll_offset: usize,
-        sub_row_px: f32,
-    ) {
-        let h_off = table.h_scroll as f64;
-        let header_height = table_layout.header_height as f64;
-        for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-            if rc.width <= 0.0 {
-                continue;
-            }
-            if let Some(col) = table.columns.get(col_idx) {
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    rect.y,
-                    rc.width,
-                    header_height as f32,
-                );
-                self.record_painted_text(&col.title, bounds);
-            }
-        }
-
-        let row_height = table_layout.row_height as f64;
-        let body_y = rect.y as f64 + header_height - sub_row_px as f64;
-        // Mirrors `draw_data_table_with_opacity`'s own `extra_row`: a
-        // positive `sub_row_px` paints one more, partially clipped body
-        // row at the bottom, so it must be recorded too or `find` can't
-        // see it.
-        let extra_row = usize::from(sub_row_px > 0.0);
-        let visible = (table_layout.visible_rows + extra_row)
-            .min(table.rows.len().saturating_sub(scroll_offset));
-        for row_idx in 0..visible {
-            let abs_idx = scroll_offset + row_idx;
-            let row = &table.rows[abs_idx];
-            let row_y = body_y + row_idx as f64 * row_height;
-            for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                if rc.width <= 0.0 {
-                    continue;
-                }
-                let Some(cell) = row.cells.get(col_idx) else {
-                    continue;
-                };
-                if cell.spans.is_empty() {
-                    continue;
-                }
-                let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                if text.is_empty() {
-                    continue;
-                }
-                let bounds = QRect::new(
-                    (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                    row_y as f32,
-                    rc.width,
-                    row_height as f32,
-                );
-                self.record_painted_text(&text, bounds);
-            }
-        }
-
-        if let Some(footer) = &table.footer {
-            if table_layout.footer_height > 0.0 {
-                let footer_y = rect.y as f64 + rect.height as f64 - row_height;
-                for (col_idx, rc) in table_layout.columns.iter().enumerate() {
-                    if rc.width <= 0.0 {
-                        continue;
-                    }
-                    let Some(cell) = footer.cells.get(col_idx) else {
-                        continue;
-                    };
-                    if cell.spans.is_empty() {
-                        continue;
-                    }
-                    let text: String = cell.spans.iter().map(|s| s.text.as_str()).collect();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let bounds = QRect::new(
-                        (rect.x as f64 + rc.x as f64 - h_off) as f32,
-                        footer_y as f32,
-                        rc.width,
-                        row_height as f32,
-                    );
-                    self.record_painted_text(&text, bounds);
-                }
-            }
-        }
     }
 
     /// Paint the active text selection highlight onto `cr`. Must be called
@@ -1492,10 +1311,9 @@ impl GtkBackend {
 
     // ── Caret blink ──────────────────────────────────────────────────────
 
-    /// Current blink phase for `MultiSectionView` aux-row text inputs —
-    /// threaded into [`crate::primitives::multi_section_view::native_surface_paint::paint_aux`]
-    /// by [`Backend::draw_multi_section_view`]. See
-    /// [`Self::caret_blink`]'s field doc for the wiring.
+    /// Current blink phase. See [`Self::caret_blink`]'s field doc for the
+    /// wiring.
+    #[cfg(test)]
     pub(crate) fn caret_visible(&self) -> bool {
         self.caret_blink.visible()
     }
@@ -2502,8 +2320,7 @@ impl Backend for GtkBackend {
     /// already resolves per role. Built against the stable
     /// widget-realized `pango_ctx`, not the per-frame `cr`/`layout` pair
     /// from [`Self::current_frame_refs`] — same "works outside a frame
-    /// too" posture as [`Self::data_table_layout`]'s own `pango_ctx` use,
-    /// since an app computing a `Dialog`/`ContextMenu` measure has no
+    /// too" posture as `measure_text`'s own `pango_ctx` use, since an app computing a `Dialog`/`ContextMenu` measure has no
     /// live frame to borrow from.
     ///
     /// With no `pango_ctx` set, a call inside a frame measures against
@@ -2551,91 +2368,13 @@ impl Backend for GtkBackend {
         true
     }
 
-    fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tree called outside enter_frame_scope");
-        // Row labels, badges and chevrons are chrome, not editor
-        // content — save the editor font on the shared layout, paint the
-        // tree in `ui_font`, then restore so later draws in this frame
-        // aren't left painting chrome-sized text. `gtk::draw_tree` itself
-        // does all its own text measurement inline against `layout`, so
-        // swapping the font here covers paint and measurement alike.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_tree(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            tree,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    fn draw_tree_with_state(
-        &mut self,
-        rect: QRect,
-        tree: &TreeView,
-        state: &crate::primitives::tree::TreePaintState,
-        focus_ring_visible: bool,
-    ) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tree_with_state called outside enter_frame_scope");
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_tree_with_state(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            tree,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-            state.hovered_idx,
-            state.pressed_idx,
-            focus_ring_visible,
-            state.scroll_px,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
-    /// of the editor font metric, run through the same
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
-    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
-    /// at — not the trait default ([`Backend::line_height`] alone),
-    /// which disagrees with that painted pitch by the leaf/branch
-    /// `1.4×` multiplier `tree_row_pitch` applies (unless
-    /// `tree.style.row_height` overrides it). Matches `MacBackend`'s
-    /// override of the same method.
-    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
-        crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height),
-        ) as f32
-    }
-
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_list called outside enter_frame_scope");
         // Row labels and icon glyphs (`Icon::glyph`) are chrome, not
-        // editor content — mirrors `Self::draw_tree`'s save/swap/restore
+        // editor content — mirrors `Self::with_chrome_surface`'s save/swap/restore
         // above. Before this, `draw_list` painted with whatever font the
         // shared layout happened to carry into the frame (typically the
         // editor font), which has no Nerd-Font fallback family, so an
@@ -2693,155 +2432,6 @@ impl Backend for GtkBackend {
         layout.set_font_description(saved_font.as_ref());
     }
 
-    fn draw_data_table(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::DataTableLayout {
-        self.draw_data_table_with_glyphs(rect, table, hovered_idx, None)
-    }
-
-    /// [`Self::draw_data_table`] plus an optional
-    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
-    /// header's sort-direction glyph, honoured in full here (unlike the
-    /// trait default, which ignores `glyphs`).
-    ///
-    /// Forwards to the shared
-    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
-    /// through [`Self::with_chrome_surface`] — `DataTable` is chrome, not
-    /// editor content, same as [`Self::draw_tree_table`].
-    fn draw_data_table_with_glyphs(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        hovered_idx: Option<usize>,
-        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
-    ) -> crate::DataTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height) as f32;
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let state = crate::primitives::data_table::DataTablePaintState::default()
-            .with_hovered_idx(hovered_idx);
-        let table_layout = self.with_chrome_surface("draw_data_table_with_glyphs", |surface| {
-            crate::primitives::data_table::native_surface_paint::paint_with_state(
-                table,
-                surface,
-                &theme,
-                rect,
-                lh,
-                &state,
-                glyphs,
-                nerd_fonts_enabled,
-            )
-        });
-        self.record_data_table_painted_text(rect, table, &table_layout, table.scroll_offset, 0.0);
-        table_layout
-    }
-
-    /// [`Self::draw_data_table_with_glyphs`], plus — when
-    /// `state.scroll_px` is `Some` — a pixel-precise scroll position
-    /// instead of only [`crate::DataTable::scroll_offset`]'s whole-row
-    /// value. `state.scroll_px: None` paints pixel-identically to
-    /// [`Self::draw_data_table_with_glyphs`].
-    fn draw_data_table_with_state(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        state: &crate::primitives::data_table::DataTablePaintState,
-    ) -> crate::DataTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height) as f32;
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let table_layout = self.with_chrome_surface("draw_data_table_with_state", |surface| {
-            crate::primitives::data_table::native_surface_paint::paint_with_state(
-                table,
-                surface,
-                &theme,
-                rect,
-                lh,
-                state,
-                None,
-                nerd_fonts_enabled,
-            )
-        });
-
-        let scroll_offset = table.effective_scroll_offset(lh, state.scroll_px);
-        let sub_px = table.scroll_sub_row_px(lh, state.scroll_px);
-        self.record_data_table_painted_text(rect, table, &table_layout, scroll_offset, sub_px);
-        table_layout
-    }
-
-    /// Column headers are now measured via `pango::Layout` instead of
-    /// byte length (which counted UTF-8 bytes rather than characters).
-    /// Routes through [`crate::primitives::layout_metrics::pixel_data_table_layout`]
-    /// with a real Pango measurer built from the widget-realized `pango_ctx`
-    /// (falling back to a character estimate only when no context exists yet).
-    fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        crate::primitives::layout_metrics::pixel_data_table_layout(
-            table,
-            rect.width,
-            rect.height,
-            self.resolved_row_height(self.current_line_height) as f32,
-            &measure,
-        )
-    }
-    /// Forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
-    /// through [`Self::with_chrome_surface`] — `TreeTable` is chrome,
-    /// not editor content, same as [`Self::draw_data_table_with_glyphs`].
-    fn draw_tree_table(
-        &mut self,
-        rect: QRect,
-        table: &crate::TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height);
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let state = crate::primitives::data_table::DataTablePaintState::default()
-            .with_hovered_idx(hovered_idx);
-        self.with_chrome_surface("draw_tree_table", |surface| {
-            crate::primitives::tree_table::native_surface_paint::paint(
-                table,
-                surface,
-                &theme,
-                rect,
-                lh as f32,
-                &state,
-                nerd_fonts_enabled,
-            )
-        })
-    }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
-    /// mirroring [`Self::data_table_layout`].
-    fn tree_table_layout(
-        &self,
-        rect: QRect,
-        table: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
-            table,
-            rect.width,
-            rect.height,
-            self.resolved_row_height(self.current_line_height) as f32,
-            &measure,
-        )
-    }
-
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
         // but GTK works in pixels.  Convert with `current_char_width` so the
@@ -2892,28 +2482,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    fn draw_settings_chrome(
-        &mut self,
-        rect: QRect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        crate::compose::sidebar_panel_body::paint_settings_chrome(
-            self,
-            &theme,
-            rect,
-            line_height,
-            header_text,
-            query,
-            placeholder,
-            active,
-        );
-    }
-
     // ─── Layout-passthrough primitives ─────────────────────────────────────
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
@@ -2923,141 +2491,7 @@ impl Backend for GtkBackend {
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
 
-    /// A pixel backend can honor `rect` exactly, unlike the old
-    /// per-row `StatusBar` hack this replaces — see
-    /// `Backend::draw_solid_fill`'s doc for why that hack produced a
-    /// dashed divider here specifically.
-    fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
-        self.surface_fill_rect(rect, color);
-        // Chrome-only paint (no text of its own) — see
-        // `TuiBackend::draw_solid_fill`'s identical registration for why.
-        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
-
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
-
-    fn draw_multi_section_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::multi_section_view::MultiSectionView,
-    ) {
-        let line_height = self.current_line_height;
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let caret_visible = self.caret_visible();
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_multi_section_view called outside enter_frame_scope");
-        // Section headers and `Tree`/`List` body rows (icon glyphs
-        // included) are sidebar chrome, not editor content — same
-        // save/swap/restore `Self::draw_tree`/`Self::draw_list` use.
-        // `SectionBody::Terminal`/`Custom` are host-painted no-ops here
-        // (see `gtk::draw_multi_section_view`'s own body dispatch), so
-        // they're unaffected by the swap.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_multi_section_view(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            view,
-            &theme,
-            &self.current_style,
-            line_height,
-            nerd_fonts,
-            caret_visible,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    fn msv_layout(
-        &self,
-        rect: QRect,
-        view: &crate::primitives::multi_section_view::MultiSectionView,
-    ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
-        crate::gtk::gtk_msv_layout(view, rect, self.current_line_height)
-    }
-
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-        crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
-    }
-
-    /// Measures the chevron
-    /// glyph actually configured on `tree.style` through a real Pango
-    /// layout (via [`Self::chrome_measure_layout`]) instead of
-    /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
-    /// hit-testing outside a paint frame agrees with what
-    /// `Self::draw_tree` paints.
-    fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        let char_w = self.current_char_width;
-        let pango_layout = self.chrome_measure_layout();
-        crate::gtk::gtk_tree_layout_measured(
-            tree,
-            rect,
-            self.resolved_row_height(self.current_line_height),
-            pango_layout.as_ref(),
-            char_w,
-            self.current_style.row_padding_x,
-        )
-    }
-
-    fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // Delegate to the primitive's geometry method, using the same
-        // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
-        // actually paints — not the raw `line_height`. Unlike `ListView`
-        // (whose items really are `line_height` tall, see
-        // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
-        // `line_height * 1.4` (or `TreeStyle::row_height`); see
-        // `layout_metrics::tree_row_pitch`'s doc.
-        //
-        // Track width is the live `self.current_style.scrollbar_width`
-        // token, not the fixed `TREE_VSCROLLBAR_WIDTH` literal — same
-        // live field `Self::list_vscrollbar` already passes, so a
-        // host-set override can't make this hit-test geometry disagree
-        // with what `crate::primitives::tree::native_surface_paint::paint`
-        // (reached through `Self::draw_tree`) actually painted.
-        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height),
-        );
-        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
-    }
-
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        true
-    }
-
-    fn draw_message_list(
-        &mut self,
-        rect: QRect,
-        list: &crate::primitives::message_list::MessageList,
-    ) {
-        let line_height = self.current_line_height;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_message_list called outside enter_frame_scope");
-        // MessageList rows are chrome, not editor content — save the
-        // editor font on the shared layout, paint in `ui_font`, then
-        // restore, matching `Self::draw_tree`'s save/swap/restore.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_message_list(
-            cr,
-            pango_layout,
-            list,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            (rect.y + rect.height) as f64,
-            line_height,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-    }
 
     fn draw_find_replace(
         &mut self,
@@ -3074,7 +2508,8 @@ impl Backend for GtkBackend {
         // unused (forward-compat for a host-resolved layout per
         // BACKEND_TRAIT_PROPOSAL §6.2).
         let _ = rect;
-        crate::primitives::find_replace::paint(panel, self, &theme);
+        let style = Backend::style(self);
+        crate::primitives::find_replace::paint(panel, self, &theme, &style);
     }
 
     fn draw_scrollbar(
@@ -3092,105 +2527,6 @@ impl Backend for GtkBackend {
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
         self.register_zone(scrollbar.id, scrollbar.track);
-    }
-
-    fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
-        let theme = self.current_theme;
-        let layout = crate::gtk::gtk_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
-        // `Split` paints a divider only — no text of its own — so a
-        // registered zone is the only way this frame is attributable to
-        // the primitive rather than indistinguishable from the trait's
-        // no-op default (C0 paint smoke, contract §5b).
-        self.register_zone(split.id, rect);
-        layout
-    }
-
-    fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
-        crate::gtk::gtk_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-
-    fn draw_split_tree(
-        &mut self,
-        rect: QRect,
-        tree: &crate::primitives::split_tree::SplitTree,
-    ) -> crate::primitives::split_tree::SplitTreeLayout {
-        let theme = self.current_theme;
-        let layout = crate::gtk::gtk_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
-        // Dividers only, and `SplitTree` (unlike `Split`) carries no
-        // id of its own — register a fixed chrome id, same pattern as
-        // `draw_solid_fill` and the `DropOverlay` widget's host.
-        self.register_zone(WidgetId::new("chrome:split-tree"), rect);
-        layout
-    }
-
-    fn split_tree_layout(
-        &self,
-        rect: QRect,
-        tree: &crate::primitives::split_tree::SplitTree,
-    ) -> crate::primitives::split_tree::SplitTreeLayout {
-        crate::gtk::gtk_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-
-    fn draw_canvas(
-        &mut self,
-        rect: QRect,
-        canvas: &crate::primitives::canvas::Canvas,
-    ) -> crate::primitives::canvas::CanvasLayout {
-        let layout = canvas.layout(rect);
-        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
-        layout
-    }
-
-    /// Paint via the shared [`crate::primitives::pipeline_view::native_surface_paint::paint`].
-    /// Every text run goes through [`Self::surface_draw_text_run`], which is already
-    /// recorded into the painted-text map for testing.
-    fn draw_pipeline_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let theme = self.current_theme;
-        crate::primitives::pipeline_view::native_surface_paint::paint(view, self, &theme, rect)
-    }
-
-    fn pipeline_view_layout(
-        &self,
-        rect: QRect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        crate::gtk::gtk_pipeline_view_layout(
-            view,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
     }
 
     /// Paint via the shared [`crate::primitives::progress::native_surface_paint::paint`].
@@ -3230,7 +2566,7 @@ impl Backend for GtkBackend {
             .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
         // Spinner's label (e.g. "Indexing…") is chrome, not editor
         // content — save the editor font on the shared layout, paint in
-        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // `ui_font`, then restore, matching `Self::with_chrome_surface`'s
         // save/swap/restore.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
@@ -3258,92 +2594,6 @@ impl Backend for GtkBackend {
                 rect.width,
                 self.current_line_height as f32,
             ),
-        )
-    }
-
-    /// Shared chart painting lives in [`crate::primitives::chart::paint`] now.
-    fn draw_chart(
-        &mut self,
-        rect: QRect,
-        chart: &crate::primitives::chart::Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) -> crate::primitives::chart::ChartLayout {
-        let theme = self.current_theme;
-        let layout = self.chart_layout(rect, chart);
-        crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
-        layout
-    }
-
-    fn chart_layout(
-        &self,
-        rect: QRect,
-        chart: &crate::primitives::chart::Chart,
-    ) -> crate::primitives::chart::ChartLayout {
-        crate::gtk::gtk_chart_layout(
-            chart,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.current_line_height,
-            self.current_char_width,
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
-    /// see that fn's doc for the two named divergences (row/header text
-    /// vertical alignment; header-label ellipsize vs. hard-clip) found
-    /// while unifying `gtk::diff_view::draw_diff_view`,
-    /// `macos::diff_view::draw_diff_view` and
-    /// `win::diff_view::draw_diff_view` into one implementation.
-    fn draw_diff_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        // The diff view is editor-class — see `EditorSurface`'s own
-        // doc.
-        let mut surface = EditorSurface { backend: self };
-        crate::primitives::diff_view::native_surface_paint::paint(
-            view,
-            &mut surface,
-            &theme,
-            rect,
-            line_height,
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::board::native_surface_paint::paint`] — see
-    /// that fn's doc for the four named divergences (column-header
-    /// overflow; card-title wrapping; rounded vs. straight card borders;
-    /// per-element font size) found while unifying
-    /// `gtk::board::draw_board`, `macos::board::draw_board` and
-    /// `win::board::draw_board` into one implementation.
-    fn draw_board(
-        &mut self,
-        rect: QRect,
-        model: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        let theme = self.current_theme;
-        crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
-    }
-
-    fn board_layout(
-        &self,
-        rect: QRect,
-        model: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        crate::gtk::gtk_board_layout(
-            model,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
         )
     }
 }
@@ -3735,6 +2985,14 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_pop_clip()
     }
 
+    fn surface_push_rounded_clip(&mut self, rect: QRect, radius: f32) {
+        self.backend.surface_push_rounded_clip(rect, radius)
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.backend.surface_overlay_scrollbar_opacity()
+    }
+
     fn surface_blit_alpha(
         &mut self,
         dest: QRect,
@@ -3843,7 +3101,7 @@ impl PaintSurface for GtkBackend {
 
     /// `self` is the surface every non-editor-class
     /// primitive measures/paints through unwrapped (`draw_toast_overlay`,
-    /// `draw_split`, …), so this forces `ui_font`
+    /// a data table, …), so this forces `ui_font`
     /// (the chrome font) explicitly rather than trusting whatever font
     /// the shared per-frame layout happens to carry in — that ambient
     /// font is the *editor* font by default (`gtk/run.rs::render_frame`
@@ -3851,7 +3109,7 @@ impl PaintSurface for GtkBackend {
     /// measuring without forcing chrome here silently measured chrome
     /// text against editor metrics. Saves and restores the layout's font
     /// description around the measurement, the same save/swap/restore
-    /// shape [`Self::draw_tree`] already uses for painting, so a caller
+    /// shape [`Self::with_chrome_surface`] uses for painting, so a caller
     /// mid-frame never finds the shared layout left on `ui_font` after
     /// this returns. See [`EditorSurface`]'s doc for the three
     /// editor-class primitives that opt back into the editor font via a
@@ -3991,7 +3249,7 @@ impl PaintSurface for GtkBackend {
     /// [`Self::surface_measure_text`]'s doc for why, and [`EditorSurface`]
     /// for the adapter the editor-class primitives (the terminal through
     /// [`PaintSurface::surface_with_editor_font`], `draw_text_display`,
-    /// `draw_diff_view`) paint through instead so their glyphs keep
+    /// a diff view) paint through instead so their glyphs keep
     /// painting in the editor font.
     fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
         let (cr, layout) = self
@@ -4067,7 +3325,7 @@ impl PaintSurface for GtkBackend {
     /// chrome one. Saves and restores the layout's font description
     /// around the call, mirroring the save/restore recipe every
     /// `chrome_font_desc`-swapping `draw_*` method in this file already
-    /// repeats by hand (e.g. `draw_tree`).
+    /// repeats by hand.
     fn surface_draw_text_run_with_role(
         &mut self,
         rect: QRect,
@@ -4179,6 +3437,26 @@ impl PaintSurface for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::surface_pop_clip called outside enter_frame_scope");
         cr.restore().ok();
+    }
+
+    fn surface_push_rounded_clip(&mut self, rect: QRect, radius: f32) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_push_rounded_clip called outside enter_frame_scope");
+        cr.save().ok();
+        crate::gtk::rounded_rect_path(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            radius as f64,
+        );
+        cr.clip();
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.scrollbar_fade_opacity()
     }
 
     fn surface_blit_alpha(
@@ -4457,6 +3735,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: Some(40),
                 show_v_scrollbar: false,
+                striped: false,
             }
         };
 
@@ -4499,6 +3778,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -6699,7 +5979,7 @@ mod tests {
             let mut surface =
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
-            let tree = TreeView {
+            let tree = crate::TreeView {
                 id: WidgetId::new("test:tree"),
                 rows: vec![crate::primitives::tree::TreeRow {
                     path: vec![0],
@@ -6739,7 +6019,7 @@ mod tests {
                     Backend::set_ui_font(&mut backend, f);
                 }
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_tree(rect, &tree);
+                    b.draw_dyn(rect, &tree, &());
                 });
             }
             surface.flush();
@@ -6776,245 +6056,13 @@ mod tests {
         );
     }
 
-    /// Same shape as `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
-    /// above, for `DataTable`. `DataTableLayout`'s own `find_bounds`
-    /// equivalent (the bounds `draw_data_table`'s caller records into
-    /// `painted_text`) is derived from the declarative layout, not
-    /// re-measured Pango geometry (see `Self::draw_data_table`'s own
-    /// doc comment on that recording), so it can't be used as a
-    /// font-size oracle the way a `GtkDriver::find_bounds` probe can for
-    /// most other chrome primitives — a pixel scan of the actually
-    /// painted ink is the only oracle that answers "which font shaped
-    /// this glyph" here.
-    ///
-    /// Pins `current_line_height` to a generous 60px (`draw_data_table`'s
-    /// per-cell clip rect is exactly one `line_height` tall) so a large
-    /// chrome glyph's ink isn't clipped away before the scan below ever
-    /// sees it, and scans the whole row band (not one fixed `y`) since a
-    /// much taller glyph's visible ink sits at a different vertical
-    /// offset than a small one's.
-    /// The no-paint `data_table_layout` twin must resolve the same
-    /// content-sized column geometry `draw_data_table` paints with, even
-    /// when the stored Pango context carries a font unlike `ui_font` —
-    /// otherwise click hit-testing and separator positions drift off the
-    /// painted columns.
-    #[test]
-    fn gtk_backend_data_table_layout_matches_painted_columns() {
-        const W: i32 = 1200;
-        const H: i32 = 200;
-        let surface =
-            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
-                .expect("create ImageSurface");
-        let table = crate::DataTable {
-            id: WidgetId::new("test:data-table-parity"),
-            columns: vec![
-                crate::Column {
-                    title: "Name".to_string(),
-                    width: crate::ColumnWidth::Content {
-                        min: 0.0,
-                        max: 1000.0,
-                    },
-                    align: crate::ColumnAlign::Left,
-                },
-                crate::Column {
-                    title: "Status".to_string(),
-                    width: crate::ColumnWidth::Flex(1.0),
-                    align: crate::ColumnAlign::Left,
-                },
-            ],
-            rows: vec![crate::DataRow {
-                cells: vec![
-                    crate::types::StyledText::plain("a-fairly-long-pod-name-xyz".to_string()),
-                    crate::types::StyledText::plain("Running".to_string()),
-                ],
-                decoration: crate::types::Decoration::Normal,
-            }],
-            selected_idx: None,
-            scroll_offset: 0,
-            sort: None,
-            has_focus: false,
-            show_scrollbar: false,
-            min_total_width: None,
-            h_scroll: 0.0,
-            column_overrides: vec![],
-            footer: None,
-            bordered: false,
-            striped: false,
-            glyphs: None,
-        };
-        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
-        let stored_ctx = pangocairo::functions::create_context(&cr);
-        stored_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
-        let frame_ctx = pangocairo::functions::create_context(&cr);
-        frame_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
-        let frame_layout = pango::Layout::new(&frame_ctx);
-
-        let mut backend = GtkBackend::new();
-        backend.set_pango_context(stored_ctx);
-        Backend::set_current_line_height(&mut backend, 20.0);
-        Backend::set_ui_font(&mut backend, "Sans 20");
-
-        let measured = backend.data_table_layout(rect, &table);
-        let mut painted = None;
-        backend.enter_frame_scope(&cr, &frame_layout, |b| {
-            painted = Some(b.draw_data_table(rect, &table, None));
-        });
-        let painted = painted.expect("draw_data_table ran");
-        let xs = |l: &crate::DataTableLayout| {
-            l.columns.iter().map(|c| (c.x, c.width)).collect::<Vec<_>>()
-        };
-        assert_eq!(
-            xs(&measured),
-            xs(&painted),
-            "data_table_layout must measure with the same chrome font draw_data_table paints with"
-        );
-    }
-
-    /// `draw_data_table` and `draw_data_table_with_state` at
-    /// `DataTablePaintState::default()` both forward to the same
-    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
-    /// call, so they must paint byte-identically — including the
-    /// scrollbar, which (unlike [`Self::draw_scrollbar`]'s own idle-fade)
-    /// this shared painter always paints at full opacity, matching
-    /// `DataTable`'s `TreeTable`/`ListView`/`TreeView` siblings on GTK.
-    #[test]
-    fn gtk_backend_draw_data_table_with_state_matches_draw_data_table() {
-        const W: i32 = 300;
-        const H: i32 = 150;
-        let table = crate::DataTable {
-            id: WidgetId::new("test:data-table-fade"),
-            columns: vec![crate::Column {
-                title: "Name".to_string(),
-                width: crate::ColumnWidth::Flex(1.0),
-                align: crate::ColumnAlign::Left,
-            }],
-            rows: (0..30)
-                .map(|i| crate::DataRow {
-                    cells: vec![crate::types::StyledText::plain(format!("row {i}"))],
-                    decoration: crate::types::Decoration::Normal,
-                })
-                .collect(),
-            selected_idx: None,
-            scroll_offset: 0,
-            sort: None,
-            has_focus: false,
-            show_scrollbar: true,
-            min_total_width: None,
-            h_scroll: 0.0,
-            column_overrides: vec![],
-            footer: None,
-            bordered: false,
-            striped: false,
-            glyphs: None,
-        };
-        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
-
-        let paint = |with_state: bool| {
-            let mut surface =
-                pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
-                    .expect("create ImageSurface");
-            let layout;
-            {
-                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
-                let theme = crate::Theme::default();
-                let (br, bgc, bb) = (
-                    theme.background.r as f64 / 255.0,
-                    theme.background.g as f64 / 255.0,
-                    theme.background.b as f64 / 255.0,
-                );
-                cr.set_source_rgb(br, bgc, bb);
-                cr.paint().ok();
-                let pango_ctx = pangocairo::functions::create_context(&cr);
-                pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 8"));
-                let frame_layout = pango::Layout::new(&pango_ctx);
-                let mut backend = GtkBackend::new();
-                Backend::set_current_line_height(&mut backend, 16.0);
-                let mut out = None;
-                backend.enter_frame_scope(&cr, &frame_layout, |b| {
-                    out = Some(if with_state {
-                        b.draw_data_table_with_state(
-                            rect,
-                            &table,
-                            &crate::primitives::data_table::DataTablePaintState::default(),
-                        )
-                    } else {
-                        b.draw_data_table(rect, &table, None)
-                    });
-                });
-                layout = out.expect("draw ran");
-            }
-            surface.flush();
-            let stride = surface.stride() as usize;
-            let data = surface.data().expect("surface data").to_vec();
-            (data, stride, layout)
-        };
-
-        let (data_table_px, _stride1, layout1) = paint(false);
-        let (with_state_px, _stride2, layout2) = paint(true);
-        assert!(
-            layout1.visible_rows < table.rows.len(),
-            "fixture must actually overflow to exercise the v-scrollbar"
-        );
-        assert_eq!(
-            layout1.scrollbar_width, layout2.scrollbar_width,
-            "both paths must resolve the same layout"
-        );
-        assert_eq!(
-            data_table_px, with_state_px,
-            "draw_data_table_with_state's default state must paint byte-identically \
-             to draw_data_table"
-        );
-    }
-
-    /// `GtkBackend::tree_scroll_row_height` is the real painted pitch —
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`]'s 1.4x
-    /// leaf/branch formula over [`GtkBackend::resolved_row_height`] —
-    /// not the trait default ([`Backend::line_height`] alone). Mirrors
-    /// `MacBackend`'s identically named test.
-    #[test]
-    fn gtk_backend_tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
-        let b = GtkBackend::new();
-        assert_eq!(b.line_height(), 16.0);
-        let tree = TreeView {
-            id: WidgetId::new("tree"),
-            rows: vec![crate::primitives::tree::TreeRow {
-                path: vec![0],
-                indent: 0,
-                icon: None,
-                text: crate::types::StyledText::plain("a"),
-                badge: None,
-                is_expanded: None,
-                decoration: crate::Decoration::Normal,
-                edit: None,
-            }],
-            selection_mode: crate::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::TreeStyle::default(),
-            has_focus: true,
-        };
-        let row_height = b.tree_scroll_row_height(&tree);
-        // The real painted pitch is floored at `Style::row_height` and
-        // run through the tree's own 1.4x row-pitch formula, so it must
-        // not equal the raw editor `line_height()`.
-        assert_ne!(row_height, b.line_height());
-        assert_eq!(
-            row_height as f64,
-            crate::primitives::layout_metrics::tree_row_pitch(
-                &tree,
-                b.resolved_row_height(b.line_height() as f64)
-            )
-        );
-    }
-
-    /// `draw_data_table_with_glyphs`'s `DataTableGlyphs` override replaces
-    /// the header's sort-direction glyph; `None` and an empty override
+    /// A [`crate::DataTable::glyphs`] override replaces the header's
+    /// sort-direction glyph; `None` and an empty override
     /// (no fields set) must paint byte-identical to each other, and a
     /// populated `sort_ascending_glyph` override must visibly change the
     /// painted header ink.
     #[test]
-    fn gtk_backend_draw_data_table_honors_sort_glyph_override() {
+    fn gtk_data_table_honors_sort_glyph_override() {
         const W: i32 = 400;
         const H: i32 = 100;
 
@@ -7055,12 +6103,16 @@ mod tests {
                 let mut backend = GtkBackend::new();
                 Backend::set_current_line_height(&mut backend, 20.0);
                 let mut painted = None;
+                let table = crate::DataTable {
+                    glyphs: glyphs.cloned(),
+                    ..table
+                };
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    painted = Some(b.draw_data_table_with_glyphs(rect, &table, None, glyphs));
+                    painted = Some(crate::backend::DrawsPrimitives::draw_primitive(
+                        b, rect, &table,
+                    ));
                 });
-                header_height = painted
-                    .expect("draw_data_table_with_glyphs ran")
-                    .header_height;
+                header_height = painted.expect("the table painted").layout.header_height;
             }
             surface.flush();
             let stride = surface.stride() as usize;
@@ -7085,7 +6137,7 @@ mod tests {
     }
 
     #[test]
-    fn gtk_backend_draw_data_table_uses_ui_font_not_editor_font() {
+    fn gtk_data_table_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
         let large_editor_font = pango::FontDescription::from_string("Sans 40");
         const W: i32 = 1600;
@@ -7146,7 +6198,7 @@ mod tests {
                     Backend::set_ui_font(&mut backend, f);
                 }
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_data_table(rect, &table, None);
+                    crate::backend::DrawsPrimitives::draw_primitive(b, rect, &table);
                 });
             }
             surface.flush();
@@ -7187,109 +6239,6 @@ mod tests {
         );
     }
 
-    /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
-    /// integration tests.
-    fn flat_tree(n_rows: usize) -> TreeView {
-        TreeView {
-            id: WidgetId::new("test:tree:vscrollbar"),
-            rows: (0..n_rows)
-                .map(|i| crate::primitives::tree::TreeRow {
-                    path: vec![i as u16],
-                    indent: 0,
-                    icon: None,
-                    text: crate::types::StyledText::plain(format!("row{i}")),
-                    badge: None,
-                    is_expanded: None,
-                    decoration: crate::types::Decoration::Normal,
-                    edit: None,
-                })
-                .collect(),
-            selection_mode: crate::types::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::types::TreeStyle::default(),
-            has_focus: false,
-        }
-    }
-
-    /// `tree_vscrollbar` passes `line_height * 1.4` pitch (the actual row
-    /// height `tree_layout` paints) as `TreeView::vscrollbar`'s
-    /// `row_height`, not the raw `line_height`. With `current_line_height`
-    /// at 16px default, 15 rows painted at the real 22.4px→22px pitch fit
-    /// 13 into a 300px-tall viewport (300/22 = 13), so an overflow
-    /// scrollbar must appear. The row pitch governs the minimum thumb
-    /// length, not the track's width (the live `Style::scrollbar_width`
-    /// token, `10.0` at the default style used here).
-    #[test]
-    fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
-        let backend = GtkBackend::new();
-        let tree = flat_tree(15);
-        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
-
-        let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
-        assert_eq!(
-            sb.track.width,
-            backend.current_style().scrollbar_width,
-            "track width must follow the live Style::scrollbar_width token"
-        );
-        assert!(
-            sb.thumb_len >= expected_row_h,
-            "minimum thumb length (and row pitch) must match tree_layout's \
-             non-header item_height, not the raw line_height"
-        );
-    }
-
-    /// A host-set `TreeStyle::row_height` must be honored
-    /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
-    /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's width (the live
-    /// `Style::scrollbar_width` token).
-    #[test]
-    fn gtk_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
-        let backend = GtkBackend::new();
-        let mut tree = flat_tree(15);
-        tree.style.row_height = Some(50);
-        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
-        assert!(sb.thumb_len >= 50.0);
-    }
-
-    /// `tree_vscrollbar`'s track width must follow a host-set
-    /// `Style::scrollbar_width`, the same live field
-    /// `crate::primitives::tree::native_surface_paint::paint` reads (via
-    /// `Self::draw_tree`) — so the painted track and the hit-tested
-    /// track can never drift apart at a non-default width. Mirrors
-    /// `gtk_backend_list_vscrollbar_track_width_follows_style_token`.
-    #[test]
-    fn gtk_backend_tree_vscrollbar_track_width_follows_style_token() {
-        let mut backend = GtkBackend::new();
-        let tree = flat_tree(15);
-        let rect = QRect::new(0.0, 0.0, 200.0, 300.0);
-
-        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows must overflow a 300px viewport");
-        assert_eq!(
-            default_sb.track.width,
-            backend.current_style().scrollbar_width
-        );
-
-        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows must still overflow with a wider track reserved");
-        assert_eq!(overridden_sb.track.width, 24.0);
-        assert_eq!(
-            overridden_sb.track.x,
-            rect.x + rect.width - 24.0,
-            "widened track must still hug the tree's right edge"
-        );
-    }
-
     /// `list_vscrollbar`'s track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
@@ -7316,6 +6265,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         };
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -7364,6 +6314,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
@@ -7460,6 +6411,7 @@ mod tests {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 };
                 let rect = QRect::new(0.0, 0.0, vp.width, vp.height);
                 backend.draw_list(rect, &list);
@@ -7879,130 +6831,6 @@ mod tests {
         );
     }
 
-    /// `data_table_layout` is documented **LOCAL**:
-    /// `GtkBackend`'s impl never reads `rect.x`/`rect.y` at all — it
-    /// only forwards `rect.width`/`rect.height` to `DataTable::layout`
-    /// — so a non-zero origin must produce byte-identical column/row
-    /// geometry to the zero-origin case. This guards against a future
-    /// edit that starts folding `rect.x`/`rect.y` in (an accidental
-    /// switch to ABSOLUTE, the exact bug class `LESSONS.md`'s
-    /// `mac_tree_layout` postmortem describes).
-    #[test]
-    fn gtk_backend_data_table_layout_ignores_rect_origin() {
-        use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
-        use crate::types::StyledText;
-
-        let table = crate::DataTable {
-            id: WidgetId::new("dt"),
-            columns: vec![Column {
-                title: "Name".into(),
-                width: ColumnWidth::FixedPx(40.0),
-                align: Default::default(),
-            }],
-            rows: vec![DataRow {
-                cells: vec![StyledText::plain("a")],
-                decoration: Default::default(),
-            }],
-            selected_idx: None,
-            scroll_offset: 0,
-            sort: None,
-            has_focus: false,
-            show_scrollbar: false,
-            min_total_width: None,
-            h_scroll: 0.0,
-            column_overrides: vec![],
-            footer: None,
-            bordered: false,
-            striped: false,
-            glyphs: None,
-        };
-
-        let backend = GtkBackend::new();
-        let at_origin =
-            Backend::data_table_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &table);
-        let shifted =
-            Backend::data_table_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &table);
-
-        assert_eq!(
-            at_origin.columns, shifted.columns,
-            "LOCAL data_table_layout must not shift column bounds by rect.x/rect.y"
-        );
-    }
-
-    /// Regression test: a multi-byte column header must measure by
-    /// **character count**, not UTF-8 byte length, on the click-routing
-    /// path's no-live-Pango-context fallback measurer. `"日付"` is 2
-    /// characters but 6 UTF-8 bytes; the measurer must match
-    /// `PangoTextMeasure`'s `chars().count()`-based no-context estimate.
-    #[test]
-    fn gtk_backend_data_table_layout_measures_multibyte_header_by_char_count() {
-        use crate::primitives::data_table::{Column, ColumnWidth, DataRow};
-        use crate::types::StyledText;
-
-        let title = "日付"; // 2 chars, 6 UTF-8 bytes
-        let table = crate::DataTable {
-            id: WidgetId::new("dt"),
-            // A trailing `FixedPx` column so `resolve_columns`'s pass 4
-            // (#521 defect 2: stretch the *last* column to fill any
-            // viewport leftover) grows that one instead of masking
-            // the `Content` column's own measured width under test.
-            columns: vec![
-                Column {
-                    title: title.into(),
-                    width: ColumnWidth::Content {
-                        min: 0.0,
-                        max: 1000.0,
-                    },
-                    align: Default::default(),
-                },
-                Column {
-                    title: "filler".into(),
-                    width: ColumnWidth::FixedPx(50.0),
-                    align: Default::default(),
-                },
-            ],
-            rows: vec![DataRow {
-                cells: vec![StyledText::plain("x"), StyledText::plain("y")],
-                decoration: Default::default(),
-            }],
-            selected_idx: None,
-            scroll_offset: 0,
-            sort: None,
-            has_focus: false,
-            show_scrollbar: false,
-            min_total_width: None,
-            h_scroll: 0.0,
-            column_overrides: vec![],
-            footer: None,
-            bordered: false,
-            striped: false,
-            glyphs: None,
-        };
-
-        // Fresh backend: no `pango_ctx` set, so `data_table_layout` falls
-        // back to the char-count estimate — exactly the path #1079's bug
-        // lived in.
-        let backend = GtkBackend::new();
-        let layout =
-            Backend::data_table_layout(&backend, QRect::new(0.0, 0.0, 500.0, 50.0), &table);
-
-        let char_w = 8.0_f32; // `GtkBackend::new()`'s default `current_char_width`
-        let byte_length_width = title.len() as f32 * char_w; // pre-#1079 bug's value
-        let char_count_width = (title.chars().count() as f32 * char_w).ceil() + 2.0;
-
-        assert_ne!(
-            byte_length_width, char_count_width,
-            "sanity: the two formulas must disagree for a multi-byte header"
-        );
-        assert_eq!(
-            layout.columns[0].width, char_count_width,
-            "multi-byte column header must measure by character count, not \
-             UTF-8 byte length: got {}, expected the char-count estimate \
-             {char_count_width} (byte-length bug would have produced {byte_length_width})",
-            layout.columns[0].width,
-        );
-    }
-
     /// Before a widget realizes, `measure_text` must pick the
     /// *role*-appropriate cached advance (`current_chrome_char_width` for
     /// [`crate::FontRole::Chrome`], `current_char_width` for
@@ -8105,6 +6933,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let backend = GtkBackend::new();
 
@@ -8163,6 +6992,7 @@ mod tests {
             // char width, so this reliably forces the scrollbar.
             max_content_width: Some(1000),
             show_v_scrollbar: false,
+            striped: false,
         };
         let backend = GtkBackend::new();
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
@@ -8186,51 +7016,6 @@ mod tests {
              viewport height = 100, row_height = {}",
             last.bounds.y + last.bounds.height,
             row_h,
-        );
-    }
-
-    /// `board_layout` is documented **ABSOLUTE** — bounds are shifted by
-    /// `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s contract.
-    /// Both `board_layout` and `draw_board` route through `gtk_board_layout`.
-    #[test]
-    fn gtk_backend_board_layout_is_absolute_and_matches_helper() {
-        let model = crate::primitives::board::BoardModel {
-            id: WidgetId::new("test:board"),
-            columns: vec![crate::primitives::board::BoardColumn {
-                id: WidgetId::new("col:a"),
-                title: "Backlog".into(),
-                cards: vec![crate::primitives::board::BoardCard {
-                    id: WidgetId::new("card:1"),
-                    title: "Do the thing".into(),
-                    labels: vec![],
-                    badges: vec![],
-                    hint: None,
-                }],
-                scroll_offset: 0,
-            }],
-            selected_card_id: None,
-            col_scroll_offset: 0,
-        };
-        let backend = GtkBackend::new();
-        let rect = QRect::new(5.0, 2.0, 400.0, 300.0);
-
-        let no_paint = Backend::board_layout(&backend, rect, &model);
-        assert_eq!(
-            no_paint.bounds,
-            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
-            "board_layout must fold rect's origin into `bounds` (ABSOLUTE, issue #505)"
-        );
-
-        let via_helper = crate::gtk::gtk_board_layout(
-            &model,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        assert_eq!(
-            no_paint, via_helper,
-            "board_layout must equal the exact helper draw_board uses internally"
         );
     }
 
@@ -8323,106 +7108,6 @@ mod tests {
             (0, 255, 0),
             "x=35 sits inside the 10px scrollbar gutter — it must not show the terminal \
              cell colour, matching the layout's grid_cols=3 exclusion of that region"
-        );
-    }
-
-    /// Minimal two-row-hunk `DiffView` fixture for `diff_view_layout`
-    /// parity tests below — mirrors `tui::backend::tests::sample_diff_view`.
-    fn gtk_sample_diff_view(mode: crate::DiffMode, left_label: Option<String>) -> crate::DiffView {
-        crate::DiffView {
-            id: WidgetId::new("diff"),
-            left: String::new(),
-            right: String::new(),
-            left_label,
-            right_label: None,
-            hunks: vec![crate::DiffHunk {
-                left_start: 1,
-                right_start: 1,
-                rows: vec![
-                    crate::DiffRow {
-                        left: Some("alpha".into()),
-                        right: Some("ALPHA".into()),
-                        kind: crate::DiffRowKind::Changed,
-                    },
-                    crate::DiffRow {
-                        left: Some("beta".into()),
-                        right: Some("beta".into()),
-                        kind: crate::DiffRowKind::Same,
-                    },
-                ],
-            }],
-            mode,
-            editability: crate::DiffEditability::ReadOnly,
-            scroll_offset: 0,
-            focused_pane: crate::DiffPane::Left,
-            has_focus: false,
-        }
-    }
-
-    /// `diff_view_layout` is verified byte-for-byte against the real paint
-    /// formula. Since #866, painting goes through `Backend::draw_diff_view`
-    /// (the shared `primitives::diff_view::native_surface_paint::paint`),
-    /// not a deprecated free-function shim. This routes through the real
-    /// trait method, compares the no-paint default body against the exact
-    /// value the real paint path produced, in `SideBySide` mode with a
-    /// header row reserved.
-    #[test]
-    fn gtk_diff_view_layout_matches_draw_diff_view_side_by_side_with_header() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let mut backend = GtkBackend::new();
-        backend.current_line_height = 20.0;
-        let view = gtk_sample_diff_view(crate::DiffMode::SideBySide, Some("left.txt".into()));
-        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
-
-        let no_paint = Backend::diff_view_layout(&backend, rect, &view);
-
-        let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_layout = pangocairo::functions::create_layout(&cr);
-        let painted = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(&cr, &pango_layout, |b| {
-            *painted.borrow_mut() = Some(b.draw_diff_view(rect, &view));
-        });
-        let painted = painted.into_inner().expect("layout captured");
-
-        assert_eq!(
-            no_paint, painted,
-            "diff_view_layout must equal the exact layout draw_diff_view painted with"
-        );
-        assert_eq!(
-            no_paint.visible_rows, 4,
-            "a 100px-tall rect minus a 20px header (left_label is set) leaves 4 content rows at \
-             line_height=20"
-        );
-    }
-
-    /// Same parity check in `Unified` mode, where no header row is
-    /// reserved.
-    #[test]
-    fn gtk_diff_view_layout_matches_draw_diff_view_unified() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let mut backend = GtkBackend::new();
-        backend.current_line_height = 20.0;
-        let view = gtk_sample_diff_view(crate::DiffMode::Unified, None);
-        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
-
-        let no_paint = Backend::diff_view_layout(&backend, rect, &view);
-
-        let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        let pango_layout = pangocairo::functions::create_layout(&cr);
-        let painted = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(&cr, &pango_layout, |b| {
-            *painted.borrow_mut() = Some(b.draw_diff_view(rect, &view));
-        });
-        let painted = painted.into_inner().expect("layout captured");
-
-        assert_eq!(
-            no_paint, painted,
-            "diff_view_layout must equal the exact layout draw_diff_view painted with (unified \
-             mode reserves no header band)"
         );
     }
 
@@ -8848,7 +7533,11 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
                 Backend::push_clip(b, QRect::new(0.0, 0.0, 10.0, 10.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), red);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 40.0, 40.0),
+                    &crate::testing::solid_canvas(QRect::new(0.0, 0.0, 40.0, 40.0), red),
+                    &(),
+                );
                 Backend::pop_clip(b);
             });
         }
@@ -8893,14 +7582,22 @@ mod tests {
                 // clip, this reaches (0,0)..(20,20) but not past it; if it
                 // dropped clipping entirely, it would reach the whole
                 // 40x40 surface, including (30,30) checked below.
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), green);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 40.0, 40.0),
+                    &crate::testing::solid_canvas(QRect::new(0.0, 0.0, 40.0, 40.0), green),
+                    &(),
+                );
                 Backend::pop_clip(b);
                 // Paint only after the outer pop, confined to pixels
                 // (20,20)..(40,40) — entirely outside the now-popped
                 // outer clip, so this fill can only land there if the
                 // outer pop actually cleared clipping rather than
                 // leaving the outer rect active.
-                b.draw_solid_fill(QRect::new(20.0, 20.0, 20.0, 20.0), white);
+                b.draw_dyn(
+                    QRect::new(20.0, 20.0, 20.0, 20.0),
+                    &crate::testing::solid_canvas(QRect::new(20.0, 20.0, 20.0, 20.0), white),
+                    &(),
+                );
             });
         }
 
@@ -9842,13 +8539,10 @@ mod tests {
         });
     }
 
-    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    // ── Chart real-pixel driver tests ───────────────────────────────────
     //
-    // Ported from the deleted `gtk::chart::tests` (that module painted
-    // straight onto a Cairo `ImageSurface` via the since-deleted free
-    // function `gtk::chart::draw_chart`) to instead drive the real
-    // `Backend::draw_chart` → `primitives::chart::paint` path end to
-    // end, the same shape `gtk_backend_draw_find_replace_*` above uses.
+    // Drive a chart through `draw_primitive` end to end on a real Cairo
+    // surface, the same shape `gtk_backend_draw_find_replace_*` above uses.
 
     use crate::primitives::chart::{Chart as ChartModel, ChartKind, Series, SERIES_COLORS};
 
@@ -9906,8 +8600,12 @@ mod tests {
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
+            let chart = ChartModel {
+                hovered_point,
+                ..chart.clone()
+            };
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_chart(rect, chart, hovered_point, None);
+                crate::backend::DrawsPrimitives::draw_primitive(b, rect, &chart);
             });
         }
         surface.flush();
@@ -9915,7 +8613,7 @@ mod tests {
     }
 
     #[test]
-    fn gtk_backend_draw_chart_stacked_bar_paints_each_series_in_its_own_color() {
+    fn gtk_chart_stacked_bar_paints_each_series_in_its_own_color() {
         // Three equal-value series stacked in a single column, with an
         // explicit y_range so the geometry is exact: (0, 1/3), (1/3,
         // 2/3), (2/3, 1) bottom to top.
@@ -9956,7 +8654,7 @@ mod tests {
     }
 
     #[test]
-    fn gtk_backend_draw_chart_grouped_bar_paints_series_side_by_side() {
+    fn gtk_chart_grouped_bar_paints_series_side_by_side() {
         let chart = chart_bar_chart(
             ChartKind::BarGrouped,
             vec![
@@ -9989,13 +8687,12 @@ mod tests {
         );
     }
 
-    /// Before unification, GTK's `draw_chart` had no clip, so overlay
-    /// elements painted outside `plot_area` (legend, crosshair, hover
-    /// marker) could bleed past the chart's rect. The unified
-    /// `primitives::chart::paint` now owns this clip for every backend.
-    /// This is the driver-tier proof for GTK.
+    /// Overlay elements painted outside `plot_area` (legend, crosshair,
+    /// hover marker) must not bleed past the chart's rect: the shared
+    /// chart painter owns that clip for every backend. This is the
+    /// driver-tier proof for GTK.
     #[test]
-    fn gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
+    fn gtk_chart_hover_marker_does_not_escape_chart_rect() {
         // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom
         // edge. n=2 → index 0's x is the plot area's left edge. So data
         // point (0, 0) sits exactly at the chart's top-left corner.
@@ -10033,12 +8730,15 @@ mod tests {
             cr.fill().ok();
 
             let pango_layout = pangocairo::functions::create_layout(&cr);
+            let chart = ChartModel {
+                hovered_point: Some((0, 0)),
+                ..chart
+            };
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_chart(
+                crate::backend::DrawsPrimitives::draw_primitive(
+                    b,
                     QRect::new(chart_x, chart_y, chart_w, chart_h),
                     &chart,
-                    Some((0, 0)),
-                    None,
                 );
             });
         }

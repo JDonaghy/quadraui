@@ -4103,8 +4103,8 @@ mod tests {
     // draw calls are no-ops. These two paint the controller through the
     // real `TuiBackend` / `GtkBackend` trait impls into a backend-owned
     // headless surface (a `ratatui::Buffer` / `cairo::ImageSurface`) and
-    // assert that the actual `draw_message_list` / `draw_text_input` /
-    // `draw_scrollbar` / `draw_spinner` rasterisers produced output. This
+    // assert that the message list, text input, scrollbar and spinner
+    // paints produced output. This
     // is the golden-style coverage required by the issue acceptance
     // criteria (TESTING.md "coordinate drift" row).
 
@@ -4183,8 +4183,8 @@ mod tests {
 
     /// TUI: the Send/Stop segment paints "Send" while idle and
     /// "Stop" while busy, and the persistent hint row paints its text —
-    /// through the real `Form` cell painter and `draw_message_list`
-    /// rasteriser, not a mock.
+    /// through the real `Form` cell painter and the message list's own
+    /// cell paint, not a mock.
     #[cfg(feature = "tui")]
     #[test]
     fn tui_render_paints_send_stop_segment_and_hint() {

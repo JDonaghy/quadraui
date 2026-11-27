@@ -1,7 +1,7 @@
 //! `Canvas` v2 op demo ([`tui_canvas_shapes`] / [`gtk_canvas_shapes`]).
 //!
 //! A chart-style gauge drawn entirely from the `Canvas` v2 op set, one
-//! `Backend::draw_canvas` call, on every backend:
+//! `draw_primitive` call, on every backend:
 //! - [`DrawOp::StrokeRect`] — the plot border.
 //! - [`DrawOp::DashedLine`] — horizontal gridlines.
 //! - [`DrawOp::Polygon`] — tapered bars (a trapezoid per bar, not a
@@ -211,7 +211,7 @@ impl AppLogic for CanvasShapesApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let rect = self.chart_rect(backend);
-        let _ = backend.draw_canvas(rect, &self.chart_canvas(rect));
+        let _ = backend.draw_primitive(rect, &self.chart_canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());

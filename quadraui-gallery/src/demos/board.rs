@@ -21,7 +21,7 @@ const SOURCE: &str = include_str!("board.rs");
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -207,7 +207,7 @@ impl Demo for BoardDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let board_rect = Self::board_rect(area, backend);
-        let _ = backend.draw_board(board_rect, self.model(variant));
+        let _ = backend.draw_primitive(board_rect, self.model(variant));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(), &());
@@ -236,7 +236,7 @@ impl Demo for BoardDemo {
             }
             UiEvent::MouseDown { position, .. } => {
                 let board_rect = Self::board_rect(area, backend);
-                let layout = backend.board_layout(board_rect, self.model(variant));
+                let layout = backend.layout_primitive(board_rect, self.model(variant));
                 match layout.hit_test(position.x, position.y) {
                     BoardHit::Card(id) => {
                         let title = self

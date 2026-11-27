@@ -32,10 +32,9 @@
 //!
 //! ## Portability
 //!
-//! Part of the `Backend` trait: `draw_board` is required (no default
-//! impl — quadraui#600), so every backend implementer supplies a real
-//! rasteriser (or an explicit `todo!()` stub, per convention). Apps
-//! write `backend.draw_board(rect, &model)` once and pick up each
+//! `BoardModel` paints through its own `Primitive` impl on every backend
+//! (a shared pixel painter, and a cell painter on TUI). Apps write
+//! `backend.draw_primitive(rect, &model)` once and pick up each
 //! backend's rasteriser as it lands.
 
 use crate::event::{Point, Rect};
@@ -176,12 +175,15 @@ pub struct BoardColumn {
 /// Top-level model for a [`Board`] widget.
 ///
 /// The host constructs this from its own state each frame and passes it
-/// to `backend.draw_board(rect, &model)`.
+/// to `backend.draw_primitive(rect, &model)`.
 ///
 /// # Examples
 ///
 /// ```
-/// use quadraui::{board_layout, BoardCard, BoardColumn, BoardHit, BoardMeasure, BoardModel, WidgetId};
+/// use quadraui::{
+///     measured_board_layout, BoardCard, BoardColumn, BoardHit, BoardMeasure, BoardModel,
+///     WidgetId,
+/// };
 ///
 /// let model = BoardModel {
 ///     id: WidgetId::new("board:issues"),
@@ -202,7 +204,7 @@ pub struct BoardColumn {
 /// };
 ///
 /// let measure = BoardMeasure::new(20.0, 1.0, 1.0, 3.0, 1.0);
-/// let layout = board_layout(&model, 0.0, 0.0, 80.0, 24.0, measure);
+/// let layout = measured_board_layout(&model, 0.0, 0.0, 80.0, 24.0, measure);
 ///
 /// assert_eq!(layout.hit_test(1.0, 2.0), BoardHit::Card(WidgetId::new("card:1")));
 /// ```
@@ -471,7 +473,7 @@ pub struct ColumnLayout {
     pub cards: Vec<CardLayout>,
 }
 
-/// Fully-resolved board layout returned by `draw_board`.
+/// Fully-resolved board layout — `BoardModel`'s `Primitive::Layout`.
 ///
 /// The host holds this between frames. On mouse events, call
 /// [`Self::hit_test`] to route clicks. `visible_cards` drives
@@ -528,7 +530,7 @@ impl BoardLayout {
 /// Per-column vertical scroll is driven by `BoardColumn::scroll_offset`;
 /// `visible_cards` in the returned [`ColumnLayout`] tells the host the
 /// scroll ceiling.
-pub fn board_layout(
+pub fn measured_board_layout(
     model: &BoardModel,
     origin_x: f32,
     origin_y: f32,
@@ -671,8 +673,8 @@ pub(crate) mod native_surface_paint {
     /// The codicon counterpart of [`badge_icon`] — every GUI backend
     /// routes through this module, so a card badge paints as a
     /// VS-Code-style vector glyph here while TUI keeps `badge_icon`'s
-    /// plain Unicode (TUI's own `draw_board` calls `badge_icon` directly
-    /// and never reaches this module). Falls back to `badge_icon` itself
+    /// plain Unicode (the cell painter calls `badge_icon` directly and
+    /// never reaches this module). Falls back to `badge_icon` itself
     /// if the name isn't registered, which cannot happen for any of
     /// these four names — covered by this module's own test.
     fn badge_codicon_glyph(status: BadgeStatus) -> Cow<'static, str> {
@@ -707,8 +709,7 @@ pub(crate) mod native_surface_paint {
     const CARD_BORDER_WIDTH: f32 = 1.0;
 
     /// Paint a [`BoardModel`] into `rect` on `surface`, returning
-    /// [`BoardLayout`] for host click dispatch — same contract as every
-    /// deleted per-backend `draw_board`.
+    /// [`BoardLayout`] for host click dispatch.
     pub(crate) fn paint(
         model: &BoardModel,
         surface: &mut dyn PaintSurface,
@@ -1293,10 +1294,10 @@ pub(crate) const BOARD_CARD_H_CELLS: f32 = 5.0;
 const BOARD_CARD_GAP_CELLS: f32 = 0.0;
 
 impl BoardModel {
-    /// [`board_layout`] over `rect` at the cell-grid measure: the layout
+    /// [`measured_board_layout`] over `rect` at the cell-grid measure: the layout
     /// the TUI painter paints from and hit-tests against.
     pub fn cell_layout(&self, rect: Rect) -> BoardLayout {
-        board_layout(
+        measured_board_layout(
             self,
             rect.x,
             rect.y,
@@ -1324,6 +1325,10 @@ impl crate::interactive::WidgetAction for BoardAction {
 impl crate::primitive::Primitive for BoardModel {
     type Layout = BoardLayout;
     type Event = BoardAction;
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Board(self.clone())
+    }
 
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
@@ -1590,7 +1595,7 @@ mod tests {
     fn layout_three_columns_fit_in_wide_viewport() {
         let m = make_model();
         // 3 cols × min 20 + 2 gaps = 64; viewport = 100 → all fit
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         assert_eq!(
             layout.columns.len(),
             3,
@@ -1602,7 +1607,7 @@ mod tests {
     fn layout_equal_column_widths() {
         let m = make_model();
         // 3 cols, gap 2 → natural = (100 - 4) / 3 ≈ 32
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         let w0 = layout.columns[0].bounds.width;
         let w1 = layout.columns[1].bounds.width;
         let w2 = layout.columns[2].bounds.width;
@@ -1616,7 +1621,7 @@ mod tests {
     fn layout_horizontal_scroll_hides_first_column() {
         let mut m = make_model();
         m.col_scroll_offset = 1; // skip the first column
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         // Column 0 ("Backlog") must be absent; column 1 ("Ready") first.
         assert_eq!(layout.columns[0].col_id.as_str(), "col:ready");
     }
@@ -1626,7 +1631,7 @@ mod tests {
         let m = make_model();
         // min_width = 50, viewport = 60 → only 1 column fits (50 + 2 > 60 for 2)
         let tight = BoardMeasure::new(50.0, 2.0, 2.0, 5.0, 1.0);
-        let layout = board_layout(&m, 0.0, 0.0, 60.0, 20.0, tight);
+        let layout = measured_board_layout(&m, 0.0, 0.0, 60.0, 20.0, tight);
         assert_eq!(
             layout.columns.len(),
             1,
@@ -1638,7 +1643,7 @@ mod tests {
     fn layout_always_shows_at_least_one_column() {
         let m = make_model();
         // Extremely narrow viewport
-        let layout = board_layout(&m, 0.0, 0.0, 5.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 5.0, 20.0, measure());
         assert!(
             layout.columns.len() >= 1,
             "at least 1 column must be visible regardless of viewport"
@@ -1648,7 +1653,7 @@ mod tests {
     #[test]
     fn layout_origin_offset() {
         let m = make_model();
-        let layout = board_layout(&m, 10.0, 5.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 10.0, 5.0, 100.0, 20.0, measure());
         assert_eq!(layout.bounds.x, 10.0);
         assert_eq!(layout.bounds.y, 5.0);
         assert_eq!(layout.columns[0].bounds.x, 10.0);
@@ -1660,7 +1665,7 @@ mod tests {
         let m = make_model();
         // card_height=5, card_gap=1 → step=6; body_h = 20-2 = 18 → floor(18/6)=3
         // col[0] has 2 cards, so only 2 card layouts (not 3)
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         // visible_cards is the capacity (how many fit), not how many are present
         assert_eq!(layout.columns[0].visible_cards, 3);
         // But only 2 cards in the column data → 2 card layouts
@@ -1674,7 +1679,7 @@ mod tests {
     fn layout_scroll_offset_slices_cards() {
         let mut m = make_model();
         m.columns[0].scroll_offset = 1; // skip card:362
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         let col0 = &layout.columns[0];
         // Only 1 card visible (card:300)
         assert_eq!(col0.cards.len(), 1);
@@ -1690,7 +1695,7 @@ mod tests {
             selected_card_id: None,
             col_scroll_offset: 0,
         };
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 30.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 30.0, measure());
         assert_eq!(layout.columns.len(), 0);
     }
 
@@ -1699,7 +1704,7 @@ mod tests {
     #[test]
     fn hit_test_card_body() {
         let m = make_model();
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         let card0 = &layout.columns[0].cards[0];
         let cx = card0.bounds.x + card0.bounds.width / 2.0;
         let cy = card0.bounds.y + card0.bounds.height / 2.0;
@@ -1712,7 +1717,7 @@ mod tests {
     #[test]
     fn hit_test_column_header() {
         let m = make_model();
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         let hdr = layout.columns[1].header_bounds;
         match layout.hit_test(hdr.x + 1.0, hdr.y + 0.5) {
             BoardHit::ColumnHeader(id) => assert_eq!(id.as_str(), "col:ready"),
@@ -1723,7 +1728,7 @@ mod tests {
     #[test]
     fn hit_test_empty_area_returns_empty() {
         let m = make_model();
-        let layout = board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
+        let layout = measured_board_layout(&m, 0.0, 0.0, 100.0, 20.0, measure());
         assert_eq!(layout.hit_test(500.0, 500.0), BoardHit::Empty);
     }
 

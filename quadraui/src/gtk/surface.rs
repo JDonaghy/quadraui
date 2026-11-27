@@ -1495,13 +1495,13 @@ mod form_paint_tests {
     const CHROME_W: i32 = 200;
     const CHROME_H: i32 = 60;
     const LINE_HEIGHT: f64 = 18.0;
-    // Distinct from every colour `draw_settings_chrome` itself paints
+    // Distinct from every colour the settings chrome itself paints
     // (header_bg/tab_bar_bg/selected_bg), so a search-row pixel that
     // still reads this sentinel unambiguously means "nothing painted
     // here", not "painted a colour that happens to match by chance."
     const SENTINEL: (u8, u8, u8) = (1, 2, 3);
 
-    /// Paint `GtkBackend::draw_settings_chrome` into a `CHROME_W`x`CHROME_H` surface
+    /// Paint the shared settings chrome into a `CHROME_W`x`CHROME_H` surface
     /// pre-filled with [`SENTINEL`], at the given `height`, and return
     /// the raw pixel buffer + stride for probing.
     fn paint_chrome(height: f64) -> (Vec<u8>, usize) {
@@ -1518,23 +1518,21 @@ mod form_paint_tests {
             cr.paint().ok();
 
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            let mut backend = crate::gtk::GtkBackend::new();
-            backend.set_current_theme(Theme::default());
-            backend.set_current_line_height(LINE_HEIGHT);
-            crate::Backend::begin_frame(
-                &mut backend,
-                crate::Viewport::new(CHROME_W as f32, CHROME_H as f32, 1.0),
+            let mut raw = super::CairoSurface {
+                cr: &cr,
+                layout: Some(&pango_layout),
+                translucent_fill: true,
+            };
+            crate::compose::sidebar_panel_body::paint_settings_chrome(
+                &mut raw,
+                &Theme::default(),
+                crate::Rect::new(0.0, 0.0, CHROME_W as f32, height as f32),
+                LINE_HEIGHT as f32,
+                "HEADER",
+                "",
+                "placeholder",
+                false,
             );
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                crate::Backend::draw_settings_chrome(
-                    b,
-                    crate::Rect::new(0.0, 0.0, CHROME_W as f32, height as f32),
-                    "HEADER",
-                    "",
-                    "placeholder",
-                    false,
-                );
-            });
         }
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data").to_vec();
@@ -1544,9 +1542,9 @@ mod form_paint_tests {
     /// A 1-row-tall `height` (the shape
     /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
     /// reserves) must leave the would-be search row untouched, since
-    /// `draw_settings_chrome` only paints rows that fit within the given rect.
+    /// the settings chrome only paints rows that fit within the given rect.
     #[test]
-    fn draw_settings_chrome_one_row_height_paints_no_search_row() {
+    fn settings_chrome_one_row_height_paints_no_search_row() {
         let (data, stride) = paint_chrome(LINE_HEIGHT);
 
         // Probe x=150, clear of the left-aligned "HEADER" glyphs (same
@@ -1577,7 +1575,7 @@ mod form_paint_tests {
     /// reserves) must still paint the search row — the height-aware
     /// fix must not regress the documented 2-row shape.
     #[test]
-    fn draw_settings_chrome_two_row_height_paints_search_row() {
+    fn settings_chrome_two_row_height_paints_search_row() {
         let (data, stride) = paint_chrome(LINE_HEIGHT * 2.0);
 
         let theme = Theme::default();

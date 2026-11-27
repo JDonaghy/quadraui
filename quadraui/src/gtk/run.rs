@@ -20,7 +20,7 @@
 //! The runner uses a **single-DrawingArea** model: one DA, one
 //! `set_draw_func`, one `app.render(backend, AreaId::default())` per
 //! redraw. Zone routing (sidebar, main, status bar, etc.) is handled
-//! entirely by `AppShell::compute_layout`'s resolved rects, which the
+//! entirely by `ShellView::compute_layout`'s resolved rects, which the
 //! app hit-tests directly — not by multiple GTK DAs.
 //!
 //! This was a deliberate decision. All vimcode paint paths

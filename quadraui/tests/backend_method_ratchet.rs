@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 111;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 79;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -117,60 +117,23 @@ fn backend_trait_method_count_may_only_shrink() {
 /// implementor gets no such exemption: it should reach every backend
 /// through `draw_primitive` alone.
 ///
-/// `DataTable`, `TreeView` and `TreeTable` extend that same pilot
-/// (quadraui#2607): each gained a `Primitive` impl that routes `paint`
-/// through its existing `native_surface_paint` helper, but kept its
-/// pre-existing bespoke `Backend` methods for the same reason `ListView`
-/// did — every existing caller already goes through those, and ripping
-/// them out is its own migration.
 const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ListView", "draw_list"),
     ("ListView", "draw_list_with_state"),
     ("ListView", "list_layout"),
-    ("DataTable", "draw_data_table"),
-    ("DataTable", "draw_data_table_with_state"),
-    ("DataTable", "draw_data_table_with_glyphs"),
-    ("DataTable", "data_table_layout"),
-    ("TreeView", "draw_tree"),
-    ("TreeView", "draw_tree_with_state"),
-    ("TreeView", "tree_layout"),
-    ("TreeTable", "draw_tree"),
-    ("TreeTable", "draw_tree_with_state"),
-    ("TreeTable", "draw_tree_table"),
-    ("TreeTable", "tree_table_layout"),
-    ("TreeTable", "tree_layout"),
     // Group-A ports: each now paints
     // through `Primitive`/`Interactive`, and keeps its bespoke pair
     // until the group's cleanup deletes the methods, the per-backend
     // wrapper files and the `Surface` variants together. `draw_scrollbar`
-    // additionally stays because it is the shared chrome paint a dozen
-    // not-yet-ported rasterisers (`tui::editor`, `tui::list`,
-    // `tui::data_table`, `gtk::scroll_view`, …) reach for, none of which
-    // has a `PaintTarget` to route through `draw_primitive` with yet.
+    // additionally stays because it is the shared chrome paint the
+    // not-yet-ported rasterisers (`tui::editor`, `tui::list`, …) reach
+    // for, none of which has a `PaintTarget` to route through
+    // `draw_primitive` with yet.
     ("ProgressBar", "draw_progress"),
     ("ProgressBar", "progress_layout"),
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
-    // Group-F ports, kept until the group's cleanup deletes them.
-    ("Chart", "draw_chart"),
-    ("Chart", "chart_layout"),
-    ("Canvas", "draw_canvas"),
-    ("Canvas", "canvas_layout"),
-    ("BoardModel", "draw_board"),
-    ("BoardModel", "board_layout"),
-    ("DiffView", "draw_diff_view"),
-    ("DiffView", "diff_view_layout"),
-    ("MessageList", "draw_message_list"),
-    ("PipelineView", "draw_pipeline_view"),
-    ("PipelineView", "pipeline_view_layout"),
-    ("Split", "draw_split"),
-    ("Split", "split_layout"),
-    ("SplitTree", "draw_split"),
-    ("SplitTree", "split_layout"),
-    ("SplitTree", "draw_split_tree"),
-    ("SplitTree", "split_tree_layout"),
-    ("MultiSectionView", "draw_multi_section_view"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

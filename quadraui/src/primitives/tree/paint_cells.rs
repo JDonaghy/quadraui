@@ -1,0 +1,1516 @@
+//! Cell-grid rasteriser for [`crate::TreeView`].
+//!
+//! Per D6: this function asks the primitive for a [`crate::TreeViewLayout`]
+//! using a uniform 1-cell-per-row measurer (TUI rows are always 1 cell
+//! tall) and paints the resolved positions verbatim. The GTK rasteriser
+//! supplies a different per-row measurer (header rows 1× line_height,
+//! leaves 1.4×) — that's a backend-specific decision the rasteriser
+//! owns, not the primitive. `TreeStyle::row_height` is a GUI-pixel
+//! override; a terminal cell can't be subdivided, so TUI intentionally
+//! ignores it and always measures 1 cell per row.
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Color as RatatuiColor;
+
+use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
+use crate::theme::Theme;
+use crate::tui::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
+use crate::types::{Decoration, Icon, TreeStyle};
+
+/// The chevron glyph a row at `indent` paints and the column just past it
+/// (unclipped). Shared by [`paint_tree_cell`] and the hit-test in
+/// [`tui_tree_layout_with_scroll_px`] so the two never drift. The indent
+/// comes from the shared tree cell geometry a `TreeTable` row lays out
+/// its chevron with too.
+fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
+    let glyph = if expanded {
+        &style.chevron_expanded
+    } else {
+        &style.chevron_collapsed
+    };
+    let start = crate::primitives::tree::tree_cell::indent_offset(
+        style,
+        indent,
+        crate::primitives::tree::tree_cell::TreeCellUnits::Cells,
+    ) as usize;
+    let end = start + glyph.chars().count();
+    (glyph, end)
+}
+
+/// Paint a tree cell — indent + chevron + icon, column 0 of a `TreeView`
+/// row — into the 1-cell-tall `row` of `buf`, which the caller has already
+/// cleared to `bg`. Leaves get a 2-cell gap instead of a chevron. Returns
+/// the chevron's column range (`None` for a leaf or hidden chevron) and the
+/// label's start column, which always leaves at least one column for the
+/// label on a non-empty row.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_tree_cell(
+    buf: &mut Buffer,
+    row: Rect,
+    style: &TreeStyle,
+    indent: u16,
+    is_expanded: Option<bool>,
+    icon: Option<&Icon>,
+    nerd_fonts_enabled: bool,
+    (fg, bg): (RatatuiColor, RatatuiColor),
+) -> (Option<(usize, usize)>, usize) {
+    let row_w = row.width as usize;
+    let mut col = crate::primitives::tree::tree_cell::indent_offset(
+        style,
+        indent,
+        crate::primitives::tree::tree_cell::TreeCellUnits::Cells,
+    ) as usize;
+    let mut chevron_cols = None;
+    match is_expanded {
+        Some(expanded) if style.show_chevrons => {
+            let (glyph, end) = chevron_glyph_end(style, indent, expanded);
+            let end = end.min(row_w);
+            for (c, ch) in (col..end).zip(glyph.chars()) {
+                set_cell(buf, row.x + c as u16, row.y, ch, fg, bg);
+            }
+            chevron_cols = Some((col, end));
+            col = (end + 1).min(row_w);
+        }
+        Some(_) => {}
+        None => col += 2.min(row_w.saturating_sub(col)),
+    }
+    if let Some(icon) = icon {
+        let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
+        for ch in icon
+            .resolve(nerd_fonts_enabled)
+            .chars()
+            .take(row_w.saturating_sub(col))
+        {
+            set_cell(buf, row.x + col as u16, row.y, ch, icon_fg, bg);
+            col += 1;
+        }
+        col = (col + 1).min(row_w);
+    }
+    (chevron_cols, col.min(row_w.saturating_sub(1)))
+}
+
+/// Draw a [`TreeView`] into `area` on `buf`.
+///
+/// # Visual contract
+///
+/// - **Header rows** (`Decoration::Header`): rendered with
+///   [`Theme::header_bg`] / [`Theme::header_fg`] (the SC panel's
+///   section titles).
+/// - **Selected row** (when `tree.has_focus`): rendered with
+///   [`Theme::selected_bg`] and the row's `default_fg`.
+/// - **Other rows**: rendered with [`Theme::tab_bar_bg`] /
+///   [`Theme::foreground`]. Branches and leaves get the same row
+///   styling — `is_expanded`-ness only affects chevron rendering, not
+///   visual emphasis.
+/// - **Indent, chevron, icon:** painted by [`paint_tree_cell`]; the icon
+///   uses its ASCII fallback unless `nerd_fonts_enabled`.
+/// - **Badge** (right-aligned within row): rendered in
+///   `badge.fg`/`badge.bg` (falling back to [`Theme::muted_fg`] /
+///   row bg) when there's room past the text.
+/// - **Border** (`tree.style.bordered`): a rounded `╭─╮ │ ╰─╯` frame in
+///   [`Theme::border_fg`] around `area`, insetting every row by 1
+///   cell on each side — the same margin
+///   [`TreeView::layout`](crate::primitives::tree::TreeView::layout)
+///   reserves in `visible_rows`/`hit_regions`, so a host that always
+///   sets this can safely overlay a focus ring on `area` without it
+///   ever landing on row content.
+///
+/// Doesn't draw a scrollbar — scrollbars are a later primitive stage.
+#[cfg(test)]
+pub(crate) fn paint_tree_rows(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &TreeView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+) {
+    paint_tree_rows_with_scroll_px(buf, area, tree, theme, nerd_fonts_enabled, None)
+}
+
+/// Like [`paint_tree_rows`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) from a
+/// [`crate::primitives::tree::TreePaintState`] instead of only
+/// [`TreeView::scroll_offset`]'s whole-row value.
+///
+/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
+/// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
+/// to a whole row — the sub-row remainder is computed and then simply
+/// never read, so TUI never paints a partial row. `None` (what
+/// [`paint_tree_rows`] passes) resolves to exactly the pre-existing whole-row
+/// behaviour.
+pub(crate) fn paint_tree_rows_with_scroll_px(
+    buf: &mut Buffer,
+    area: Rect,
+    tree: &TreeView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    scroll_px: Option<f32>,
+) {
+    // Floor to a whole cell up front — see
+    // `tui_tree_layout_with_scroll_px`'s doc for why.
+    let scroll_px = scroll_px.map(f32::floor);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let row_bg = ratatui_color(theme.tab_bar_bg);
+    let hdr_bg = ratatui_color(theme.header_bg);
+    let hdr_fg = ratatui_color(theme.header_fg);
+    let item_fg = ratatui_color(theme.foreground);
+    let sel_bg = ratatui_color(theme.selected_bg);
+    let inactive_sel_bg = ratatui_color(theme.inactive_selected_bg);
+    let text_sel_bg = ratatui_color(theme.selection_bg);
+    let dim_fg = ratatui_color(theme.muted_fg);
+
+    let layout = tui_tree_layout_with_scroll_px(tree, area, scroll_px);
+
+    if tree.style.bordered {
+        draw_tree_border(buf, area, ratatui_color(theme.border_fg), row_bg);
+    }
+
+    for visible_row in &layout.visible_rows {
+        let row = &tree.rows[visible_row.row_idx];
+        let y = area.y + visible_row.bounds.y.round() as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        // Row-local x/width already carry the `style.bordered` inset —
+        // `tui_tree_layout` (shared by this paint path and
+        // `Backend::tree_layout`'s hit-test) is the single source of
+        // that inset, so painting and clicking stay in agreement.
+        let row_x = area.x + visible_row.bounds.x.round() as u16;
+        let row_w = visible_row.bounds.width.round() as u16;
+
+        let is_header = matches!(row.decoration, Decoration::Header);
+        let path_selected = tree.selected_path.as_ref().is_some_and(|p| p == &row.path);
+        let is_selected = tree.has_focus && path_selected;
+        let is_inactive_selected = !tree.has_focus && path_selected;
+
+        let (default_fg, bg) = match (is_header, is_selected, is_inactive_selected) {
+            (_, true, _) => (hdr_fg, sel_bg),
+            (_, _, true) => (item_fg, inactive_sel_bg),
+            (true, _, _) => (hdr_fg, hdr_bg),
+            _ => (item_fg, row_bg),
+        };
+
+        for x in row_x..row_x + row_w {
+            set_cell(buf, x, y, ' ', default_fg, bg);
+        }
+
+        let (_, text_start) = paint_tree_cell(
+            buf,
+            Rect::new(row_x, y, row_w, 1),
+            &tree.style,
+            row.indent,
+            row.is_expanded,
+            row.icon.as_ref(),
+            nerd_fonts_enabled,
+            (default_fg, bg),
+        );
+
+        let row_area = Rect::new(row_x, area.y, row_w, area.height);
+
+        if let Some(ref edit) = row.edit {
+            paint_edit_input(
+                buf,
+                row_area,
+                y,
+                text_start,
+                edit,
+                default_fg,
+                bg,
+                text_sel_bg,
+                dim_fg,
+            );
+        } else {
+            // Reserve room for the right-aligned badge *before*
+            // painting the label, clamping the label to end at least one
+            // blank column short of the badge. The label must not overwrite
+            // the badge; a gap indicates when the label is truncated.
+            let badge_start_col = row.badge.as_ref().map(|badge| {
+                (row_w as usize).saturating_sub(crate::text_util::display_width(&badge.text))
+            });
+            let draw_badge = badge_start_col.is_some_and(|start| start > text_start);
+            // One blank gap column before the badge, never below `text_start`
+            // (a zero-width label is valid when the badge leaves no room).
+            let max_text_col = badge_start_col
+                .filter(|_| draw_badge)
+                .map_or(row_w as usize, |start| {
+                    start.saturating_sub(1).max(text_start)
+                });
+
+            let text_area = Rect::new(row_x, area.y, max_text_col as u16, area.height);
+            draw_styled_text(
+                buf,
+                text_area,
+                y,
+                text_start,
+                &row.text,
+                default_fg,
+                bg,
+                row.decoration,
+                dim_fg,
+            );
+
+            let label_truncated = draw_badge
+                && max_text_col > text_start
+                && text_start + row.text.visible_width() > max_text_col;
+            if label_truncated {
+                // Overwrite the label's last painted cell with `…`,
+                // reusing whatever fg/bg that cell already has so
+                // per-span colouring (e.g. a muted/error label) survives
+                // the clamp untouched.
+                let last_col = row_x + (max_text_col - 1) as u16;
+                // `Buffer::cell` is bounds-checked: the caller-supplied
+                // `area` may outrun the buffer after a resize race. If
+                // `last_col` is the empty continuation cell of a wide glyph,
+                // back up and overwrite the glyph itself, clearing the
+                // stale continuation, so the `…` is never half-painted.
+                let last_is_continuation = buf
+                    .cell((last_col, y))
+                    .map(|c| c.symbol().is_empty())
+                    .unwrap_or(false);
+                let ellipsis_col = if last_is_continuation && last_col > row_x {
+                    last_col - 1
+                } else {
+                    last_col
+                };
+                let (ellipsis_fg, ellipsis_bg) = buf
+                    .cell((ellipsis_col, y))
+                    .map(|existing| (existing.fg, existing.bg))
+                    .unwrap_or((default_fg, bg));
+                set_cell(buf, ellipsis_col, y, '…', ellipsis_fg, ellipsis_bg);
+                if ellipsis_col != last_col {
+                    set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
+                }
+            }
+
+            if let (true, Some(badge), Some(badge_start_col)) =
+                (draw_badge, row.badge.as_ref(), badge_start_col)
+            {
+                let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
+                let badge_bg = badge.bg.map(qc).unwrap_or(bg);
+                let mut bx = badge_start_col;
+                for ch in badge.text.chars() {
+                    if bx >= row_w as usize {
+                        break;
+                    }
+                    let w = crate::text_util::char_cell_width(ch) as usize;
+                    if w == 2 && bx + 1 < row_w as usize {
+                        set_cell_wide(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    } else {
+                        set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                    }
+                    bx += w;
+                }
+            }
+        }
+    }
+}
+
+/// Paint a rounded border frame (`╭─╮ │ ╰─╯`) around `area` in
+/// [`Theme::border_fg`] on `bg`, reserving the 1-cell margin
+/// [`TreeView::layout`](crate::primitives::tree::TreeView::layout)
+/// insets `visible_rows`/`hit_regions` into when
+/// [`crate::types::TreeStyle::bordered`] is set.
+fn draw_tree_border(
+    buf: &mut Buffer,
+    area: Rect,
+    border_fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) {
+    let top_y = area.y;
+    for col in 0..area.width {
+        let cx = area.x + col;
+        let ch = if col == 0 {
+            '╭'
+        } else if col + 1 == area.width {
+            '╮'
+        } else {
+            '─'
+        };
+        set_cell(buf, cx, top_y, ch, border_fg, bg);
+    }
+    if area.height >= 2 {
+        let bot_y = area.y + area.height - 1;
+        for col in 0..area.width {
+            let cx = area.x + col;
+            let ch = if col == 0 {
+                '╰'
+            } else if col + 1 == area.width {
+                '╯'
+            } else {
+                '─'
+            };
+            set_cell(buf, cx, bot_y, ch, border_fg, bg);
+        }
+    }
+    if area.height >= 3 {
+        for row in (area.y + 1)..(area.y + area.height - 1) {
+            set_cell(buf, area.x, row, '│', border_fg, bg);
+            set_cell(buf, area.x + area.width - 1, row, '│', border_fg, bg);
+        }
+    }
+}
+
+/// Thin wrapper over the shared [`crate::tui::paint_inline_text_editor`] —
+/// see that function's doc for the actual cursor/selection/placeholder
+/// rendering logic.
+#[allow(clippy::too_many_arguments)]
+fn paint_edit_input(
+    buf: &mut Buffer,
+    area: Rect,
+    y: u16,
+    start_col: usize,
+    edit: &TreeRowEditState,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    sel_bg: ratatui::style::Color,
+    dim_fg: ratatui::style::Color,
+) {
+    crate::tui::paint_inline_text_editor(
+        buf,
+        area,
+        y,
+        start_col,
+        &edit.text,
+        edit.cursor,
+        edit.selection_anchor,
+        edit.placeholder.as_deref(),
+        fg,
+        bg,
+        sel_bg,
+        dim_fg,
+    );
+}
+
+/// Compute the layout the TUI rasteriser would produce for `tree` in
+/// `area`. Hosts and tests call this to drive hit-testing without
+/// re-deriving metrics that could drift from paint. `paint_tree_rows` uses
+/// this same helper internally so paint and hit_test consume one
+/// layout instance produced by one set of metrics — the source-of-
+/// truth contract.
+///
+/// TUI rows are uniform 1-cell tall. The layout is in tree-local coords
+/// (origin at 0,0); convert absolute click coords by subtracting
+/// `area.x` / `area.y` before calling [`TreeViewLayout::hit_test`].
+///
+/// Branch rows (`is_expanded.is_some()`) get a split hit region: the
+/// cells covered by the painted chevron glyph + trailing space produce
+/// [`crate::primitives::tree::TreeViewHit::Chevron`]; the rest of the
+/// row produces [`crate::primitives::tree::TreeViewHit::Row`].
+pub fn tui_tree_layout(tree: &TreeView, area: Rect) -> TreeViewLayout {
+    tui_tree_layout_with_scroll_px(tree, area, None)
+}
+
+/// Like [`tui_tree_layout`], but with an explicit pixel-precise scroll
+/// position (`scroll_px`) instead of only [`TreeView::scroll_offset`]'s
+/// whole-row value — see [`paint_tree_rows_with_scroll_px`].
+pub fn tui_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: Rect,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    // Floor to a whole cell *before* resolving: TUI's row height is
+    // always 1.0, so a non-whole `scroll_px` would otherwise leave a
+    // non-zero `scroll_sub_px` remainder that nothing here clips away
+    // (unlike a GUI surface's `surface_push_clip`), painting a
+    // negative-offset row that collides with its neighbour. Flooring
+    // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
+    // partial row.
+    let scroll_px = scroll_px.map(f32::floor);
+    tree.layout_with_scroll_px(area.width as f32, area.height as f32, scroll_px, |i| {
+        let row = &tree.rows[i];
+        // Chevron + 1-cell trailing gap, from the formula the painter uses.
+        let chevron_end_x = (row.is_expanded)
+            .filter(|_| tree.style.show_chevrons)
+            .map(|exp| chevron_glyph_end(&tree.style, row.indent, exp).1 as f32 + 1.0);
+        TreeRowMeasure {
+            height: 1.0,
+            chevron_end_x,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::types::{StyledSpan, StyledText, WidgetId};
+    fn cell(
+        w: u16,
+        indent: u16,
+        exp: Option<bool>,
+        icon: Option<&Icon>,
+    ) -> (Option<(usize, usize)>, usize) {
+        let (r, c) = (Rect::new(0, 0, w, 1), ratatui::style::Color::Reset);
+        let (s, mut b) = (TreeStyle::default(), Buffer::empty(r));
+        paint_tree_cell(&mut b, r, &s, indent, exp, icon, false, (c, c))
+    }
+
+    #[test]
+    fn tree_cell_chevron_cols_for_branch_at_indent_2_and_none_for_leaf() {
+        // indent(2) * default indent_cells(2) = 4; 1-char chevron + 1 gap.
+        assert_eq!(cell(30, 2, Some(true), None), (Some((4, 5)), 6));
+        assert_eq!(cell(30, 0, None, None), (None, 2));
+    }
+
+    #[test]
+    fn tree_cell_label_never_shrinks_below_one_char_on_a_narrow_row() {
+        // chevron(1) + gap(1) + icon(1) + gap(1) == row_w would leave zero.
+        let (_, label_col) = cell(4, 0, Some(true), Some(&Icon::new("f", "f")));
+        assert_eq!(label_col, 3);
+    }
+
+    fn row(path: &[u16], indent: u16, label: &str, expanded: Option<bool>) -> TreeRow {
+        TreeRow {
+            path: path.to_vec(),
+            indent,
+            text: StyledText {
+                spans: vec![StyledSpan::plain(label)],
+            },
+            icon: None,
+            badge: None,
+            is_expanded: expanded,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn make_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("tree"),
+            rows: vec![
+                row(&[0], 0, "src", Some(true)),
+                row(&[0, 0], 1, "main.rs", None),
+                row(&[0, 1], 1, "lib.rs", None),
+            ],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: Some(vec![0, 0]),
+            scroll_offset: 0,
+            has_focus: true,
+            style: TreeStyle::default(),
+        }
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    #[test]
+    fn paints_branch_with_chevron_and_leaves_indented() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+        let tree = make_tree();
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, 30, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        // Row 0 ("src"): branch, expanded — chevron at col 0.
+        // TreeStyle::default() chevron_expanded is '▾'.
+        assert_eq!(
+            cell_char(&buf, 0, 0),
+            tree.style.chevron_expanded.chars().next().unwrap()
+        );
+        // "src" should appear after the chevron + space.
+        let src_row: String = (2..5).map(|x| cell_char(&buf, x, 0)).collect();
+        assert_eq!(src_row, "src");
+
+        // Row 1 ("main.rs"): leaf, indent=1 → starts at col 2 (indent_cells default).
+        // Leaves get a 2-cell leading gap on top of indent.
+        // Default TreeStyle::indent is 2.
+        let leaf_label_start = 2 + 2;
+        let main: String = (leaf_label_start..(leaf_label_start + 7))
+            .map(|x| cell_char(&buf, x as u16, 1))
+            .collect();
+        assert_eq!(main, "main.rs");
+    }
+
+    #[test]
+    fn selected_row_uses_selected_bg() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+        let tree = make_tree();
+        let theme = Theme {
+            selected_bg: crate::types::Color::rgb(99, 0, 0),
+            ..Theme::default()
+        };
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, false);
+        // Row 1 ("main.rs") is selected — its bg should be (99, 0, 0).
+        let bg = buf[(0u16, 1u16)].bg;
+        assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
+    }
+
+    #[test]
+    fn header_row_uses_header_bg_when_unselected() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
+        let tree = TreeView {
+            id: WidgetId::new("tree"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                text: StyledText {
+                    spans: vec![StyledSpan::plain("CHANGES")],
+                },
+                icon: None,
+                badge: None,
+                is_expanded: Some(true),
+                decoration: Decoration::Header,
+                edit: None,
+            }],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let theme = Theme {
+            header_bg: crate::types::Color::rgb(7, 7, 7),
+            ..Theme::default()
+        };
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 3), &tree, &theme, false);
+        let bg = buf[(0u16, 0u16)].bg;
+        assert_eq!(bg, ratatui::style::Color::Rgb(7, 7, 7));
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        let tree = make_tree();
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, 0, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn icon_color_paints_icon_cell_in_that_color_else_default_fg() {
+        use crate::types::{Color, Icon};
+
+        let colored = Color::rgb(200, 30, 30);
+        let mut tree = make_tree();
+        // Row 1 ("main.rs") gets a colored icon; row 2 ("lib.rs") gets an
+        // uncolored one — same glyph, only the color field differs.
+        tree.rows[1].icon = Some(Icon::new("R", "R").with_color(colored));
+        tree.rows[2].icon = Some(Icon::new("R", "R"));
+
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, true);
+
+        // Leaves: indent=1 → col 2 (indent_cells) + 2-cell leading gap = col 4.
+        let icon_col = 2 + 2;
+        assert_eq!(
+            buf[(icon_col as u16, 1u16)].fg,
+            ratatui_color(colored),
+            "row with Icon::color set should paint the icon glyph in that color"
+        );
+        assert_eq!(
+            buf[(icon_col as u16, 2u16)].fg,
+            ratatui_color(theme.foreground),
+            "row without Icon::color should paint the icon glyph in the default fg, unchanged"
+        );
+    }
+
+    /// A label too long to fit before a right-aligned
+    /// badge must be clamped to end at least one blank column short of
+    /// the badge, with the clamped label ending in `…` — not overwritten
+    /// by the badge with no gap or truncation indicator (vimcode's
+    /// Explorer showed `BACKEND_SPECU`, where the trailing `U` was
+    /// actually the git-untracked badge glued onto the label).
+    #[test]
+    fn long_label_with_badge_leaves_gap_and_ellipsizes() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // Row 1 ("main.rs", a leaf at indent=1) gets an over-long label
+        // and a one-character badge.
+        tree.rows[1].text = StyledText::plain("BACKEND_SPECULATIVE_EXECUTION_MODULE");
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+
+        // Badge "U" (1 col) is painted at the row's very last column.
+        let badge_col = width - 1;
+        assert_eq!(
+            cell_char(&buf, badge_col, 1),
+            'U',
+            "expected the badge in the last column, row text: {text:?}"
+        );
+        // The column immediately before the badge is blank — the
+        // mandatory gap column, never glued to the badge.
+        assert_eq!(
+            cell_char(&buf, badge_col - 1, 1),
+            ' ',
+            "expected a blank gap column before the badge, row text: {text:?}"
+        );
+        // The label was truncated somewhere before the gap, and the
+        // truncation is marked with an ellipsis, not a hard cut.
+        assert!(
+            text.contains('…'),
+            "expected the clamped label to end in an ellipsis, row text: {text:?}"
+        );
+        // The ellipsis sits immediately before the gap column (the label's
+        // last painted cell).
+        assert_eq!(
+            cell_char(&buf, badge_col - 2, 1),
+            '…',
+            "expected the ellipsis directly before the gap column, row text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn wide_glyph_badge_is_measured_and_positioned_by_display_width() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // A 2-char CJK badge is 4 display columns wide, not 2 — positioning
+        // it by char count would place it two columns too far right,
+        // running it off the row.
+        tree.rows[1].text = StyledText::plain("short");
+        tree.rows[1].badge = Some(Badge::plain("新着"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+        // The badge's two wide chars occupy 4 display columns (2 each),
+        // not 2 — each wide glyph's own cell carries the glyph, and the
+        // cell immediately after it is its (empty) continuation cell.
+        assert_eq!(cell_char(&buf, width - 4, 1), '新', "row text: {text:?}");
+        assert_eq!(cell_char(&buf, width - 2, 1), '着', "row text: {text:?}");
+    }
+
+    #[test]
+    fn long_label_ellipsis_tolerates_oversized_area_without_panicking() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        tree.rows[1].text = StyledText::plain("BACKEND_SPECULATIVE_EXECUTION_MODULE");
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        // `area` is caller-supplied and can legitimately exceed the real
+        // buffer's own bounds (a resize race, an off-by-one in a caller's
+        // layout math, or a stale cached rect). Ellipsis painting must
+        // clamp the column to the buffer's actual bounds.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, 40, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+    }
+
+    /// When the label's clamp boundary lands exactly on the continuation
+    /// cell of a wide glyph `draw_styled_text` already painted, the
+    /// ellipsis must overwrite the glyph's own cell (clearing the
+    /// continuation to a blank), never the continuation cell alone —
+    /// that would leave the glyph half-painted next to a stray `…`.
+    #[test]
+    fn ellipsis_overwrite_backs_up_off_a_wide_glyphs_continuation_cell() {
+        use crate::types::Badge;
+
+        let mut tree = make_tree();
+        // Leaf text_start is col 4 (see `icon_color_paints_icon_cell_...`).
+        // 12 ASCII filler chars reach col 16; "字" (2 cells) then occupies
+        // cols 16-17 exactly — col 17 is the last column of the label's
+        // clamp area at width 20 with a 1-char badge — before the
+        // trailing "X" pushes the label past the clamp and triggers the
+        // ellipsis overwrite.
+        tree.rows[1].text = StyledText::plain(&format!("{}字X", "a".repeat(12)));
+        tree.rows[1].badge = Some(Badge::plain("U"));
+
+        let width = 20u16;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
+        paint_tree_rows(
+            &mut buf,
+            Rect::new(0, 0, width, 5),
+            &tree,
+            &Theme::default(),
+            false,
+        );
+
+        let text = row_text(&buf, 1);
+        assert_eq!(
+            cell_char(&buf, 16, 1),
+            '…',
+            "the ellipsis must overwrite the wide glyph's own cell, row text: {text:?}"
+        );
+        assert_eq!(
+            buf[(17u16, 1u16)].symbol(),
+            " ",
+            "the glyph's now-stale continuation cell must be cleared to a blank \
+             cell, not left as an orphaned continuation marker or a stray glyph \
+             remnant: {text:?}"
+        );
+        // The gap column before the badge, and the badge itself, are
+        // undisturbed by the backed-up overwrite.
+        assert_eq!(cell_char(&buf, 18, 1), ' ', "row text: {text:?}");
+        assert_eq!(cell_char(&buf, 19, 1), 'U', "row text: {text:?}");
+    }
+
+    // ── Paint↔click round-trip harness ─────────────────────────────────────
+    //
+    // Per the Session 346 course correction (PLAN.md "🧭 Course
+    // correction"): primitives that promise paint/click consistency
+    // need empirical verification, not just structural design. These
+    // tests paint a `TreeView` into a `ratatui::Buffer`, find the cells
+    // the rasteriser actually wrote glyphs into, then hit_test those
+    // exact coordinates against the layout the rasteriser used and
+    // assert the hit identifies the painted-into row. If paint and
+    // click ever drift in the TUI tree rasteriser, one of these fails.
+    //
+    // TreeView uses tree-local coords (origin at 0,0) for `hit_test`,
+    // unlike `MultiSectionView` which uses absolute coords. The harness
+    // converts between them by subtracting `area.x`/`area.y` from the
+    // painted absolute y. Same source-of-truth contract; different
+    // origin convention.
+    //
+    // Mirrors the MultiSectionView harness shape so future
+    // primitives can copy this pattern.
+
+    use super::tui_tree_layout;
+    use crate::primitives::tree::TreeViewHit;
+    use crate::types::TreePath;
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        let area = buf.area;
+        (area.x..area.x + area.width)
+            .map(|x| cell_char(buf, x, y))
+            .collect()
+    }
+
+    fn find_row_with(buf: &Buffer, needle: &str) -> Option<u16> {
+        let area = buf.area;
+        (area.y..area.y + area.height).find(|&y| row_text(buf, y).contains(needle))
+    }
+
+    fn long_tree(n: usize) -> TreeView {
+        let labels: Vec<String> = (0..n).map(|i| format!("item-{i:02}")).collect();
+        let rows: Vec<TreeRow> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| TreeRow {
+                path: vec![i as u16] as TreePath,
+                indent: 0,
+                text: StyledText {
+                    spans: vec![StyledSpan::plain(label.clone())],
+                },
+                icon: None,
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: None,
+            })
+            .collect();
+        TreeView {
+            id: WidgetId::new("long"),
+            rows,
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        }
+    }
+
+    fn paint_then_layout(
+        buf: &mut Buffer,
+        area: Rect,
+        tree: &TreeView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> TreeViewLayout {
+        paint_tree_rows(buf, area, tree, theme, nerd_fonts_enabled);
+        tui_tree_layout(tree, area)
+    }
+
+    /// Round-trip: paint, find each row's label in the buffer, hit_test
+    /// the same coordinate, assert the hit identifies the correct row.
+    /// Accepts both `Row(idx)` and `Chevron(idx)` as valid hits — the
+    /// test verifies row-position consistency, not whether the click
+    /// landed on the chevron or the body.
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends".
+    // This harness already subtracts `area.y` before calling `hit_test`
+    // (tree-local coords), but every pre-existing call site used
+    // `Rect::new(0, 0, ...)`, so the subtraction was never exercised with
+    // a non-zero value. Re-run at a non-zero origin to close that gap.
+    fn clicks_land_on_painted_row_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let tree = long_tree(5);
+        let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
+
+        for visible in &layout.visible_rows {
+            let needle = tree.rows[visible.row_idx]
+                .text
+                .spans
+                .first()
+                .map(|s| s.text.clone())
+                .unwrap_or_default();
+            let painted_y = find_row_with(&buf, &needle)
+                .unwrap_or_else(|| panic!("row {} ({:?}) not painted", visible.row_idx, needle));
+            // TreeView hit_test takes tree-local coords (origin at 0,0).
+            let local_y = (painted_y - area.y) as f32;
+            let hit = layout.hit_test(0.5, local_y);
+            // Accept Chevron or Row — both carry the row index.
+            let hit_idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
+                other => panic!(
+                    "row {} ({:?}) painted at y={} but hit_test returned {:?}",
+                    visible.row_idx, needle, painted_y, other
+                ),
+            };
+            assert_eq!(
+                hit_idx, visible.row_idx,
+                "row {} ({:?}) painted at y={} but hit_test pointed to row {}",
+                visible.row_idx, needle, painted_y, hit_idx
+            );
+        }
+    }
+
+    #[test]
+    fn clicks_land_on_painted_row() {
+        clicks_land_on_painted_row_at(0, 0);
+    }
+
+    /// The same paint + hit_test round trip must hold when the tree
+    /// isn't painted at the screen origin — exercises the `local_y =
+    /// painted_y - area.y` subtraction with a non-zero `area.y`.
+    #[test]
+    fn clicks_land_on_painted_row_at_nonzero_origin() {
+        clicks_land_on_painted_row_at(7, 13);
+    }
+
+    /// Click below the last visible row returns Empty.
+    #[test]
+    fn click_below_last_row_returns_empty() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        // 2 rows in an 8-row viewport leaves 6 rows of empty space.
+        let tree = long_tree(2);
+        let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
+        let hit = layout.hit_test(0.5, 5.0); // y=5, well below the 2 painted rows
+        assert!(
+            matches!(hit, TreeViewHit::Empty),
+            "click at y=5 below last row returned {:?}",
+            hit
+        );
+    }
+
+    /// With `scroll_offset > 0`, painted row 0 must be `tree.rows[scroll_offset]`,
+    /// and clicking it must return `Row(scroll_offset)` — NOT `Row(0)`.
+    /// This is the bug class where paint advances by scroll_offset but
+    /// click forgets, or vice versa.
+    #[test]
+    fn scroll_offset_paint_and_click_agree() {
+        let area = Rect::new(0, 0, 30, 4);
+        let mut buf = Buffer::empty(area);
+        let mut tree = long_tree(10);
+        tree.scroll_offset = 3;
+        let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
+
+        // Painted row 0 should be `tree.rows[3]` ("item-03").
+        let painted_y = find_row_with(&buf, "item-03")
+            .expect("scroll_offset=3 should make row 0 paint as 'item-03'");
+        let local_y = (painted_y - area.y) as f32;
+        let hit = layout.hit_test(0.5, local_y);
+        assert!(
+            matches!(hit, TreeViewHit::Row(3)),
+            "scroll_offset=3: row painted as 'item-03' at y={}; expected Row(3), got {:?}",
+            painted_y,
+            hit
+        );
+
+        // Painted row 0 should NOT be the original "item-00" — that one
+        // is scrolled out and shouldn't appear in the buffer at all.
+        assert!(
+            find_row_with(&buf, "item-00").is_none(),
+            "item-00 should be scrolled out under scroll_offset=3 but appears in buffer"
+        );
+    }
+
+    /// `scroll_px` wins over `scroll_offset`, but on
+    /// TUI's cell grid (`row_height == 1.0`) it quantises to the same
+    /// whole row a GUI backend's sub-row remainder would float between
+    /// — the "TUI quantises scroll_px to whole rows" half of the
+    /// issue's acceptance criterion.
+    #[test]
+    fn scroll_px_quantises_to_a_whole_row_on_tui() {
+        let area = Rect::new(0, 0, 30, 4);
+        let tree = long_tree(50);
+
+        let mut buf = Buffer::empty(area);
+        paint_tree_rows_with_scroll_px(&mut buf, area, &tree, &Theme::default(), false, Some(10.7));
+        let painted_y = find_row_with(&buf, "item-10")
+            .expect("scroll_px=10.7 should quantise to row 10 at the top");
+
+        // A whole-row scroll_offset of 10 paints byte-for-byte the same
+        // first row — scroll_px degrades to the pre-existing
+        // row-quantised behaviour, it does not add a new visual.
+        let mut via_offset = tree.clone();
+        via_offset.scroll_offset = 10;
+        let mut buf2 = Buffer::empty(area);
+        paint_tree_rows(&mut buf2, area, &via_offset, &Theme::default(), false);
+        let painted_y_via_offset = find_row_with(&buf2, "item-10")
+            .expect("scroll_offset=10 should paint 'item-10' at the top");
+        assert_eq!(painted_y, painted_y_via_offset);
+    }
+
+    /// Header rows (Decoration::Header) and leaf rows are equally
+    /// hit-testable. Mixed-row trees should round-trip cleanly across
+    /// every visible row regardless of decoration.
+    #[test]
+    fn header_and_leaf_rows_both_hit_testable() {
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        let tree = TreeView {
+            id: WidgetId::new("mixed"),
+            rows: vec![
+                TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    text: StyledText {
+                        spans: vec![StyledSpan::plain("CHANGES")],
+                    },
+                    icon: None,
+                    badge: None,
+                    is_expanded: Some(true),
+                    decoration: Decoration::Header,
+                    edit: None,
+                },
+                row(&[0, 0], 1, "alpha", None),
+                row(&[0, 1], 1, "beta", None),
+            ],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
+
+        for (expected_idx, needle) in [(0usize, "CHANGES"), (1, "alpha"), (2, "beta")] {
+            let painted_y =
+                find_row_with(&buf, needle).unwrap_or_else(|| panic!("row {needle:?} not painted"));
+            let local_y = (painted_y - area.y) as f32;
+            let hit = layout.hit_test(0.5, local_y);
+            // Accept both Row and Chevron — the test verifies row identity.
+            let hit_idx = match hit {
+                TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => idx,
+                other => panic!(
+                    "row {needle:?} painted at y={painted_y}: expected Row/Chevron({expected_idx}), got {other:?}"
+                ),
+            };
+            assert_eq!(
+                hit_idx, expected_idx,
+                "row {needle:?} painted at y={painted_y}: expected idx={expected_idx}, got {hit_idx}"
+            );
+        }
+    }
+
+    // ── Chevron hit-test tests ──────────────────────────────────────
+    //
+    // These tests verify the split hit-region contract: clicking in the
+    // leftmost cells of a branch row returns Chevron(idx); clicking to
+    // the right (past the painted chevron) returns Row(idx); leaf rows
+    // always return Row regardless of x position.
+
+    /// Clicking in the chevron region of a branch row emits Chevron(idx).
+    /// Default TreeStyle: indent=2, chevron_expanded='▾' (1 char) + 1
+    /// space = chevron_end_x=2. So x=0 and x=1 are Chevron, x=2 is Row.
+    #[test]
+    fn chevron_click_on_branch_returns_chevron_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![
+                row(&[0], 0, "src", Some(true)),  // branch, expanded
+                row(&[0, 0], 1, "main.rs", None), // leaf
+            ],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        // indent=0, chevron='▾'(1 char)+1 space → chevron_end_x = 2.0
+        // x=0 is inside [0, 2) → Chevron
+        let hit = layout.hit_test(0.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Chevron(0)),
+            "x=0 on branch row 0 should return Chevron(0), got {:?}",
+            hit
+        );
+        let hit2 = layout.hit_test(1.5, 0.0);
+        assert!(
+            matches!(hit2, TreeViewHit::Chevron(0)),
+            "x=1.5 on branch row 0 should return Chevron(0), got {:?}",
+            hit2
+        );
+    }
+
+    /// Clicking past the chevron (in the body region) returns Row(idx).
+    #[test]
+    fn body_click_on_branch_returns_row_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![row(&[0], 0, "src", Some(true))],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        // chevron_end_x = 2.0 → x >= 2.0 is Row region
+        let hit = layout.hit_test(5.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Row(0)),
+            "x=5 past chevron should return Row(0), got {:?}",
+            hit
+        );
+    }
+
+    /// Clicking anywhere on a leaf row returns Row(idx).
+    #[test]
+    fn leaf_click_always_returns_row_hit() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![row(&[0], 0, "main.rs", None)],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        for x in [0.0_f32, 0.5, 1.0, 5.0, 15.0] {
+            let hit = layout.hit_test(x, 0.0);
+            assert!(
+                matches!(hit, TreeViewHit::Row(0)),
+                "leaf click at x={x} should return Row(0), got {:?}",
+                hit
+            );
+        }
+    }
+
+    /// Header rows with is_expanded=Some(_) also get chevron split.
+    #[test]
+    fn header_branch_chevron_click_returns_chevron() {
+        let area = Rect::new(0, 0, 30, 5);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                text: StyledText {
+                    spans: vec![StyledSpan::plain("CHANGES")],
+                },
+                icon: None,
+                badge: None,
+                is_expanded: Some(false),
+                decoration: Decoration::Header,
+                edit: None,
+            }],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let layout = tui_tree_layout(&tree, area);
+        let hit = layout.hit_test(0.0, 0.0);
+        assert!(
+            matches!(hit, TreeViewHit::Chevron(0)),
+            "header branch at x=0 should return Chevron(0), got {:?}",
+            hit
+        );
+        // Body region is Row.
+        let hit_body = layout.hit_test(10.0, 0.0);
+        assert!(
+            matches!(hit_body, TreeViewHit::Row(0)),
+            "header branch body at x=10 should return Row(0), got {:?}",
+            hit_body
+        );
+    }
+
+    // ── `TreeStyle::bordered` focus-ring inset ──────────────────────────
+
+    /// With `style.bordered`, row 0's content paints one cell inset from
+    /// `area`'s top-left — the corner `draw_focus_ring` would otherwise
+    /// overwrite stays blank (border glyph territory), not tree content.
+    #[test]
+    fn bordered_insets_row_zero_away_from_the_top_left_corner() {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        let mut tree = long_tree(3);
+        tree.style.bordered = true;
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+
+        // Top-left corner is the border glyph, not row content.
+        assert_eq!(cell_char(&buf, 0, 0), '╭');
+        // The label for row 0 ("item-00") paints at local row x=2 (the
+        // leaf leading gap) plus the 1-cell border inset — x=3 — not at
+        // x=2 as it would with no border reserved.
+        let label: String = (3..3 + "item-00".len() as u16)
+            .map(|x| cell_char(&buf, x, 1))
+            .collect();
+        assert_eq!(label, "item-00");
+        // Last column/row of `area` are border too.
+        assert_eq!(cell_char(&buf, 29, 0), '╮');
+        assert_eq!(cell_char(&buf, 0, 4), '╰');
+        assert_eq!(cell_char(&buf, 29, 4), '╯');
+    }
+
+    /// `draw_focus_ring` painted over the *same* `area` a bordered tree
+    /// was painted into recolours the border cells it shares with the
+    /// tree's own frame, but never touches the inset content.
+    #[test]
+    fn focus_ring_over_bordered_tree_never_overwrites_content() {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        let mut tree = long_tree(3);
+        tree.style.bordered = true;
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+
+        let label_before: String = (3..3 + "item-00".len() as u16)
+            .map(|x| cell_char(&buf, x, 1))
+            .collect();
+        assert_eq!(label_before, "item-00");
+
+        crate::tui::draw_focus_ring(&mut buf, area, &Theme::default());
+
+        // The ring repaints the same corner glyph; row content a cell in
+        // is untouched.
+        assert_eq!(cell_char(&buf, 0, 0), '╭');
+        let label_after: String = (3..3 + "item-00".len() as u16)
+            .map(|x| cell_char(&buf, x, 1))
+            .collect();
+        assert_eq!(
+            label_after, "item-00",
+            "focus ring must not overwrite bordered tree content"
+        );
+    }
+
+    /// Hit-testing stays in sync with the inset paint: clicking the
+    /// painted label's cell (local coords, i.e. relative to `area`)
+    /// still resolves to the right row; clicking the border column (x=0)
+    /// misses every row.
+    #[test]
+    fn bordered_hit_test_matches_inset_paint() {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        let mut tree = long_tree(3);
+        tree.style.bordered = true;
+        let layout = paint_then_layout(&mut buf, area, &tree, &Theme::default(), false);
+
+        // Row 0's painted label is at local (1, 1).
+        assert!(matches!(layout.hit_test(1.0, 1.0), TreeViewHit::Row(0)));
+        // The reserved left border column never resolves to a row.
+        assert!(matches!(layout.hit_test(0.0, 1.0), TreeViewHit::Empty));
+    }
+
+    // ── Inline editing paint tests ──────────────────────────────────
+
+    use crate::primitives::tree::TreeRowEditState;
+
+    #[test]
+    fn editing_row_shows_edit_text_not_original() {
+        let area = Rect::new(0, 0, 30, 5);
+        let mut buf = Buffer::empty(area);
+        let mut tree = make_tree();
+        // Put the second row (main.rs) into editing mode with different text.
+        tree.rows[1].edit = Some(TreeRowEditState {
+            text: "renamed.rs".into(),
+            cursor: 10,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+
+        // "renamed.rs" should appear.
+        assert!(
+            find_row_with(&buf, "renamed.rs").is_some(),
+            "editing row should show 'renamed.rs'"
+        );
+        // The original "main.rs" text should NOT appear on that row.
+        // (find_row_with searches all rows, "main.rs" shouldn't be on any.)
+        assert!(
+            find_row_with(&buf, "main.rs").is_none(),
+            "original label 'main.rs' should be replaced by edit text"
+        );
+    }
+
+    #[test]
+    fn editing_row_cursor_is_inverted() {
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        let tree = TreeView {
+            id: WidgetId::new("t"),
+            rows: vec![TreeRow {
+                path: vec![0],
+                indent: 0,
+                text: StyledText::plain("old"),
+                icon: None,
+                badge: None,
+                is_expanded: None,
+                decoration: Decoration::Normal,
+                edit: Some(TreeRowEditState {
+                    text: "ab".into(),
+                    cursor: 2, // cursor at end (on the space after 'b')
+                    selection_anchor: None,
+                    placeholder: None,
+                }),
+            }],
+            selection_mode: crate::types::SelectionMode::default(),
+            selected_path: None,
+            scroll_offset: 0,
+            has_focus: false,
+            style: TreeStyle::default(),
+        };
+        let theme = Theme::default();
+        paint_tree_rows(&mut buf, area, &tree, &theme, false);
+        // The leaf has indent=0, no icon, no chevron → 2-cell gap then edit text.
+        // Edit text "ab" at cols 2,3. Cursor at byte 2 → char index 2 → col 4.
+        // Cursor cell should have inverted fg/bg.
+        let row_bg = ratatui_color(theme.tab_bar_bg);
+        let row_fg = ratatui_color(theme.foreground);
+        let cursor_cell = &buf[(area.x + 4, 0u16)];
+        assert_eq!(
+            cursor_cell.fg, row_bg,
+            "cursor cell fg should be the row bg (inverted)"
+        );
+        assert_eq!(
+            cursor_cell.bg, row_fg,
+            "cursor cell bg should be the row fg (inverted)"
+        );
+    }
+}
+
+/// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
+///
+/// `TreeView` stays purely declarative — selection state lives on the app,
+/// keyed by flattened-row index, and [`selected_paths_for_indices`] maps
+/// that index set back to `TreePath`s before it's reported. TUI has no
+/// mouse, so unlike the click-driven `crate::gtk::tree`/`crate::win::tree`
+/// counterparts, a plain Up/Down only moves the keyboard cursor; Shift+Up/
+/// Down extends a range from the anchor via
+/// [`SelectionGesture::from_modifiers`], and Space toggles the cursor row
+/// without moving it.
+#[cfg(test)]
+mod multi_select_driver_tests {
+    use crate::primitives::tree::{selected_paths_for_indices, TreeRow, TreeView};
+    use crate::runner::{AppLogic, Reaction};
+    use crate::tui::testing::TuiDriver;
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, Key, Modifiers, NamedKey, Rect,
+        SelectionGesture, SelectionMode, StyledText, TreeEvent, TreePath, TreeStyle, UiEvent,
+        WidgetId,
+    };
+
+    const VIEWPORT_W: u16 = 40;
+    const VIEWPORT_H: u16 = 10;
+
+    fn leaf(idx: u16, label: &str) -> TreeRow {
+        TreeRow {
+            path: vec![idx],
+            indent: 0,
+            icon: None,
+            text: StyledText::plain(label.to_string()),
+            badge: None,
+            is_expanded: None,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn sample_tree() -> TreeView {
+        TreeView {
+            id: WidgetId::new("t"),
+            rows: (0..5).map(|i| leaf(i, &format!("row {i}"))).collect(),
+            selection_mode: SelectionMode::Multi,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    struct TreeApp {
+        tree: TreeView,
+        cursor: usize,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<TreeEvent>,
+    }
+
+    impl TreeApp {
+        fn new() -> Self {
+            Self {
+                tree: sample_tree(),
+                cursor: 0,
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+
+        fn selected_paths(&self) -> Vec<TreePath> {
+            selected_paths_for_indices(&self.tree.rows, &self.selected)
+        }
+    }
+
+    impl AppLogic for TreeApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let _ = crate::DrawsPrimitives::draw_dyn(
+                backend,
+                Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
+                &self.tree,
+                &(),
+            );
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::KeyPressed { key, modifiers, .. } = event else {
+                return Reaction::Continue;
+            };
+            let last = self.tree.rows.len().saturating_sub(1);
+            match key {
+                Key::Named(NamedKey::Down) | Key::Named(NamedKey::Up) => {
+                    let delta: isize = if key == Key::Named(NamedKey::Down) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
+                    if !modifiers.shift {
+                        // A plain move repositions the cursor only; the
+                        // selection changes explicitly via Space/Shift.
+                        return Reaction::Redraw;
+                    }
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Range,
+                    );
+                    self.selected = indices;
+                    let paths = self.selected_paths();
+                    self.events.push(TreeEvent::SelectionSet { paths });
+                    Reaction::Redraw
+                }
+                Key::Char(' ') => {
+                    let indices = apply_selection_gesture(
+                        &self.selected,
+                        self.anchor,
+                        self.cursor,
+                        SelectionGesture::Toggle,
+                    );
+                    self.selected = indices;
+                    self.anchor = self.cursor;
+                    let paths = self.selected_paths();
+                    self.events.push(TreeEvent::SelectionSet { paths });
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    fn key_event(key: Key, modifiers: Modifiers) -> UiEvent {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat: false,
+        }
+    }
+
+    fn driver() -> TuiDriver<TreeApp> {
+        TuiDriver::new(TreeApp::new(), VIEWPORT_W, VIEWPORT_H)
+    }
+
+    #[test]
+    fn plain_arrow_moves_the_cursor_without_changing_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        assert_eq!(driver.app().cursor, 1);
+        assert_eq!(driver.app().selected, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn space_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected_paths(), vec![vec![0], vec![2]]);
+        // Space toggles the same row back off.
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Named(NamedKey::Up), Modifiers::default()));
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        assert_eq!(driver.app().selected_paths(), vec![vec![2]]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![2]]
+            })
+        );
+    }
+
+    #[test]
+    fn shift_arrow_extends_a_range_from_the_anchor() {
+        let mut driver = driver();
+        driver.dispatch(key_event(Key::Char(' '), Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        driver.dispatch(key_event(Key::Named(NamedKey::Down), shift));
+        assert_eq!(
+            driver.app().selected_paths(),
+            vec![vec![0], vec![1], vec![2], vec![3]]
+        );
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&TreeEvent::SelectionSet {
+                paths: vec![vec![0], vec![1], vec![2], vec![3]]
+            })
+        );
+    }
+}

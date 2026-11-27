@@ -74,19 +74,27 @@ criterion_group!(core_benches, bench_frame_build, bench_layout);
 #[cfg(feature = "tui")]
 mod tui_bench {
     use super::*;
-    use quadraui::tui::draw_tree;
-    use quadraui::Theme;
+    use quadraui::primitive::LayoutCtx;
+    use quadraui::tui::BufferCellSurface;
+    use quadraui::{PaintEnv, Primitive, Rect as QRect, Style, Theme};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     pub fn bench_paint(c: &mut Criterion) {
         let tree = build_tree(ROWS);
         let theme = Theme::default();
+        let style = Style::default();
+        let env = PaintEnv::new(&theme, &style);
         let area = Rect::new(0, 0, 60, 50);
+        let layout = Primitive::layout(
+            &tree,
+            &LayoutCtx::new(1.0, 1.0, false),
+            QRect::new(0.0, 0.0, 60.0, 50.0),
+        );
         c.bench_function("tree_paint_tui_100k_rows", |b| {
             b.iter(|| {
                 let mut buf = Buffer::empty(area);
-                draw_tree(&mut buf, area, &tree, &theme, false);
+                Primitive::paint_cells(&tree, &layout, &mut BufferCellSurface::new(&mut buf), &env);
                 black_box(&buf);
             })
         });
@@ -101,24 +109,24 @@ mod gtk_bench {
     use super::*;
     use gtk4::pango;
     use pangocairo::cairo::{Context, Format, ImageSurface};
-    use quadraui::gtk::draw_tree;
-    use quadraui::{Style, Theme};
+    use quadraui::gtk::GtkBackend;
+    use quadraui::{DrawsPrimitives, Rect};
 
     pub fn bench_paint(c: &mut Criterion) {
         let tree = build_tree(ROWS);
-        let theme = Theme::default();
-        let style = Style::default();
         let surface = ImageSurface::create(Format::ARgb32, 600, 800).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new on headless ImageSurface");
         let pctx = pangocairo::functions::create_context(&cr);
         pctx.set_font_description(&pango::FontDescription::from_string("Sans 11"));
         let layout = pango::Layout::new(&pctx);
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(20.0);
+        let rect = Rect::new(0.0, 0.0, 600.0, 800.0);
         c.bench_function("tree_paint_gtk_100k_rows", |b| {
             b.iter(|| {
-                draw_tree(
-                    &cr, &layout, 0.0, 0.0, 600.0, 800.0, &tree, &theme, &style, 20.0, false,
-                );
-                black_box(());
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    black_box(b.draw_primitive(rect, &tree));
+                });
             })
         });
     }

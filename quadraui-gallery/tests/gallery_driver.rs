@@ -195,7 +195,7 @@ fn navigating_group_then_demo_shows_it_and_its_code_region() {
 
 /// Hovering an inactive activity-bar icon — with no click, so
 /// `GalleryApp::handle` never appends to the (hidden) event log — must
-/// still repaint the hover highlight `AppShell` tracks in
+/// still repaint the hover highlight `ShellView` tracks in
 /// `hovered_activity_idx`. A plain `MouseMoved` only reaches the host's
 /// render loop when `ShellApp::handle` returns `Reaction::Redraw`
 /// (`TuiDriver::dispatch` calls `render()` only on `EventOutcome::
@@ -218,7 +218,7 @@ fn hovering_an_inactive_activity_bar_icon_repaints_the_highlight() {
     assert!(
         matches!(reaction, quadraui::Reaction::Redraw),
         "MouseMoved over the activity bar should escalate to Redraw so \
-         AppShell's hover-highlight mutation actually gets painted, got \
+         ShellView's hover-highlight mutation actually gets painted, got \
          {reaction:?}"
     );
 
@@ -234,7 +234,7 @@ fn hovering_an_inactive_activity_bar_icon_repaints_the_highlight() {
 }
 
 /// The other end of the same transition: moving the pointer *off* the
-/// activity bar clears `AppShell::hovered_activity_idx`, and that frame
+/// activity bar clears `ShellView::hovered_activity_idx`, and that frame
 /// has to be painted too or the icon stays visibly highlighted with the
 /// pointer somewhere else entirely. The off-bar target is the sidebar,
 /// where a `MouseMoved` is outside the main pane, so `handle_inner`
@@ -267,7 +267,7 @@ fn moving_off_the_activity_bar_repaints_to_clear_the_highlight() {
     assert!(
         matches!(reaction, quadraui::Reaction::Redraw),
         "MouseMoved leaving the activity bar should escalate to Redraw so the \
-         highlight AppShell just cleared actually gets repainted, got {reaction:?}"
+         highlight ShellView just cleared actually gets repainted, got {reaction:?}"
     );
 
     let cleared = driver
@@ -478,7 +478,7 @@ fn every_registered_demo_renders_and_has_a_non_empty_code_region() {
                 )
             });
         // `GalleryApp::new()` already starts on `GROUPS[0]` — clicking
-        // that *same* activity-bar icon again would hit `AppShell`'s
+        // that *same* activity-bar icon again would hit `ShellView`'s
         // "click the already-active icon to hide the sidebar" toggle
         // (quadraui's `app_shell.rs`), collapsing the very sidebar the
         // next line needs to click into. Only click the icon when this
@@ -848,7 +848,7 @@ fn click_sidebar_row_panics_on_a_row_the_sidebar_never_painted() {
 /// Select the demo named `name` from the sidebar. Unlike
 /// `select_chrome_demo`, this does **not** click the Content group's own
 /// activity-bar icon first: `GalleryApp::new()` already starts on
-/// `GROUPS[0]` ("Content"), and `AppShell` toggles (hides) the sidebar
+/// `GROUPS[0]` ("Content"), and `ShellView` toggles (hides) the sidebar
 /// when the *already-active* icon is clicked again — clicking it here
 /// would collapse the sidebar these tests need to click into, rather
 /// than re-selecting it.

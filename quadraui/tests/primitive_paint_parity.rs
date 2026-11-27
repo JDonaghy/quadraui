@@ -1,7 +1,7 @@
 //! Parity between `ListView`/`TreeView`/`DataTable`/`TreeTable`'s
 //! [`Primitive::paint_cells`] path and their TUI free-function
-//! rasterisers (`quadraui::tui::draw_list`/`draw_tree`/`draw_data_table`/
-//! `draw_tree_table`), driven entirely through public API from a
+//! rasterisers (`quadraui::tui::draw_list`/`TreeView`'s paint/`DataTable`'s
+//! paint/`TreeTable`'s paint), driven entirely through public API from a
 //! separate compilation unit (`tests/`, outside the crate).
 //!
 //! Each test below does two things:
@@ -26,20 +26,15 @@
 //! `DataTablePaintState`) when it calls through to its own `draw_*`,
 //! even though the TUI free functions below accept a real one:
 //!
-//! - [`quadraui::tui::draw_data_table_with_state`] /
-//!   [`quadraui::tui::draw_tree_table`]'s `hovered_idx` tints a
-//!   non-selected row's background —
-//!   `data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover`
-//!   and
-//!   `tree_table_paint_cells_matches_draw_tree_table_then_diverges_under_hover`
-//!   below show the resulting buffers are not equal.
-//! - [`quadraui::tui::draw_list_with_state`] /
-//!   [`quadraui::tui::draw_tree_with_scroll_px`]'s `scroll_px` wins over
+//! `DataTable`, like `TreeView`, reads its hovered row from the paint
+//! state itself (`data_table_paint_cells_follows_the_paint_state_hover`).
+//! - [`quadraui::tui::draw_list_with_state`]'s `scroll_px` wins over
 //!   `scroll_offset` and can land on a different first visible row —
 //!   `list_paint_cells_matches_draw_list_then_diverges_under_scroll_px`
-//!   and
-//!   `tree_paint_cells_matches_draw_tree_then_diverges_under_scroll_px`
-//!   below show the same thing for scroll position.
+//!   below shows the same thing for scroll position.
+//!
+//! `TreeView` is the exception: its `paint_cells` reads `scroll_px` from
+//! the paint state itself (`tree_paint_cells_follows_the_paint_state_scroll_px`).
 //!
 //! `pressed_idx` is omitted from every divergence test: no TUI
 //! rasteriser in this crate reads it today (confirmed by grep across
@@ -64,7 +59,7 @@ use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{
     Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTablePaintState, Decoration,
     ListItem, ListPaintState, ListView, Rect, SelectionMode, SortDirection, StyledText, Theme,
-    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, WidgetId,
+    TreeRow, TreeStyle, TreeView, WidgetId,
 };
 
 /// Absolute area every fixture is laid out into, in both unit systems —
@@ -106,6 +101,7 @@ fn sample_list() -> ListView {
         h_scroll: 0,
         max_content_width: None,
         show_v_scrollbar: false,
+        striped: false,
     }
 }
 
@@ -177,15 +173,6 @@ fn sample_table() -> DataTable {
     }
 }
 
-fn sample_tree_table() -> TreeTable {
-    let mut table = sample_table();
-    table.id = WidgetId::new("files");
-    let tree = (0..table.rows.len())
-        .map(|i| TreeTableNode::new(vec![i as u16], 0))
-        .collect();
-    TreeTable::new(table, tree)
-}
-
 /// A theme whose `tab_bar_bg` (the colour `DataTable`'s hover tint
 /// paints with) differs from `background` — [`Theme::default`]'s own
 /// `tab_bar_bg` is set equal to `background`, which would make a
@@ -254,167 +241,81 @@ fn list_paint_cells_matches_draw_list_then_diverges_under_scroll_px() {
     );
 }
 
-/// Same shape as [`list_paint_cells_matches_draw_list_then_diverges_under_scroll_px`],
-/// for `TreeView` against [`quadraui::tui::draw_tree`] /
-/// [`quadraui::tui::draw_tree_with_scroll_px`].
+/// `TreeView` reads a pixel-precise scroll position from its paint
+/// state: [`Primitive::paint_cells`] under a [`quadraui::TreePaintState`]
+/// whose `scroll_px` names a later first visible row paints a different
+/// buffer than the same widget at the default state.
 #[test]
-fn tree_paint_cells_matches_draw_tree_then_diverges_under_scroll_px() {
+fn tree_paint_cells_follows_the_paint_state_scroll_px() {
     let tree = sample_tree();
     let theme = Theme::default();
+    let style = quadraui::Style::default();
     let ctx = ctx();
 
     let layout = Primitive::layout(&tree, &ctx, area());
-    let mut via_primitive = Buffer::empty(cell_area());
+    let mut at_default = Buffer::empty(cell_area());
     Primitive::paint_cells(
         &tree,
         &layout,
-        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
-        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+        &mut quadraui::tui::BufferCellSurface::new(&mut at_default),
+        &quadraui::PaintEnv::new(&theme, &style),
     );
-
-    let mut direct_default = Buffer::empty(cell_area());
-    quadraui::tui::draw_tree(
-        &mut direct_default,
-        cell_area(),
-        &tree,
-        &theme,
-        ctx.nerd_fonts_enabled,
-    );
-
     assert_ne!(
-        via_primitive,
+        at_default,
         Buffer::empty(cell_area()),
         "the tree must paint something for this comparison to be meaningful"
     );
-    assert_eq!(
-        via_primitive, direct_default,
-        "Primitive::paint_cells must match quadraui::tui::draw_tree at the default state"
-    );
 
-    let mut direct_scrolled = Buffer::empty(cell_area());
-    quadraui::tui::draw_tree_with_scroll_px(
-        &mut direct_scrolled,
-        cell_area(),
+    let scrolled_state = quadraui::TreePaintState::default().with_scroll_px(Some(1.0));
+    let mut scrolled = Buffer::empty(cell_area());
+    Primitive::paint_cells(
         &tree,
-        &theme,
-        ctx.nerd_fonts_enabled,
-        Some(1.0),
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut scrolled),
+        &quadraui::PaintEnv::new(&theme, &style).with_state(&scrolled_state),
     );
     assert_ne!(
-        via_primitive, direct_scrolled,
-        "Primitive::paint_cells has no scroll_px parameter, so it can never match \
-         draw_tree_with_scroll_px once scroll_px names a different first visible row"
+        at_default, scrolled,
+        "a scroll_px naming a later first row must move the painted rows"
     );
 }
 
-/// `DataTable`: [`Primitive::layout`] + [`Primitive::paint_cells`] match
-/// [`quadraui::tui::draw_data_table`] exactly at `hovered_idx: None`
-/// (what `DataTable`'s `Primitive::paint_cells` itself passes), and
-/// diverge from [`quadraui::tui::draw_data_table_with_state`] once a
-/// non-selected row is hovered — a state `paint_cells` has no parameter
-/// to carry.
+/// `DataTable`: [`Primitive::paint_cells`] follows the paint state's
+/// hovered row — hovering a non-selected row changes the painted cells.
 #[test]
-fn data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover() {
+fn data_table_paint_cells_follows_the_paint_state_hover() {
     let table = sample_table();
     let theme = theme_with_distinct_hover_bg();
     let ctx = ctx();
+    let style = quadraui::Style::default();
 
     let layout = Primitive::layout(&table, &ctx, area());
-    let mut via_primitive = Buffer::empty(cell_area());
+    let mut at_default = Buffer::empty(cell_area());
     Primitive::paint_cells(
         &table,
         &layout,
-        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
-        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+        &mut quadraui::tui::BufferCellSurface::new(&mut at_default),
+        &quadraui::PaintEnv::new(&theme, &style),
     );
-
-    let mut direct_default = Buffer::empty(cell_area());
-    quadraui::tui::draw_data_table(&mut direct_default, cell_area(), &table, &theme, None);
-
     assert_ne!(
-        via_primitive,
+        at_default,
         Buffer::empty(cell_area()),
         "the table must paint something for this comparison to be meaningful"
-    );
-    assert_eq!(
-        via_primitive, direct_default,
-        "Primitive::paint_cells must match quadraui::tui::draw_data_table at hovered_idx: None"
     );
 
     // Row 1, not row 2 (`table.selected_idx`) — hover tinting is
     // suppressed on the selected row, so hovering a different row is
     // what actually exercises it.
-    let state = DataTablePaintState::default().with_hovered_idx(Some(1));
-    let mut direct_hovered = Buffer::empty(cell_area());
-    quadraui::tui::draw_data_table_with_state(
-        &mut direct_hovered,
-        cell_area(),
-        &table,
-        &theme,
-        &state,
-    );
-    assert_ne!(
-        via_primitive, direct_hovered,
-        "Primitive::paint_cells has no hovered_idx parameter, so it can never match \
-         draw_data_table_with_state once a non-selected row is hovered"
-    );
-}
-
-/// Same shape as
-/// [`data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover`],
-/// for `TreeTable` against [`quadraui::tui::draw_tree_table`]'s own
-/// `hovered_idx` parameter (`TreeTable` has no `_with_state` free
-/// function of its own — `hovered_idx` is positional here, same as
-/// `draw_data_table`'s).
-#[test]
-fn tree_table_paint_cells_matches_draw_tree_table_then_diverges_under_hover() {
-    let tt = sample_tree_table();
-    let theme = theme_with_distinct_hover_bg();
-    let ctx = ctx();
-
-    let layout = Primitive::layout(&tt, &ctx, area());
-    let mut via_primitive = Buffer::empty(cell_area());
+    let hovered_state = DataTablePaintState::default().with_hovered_idx(Some(1));
+    let mut hovered = Buffer::empty(cell_area());
     Primitive::paint_cells(
-        &tt,
+        &table,
         &layout,
-        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
-        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
-    );
-
-    let mut direct_default = Buffer::empty(cell_area());
-    quadraui::tui::draw_tree_table(
-        &mut direct_default,
-        cell_area(),
-        &tt,
-        &theme,
-        None,
-        ctx.nerd_fonts_enabled,
-    );
-
-    assert_ne!(
-        via_primitive,
-        Buffer::empty(cell_area()),
-        "the tree table must paint something for this comparison to be meaningful"
-    );
-    assert_eq!(
-        via_primitive, direct_default,
-        "Primitive::paint_cells must match quadraui::tui::draw_tree_table at hovered_idx: None"
-    );
-
-    // Row 1, not row 2 (`tt.table.selected_idx`) — same reasoning as
-    // the `DataTable` test above.
-    let mut direct_hovered = Buffer::empty(cell_area());
-    quadraui::tui::draw_tree_table(
-        &mut direct_hovered,
-        cell_area(),
-        &tt,
-        &theme,
-        Some(1),
-        ctx.nerd_fonts_enabled,
+        &mut quadraui::tui::BufferCellSurface::new(&mut hovered),
+        &quadraui::PaintEnv::new(&theme, &style).with_state(&hovered_state),
     );
     assert_ne!(
-        via_primitive, direct_hovered,
-        "Primitive::paint_cells has no hovered_idx parameter, so it can never match \
-         draw_tree_table once a non-selected row is hovered"
+        at_default, hovered,
+        "a hovered non-selected row must tint the painted cells"
     );
 }

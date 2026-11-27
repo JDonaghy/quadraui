@@ -239,6 +239,22 @@ pub(crate) fn record_text_run(text: &str, bounds: Rect) {
     });
 }
 
+/// A [`crate::Canvas`] that fills its whole rect with `color` — the
+/// widget a test paints through
+/// [`crate::DrawsPrimitives::draw_dyn`] at `rect` when it needs a plain
+/// colour block (a clip probe, a backdrop) rather than a real widget.
+pub fn solid_canvas(rect: Rect, color: crate::Color) -> crate::Canvas {
+    crate::Canvas {
+        id: WidgetId::new("testing:solid"),
+        ops: vec![crate::DrawOp::Rect {
+            rect: Rect::new(0.0, 0.0, rect.width, rect.height),
+            color,
+        }],
+        regions: Vec::new(),
+        focusable: false,
+    }
+}
+
 /// One registered widget zone (a hit-testable region) painted during a
 /// frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,7 +273,7 @@ pub struct ZoneRec {
 /// `zones` is populated from [`crate::Backend::register_zone`] calls made
 /// during the frame, and **coverage is opt-in per paint site**. Exactly
 /// one composer registers zones today —
-/// [`crate::compose::app_shell::AppShell::render`], via its
+/// [`crate::compose::app_shell::ShellView::render`], via its
 /// `register_chrome_zones` helper — and it contributes:
 ///
 /// - one `app-shell:`-prefixed zone per chrome region it lays out:
@@ -607,7 +623,7 @@ pub trait ConformanceDriver: Sized {
 //
 // Before this, an external developer who wanted to unit-test their own
 // `compose`-style controller (something that takes `&mut dyn Backend`,
-// the way `TreeController`/`ChatController`/`AppShell` do) had nothing to
+// the way `ChatController`/`ShellView` do) had nothing to
 // test against: the only full `impl Backend` mocks in this crate were
 // three near-identical private `MockBackend` copies, one each in
 // `compose::{tree_controller, chat_controller, app_shell}`'s own
@@ -620,33 +636,6 @@ pub trait ConformanceDriver: Sized {
 // was byte-for-byte identical across all three, so there was only one
 // reasonable choice.
 
-// Crate-internal test switch for `Backend::tree_paints_own_scrollbar`, kept
-// off `RecordingBackend`'s public fields: that struct is exhaustively
-// constructible, so any new field is a semver break (cargo-semver-checks).
-#[cfg(test)]
-thread_local! {
-    static TREE_PAINTS_OWN_SCROLLBAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Makes every `RecordingBackend` on this thread report
-/// `tree_paints_own_scrollbar() == value` until the guard drops.
-#[cfg(test)]
-pub(crate) struct TreePaintsOwnScrollbar(bool);
-
-#[cfg(test)]
-impl TreePaintsOwnScrollbar {
-    pub(crate) fn set(value: bool) -> Self {
-        Self(TREE_PAINTS_OWN_SCROLLBAR.with(|c| c.replace(value)))
-    }
-}
-
-#[cfg(test)]
-impl Drop for TreePaintsOwnScrollbar {
-    fn drop(&mut self) {
-        TREE_PAINTS_OWN_SCROLLBAR.with(|c| c.set(self.0));
-    }
-}
-
 /// A batteries-included, fully-implemented [`Backend`] for unit tests
 /// that need *some* backend to hand a controller — not a specific
 /// backend's real rendering. Reports an 80×24, TUI-cell-shaped viewport
@@ -655,9 +644,8 @@ impl Drop for TreePaintsOwnScrollbar {
 ///
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
-/// (`backend.calls.contains(&"draw_tree")`) without a real
-/// rasteriser. Layout getters (`tree_layout`, `list_layout`, …)
-/// are not recorded: they're queries, not paint events, and controllers
+/// (`backend.calls.contains(&"draw_list")`) without a real
+/// rasteriser. Layout getters (`list_layout`, …) are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.
 ///
@@ -740,12 +728,6 @@ pub struct RecordingBackend {
     /// `compose::menu_system`'s `dropdown_width` and
     /// `compose::sidebar_system`'s `render` both use.
     pub font_families: std::collections::HashSet<&'static str>,
-    /// Every [`crate::MultiSectionView`] passed to
-    /// [`Backend::draw_multi_section_view`], in call order — lets a test
-    /// inspect what got painted (e.g. a section header's title text)
-    /// without a real rasteriser, mirroring what [`Self::calls`] does for
-    /// the method name alone.
-    pub multi_section_view_calls: Vec<crate::MultiSectionView>,
 }
 
 impl Default for RecordingBackend {
@@ -768,7 +750,6 @@ impl Default for RecordingBackend {
             notifications_capable: false,
             notification_send_result: Ok(()),
             font_families: std::collections::HashSet::new(),
-            multi_section_view_calls: Vec::new(),
         }
     }
 }
@@ -1133,39 +1114,8 @@ impl crate::Backend for RecordingBackend {
             ui_size_pt: 0.0,
         }
     }
-    fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {
-        self.record("draw_tree");
-    }
     fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {
         self.record("draw_list");
-    }
-    fn draw_data_table(
-        &mut self,
-        _r: Rect,
-        _t: &crate::DataTable,
-        _h: Option<usize>,
-    ) -> crate::DataTableLayout {
-        self.record("draw_data_table");
-        unimplemented!("RecordingBackend has no DataTable layout algorithm")
-    }
-    fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-        unimplemented!("RecordingBackend has no DataTable layout algorithm")
-    }
-    fn draw_tree_table(
-        &mut self,
-        _r: Rect,
-        _t: &crate::TreeTable,
-        _h: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        self.record("draw_tree_table");
-        unimplemented!("RecordingBackend has no TreeTable layout algorithm")
-    }
-    fn tree_table_layout(
-        &self,
-        _r: Rect,
-        _t: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        unimplemented!("RecordingBackend has no TreeTable layout algorithm")
     }
     fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
         None
@@ -1178,87 +1128,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    fn draw_settings_chrome(
-        &mut self,
-        _r: Rect,
-        _header_text: &str,
-        _query: &str,
-        _placeholder: &str,
-        _active: bool,
-    ) {
-        self.record("draw_settings_chrome");
-    }
-    fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
-        self.record("draw_solid_fill");
-    }
-    /// Union note: `app_shell::MockBackend` was the only one with a real
-    /// body (`Vec::new()`); the other two `unimplemented!()`d.
-    fn draw_multi_section_view(&mut self, _r: Rect, v: &crate::MultiSectionView) {
-        self.record("draw_multi_section_view");
-        self.multi_section_view_calls.push(v.clone());
-    }
-    fn msv_layout(&self, _r: Rect, _v: &crate::MultiSectionView) -> crate::MultiSectionViewLayout {
-        unimplemented!("RecordingBackend has no MultiSectionView layout algorithm")
-    }
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-        unimplemented!("RecordingBackend has no MultiSectionView metrics")
-    }
-    /// Union note: `tree_controller::MockBackend`'s body wins —
-    /// `chat_controller::MockBackend` also had a real (but simpler,
-    /// hit-region-free) body, but `ChatController` never calls
-    /// `tree_layout`, so the more complete chevron-aware algorithm
-    /// `TreeController`'s own click-routing tests depend on is safe to
-    /// use everywhere. Delegates to [`crate::TreeView::layout`] so
-    /// chevron hit regions come out identical to a real backend's.
-    fn tree_layout(
-        &self,
-        rect: Rect,
-        tree: &crate::TreeView,
-    ) -> crate::primitives::tree::TreeViewLayout {
-        let lh = self.line_height();
-        let indent_cells = tree.style.indent as f32;
-        let chevron_w = if tree.style.show_chevrons {
-            tree.style.chevron_expanded.chars().count() as f32 + 1.0
-        } else {
-            0.0
-        };
-        tree.layout(rect.width, rect.height, |i| {
-            let row = &tree.rows[i];
-            let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
-                Some(row.indent as f32 * indent_cells + chevron_w)
-            } else {
-                None
-            };
-            crate::primitives::tree::TreeRowMeasure {
-                height: lh,
-                chevron_end_x,
-            }
-        })
-    }
-    fn tree_vscrollbar(&self, rect: Rect, tree: &crate::TreeView) -> Option<crate::Scrollbar> {
-        // Reached only when `tree_paints_own_scrollbar()` is true (see
-        // `TreeController::split_rect`), i.e. only when a test is
-        // simulating a pixel backend — so the track width matches the
-        // real pixel backends' fixed column, not `line_height`.
-        tree.vscrollbar_with_track_width(
-            rect,
-            self.line_height(),
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
-    }
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        #[cfg(test)]
-        {
-            TREE_PAINTS_OWN_SCROLLBAR.with(std::cell::Cell::get)
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
-    }
-    fn draw_message_list(&mut self, _r: Rect, _l: &crate::primitives::message_list::MessageList) {
-        self.record("draw_message_list");
-    }
     fn draw_find_replace(
         &mut self,
         _r: Rect,
@@ -1268,39 +1137,6 @@ impl crate::Backend for RecordingBackend {
     }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
-    }
-    fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-        self.record("draw_split");
-        unimplemented!("RecordingBackend has no Split layout algorithm")
-    }
-    fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-        unimplemented!("RecordingBackend has no Split layout algorithm")
-    }
-    fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-        self.record("draw_split_tree");
-        unimplemented!("RecordingBackend has no SplitTree layout algorithm")
-    }
-    fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-        unimplemented!("RecordingBackend has no SplitTree layout algorithm")
-    }
-    fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
-        self.record("draw_canvas");
-        unimplemented!("RecordingBackend has no Canvas paint algorithm")
-    }
-    fn draw_pipeline_view(
-        &mut self,
-        _r: Rect,
-        _v: &crate::PipelineView,
-    ) -> crate::PipelineViewLayout {
-        self.record("draw_pipeline_view");
-        unimplemented!("RecordingBackend has no PipelineView layout algorithm")
-    }
-    fn pipeline_view_layout(
-        &self,
-        _r: Rect,
-        _v: &crate::PipelineView,
-    ) -> crate::PipelineViewLayout {
-        unimplemented!("RecordingBackend has no PipelineView layout algorithm")
     }
     fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
         self.record("draw_progress");
@@ -1319,55 +1155,6 @@ impl crate::Backend for RecordingBackend {
     /// Union note: see `draw_spinner` above.
     fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
         crate::SpinnerLayout { bounds: r }
-    }
-    fn draw_chart(
-        &mut self,
-        _r: Rect,
-        _c: &crate::primitives::chart::Chart,
-        _h: Option<(usize, usize)>,
-        _x: Option<f64>,
-    ) -> crate::primitives::chart::ChartLayout {
-        self.record("draw_chart");
-        unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn chart_layout(
-        &self,
-        _r: Rect,
-        _c: &crate::primitives::chart::Chart,
-    ) -> crate::primitives::chart::ChartLayout {
-        unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn draw_diff_view(
-        &mut self,
-        _r: Rect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        self.record("draw_diff_view");
-        crate::primitives::diff_view::DiffViewLayout {
-            visible_rows: 0,
-            total_rows: view.total_rows(),
-        }
-    }
-    fn draw_board(
-        &mut self,
-        _r: Rect,
-        _m: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        self.record("draw_board");
-        crate::primitives::board::BoardLayout {
-            bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-            columns: vec![],
-        }
-    }
-    fn board_layout(
-        &self,
-        _r: Rect,
-        _m: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        crate::primitives::board::BoardLayout {
-            bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-            columns: vec![],
-        }
     }
 }
 

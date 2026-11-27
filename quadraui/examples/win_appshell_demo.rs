@@ -1,4 +1,4 @@
-//! Win-GUI runner for AppShell demo.
+//! Win-GUI runner for ShellView demo.
 //!
 //! Windows-only at runtime, but compiles on every host under plain
 //! `cargo build --example win_appshell_demo --features win` — same

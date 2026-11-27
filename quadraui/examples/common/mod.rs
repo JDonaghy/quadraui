@@ -31,7 +31,7 @@
 //!   raw `TreeView` body + a hand-built scrollbar. Used by
 //!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
 //! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
-//!   mounted inside an `AppShell` panel: open-N-view-one document
+//!   mounted inside a `ShellView` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
 //! - [`FocusDemo`] (in [`focus_demo`]) — two lists + a status bar whose
@@ -103,10 +103,22 @@ pub mod cell_grid_demo;
 pub mod chart_app;
 pub mod chat_demo;
 pub mod clipboard_demo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod codicon_tree_demo;
 pub mod command_line_selection_demo;
 pub mod context_menu_style_demo;
 pub mod controls;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod data_table_app;
 pub mod demo;
 pub mod dialog_table_demo;
@@ -154,11 +166,23 @@ pub mod platform_seams_demo;
 pub mod right_click_demo;
 #[cfg(any(feature = "gtk", feature = "win"))]
 pub mod scroll_view_demo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod search_panel;
 pub mod selection_app;
 pub mod shell_app;
 pub mod shell_menu_demo;
 pub mod sidebar_panel_app;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod sidebar_panel_body_demo;
 pub mod sidebar_reveal_demo;
 pub mod sidebar_search;
@@ -192,10 +216,22 @@ pub use cell_grid_demo::CellGridDemo;
 pub use chart_app::ChartApp;
 pub use chat_demo::ChatDemo;
 pub use clipboard_demo::ClipboardDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use codicon_tree_demo::CodiconTreeDemo;
 pub use command_line_selection_demo::CommandLineSelectionDemo;
 pub use context_menu_style_demo::ContextMenuStyleDemo;
 pub use controls::ControlsApp;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use data_table_app::DataTableApp;
 pub use demo::AppState;
 pub use dialog_table_demo::DialogTableDemo;
@@ -240,11 +276,23 @@ pub use pipeline_app::PipelineApp;
 pub use right_click_demo::RightClickDemo;
 #[cfg(any(feature = "gtk", feature = "win"))]
 pub use scroll_view_demo::ScrollViewDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use search_panel::SearchPanelApp;
 pub use selection_app::SelectionDemo;
 pub use shell_app::ShellApp;
 pub use shell_menu_demo::ShellMenuDemo;
 pub use sidebar_panel_app::SidebarPanelApp;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use sidebar_panel_body_demo::SidebarPanelBodyDemo;
 pub use sidebar_reveal_demo::SidebarRevealDemo;
 pub use sidebar_search::SidebarSearchApp;

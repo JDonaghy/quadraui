@@ -151,7 +151,7 @@ pub fn route_action(
 
     match kind {
         A11yOwnerKind::List => route_list_action(widget, key, action),
-        A11yOwnerKind::Tree => route_tree_action(widget, key, action),
+        A11yOwnerKind::Tree => route_tree_action(tree, target, widget, key, action),
         A11yOwnerKind::Form => route_form_action(tree, target, widget, key, action, value),
         A11yOwnerKind::CellGrid => route_cell_grid_action(widget, key, action),
         A11yOwnerKind::Unsupported => {
@@ -342,18 +342,32 @@ fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
 /// "select" (`TreeEvent` has no separate `RowActivated` variant the way
 /// `ListViewEvent`/`DataTableEvent` do), so it is the one a screen
 /// reader's default action routes to as well.
-fn route_tree_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
+fn route_tree_action(
+    tree: &A11yTree,
+    target: A11yNodeId,
+    widget: WidgetId,
+    key: &str,
+    action: A11yAction,
+) -> Vec<UiEvent> {
     let Some(path) = key.strip_prefix("row.").and_then(decode_tree_path) else {
         emit_unroutable_key("tree", widget, key, action);
         return Vec::new();
     };
     match action {
         A11yAction::Click => vec![UiEvent::Tree(widget, TreeEvent::RowDoubleClicked { path })],
-        // The toggle event itself carries no direction — the primitive
-        // flips whatever state the row is currently in, same as a mouse
-        // click on its disclosure triangle.
+        // The toggle event carries no direction, so it is emitted only
+        // when it moves the row the requested way: `Expand` on a
+        // collapsed branch, `Collapse` on an expanded one. A leaf, or a
+        // branch already in the requested state, produces nothing —
+        // the same answer `TreeView`'s own `Interactive` gives.
         A11yAction::Expand | A11yAction::Collapse => {
-            vec![UiEvent::Tree(widget, TreeEvent::RowToggleExpand { path })]
+            let want_expanded = action == A11yAction::Expand;
+            let expanded = tree.node(target).and_then(|node| node.info.expanded);
+            if expanded == Some(!want_expanded) {
+                vec![UiEvent::Tree(widget, TreeEvent::RowToggleExpand { path })]
+            } else {
+                Vec::new()
+            }
         }
         _ => {
             crate::diagnostics::emit(format!(
@@ -512,9 +526,22 @@ mod tests {
     use crate::primitives::list::{ListItem, ListView};
     use crate::primitives::progress::ProgressBar;
     use crate::primitives::split::{Split, SplitDirection};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::testing::a11y::A11yScenario;
-    use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
+    use crate::types::{Decoration, StyledText};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    use crate::types::{SelectionMode, TreeStyle};
     use crate::Rect;
 
     fn list_surface(id: &str, items: &[&str], selected: usize) -> Surface {
@@ -539,14 +566,21 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             },
         }
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     fn tree_surface(id: &str, rows: Vec<TreeRow>) -> Surface {
-        Surface::Tree {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-            tree: TreeView {
+            widget: Box::new(TreeView {
                 id: WidgetId::new(id),
                 rows,
                 selection_mode: SelectionMode::Single,
@@ -554,10 +588,16 @@ mod tests {
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: false,
-            },
+            }),
         }
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     fn row(label: &str, path: &[u16]) -> TreeRow {
         TreeRow {
             path: path.to_vec(),
@@ -639,10 +679,22 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn click_and_expand_on_tree_row_round_trip_the_path() {
         let snapshot = A11yScenario::new()
-            .with_surface(tree_surface("outline", vec![row("root", &[0])]))
+            .with_surface(tree_surface(
+                "outline",
+                vec![TreeRow {
+                    is_expanded: Some(false),
+                    ..row("root", &[0])
+                }],
+            ))
             .snapshot();
         let node = snapshot.find("root").expect("row").id;
 
@@ -662,6 +714,12 @@ mod tests {
                 WidgetId::new("outline"),
                 TreeEvent::RowToggleExpand { path: vec![0] }
             )]
+        );
+
+        let collapsed = route_action(snapshot.tree(), node, A11yAction::Collapse, None);
+        assert!(
+            collapsed.is_empty(),
+            "Collapse on an already collapsed row emits nothing, as TreeView's Interactive does"
         );
     }
 
@@ -921,15 +979,15 @@ mod tests {
     #[test]
     fn increment_is_not_advertised_on_a_splitter_ratio() {
         let snapshot = A11yScenario::new()
-            .with_surface(Surface::Split {
+            .with_surface(Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-                split: Split {
+                widget: Box::new(Split {
                     id: WidgetId::new("main-split"),
                     direction: SplitDirection::Horizontal,
                     ratio: 0.5,
                     first_min: 1.0,
                     second_min: 1.0,
-                },
+                }),
             })
             .snapshot();
         let node = snapshot.find("Split").expect("split node").id;

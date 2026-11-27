@@ -1287,6 +1287,11 @@ pub struct InteractionEngine {
     /// every `MouseUp` — mirroring those four fields' own "`MouseUp`
     /// always ends it" reset.
     dyn_widget_capture: RefCell<Option<WidgetId>>,
+    /// The [`crate::extra_paint::WIDGET_KINDS`] leaf the pointer was last
+    /// over, so a move that leaves it routes a `Leave` there and one that
+    /// arrives on another routes an `Enter` (see
+    /// [`Self::route_dyn_widget_hover`]).
+    dyn_widget_hover: RefCell<Option<WidgetId>>,
     /// The sub-target a `DynWidget` leaf last asked focus for through
     /// [`quadraui::interactive::EventHost::request_focus`], with the leaf's
     /// id. `Backend::set_focus` addresses a whole widget, so the sub-part
@@ -3520,6 +3525,73 @@ impl InteractionEngine {
         self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
     }
 
+    /// Routes an uncaptured pointer move's hover change to the generic
+    /// leaves involved, through their own [`DynWidget::handle`]: a `Leave`
+    /// to the leaf the pointer has just left, and an `Enter` to the leaf
+    /// it arrives on — the same hover tracking the
+    /// native runtime does, so both report the same events. Each event a
+    /// leaf reports (a `Canvas` region's `RegionHovered`, say) reaches
+    /// `sink` alongside the generic `MouseEntered`/`MouseLeft` pair.
+    fn route_dyn_widget_hover(
+        &self,
+        now: Option<WidgetId>,
+        position: Point,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
+        let prev = self.dyn_widget_hover.replace(now);
+        let mut reaction = quadraui::Reaction::Continue;
+        if prev == now {
+            return reaction;
+        }
+        if let Some(id) = prev {
+            reaction = reaction.merge(self.dispatch_dyn_widget_pointer(
+                id,
+                PointerKind::Leave,
+                position,
+                backend,
+                sink,
+            ));
+        }
+        if let Some(id) = now {
+            reaction = reaction.merge(self.dispatch_dyn_widget_pointer(
+                id,
+                PointerKind::Enter,
+                position,
+                backend,
+                sink,
+            ));
+        }
+        reaction
+    }
+
+    /// Routes one pointer `kind` at `position` to the painted generic
+    /// leaf `id` and dispatches whatever event it reports. A no-op when
+    /// `id` did not paint this frame.
+    fn dispatch_dyn_widget_pointer(
+        &self,
+        id: WidgetId,
+        kind: PointerKind,
+        position: Point,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
+        let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), id) else {
+            return quadraui::Reaction::Continue;
+        };
+        let routed = RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point::new(position.x - area.x, position.y - area.y),
+            mods: Modifiers::default(),
+        };
+        let outcome = self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink);
+        match outcome.event {
+            Some(event) => outcome.reaction.merge(sink.dispatch(&event, None)),
+            None => outcome.reaction,
+        }
+    }
+
     /// The focused leaf and its focused sub-part, for
     /// [`EventHost::is_focused`]: the backend's focus, with the sub-part
     /// from [`Self::dyn_widget_focus_sub`] when the backend names none and
@@ -3556,9 +3628,11 @@ impl InteractionEngine {
     ) -> DynWidgetClickOutcome {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
-        // measurer and its style), so a click resolves against the
-        // geometry that was actually painted on pixel backends.
+        // measurer, its style and the paint state the widget painted
+        // with), so a click resolves against the geometry that was
+        // actually painted.
         let style = backend.style();
+        let painted = quadraui::primitive::painted_state(&id);
         let (units, layout) = {
             let backend_ref: &dyn Backend = backend;
             let measurer =
@@ -3572,7 +3646,10 @@ impl InteractionEngine {
                 backend_ref.nerd_fonts_enabled(),
             )
             .with_editor_line_height(backend_ref.line_height());
-            let ctx = ctx.with_measurer(&measurer).with_style(&style);
+            let ctx = ctx
+                .with_measurer(&measurer)
+                .with_style(&style)
+                .with_paint_state(&painted);
             (ctx.units(), widget.layout(&ctx, area))
         };
 
@@ -4409,8 +4486,8 @@ impl InteractionEngine {
                                 &UiEvent::MouseLeft { widget: old_id },
                                 Some(&old_detail),
                             ));
-                        // A `Canvas` region just stopped being hovered —
-                        // dispatched alongside (never instead of) the
+                        // A script-defined widget's region just stopped
+                        // being hovered — dispatched alongside (never instead of) the
                         // generic `MouseLeft` just above, mirroring
                         // `CanvasEvent::RegionHovered`'s own "`None` means
                         // no region, including having left the canvas
@@ -4433,8 +4510,8 @@ impl InteractionEngine {
                             &UiEvent::MouseEntered { widget: *new_id },
                             Some(new_detail),
                         ));
-                        // The counterpart entering arm: a `Canvas` region
-                        // just started being hovered.
+                        // The counterpart entering arm: a script-defined
+                        // widget's region just started being hovered.
                         if let HitDetail::CanvasRegion { region } = new_detail {
                             hover_reaction = hover_reaction.merge(sink.dispatch(
                                 &UiEvent::Canvas(
@@ -4451,6 +4528,14 @@ impl InteractionEngine {
                     if matches!(hover_reaction, Reaction::Exit) {
                         return hover_reaction;
                     }
+                }
+                let widget_now = self.hover.borrow().as_ref().and_then(|(id, detail)| {
+                    matches!(detail, HitDetail::WidgetBody).then_some(*id)
+                });
+                hover_reaction = hover_reaction
+                    .merge(self.route_dyn_widget_hover(widget_now, *position, backend, sink));
+                if matches!(hover_reaction, Reaction::Exit) {
+                    return hover_reaction;
                 }
             }
         }
@@ -5035,7 +5120,7 @@ impl InteractionEngine {
                     // A press on the thumb itself arms a drag (consumed by
                     // the `MouseMoved` branch above on later moves) rather
                     // than scrolling immediately — matching
-                    // `compose::TreeController::click_scrollbar`'s
+                    // `TreeNavCore::press_scrollbar`'s
                     // `PressZone::Thumb` arm. The raw `MouseDown` (and its
                     // `"hit"` dict) stops here either way, so this never
                     // falls through to row selection.
@@ -7446,6 +7531,242 @@ mod tests {
         );
     }
 
+    /// The binding-host legs of the group-F event parity: each widget is a
+    /// layout leaf filling the viewport, driven with the same gesture and
+    /// expected to report the same events as the `TuiDriver` leg
+    /// (`quadraui/tests/group_f_event_parity.rs`).
+    mod group_f_event_parity {
+        use super::*;
+        use quadraui::CanvasEvent;
+
+        fn leaf(
+            id: &'static str,
+            kind: &'static str,
+            widget: Rc<dyn DynWidget>,
+            cols: u16,
+            rows: u16,
+        ) -> TuiDriver<LayoutWidgetLeafLogic> {
+            let mut driver =
+                TuiDriver::new(LayoutWidgetLeafLogic::new(id, kind, widget), cols, rows);
+            driver.render();
+            driver
+        }
+
+        fn is_form(e: &UiEvent) -> bool {
+            matches!(e, UiEvent::Form(..))
+        }
+
+        #[test]
+        fn a_click_on_a_checkbox_leaf_matches_the_parity_event() {
+            let id = WidgetId::new("cb");
+            let mut driver = leaf("cb", "checkbox", Rc::new(quadraui::Checkbox::new(id)), 6, 1);
+            driver.click(1.0, 0.0);
+            assert_eq!(
+                driver.app().events(is_form),
+                vec![UiEvent::Form(
+                    id,
+                    quadraui::FormEvent::ToggleChanged { id, value: true }
+                )]
+            );
+        }
+
+        #[test]
+        fn a_click_on_a_select_leaf_matches_the_parity_event() {
+            let id = WidgetId::new("sel");
+            let select =
+                quadraui::Select::new(id, vec!["One".into(), "Two".into(), "Three".into()]);
+            let mut driver = leaf("sel", "select", Rc::new(select), 16, 1);
+            driver.click(2.0, 0.0);
+            assert_eq!(
+                driver.app().events(is_form),
+                vec![UiEvent::Form(
+                    id,
+                    quadraui::FormEvent::DropdownChanged {
+                        id,
+                        selected_idx: 1
+                    }
+                )]
+            );
+        }
+
+        #[test]
+        fn a_click_at_the_slider_leaf_track_end_matches_the_parity_event() {
+            let id = WidgetId::new("sl");
+            let slider = quadraui::Slider::new(id, 0.0, 0.0, 10.0);
+            let mut driver = leaf("sl", "slider", Rc::new(slider), 24, 1);
+            driver.click(23.0, 0.0);
+            assert_eq!(
+                driver.app().events(is_form),
+                vec![UiEvent::Form(
+                    id,
+                    quadraui::FormEvent::SliderChanged { id, value: 10.0 }
+                )]
+            );
+        }
+
+        #[test]
+        fn hover_and_a_click_on_a_canvas_leaf_region_match_the_parity_events() {
+            let id = WidgetId::new("canvas");
+            let canvas = quadraui::Canvas {
+                id,
+                ops: vec![],
+                regions: vec![quadraui::CanvasRegion {
+                    id: WidgetId::new("region:a"),
+                    rect: Rect::new(0.0, 0.0, 10.0, 1.0),
+                    cursor: None,
+                }],
+                focusable: false,
+            };
+            let mut driver = leaf("canvas", "canvas", Rc::new(canvas), 20, 4);
+            driver.mouse_move(1.0, 0.0);
+            driver.mouse_move(15.0, 3.0);
+            driver.mouse_move(30.0, 10.0);
+            driver.click(1.0, 0.0);
+            assert_eq!(
+                driver.app().events(|e| matches!(e, UiEvent::Canvas(..))),
+                vec![
+                    UiEvent::Canvas(
+                        id,
+                        CanvasEvent::RegionHovered {
+                            region: Some("region:a".into())
+                        }
+                    ),
+                    UiEvent::Canvas(id, CanvasEvent::RegionHovered { region: None }),
+                    UiEvent::Canvas(
+                        id,
+                        CanvasEvent::RegionClicked {
+                            region: WidgetId::new("region:a"),
+                            button: MouseButton::Left,
+                            modifiers: Modifiers::default(),
+                            x: 1.0,
+                            y: 0.0,
+                        }
+                    ),
+                ]
+            );
+        }
+
+        #[test]
+        fn hovering_a_chart_leaf_point_matches_the_parity_event() {
+            let chart = quadraui::Chart {
+                id: WidgetId::new("chart"),
+                kind: quadraui::ChartKind::Bar,
+                series: vec![quadraui::Series {
+                    label: "load".into(),
+                    data: vec![1.0, 3.0, 2.0, 4.0],
+                    color: None,
+                    fill: false,
+                }],
+                x_label: None,
+                y_label: None,
+                y_range: Some((0.0, 4.0)),
+                x_range: None,
+                show_legend: true,
+                y_ticks: Some(0),
+                x_ticks: None,
+                show_grid: false,
+                hovered_point: None,
+                crosshair_x: None,
+            };
+            let layout = chart.layout_in(Rect::new(0.0, 0.0, 24.0, 8.0), 1.0, 1.0);
+            let &(_, _, x, y) = layout
+                .data_point_positions
+                .iter()
+                .find(|&&(si, di, _, _)| si == 0 && di == 3)
+                .expect("point laid out");
+            let mut driver = leaf("chart", "chart", Rc::new(chart), 24, 8);
+            driver.mouse_move(x, y);
+            let points: Vec<Option<(usize, usize)>> = driver
+                .app()
+                .events(|e| matches!(e, UiEvent::Chart(..)))
+                .into_iter()
+                .filter_map(|e| match e {
+                    UiEvent::Chart(_, quadraui::ChartEvent::DataPointHovered { point, .. }) => {
+                        Some(point)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(points, vec![Some((0, 3))]);
+        }
+
+        fn card(id: &str, title: &str) -> quadraui::BoardCard {
+            quadraui::BoardCard {
+                id: WidgetId::new(id),
+                title: title.to_string(),
+                labels: vec![],
+                badges: vec![quadraui::CardBadge {
+                    label: "T".into(),
+                    status: quadraui::BadgeStatus::Passed,
+                }],
+                hint: None,
+            }
+        }
+
+        #[test]
+        fn a_click_on_a_board_leaf_card_matches_the_parity_event() {
+            let board = quadraui::BoardModel {
+                id: WidgetId::new("board"),
+                columns: vec![
+                    quadraui::BoardColumn {
+                        id: WidgetId::new("col:todo"),
+                        title: "Todo".to_string(),
+                        cards: vec![card("card:1", "First card"), card("card:2", "Second card")],
+                        scroll_offset: 0,
+                    },
+                    quadraui::BoardColumn {
+                        id: WidgetId::new("col:done"),
+                        title: "Done".to_string(),
+                        cards: vec![card("card:3", "Third card")],
+                        scroll_offset: 0,
+                    },
+                ],
+                selected_card_id: None,
+                col_scroll_offset: 0,
+            };
+            let mut driver = leaf("board", "board", Rc::new(board), 50, 13);
+            let (x, y) = driver.find("Third card").expect("card painted");
+            driver.click(x, y);
+            assert_eq!(
+                driver.app().events(|e| matches!(e, UiEvent::Board(..))),
+                vec![UiEvent::Board(
+                    WidgetId::new("board"),
+                    quadraui::BoardAction::SelectCard(WidgetId::new("card:3"))
+                )]
+            );
+        }
+
+        #[test]
+        fn a_click_on_a_pipeline_leaf_stage_matches_the_parity_event() {
+            let stage = |label: &str, status, action: Option<&str>| quadraui::PipelineStage {
+                label: label.to_string(),
+                status,
+                action: action.map(str::to_string),
+            };
+            let view = quadraui::PipelineView {
+                id: WidgetId::new("pipe"),
+                stages: vec![
+                    stage("Build", quadraui::StageStatus::Done, None),
+                    stage("Test", quadraui::StageStatus::Active, Some("Retry")),
+                    stage("Ship", quadraui::StageStatus::Pending, None),
+                ],
+                focused_stage: Some(0),
+            };
+            let mut driver = leaf("pipe", "pipeline_view", Rc::new(view), 60, 7);
+            let (x, y) = driver.find("Ship").expect("stage painted");
+            driver.click(x, y);
+            assert_eq!(
+                driver
+                    .app()
+                    .events(|e| matches!(e, UiEvent::PipelineView(..))),
+                vec![UiEvent::PipelineView(
+                    WidgetId::new("pipe"),
+                    quadraui::PipelineEvent::StageSelected { index: 2 }
+                )]
+            );
+        }
+    }
+
     /// An `"image"` leaf decodes through the generic widget registry and
     /// paints its fallback text on a terminal with no graphics channel.
     #[test]
@@ -8737,6 +9058,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let content = LayoutNode::Leaf(LayoutLeaf {
             id: "recent".to_string(),
@@ -10265,6 +10587,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListCursorLogic {
             list,
@@ -10434,9 +10757,10 @@ mod tests {
                 viewport.width,
                 (4.0 * line_height).min(viewport.height),
             );
-            let viewport_rows = backend
-                .data_table_layout(table_rect, &self.table)
-                .visible_rows;
+            let viewport_rows =
+                quadraui::DrawsPrimitives::layout_primitive(backend, table_rect, &self.table)
+                    .layout
+                    .visible_rows;
             let resolved =
                 resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
 
@@ -10674,6 +10998,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListLogic {
             list,

@@ -1,15 +1,15 @@
 //! Shell runner infrastructure: [`ShellApp`] trait + [`ShellConfig`].
 //!
-//! Apps that want an AppShell (activity bar + sidebar + main content)
+//! Apps that want a ShellView (activity bar + sidebar + main content)
 //! implement [`ShellApp`] instead of [`AppLogic`](crate::AppLogic).
 //! Per-backend `run_with_shell()` functions handle the full lifecycle:
-//! window creation, event wiring, AppShell chrome rendering, and event
+//! window creation, event wiring, ShellView chrome rendering, and event
 //! routing — the consumer renders only its own content.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 
 use crate::compose::app_shell::{
-    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellPosition,
+    BottomBand, PanelDefinition, ShellEvent, ShellLayout, ShellPosition, ShellView,
 };
 use crate::compose::bottom_panel::{BottomPanelConfig, BottomPanelEvent};
 use crate::event::{Point, Rect};
@@ -17,7 +17,7 @@ use crate::primitives::image::ImageSource;
 use crate::types::{Color, Icon, WidgetId};
 use crate::{Backend, Reaction, ResizeEdge, UiEvent};
 
-/// Configuration for creating an AppShell.
+/// Configuration for creating a ShellView.
 pub struct ShellConfig {
     pub panels: Vec<PanelDefinition>,
     pub bottom_items: Vec<PanelDefinition>,
@@ -33,7 +33,7 @@ pub struct ShellConfig {
     /// that doesn't move with the app's editor font.
     pub activity_bar_width: f32,
     /// Fixed-pixel activity bar width override, on pixel backends. `None`
-    /// by default, which leaves [`AppShell::compute_layout`]'s own default
+    /// by default, which leaves [`ShellView::compute_layout`]'s own default
     /// in charge — [`crate::Style::activity_bar_width`] (48px, matching VS
     /// Code's activity bar) on a pixel backend with no override, or
     /// whatever a host's [`crate::Backend::set_style`] last set. A `Some`
@@ -51,7 +51,7 @@ pub struct ShellConfig {
     pub title_bar_height_lh: f32,
     /// Fixed-pixel floor under `title_bar_height_lh * line_height`, on pixel
     /// backends. `Some(35.0)` by default, matching VS Code's tab/title bar.
-    /// See [`AppShell::with_title_bar_min_px`] for the full rationale and
+    /// See [`ShellView::with_title_bar_min_px`] for the full rationale and
     /// why this is a floor rather than [`Self::activity_bar_width_px`]'s
     /// hard override. Set via [`Self::with_title_bar_min_px`]; pass `None`
     /// to leave `title_bar_height_lh * line_height` in sole charge. **TUI
@@ -77,7 +77,7 @@ pub struct ShellConfig {
     /// the strength of that — ask
     /// [`crate::Backend::titlebar_control_inset`] instead, which reports
     /// how much of the leading edge of
-    /// [`crate::compose::app_shell::AppShellLayout::title_bar_bounds`] to
+    /// [`crate::compose::app_shell::ShellLayout::title_bar_bounds`] to
     /// leave clear (`Rect::default()`, i.e. "paint the whole band", on
     /// every backend that ignores this field) and keeps working
     /// unchanged when GTK/Win-GUI do grow client-side decorations.
@@ -92,7 +92,7 @@ pub struct ShellConfig {
     pub has_status_bar: bool,
     /// Fixed-pixel status bar height, on pixel backends, when
     /// [`Self::has_status_bar`] is set. `None` by default, which leaves
-    /// [`AppShell::compute_layout`]'s own default in charge —
+    /// [`ShellView::compute_layout`]'s own default in charge —
     /// [`crate::Style::status_bar_height`] (22px, matching VS Code's status
     /// bar) on a pixel backend with no override, or whatever a host's
     /// [`crate::Backend::set_style`] last set. A `Some` here is a **hard**
@@ -111,11 +111,11 @@ pub struct ShellConfig {
     /// Set via [`Self::with_status_bar_under_main_column`].
     pub status_bar_under_main_column: bool,
     /// Optional tabbed bottom panel. `None` (the default) preserves the
-    /// existing no-panel layout. When `Some`, the shell runner creates a
-    /// [`crate::compose::bottom_panel::BottomPanelController`] that renders
-    /// the tab strip and delegates content to each tab's `BackendWidget`.
+    /// existing no-panel layout. When `Some`, the shell runner docks a
+    /// [`crate::compose::bottom_panel::BottomPanel`] that paints the tab
+    /// strip and delegates content to each tab's `BackendWidget`.
     ///
-    /// Setting this field automatically enables an AppShell bottom panel
+    /// Setting this field automatically enables a ShellView bottom panel
     /// region — no need to also call [`Self::with_bottom_panel`] unless you
     /// want to tune the height via the old API as well.
     pub bottom_panel: Option<BottomPanelConfig>,
@@ -129,7 +129,7 @@ pub struct ShellConfig {
     /// [`Self::bottom_panel`] / [`Self::with_bottom_panel`]. Set via
     /// [`Self::with_bottom_bands`]; toggle presence/height at runtime via
     /// `ctx.shell_mut().set_bottom_band_visible(...)` /
-    /// `set_bottom_band_height(...)` ([`AppShell`]'s own methods, reached
+    /// `set_bottom_band_height(...)` ([`ShellView`]'s own methods, reached
     /// through [`ShellContext::shell_mut`]).
     pub bottom_bands: Vec<BottomBand>,
     /// Editor font override: `(family, size_pt)`. `None` (the default)
@@ -162,10 +162,10 @@ pub struct ShellConfig {
     /// with no icon-theme concept (TUI) ignore this field.
     pub icon_name: Option<String>,
     /// Per-panel Nerd-Font glyph + ASCII fallback overrides, replayed onto
-    /// the built [`AppShell`] via [`AppShell::with_panel_icon`] by
+    /// the built [`ShellView`] via [`ShellView::with_panel_icon`] by
     /// [`crate::shell_adapter::build_shell_adapter`]. Covers both top
     /// panels (`panels`) and [`Self::bottom_items`] — same seam,
-    /// [`AppShell::with_panel_icon`] doesn't distinguish the two. Empty by
+    /// [`ShellView::with_panel_icon`] doesn't distinguish the two. Empty by
     /// default, so nothing that predates this field changes behavior:
     /// every panel keeps painting its single [`PanelDefinition::icon`]
     /// string under both settings of `nerd_fonts_enabled`, exactly as
@@ -173,8 +173,8 @@ pub struct ShellConfig {
     ///
     /// Set via [`Self::with_panel_icon`]. Before this field existed, a
     /// `ShellConfig`-based consumer had no way to reach
-    /// [`AppShell::with_panel_icon`] at all — `build_shell_adapter` builds
-    /// the `AppShell` directly from `panels/bottom_items` and never
+    /// [`ShellView::with_panel_icon`] at all — `build_shell_adapter` builds
+    /// the `ShellView` directly from `panels/bottom_items` and never
     /// exposed a hook for it.
     pub panel_icons: Vec<(WidgetId, Icon)>,
     /// App icon (Dock/app-switcher on macOS, big+small taskbar/titlebar
@@ -195,25 +195,25 @@ pub struct ShellConfig {
     /// Set via [`Self::with_app_icon`].
     pub app_icon: Option<ImageSource>,
     /// Activity-bar accent colour, forwarded to
-    /// [`AppShell::with_active_accent`] at construction and available via
-    /// [`AppShell::set_active_accent`] at runtime.  `None` (the default)
+    /// [`ShellView::with_active_accent`] at construction and available via
+    /// [`ShellView::set_active_accent`] at runtime.  `None` (the default)
     /// paints no accent strip — see [`crate::ActivityBar::active_accent`].
     ///
     /// Set via [`Self::with_active_accent`].
     pub active_accent: Option<Color>,
     /// Keyboard-selection background, forwarded to
-    /// [`AppShell::with_selection_bg`].  `None` (the default) lets each
+    /// [`ShellView::with_selection_bg`].  `None` (the default) lets each
     /// backend fall back to its own default.
     ///
     /// Set via [`Self::with_selection_bg`].
     pub selection_bg: Option<Color>,
     /// Whether the sidebar is visible on the very first render. `true` (the
-    /// default) matches [`AppShell::new`]'s own starting state.
+    /// default) matches [`ShellView::new`]'s own starting state.
     ///
     /// Lets a consumer seed the sidebar hidden declaratively, without
     /// rendering a first frame visible and then dispatching a hide event.
     /// [`crate::shell_adapter::build_shell_adapter`] applies this field via
-    /// [`AppShell::hide_sidebar`] before the first frame, the same seam
+    /// [`ShellView::hide_sidebar`] before the first frame, the same seam
     /// [`Self::has_title_bar`] uses for the title bar.
     ///
     /// Set via [`Self::with_sidebar_visible`].
@@ -300,7 +300,7 @@ impl ShellConfig {
     }
 
     /// Pin a fixed-pixel floor under the title bar's line-height-derived
-    /// height — see [`AppShell::with_title_bar_min_px`] for the full
+    /// height — see [`ShellView::with_title_bar_min_px`] for the full
     /// rationale. Defaults to `35.0`. Set the `title_bar_min_px` field
     /// directly to `None` to leave `title_bar_height_lh * line_height` in
     /// sole charge instead.
@@ -362,7 +362,7 @@ impl ShellConfig {
     ///
     /// This is the preferred way to add a bottom panel when you want tab
     /// switching, close buttons, and per-tab [`crate::compose::bottom_panel::BackendWidget`]
-    /// content. It automatically enables the AppShell bottom panel region;
+    /// content. It automatically enables the ShellView bottom panel region;
     /// the initial height comes from [`BottomPanelConfig::height_fraction`].
     ///
     /// Use [`Self::with_bottom_panel`] + [`Self::with_bottom_panel_limits`]
@@ -418,7 +418,7 @@ impl ShellConfig {
     }
 
     /// Attach a distinct Nerd-Font glyph + ASCII fallback pair to one
-    /// activity-bar row, mirroring [`AppShell::with_panel_icon`] — the
+    /// activity-bar row, mirroring [`ShellView::with_panel_icon`] — the
     /// consuming-builder method [`crate::shell_adapter::build_shell_adapter`]
     /// replays every registered pair onto during construction.
     ///
@@ -426,7 +426,7 @@ impl ShellConfig {
     /// entry; unknown ids are stored but never consulted, so call order
     /// relative to `ShellConfig::new` / [`Self::with_bottom_items`] doesn't
     /// matter. Calling this twice for the same id keeps the last pair —
-    /// same last-write-wins semantics as `AppShell::with_panel_icon`, since
+    /// same last-write-wins semantics as `ShellView::with_panel_icon`, since
     /// both are ultimately backed by the same `HashMap`.
     pub fn with_panel_icon(mut self, id: WidgetId, icon: Icon) -> Self {
         self.panel_icons.push((id, icon));
@@ -441,7 +441,7 @@ impl ShellConfig {
     }
 
     /// Set the activity-bar accent colour forwarded to
-    /// [`AppShell::with_active_accent`] at construction. See
+    /// [`ShellView::with_active_accent`] at construction. See
     /// [`Self::active_accent`] for the full contract.
     pub fn with_active_accent(mut self, color: Color) -> Self {
         self.active_accent = Some(color);
@@ -449,7 +449,7 @@ impl ShellConfig {
     }
 
     /// Set the keyboard-selection background forwarded to
-    /// [`AppShell::with_selection_bg`] at construction. See
+    /// [`ShellView::with_selection_bg`] at construction. See
     /// [`Self::selection_bg`] for the full contract.
     pub fn with_selection_bg(mut self, color: Color) -> Self {
         self.selection_bg = Some(color);
@@ -473,32 +473,36 @@ pub struct ShellContext<'a> {
     /// Whether the sidebar is visible.
     pub sidebar_visible: bool,
     /// Layout bounds from the last render.
-    pub layout: &'a AppShellLayout,
+    pub layout: &'a ShellLayout,
     /// Set via [`Self::request_activity_keyboard_focus`]; consumed by
     /// [`crate::shell_adapter::ShellAdapter::handle`] after
     /// `ShellApp::handle` returns. `Cell` because `ShellContext` is passed
     /// by shared reference — the consumer can request focus without a
     /// `&mut` hook back into the shell.
     activity_focus_requested: Cell<bool>,
-    /// A scoped mutable borrow of the [`AppShell`] instance
+    /// A scoped mutable borrow of the [`ShellView`] instance
     /// [`crate::shell_adapter::ShellAdapter`] actually renders, lent out for
     /// the duration of one `ShellApp::handle` dispatch.
     ///
     /// Before this existed, a `ShellApp` consumer had no way to reach the
     /// rendered shell at all — `ShellAdapter::shell` is `pub(crate)` — so
     /// driving shell state programmatically (e.g. a `Ctrl+B` toggle-sidebar
-    /// binding) required keeping a second, shadow `AppShell` that silently
+    /// binding) required keeping a second, shadow `ShellView` that silently
     /// drifted from the one actually painted (vimcode `Ctrl+B` was dead on
     /// GTK because of exactly this: the shadow toggled, the rendered
     /// instance never learned about it).
     ///
     /// `RefCell` because `ShellContext` is passed by shared reference (see
     /// `activity_focus_requested` above) — access via [`Self::shell`] /
-    /// [`Self::shell_mut`]. `AppShell` remains solely owned and constructed
+    /// [`Self::shell_mut`]. `ShellView` remains solely owned and constructed
     /// by `ShellAdapter`; this only lends a scoped borrow for one dispatch,
     /// so the single-owner invariant that makes drift impossible is
     /// preserved.
-    shell: RefCell<&'a mut AppShell>,
+    shell: RefCell<&'a mut ShellView>,
+    /// Each visible [`BottomBand`]'s rect in [`Self::layout`], bottom-up.
+    bottom_band_bounds: Vec<(WidgetId, Rect)>,
+    /// The activity-bar row the pointer hovers, if any.
+    hovered_activity_idx: Option<usize>,
 }
 
 impl<'a> ShellContext<'a> {
@@ -522,8 +526,10 @@ impl<'a> ShellContext<'a> {
     pub(crate) fn new(
         active_panel_id: Option<&'a WidgetId>,
         sidebar_visible: bool,
-        layout: &'a AppShellLayout,
-        shell: &'a mut AppShell,
+        layout: &'a ShellLayout,
+        shell: &'a mut ShellView,
+        bottom_band_bounds: Vec<(WidgetId, Rect)>,
+        hovered_activity_idx: Option<usize>,
     ) -> Self {
         Self {
             active_panel_id,
@@ -531,13 +537,20 @@ impl<'a> ShellContext<'a> {
             layout,
             activity_focus_requested: Cell::new(false),
             shell: RefCell::new(shell),
+            bottom_band_bounds,
+            hovered_activity_idx,
         }
     }
 
-    /// Borrow the real, rendered [`AppShell`] read-only.
+    /// The activity-bar row the pointer hovers, if any.
+    pub fn hovered_activity_idx(&self) -> Option<usize> {
+        self.hovered_activity_idx
+    }
+
+    /// Borrow the real, rendered [`ShellView`] read-only.
     ///
     /// Prefer the narrow accessors above (`in_sidebar`, `sidebar_bounds`,
-    /// ...) for layout queries — this exists for the rest of `AppShell`'s
+    /// ...) for layout queries — this exists for the rest of `ShellView`'s
     /// API (e.g. `bottom_panel_visible()`, `activity_selected_id()`) that
     /// `ShellContext` doesn't otherwise mirror.
     ///
@@ -545,13 +558,13 @@ impl<'a> ShellContext<'a> {
     /// Panics if [`Self::shell_mut`] is borrowed at the same time (standard
     /// `RefCell` rules). Each borrow is meant to be short-lived — grab it,
     /// read, drop.
-    pub fn shell(&self) -> Ref<'_, &'a mut AppShell> {
+    pub fn shell(&self) -> Ref<'_, &'a mut ShellView> {
         self.shell.borrow()
     }
 
-    /// Borrow the real, rendered [`AppShell`] mutably.
+    /// Borrow the real, rendered [`ShellView`] mutably.
     ///
-    /// Call any `AppShell` mutator directly on the instance
+    /// Call any `ShellView` mutator directly on the instance
     /// [`crate::shell_adapter::ShellAdapter`] actually renders —
     /// `ctx.shell_mut().toggle_sidebar()`,
     /// `ctx.shell_mut().show_bottom_panel()`,
@@ -562,7 +575,7 @@ impl<'a> ShellContext<'a> {
     /// Panics if [`Self::shell`] / [`Self::shell_mut`] is borrowed at the
     /// same time (standard `RefCell` rules). Each borrow is meant to be
     /// short-lived — grab it, mutate, drop.
-    pub fn shell_mut(&self) -> RefMut<'_, &'a mut AppShell> {
+    pub fn shell_mut(&self) -> RefMut<'_, &'a mut ShellView> {
         self.shell.borrow_mut()
     }
 
@@ -577,7 +590,7 @@ impl<'a> ShellContext<'a> {
     /// different triggers. Once focused, [`crate::shell_adapter::ShellAdapter`]
     /// owns the navigation keys (`j`/`k`/arrows to move, `Enter`/`Space` to
     /// activate, `Esc` to cancel) by driving the same
-    /// [`crate::compose::app_shell::AppShell`] methods the raw `AppLogic`
+    /// [`crate::compose::app_shell::ShellView`] methods the raw `AppLogic`
     /// pattern uses directly — see `examples/common/shell_app.rs`.
     ///
     /// A no-op if called more than once per `handle()` call (the flag is
@@ -660,15 +673,14 @@ impl<'a> ShellContext<'a> {
     /// or `None` if `id` names no registered band or the
     /// band is not visible in the last computed layout.
     ///
-    /// Reads [`AppShell::bottom_band_bounds`] rather than a field on
-    /// [`AppShellLayout`] — see that struct's doc for why bottom-band
+    /// Reads [`ShellView::bottom_band_bounds`] rather than a field on
+    /// [`ShellLayout`] — see that struct's doc for why bottom-band
     /// bounds live there instead of on the layout snapshot.
     pub fn bottom_band_bounds(&self, id: &WidgetId) -> Option<Rect> {
-        self.shell()
-            .bottom_band_bounds()
-            .into_iter()
+        self.bottom_band_bounds
+            .iter()
             .find(|(band_id, _)| band_id == id)
-            .map(|(_, rect)| rect)
+            .map(|(_, rect)| *rect)
     }
 
     /// Check if a mouse position lands inside one currently-visible
@@ -763,24 +775,24 @@ impl<'a> ShellContext<'a> {
     }
 }
 
-/// Application trait for apps that use the AppShell chrome.
+/// Application trait for apps that use the ShellView chrome.
 ///
 /// The shell handles: activity bar rendering + clicks, sidebar
 /// header + divider, panel switching, and resize drag. The consumer
 /// renders panel content and main-area content into the bounds the
-/// shell provides via [`AppShellLayout`].
+/// shell provides via [`ShellLayout`].
 pub trait ShellApp {
     /// Render content into the shell's content zones. The shell has
     /// already drawn its chrome (activity bar, sidebar header, divider);
     /// the consumer draws sidebar panel content + main content here.
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout);
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout);
 
     /// Render one currently-visible [`crate::compose::app_shell::BottomBand`].
     /// Called once per visible band, after `render_content`,
     /// in the same bottom-up stacking order the band list was given.
     ///
-    /// This is a separate hook rather than a field on [`AppShellLayout`]
-    /// deliberately: `AppShellLayout` is an all-`pub`-field struct a real
+    /// This is a separate hook rather than a field on [`ShellLayout`]
+    /// deliberately: `ShellLayout` is an all-`pub`-field struct a real
     /// downstream consumer builds with an exhaustive struct literal (see
     /// that struct's doc and `quadraui/tests/downstream_struct_literals.rs`),
     /// so growing its field list breaks that call site. A new trait method
@@ -788,7 +800,7 @@ pub trait ShellApp {
     /// `docs/PRIMITIVE_RULES.md` rule 8.
     ///
     /// Default: no-op — apps that never call
-    /// [`crate::compose::app_shell::AppShell::with_bottom_bands`] /
+    /// [`crate::compose::app_shell::ShellView::with_bottom_bands`] /
     /// [`ShellConfig::bottom_bands`] are unaffected.
     fn render_bottom_band(&self, _backend: &mut dyn Backend, _id: &WidgetId, _bounds: Rect) {}
 
@@ -803,7 +815,7 @@ pub trait ShellApp {
 
     /// Called once, immediately after [`Self::setup`] returns, with a
     /// [`ShellContext`] already lending `ctx.shell_mut()` access to the
-    /// real, built [`crate::compose::app_shell::AppShell`] — strictly
+    /// real, built [`crate::compose::app_shell::ShellView`] — strictly
     /// before the first [`Self::render_content`] of the run.
     ///
     /// [`Self::setup`] alone cannot reach the shell: it only receives a
@@ -833,14 +845,14 @@ pub trait ShellApp {
     /// Notified when a panel switch occurs (activity bar click or
     /// programmatic). Optional.
     ///
-    /// The [`ShellContext`] lends the same scoped `&mut AppShell` borrow
+    /// The [`ShellContext`] lends the same scoped `&mut ShellView` borrow
     /// [`Self::handle`] receives — call `ctx.shell_mut()` mutators
     /// here (e.g. `set_title_bar_visible`, `set_sidebar_width`,
     /// `show_panel`, `toggle_sidebar`) to push state back into the shell
     /// on the *same frame* this event fires.
     ///
     /// Default implementation is a no-op.
-    fn on_shell_event_ctx(&mut self, _event: &AppShellEvent, _ctx: &ShellContext) {}
+    fn on_shell_event_ctx(&mut self, _event: &ShellEvent, _ctx: &ShellContext) {}
 
     /// Poll for a pending **app-initiated** panel switch — e.g. an action
     /// handler that jumps straight to a different panel (a "launch
@@ -849,11 +861,11 @@ pub trait ShellApp {
     ///
     /// [`ShellAdapter`](crate::shell_adapter::ShellAdapter) calls this once
     /// immediately after every [`Self::handle`] dispatch. Returning
-    /// `Some(panel_id)` applies the switch to the underlying `AppShell`
+    /// `Some(panel_id)` applies the switch to the underlying `ShellView`
     /// (updating the ActivityBar highlight and sidebar panel header, which
-    /// are otherwise owned entirely by `AppShell` and invisible to
+    /// are otherwise owned entirely by `ShellView` and invisible to
     /// `ShellApp` implementors) and re-notifies via
-    /// [`Self::on_shell_event_ctx`] with [`AppShellEvent::PanelChanged`], the
+    /// [`Self::on_shell_event_ctx`] with [`ShellEvent::PanelChanged`], the
     /// same notification a mouse click produces — so app code that already
     /// syncs its own view state from `on_shell_event_ctx` doesn't need a
     /// second code path.
@@ -868,10 +880,10 @@ pub trait ShellApp {
     /// Notified when the bottom panel tab strip emits an event
     /// (tab activation, close, maximise toggle, or resize).
     ///
-    /// Only called when `ShellConfig.bottom_panel` is `Some`. The
-    /// [`crate::compose::bottom_panel::BottomPanelController`] has already
-    /// applied the state change (switched active tab, removed a closed tab,
-    /// toggled maximised) before this method is called. Use it for any
+    /// Only called when `ShellConfig.bottom_panel` is `Some`. The shell
+    /// runner has already applied the state change to its
+    /// [`crate::compose::bottom_panel::BottomPanel`] (switched active tab,
+    /// removed a closed tab, toggled maximised) before this method is called. Use it for any
     /// higher-level bookkeeping — re-rendering is triggered automatically.
     ///
     /// Default: no-op.
@@ -890,14 +902,15 @@ pub trait ShellApp {
 mod tests {
     use super::*;
 
-    /// Build a bare (no panels, no chrome) `AppShellLayout` sized `w x h`
+    /// Build a bare (no panels, no chrome) `ShellLayout` sized `w x h`
     /// starting at the origin — just enough to exercise `window_bounds`.
-    fn layout_for(w: f32, h: f32) -> AppShellLayout {
-        AppShell::new(Vec::new(), 20.0).layout(Rect::new(0.0, 0.0, w, h), 1.0)
+    fn layout_for(w: f32, h: f32) -> ShellLayout {
+        ShellView::new(Vec::new(), 20.0).shell_layout(Rect::new(0.0, 0.0, w, h), 1.0)
     }
 
-    fn ctx<'a>(layout: &'a AppShellLayout, shell: &'a mut AppShell) -> ShellContext<'a> {
-        ShellContext::new(None, false, layout, shell)
+    fn ctx<'a>(layout: &'a ShellLayout, shell: &'a mut ShellView) -> ShellContext<'a> {
+        let bands = shell.bottom_band_bounds(layout.window_bounds, 1.0, &crate::Style::default());
+        ShellContext::new(None, false, layout, shell, bands, None)
     }
 
     /// A fresh `ShellConfig` has no editor-font override — backends
@@ -964,10 +977,10 @@ mod tests {
         );
     }
 
-    /// A fresh `ShellConfig` keeps `AppShell`'s own line-height-multiple
+    /// A fresh `ShellConfig` keeps `ShellView`'s own line-height-multiple
     /// default (4.0, giving 4 TUI columns: 1 accent + 2 icon cells for
     /// double-width nerd font glyphs + 1 separator) for TUI, and leaves
-    /// `activity_bar_width_px` unset so `AppShell::compute_layout`'s own
+    /// `activity_bar_width_px` unset so `ShellView::compute_layout`'s own
     /// pixel-backend default — `Style::activity_bar_width` (48px, matching
     /// VS Code) — stays in charge, which in turn means a host's
     /// `Backend::set_style` override reaches the painted bar instead of
@@ -980,7 +993,7 @@ mod tests {
     }
 
     /// `with_activity_bar_width` stores the line-height multiple
-    /// verbatim for `build_shell_adapter` to pass through to `AppShell`.
+    /// verbatim for `build_shell_adapter` to pass through to `ShellView`.
     #[test]
     fn shell_config_with_activity_bar_width_overrides_the_multiple() {
         let config = ShellConfig::new("test", Vec::new()).with_activity_bar_width(2.4);
@@ -1005,7 +1018,7 @@ mod tests {
     }
 
     /// `with_title_bar_min_px` stores the floor for
-    /// `build_shell_adapter` to pass through to `AppShell`.
+    /// `build_shell_adapter` to pass through to `ShellView`.
     #[test]
     fn shell_config_with_title_bar_min_px_sets_the_floor() {
         let config = ShellConfig::new("test", Vec::new()).with_title_bar_min_px(34.0);
@@ -1013,7 +1026,7 @@ mod tests {
     }
 
     /// A fresh `ShellConfig` leaves `status_bar_height_px` unset so
-    /// `AppShell::compute_layout`'s own pixel-backend default —
+    /// `ShellView::compute_layout`'s own pixel-backend default —
     /// `Style::status_bar_height` (22px, matching VS Code) — stays in
     /// charge, which in turn means a host's `Backend::set_style` override
     /// reaches the painted bar instead of being shadowed by a
@@ -1025,7 +1038,7 @@ mod tests {
     }
 
     /// `with_status_bar_height_px` stores the override for
-    /// `build_shell_adapter` to pass through to `AppShell`.
+    /// `build_shell_adapter` to pass through to `ShellView`.
     #[test]
     fn shell_config_with_status_bar_height_px_sets_the_override() {
         let config = ShellConfig::new("test", Vec::new()).with_status_bar_height_px(30.0);
@@ -1041,7 +1054,7 @@ mod tests {
     }
 
     /// `with_panel_icon` appends `(id, icon)` pairs verbatim, in call
-    /// order, for `build_shell_adapter` to replay onto the `AppShell`.
+    /// order, for `build_shell_adapter` to replay onto the `ShellView`.
     #[test]
     fn shell_config_with_panel_icon_appends_overrides_in_order() {
         let config = ShellConfig::new("test", Vec::new())
@@ -1085,7 +1098,7 @@ mod tests {
     }
 
     /// `with_active_accent` and `with_selection_bg` store the colours
-    /// verbatim for `build_shell_adapter` to forward to `AppShell`.
+    /// verbatim for `build_shell_adapter` to forward to `ShellView`.
     #[test]
     fn shell_config_accent_flows_to_app_shell_via_adapter() {
         let accent = Color::rgb(100, 200, 50);
@@ -1106,7 +1119,7 @@ mod tests {
     }
 
     /// `with_bottom_bands` stores the ordered list verbatim for
-    /// `build_shell_adapter` to replay onto the `AppShell`.
+    /// `build_shell_adapter` to replay onto the `ShellView`.
     #[test]
     fn shell_config_with_bottom_bands_stores_the_list() {
         let bands = vec![
@@ -1118,7 +1131,7 @@ mod tests {
     }
 
     /// A fresh `ShellConfig` seeds the sidebar visible — matching
-    /// `AppShell::new`'s own hard-coded starting state, so nothing that
+    /// `ShellView::new`'s own hard-coded starting state, so nothing that
     /// predates this field changes behavior.
     #[test]
     fn shell_config_sidebar_visible_defaults_to_true() {
@@ -1127,7 +1140,7 @@ mod tests {
     }
 
     /// `with_sidebar_visible` stores the seed for `build_shell_adapter`
-    /// to apply onto the `AppShell` before the first render.
+    /// to apply onto the `ShellView` before the first render.
     #[test]
     fn shell_config_with_sidebar_visible_sets_the_seed() {
         let config = ShellConfig::new("test", Vec::new()).with_sidebar_visible(false);
@@ -1135,14 +1148,14 @@ mod tests {
     }
 
     /// `ShellContext::bottom_band_bounds`/`in_bottom_band` resolve
-    /// against a band registered on the underlying `AppShell`, mirroring
+    /// against a band registered on the underlying `ShellView`, mirroring
     /// the existing `bottom_panel_bounds`/`in_bottom_panel` accessors.
     #[test]
     fn shell_context_resolves_bottom_band_bounds_and_hit_test() {
         let band_id = WidgetId::new("band:qf");
-        let mut shell = AppShell::new(Vec::new(), 20.0)
+        let mut shell = ShellView::new(Vec::new(), 20.0)
             .with_bottom_bands(vec![BottomBand::new(band_id.clone(), 2.0)]);
-        let layout = shell.layout(Rect::new(0.0, 0.0, 100.0, 40.0), 1.0);
+        let layout = shell.shell_layout(Rect::new(0.0, 0.0, 100.0, 40.0), 1.0);
         let c = ctx(&layout, &mut shell);
 
         let bounds = c
@@ -1160,14 +1173,14 @@ mod tests {
     #[test]
     fn window_edge_none_in_the_middle() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         assert_eq!(ctx(&layout, &mut shell).window_edge(50.0, 20.0, 4.0), None);
     }
 
     #[test]
     fn window_edge_detects_each_side() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         let c = ctx(&layout, &mut shell);
         assert_eq!(c.window_edge(50.0, 0.0, 4.0), Some(ResizeEdge::North));
         assert_eq!(c.window_edge(50.0, 40.0, 4.0), Some(ResizeEdge::South));
@@ -1178,7 +1191,7 @@ mod tests {
     #[test]
     fn window_edge_detects_each_corner() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         let c = ctx(&layout, &mut shell);
         assert_eq!(c.window_edge(0.0, 0.0, 4.0), Some(ResizeEdge::NorthWest));
         assert_eq!(c.window_edge(100.0, 0.0, 4.0), Some(ResizeEdge::NorthEast));
@@ -1191,7 +1204,7 @@ mod tests {
     #[test]
     fn window_edge_none_outside_window() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         assert_eq!(ctx(&layout, &mut shell).window_edge(-2.0, 20.0, 4.0), None);
         assert_eq!(ctx(&layout, &mut shell).window_edge(50.0, 45.0, 4.0), None);
     }
@@ -1202,7 +1215,7 @@ mod tests {
     #[test]
     fn window_edge_degenerate_tiny_window_is_deterministic() {
         let layout = layout_for(3.0, 3.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         let c = ctx(&layout, &mut shell);
         // Every point in a 3x3 window is within margin=4.0 of every edge;
         // just assert this doesn't panic and returns a corner (checked
@@ -1210,14 +1223,14 @@ mod tests {
         assert_eq!(c.window_edge(1.5, 1.5, 4.0), Some(ResizeEdge::NorthWest));
     }
 
-    /// `ctx.shell_mut()` reaches the real `AppShell` — a `ShellApp`
+    /// `ctx.shell_mut()` reaches the real `ShellView` — a `ShellApp`
     /// can drive shell state (e.g. a `Ctrl+B` toggle-sidebar binding)
     /// directly on the instance that's actually rendered, with no shadow
     /// copy required.
     #[test]
     fn shell_mut_toggles_the_real_app_shell() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         assert!(shell.sidebar_visible());
         {
             let c = ctx(&layout, &mut shell);
@@ -1231,7 +1244,7 @@ mod tests {
     #[test]
     fn shell_read_reflects_current_state() {
         let layout = layout_for(100.0, 40.0);
-        let mut shell = AppShell::new(Vec::new(), 20.0);
+        let mut shell = ShellView::new(Vec::new(), 20.0);
         shell.hide_sidebar();
         let c = ctx(&layout, &mut shell);
         assert!(!c.shell().sidebar_visible());

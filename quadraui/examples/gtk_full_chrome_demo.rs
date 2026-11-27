@@ -1,4 +1,4 @@
-//! GTK runner for the full-chrome AppShell demo.
+//! GTK runner for the full-chrome ShellView demo.
 //!
 //! Drag the empty part of the title bar to move the window; double-click
 //! it to toggle maximize/restore. Drag any outer window edge/corner

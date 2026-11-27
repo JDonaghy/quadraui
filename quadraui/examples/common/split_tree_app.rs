@@ -123,7 +123,7 @@ impl AppLogic for SplitTreeApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let rect = self.tree_rect(backend);
-        let layout = backend.draw_split_tree(rect, &self.tree);
+        let layout = backend.draw_primitive(rect, &self.tree);
 
         let colors = [
             (Color::rgb(255, 255, 255), Color::rgb(60, 60, 100)),
@@ -160,7 +160,7 @@ impl AppLogic for SplitTreeApp {
             }
             UiEvent::MouseDown { position, .. } => {
                 let rect = self.tree_rect(backend);
-                let layout = backend.split_tree_layout(rect, &self.tree);
+                let layout = backend.layout_primitive(rect, &self.tree);
                 if let Some(split_index) = layout.hit_test_divider(position, DIVIDER_TOLERANCE) {
                     if let Some(div) = layout
                         .dividers

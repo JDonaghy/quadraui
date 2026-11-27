@@ -1,4 +1,4 @@
-//! GTK shell runner: `run_with_shell()` wraps a [`ShellApp`] in an AppShell and
+//! GTK shell runner: `run_with_shell()` wraps a [`ShellApp`] in a ShellView and
 //! drives it through the GTK event loop, forwarding its `Result<(), RunError>`.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
@@ -10,7 +10,7 @@ use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the GTK backend.
+/// Run a [`ShellApp`] with ShellView chrome on the GTK backend.
 ///
 /// The GTK window's identity (Wayland `xdg_toplevel.set_app_id`; X11 `WM_CLASS`)
 /// comes from `RunConfig::app_id`, which the window manager uses to match the
@@ -28,7 +28,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Res
 
 /// Build a [`ShellApp`] as a [`crate::gtk::run::GtkRunner`] instead of
 /// entering [`run_with_shell`]'s blocking loop — for a host that wants
-/// the AppShell chrome but also needs
+/// the ShellView chrome but also needs
 /// [`crate::gtk::run::GtkRunner::attach_control`] (see [`crate::control`]'s
 /// module doc) or the step/pump-level control `run_with_shell` (which owns
 /// the process for its whole lifetime) can't give. Mirrors

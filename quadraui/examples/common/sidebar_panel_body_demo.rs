@@ -4,12 +4,10 @@
 //! of the per-backend hand-rolled row-slicing the issue's `panels.rs`
 //! audit found in `vimcode`.
 //!
-//! `TreeView`'s own `draw_tree` doesn't paint a scrollbar (see
-//! `SidebarPanelBody`'s module doc) — this demo deliberately uses a raw
-//! `TreeView`, not `TreeController`, so the composer's
+//! This demo paints a raw `TreeView` with its own scrollbar turned off
+//! (see `SidebarPanelBody`'s module doc), so the composer's
 //! `scrollbar_gutter` reservation + `scrollbar_rect` output are the
-//! thing actually exercised, not hidden behind a controller that
-//! already manages its own gutter.
+//! thing actually exercised.
 //!
 //! Controls:
 //! - `↑` / `↓`     scroll the list
@@ -61,9 +59,8 @@ impl ChromeMode {
 struct TreeBody(TreeView);
 
 impl BackendWidget for TreeBody {
-    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        backend.draw_tree(rect, &self.0);
+        let _ = backend.draw_dyn(rect, &self.0, &());
     }
 }
 
@@ -194,7 +191,10 @@ impl AppLogic for SidebarPanelBodyDemo {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: None,
             scroll_offset: self.scroll_offset,
-            style: TreeStyle::default(),
+            style: TreeStyle {
+                show_scrollbar: false,
+                ..TreeStyle::default()
+            },
             has_focus: true,
         };
         let layout = panel.render(backend, panel_rect, &TreeBody(tree));

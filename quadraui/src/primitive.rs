@@ -9,7 +9,7 @@
 //!
 //! Every built-in primitive (`ListView`, `TreeView`, `DataTable`, …)
 //! gets its own pair of [`crate::Backend`] methods — `draw_list` /
-//! `list_layout`, `draw_tree` / `tree_layout`, and so on — because
+//! `list_layout`, and so on — because
 //! `Backend` is sealed and each pair is a deliberate, versioned
 //! addition reviewed per primitive (see `docs/decisions/
 //! BACKEND_TRAIT_PROPOSAL.md` §4). A consumer that wants to paint its
@@ -197,6 +197,9 @@ pub struct LayoutCtx<'a> {
     /// Whether the calling backend paints per-row text scale — see
     /// [`Self::with_scaled_text_rows`] and [`Self::scales_text_rows`].
     scales_text_rows: bool,
+    /// The paint state the widget is painted with — see
+    /// [`Self::with_paint_state`] and [`Self::paint_state`].
+    paint_state: Option<&'a dyn PaintState>,
 }
 
 /// Prints the three scalar metrics plus whether a text measurer is
@@ -210,20 +213,24 @@ impl std::fmt::Debug for LayoutCtx<'_> {
             .field("nerd_fonts_enabled", &self.nerd_fonts_enabled)
             .field("measurer", &self.measurer.map(|_| "<fn>"))
             .field("style", &self.style.is_some())
+            .field("scroll_px", &self.paint_state().scroll_px())
             .finish()
     }
 }
 
-/// Compares the three scalar metrics only. The measurer is excluded:
-/// two function pointers to the same backend's
-/// [`crate::Backend::measure_text`] are not reliably equal, and a
-/// `Primitive` caching "did this frame's metrics change?" asks about the
-/// metrics, not about the closure that carried them.
+/// Compares the three scalar metrics and the attached paint state's
+/// [`PaintState::scroll_px`], the one paint-state answer a layout
+/// resolves geometry from. The measurer is excluded: two function
+/// pointers to the same backend's [`crate::Backend::measure_text`] are
+/// not reliably equal, and a `Primitive` caching "did this frame's
+/// metrics change?" asks about the metrics, not about the closure that
+/// carried them.
 impl PartialEq for LayoutCtx<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.line_height == other.line_height
             && self.char_width == other.char_width
             && self.nerd_fonts_enabled == other.nerd_fonts_enabled
+            && self.paint_state().scroll_px() == other.paint_state().scroll_px()
     }
 }
 
@@ -248,6 +255,7 @@ impl LayoutCtx<'static> {
             chrome_text_line_height: None,
             chrome_line_height: None,
             scales_text_rows: false,
+            paint_state: None,
         }
     }
 }
@@ -374,6 +382,30 @@ impl<'a> LayoutCtx<'a> {
         self.scales_text_rows
     }
 
+    /// This ctx with `state` as the paint state the widget is painted
+    /// with — the same value [`PaintEnv::state`] carries to its paint —
+    /// so a layout that depends on paint-time state (a row widget's
+    /// [`PaintState::scroll_px`]) resolves the geometry that is painted.
+    /// [`crate::DrawsPrimitives::draw_dyn`] attaches the caller's state,
+    /// and event routing attaches what that paint recorded
+    /// ([`PaintedWidgets::painted_state`]), so a hit-test resolves rows
+    /// exactly where they were drawn.
+    pub fn with_paint_state<'b>(self, state: &'b dyn PaintState) -> LayoutCtx<'b>
+    where
+        'a: 'b,
+    {
+        LayoutCtx {
+            paint_state: Some(state),
+            ..self
+        }
+    }
+
+    /// The paint state attached with [`Self::with_paint_state`], else
+    /// `()` — no paint-time state, every answer its default.
+    pub fn paint_state(&self) -> &dyn PaintState {
+        self.paint_state.unwrap_or(&())
+    }
+
     /// The style attached with [`Self::with_style`], else
     /// [`crate::Style::default`].
     pub fn style(&self) -> &crate::Style {
@@ -404,8 +436,7 @@ impl<'a> LayoutCtx<'a> {
 
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
-    /// helper already applies on its bespoke `draw_list`/`draw_tree`/
-    /// `draw_data_table` paths (e.g. `GtkBackend::resolved_row_height`,
+    /// helper already applies on its bespoke `draw_list` path (e.g. `GtkBackend::resolved_row_height`,
     /// `MacBackend::resolved_row_height`) before laying out rows — a
     /// chrome font taller than the theme's `row_height` token must never
     /// be clipped.
@@ -934,6 +965,61 @@ impl PaintState for () {}
 impl PaintState for InteractionState {
     fn interaction(&self) -> Option<&InteractionState> {
         Some(self)
+    }
+}
+
+/// An owned copy of a [`PaintState`]'s row answers — everything but
+/// [`PaintState::interaction`], which a paint reads live rather than
+/// keeping.
+///
+/// [`crate::DrawsPrimitives::draw_dyn`] records one per identified
+/// widget ([`PaintedWidget::paint_state`]): the caller's state is a
+/// borrow that ends with the paint, and event routing, which runs after
+/// it, lays the widget out again with this copy attached
+/// ([`LayoutCtx::with_paint_state`]) so it resolves the geometry that was
+/// painted.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PaintStateSnapshot {
+    /// [`PaintState::hovered_idx`].
+    pub hovered_idx: Option<usize>,
+    /// [`PaintState::pressed_idx`].
+    pub pressed_idx: Option<usize>,
+    /// [`PaintState::scroll_px`].
+    pub scroll_px: Option<f32>,
+    /// [`PaintState::striped`].
+    pub striped: bool,
+    /// [`PaintState::focus_ring_visible`].
+    pub focus_ring_visible: bool,
+}
+
+impl PaintStateSnapshot {
+    /// Copy `state`'s answers.
+    pub fn of(state: &dyn PaintState) -> Self {
+        Self {
+            hovered_idx: state.hovered_idx(),
+            pressed_idx: state.pressed_idx(),
+            scroll_px: state.scroll_px(),
+            striped: state.striped(),
+            focus_ring_visible: state.focus_ring_visible(),
+        }
+    }
+}
+
+impl PaintState for PaintStateSnapshot {
+    fn hovered_idx(&self) -> Option<usize> {
+        self.hovered_idx
+    }
+    fn pressed_idx(&self) -> Option<usize> {
+        self.pressed_idx
+    }
+    fn scroll_px(&self) -> Option<f32> {
+        self.scroll_px
+    }
+    fn striped(&self) -> bool {
+        self.striped
+    }
+    fn focus_ring_visible(&self) -> bool {
+        self.focus_ring_visible
     }
 }
 
@@ -1550,6 +1636,9 @@ pub struct PaintedWidget {
     /// pointer passes through to whatever is painted beneath. `None`: the
     /// whole of [`Self::rect`].
     pub hover_targets: Option<Vec<crate::interactive::SubTarget>>,
+    /// The paint state the widget painted with, which its layout was
+    /// resolved against.
+    pub paint_state: PaintStateSnapshot,
 }
 
 /// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
@@ -1618,6 +1707,17 @@ impl PaintedWidgets {
             .rev()
             .find(|e| &e.id == id)
             .map(|e| (e.rect, e.layout.as_ref()))
+    }
+
+    /// The paint state `id` painted with this frame, or `None` if it
+    /// didn't paint. Same last-entry-wins rule as
+    /// [`Self::painted_layout`].
+    pub fn painted_state(&self, id: &WidgetId) -> Option<PaintStateSnapshot> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)
+            .map(|e| e.paint_state)
     }
 
     /// The widget under `(x, y)` and, when its layout names one, the
@@ -1743,6 +1843,16 @@ pub fn painted_hit(x: f32, y: f32) -> Option<(WidgetId, Option<crate::interactiv
     with_painted_widgets(|p| p.painted_hit(x, y))
 }
 
+/// The paint state `id` painted with this frame —
+/// [`PaintedWidgets::painted_state`] against the live record — or the
+/// default (no paint-time state) when it didn't paint or the record is
+/// borrowed for writing.
+pub fn painted_state(id: &WidgetId) -> PaintStateSnapshot {
+    PAINTED_WIDGETS
+        .with(|p| p.try_borrow().ok().and_then(|p| p.painted_state(id)))
+        .unwrap_or_default()
+}
+
 /// The absolute center of `id`'s `sub` sub-part this frame —
 /// [`PaintedWidgets::painted_sub_center`] against the live record.
 pub fn painted_sub_center(id: &WidgetId, sub: crate::interactive::SubTarget) -> Option<(f32, f32)> {
@@ -1778,6 +1888,50 @@ mod tests {
     fn resolve_row_height_passes_through_the_tui_cell_convention() {
         let style = Style::default().with_row_height(22.0);
         assert_eq!(LayoutCtx::resolve_row_height(1.0, &style), 1.0);
+    }
+
+    /// A ctx with no paint state attached answers every paint-state
+    /// question with its default; an attached state answers through
+    /// [`LayoutCtx::paint_state`], and `scroll_px` takes part in
+    /// equality since a layout resolves geometry from it.
+    #[test]
+    fn layout_ctx_carries_the_attached_paint_state() {
+        let bare = LayoutCtx::new(16.0, 8.0, false);
+        assert_eq!(bare.paint_state().scroll_px(), None);
+        let state = PaintStateSnapshot {
+            scroll_px: Some(12.5),
+            striped: true,
+            ..PaintStateSnapshot::default()
+        };
+        let scrolled = bare.with_paint_state(&state);
+        assert_eq!(scrolled.paint_state().scroll_px(), Some(12.5));
+        assert!(scrolled.paint_state().striped());
+        assert_ne!(scrolled, bare);
+    }
+
+    /// The record keeps a copy of the state each widget painted with,
+    /// and the last paint of an id wins.
+    #[test]
+    fn painted_state_reads_back_the_last_paint_of_an_id() {
+        let id = WidgetId::new("rows");
+        let mut painted = PaintedWidgets::default();
+        for scroll_px in [Some(4.0), Some(9.5)] {
+            painted.record(PaintedWidget {
+                id,
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                layout: Box::new(()),
+                sub_regions: Vec::new(),
+                hover_targets: None,
+                paint_state: PaintStateSnapshot::of(
+                    &crate::primitives::list::ListPaintState::default().with_scroll_px(scroll_px),
+                ),
+            });
+        }
+        assert_eq!(
+            painted.painted_state(&id).and_then(|s| s.scroll_px),
+            Some(9.5)
+        );
+        assert_eq!(painted.painted_state(&WidgetId::new("other")), None);
     }
 
     /// [`LayoutCtx::units`] reports [`Units::Cells`] for TUI's whole-cell
@@ -2104,6 +2258,7 @@ mod tests {
             layout: Box::new(()),
             sub_regions: Vec::new(),
             hover_targets: None,
+            paint_state: Default::default(),
         });
         painted.record(PaintedWidget {
             id: over,
@@ -2111,6 +2266,7 @@ mod tests {
             layout: Box::new(()),
             sub_regions: Vec::new(),
             hover_targets: None,
+            paint_state: Default::default(),
         });
 
         assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
@@ -2136,6 +2292,7 @@ mod tests {
                 (Rect::new(0.0, 0.0, 10.0, 2.0), broad),
             ],
             hover_targets: None,
+            paint_state: Default::default(),
         });
 
         assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
@@ -2164,6 +2321,7 @@ mod tests {
             layout: Box::new(()),
             sub_regions: Vec::new(),
             hover_targets: None,
+            paint_state: Default::default(),
         });
 
         assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));

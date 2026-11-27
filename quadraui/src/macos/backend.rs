@@ -60,28 +60,16 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::board::{BoardLayout, BoardModel};
-use crate::primitives::canvas::{Canvas, CanvasLayout};
-use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::MenuBar;
-use crate::primitives::message_list::MessageList;
-use crate::primitives::multi_section_view::{
-    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
-};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
-use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices, Theme,
-    TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -327,7 +315,7 @@ pub struct MacBackend {
     requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
-    /// the activity bar and `draw_tree`. Set via
+    /// the activity bar and `TreeView`'s paint. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available
@@ -344,7 +332,7 @@ pub struct MacBackend {
     focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
     /// Picks `Icon::glyph` vs `Icon::fallback` in the activity bar and
-    /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
+    /// `TreeView`'s paint. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
     /// on this backend — see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available carries
     /// none of the "terminal with no Nerd Font installed" risk
@@ -995,7 +983,7 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree` and the activity-bar and toolbar widgets now
+    /// `TreeView`'s paint and the activity-bar and toolbar widgets now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
@@ -1074,8 +1062,7 @@ impl MacBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
-    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome/editor font large enough to need more than
     /// `Style::row_height` still gets it — a huge UI font size never
@@ -2266,8 +2253,7 @@ impl Backend for MacBackend {
 
     /// `NSEvent.scrollingDeltaY` is already in real points, not row
     /// notches like every other backend reports — divide by
-    /// `row_height` (on `TreeController`, [`Self::tree_scroll_row_height`]'s
-    /// result, the *same* basis the caller multiplies back by) to land
+    /// `row_height` (the *same* basis the caller multiplies back by) to land
     /// in row-unit currency without losing the real-pixel round-trip.
     /// Guards a non-positive or non-finite `row_height` (degenerate font
     /// state) by falling back to the trait default (pass delta through
@@ -2278,20 +2264,6 @@ impl Backend for MacBackend {
         } else {
             delta_y
         }
-    }
-
-    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
-    /// of the chrome font metric, run through the same
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
-    /// [`Self::tree_layout`]/[`Self::draw_tree_with_state`] paint rows
-    /// at — not [`Self::line_height`] (the *editor* font metric), which
-    /// disagrees with that painted pitch whenever the chrome font's
-    /// line height differs from the editor font's.
-    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
-        crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.chrome_line_height),
-        ) as f32
     }
 
     /// Forwards to [`Self::set_current_line_height`] — the
@@ -2337,75 +2309,6 @@ impl Backend for MacBackend {
 
     // ── Drawing ────────────────────────────────────────────────────
 
-    fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tree called outside enter_frame_scope",
-        );
-        // Row labels/badges/chevrons are chrome (`ChromePrimitive::Tree`),
-        // so row spacing uses the chrome metric — same reason as the MSV
-        // fix in 7dfbad5e.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.chrome_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::tree::draw_tree(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                tree,
-                &theme,
-                &self.current_style,
-                line_height,
-                self.nerd_fonts_enabled,
-            );
-        }
-    }
-    /// [`Self::draw_tree`], plus hover/press tinting, a focus-visible
-    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
-    /// scroll position instead of only [`TreeView::scroll_offset`]'s
-    /// whole-row value, via [`super::tree::draw_tree_with_state`].
-    /// `state.scroll_px: None` paints pixel-identically to
-    /// [`Self::draw_tree`].
-    fn draw_tree_with_state(
-        &mut self,
-        rect: Rect,
-        tree: &TreeView,
-        state: &crate::primitives::tree::TreePaintState,
-        focus_ring_visible: bool,
-    ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_tree_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.chrome_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::tree::draw_tree_with_state(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                tree,
-                &theme,
-                &self.current_style,
-                line_height,
-                self.nerd_fonts_enabled,
-                state,
-                focus_ring_visible,
-            );
-        }
-    }
     fn draw_list(&mut self, rect: Rect, list: &ListView) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -2475,168 +2378,6 @@ impl Backend for MacBackend {
             );
         }
     }
-    fn draw_data_table(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table called outside enter_frame_scope",
-        );
-        // `DataTable` is chrome, not editor content — paint through
-        // `chrome_font`, matching `draw_tree`'s comment above.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                hovered_idx,
-            )
-        }
-    }
-    /// [`Self::draw_data_table`], but honouring an optional
-    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
-    /// sort-direction glyphs — `glyphs: None` reproduces
-    /// [`Self::draw_data_table`] exactly.
-    fn draw_data_table_with_glyphs(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table_with_glyphs called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table_with_glyphs(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                hovered_idx,
-                glyphs,
-                self.nerd_fonts_enabled,
-            )
-        }
-    }
-    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
-    /// `Some` — a pixel-precise scroll position instead of only
-    /// [`DataTable::scroll_offset`]'s whole-row value, via
-    /// [`super::data_table::draw_data_table_with_state`].
-    /// `state.scroll_px: None` paints pixel-identically to
-    /// [`Self::draw_data_table`].
-    fn draw_data_table_with_state(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        state: &crate::primitives::data_table::DataTablePaintState,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table_with_state(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                state,
-            )
-        }
-    }
-    fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
-        // No-paint twin of `draw_data_table` — must agree with what
-        // that method painted.
-        let font = &self.chrome_font;
-        super::data_table::mac_data_table_layout(
-            table,
-            font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.resolved_row_height(self.current_line_height),
-        )
-    }
-    /// Forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
-    /// through [`Self::chrome_surface`] — `TreeTable` is chrome, not
-    /// editor content, same as [`Self::draw_data_table`].
-    fn draw_tree_table(
-        &mut self,
-        rect: Rect,
-        table: &crate::TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let state = crate::primitives::data_table::DataTablePaintState::default()
-            .with_hovered_idx(hovered_idx);
-        let mut surface = self.chrome_surface("draw_tree_table");
-        crate::primitives::tree_table::native_surface_paint::paint(
-            table,
-            &mut surface,
-            &theme,
-            rect,
-            line_height as f32,
-            &state,
-            nerd_fonts_enabled,
-        )
-    }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
-    /// mirroring [`Self::data_table_layout`].
-    fn tree_table_layout(
-        &self,
-        rect: Rect,
-        table: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let font = &self.chrome_font;
-        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
-            table,
-            rect.width,
-            rect.height,
-            self.resolved_row_height(self.current_line_height) as f32,
-            font,
-        )
-    }
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
         // but macOS works in pixels.  Convert with `current_char_width` so the
@@ -2689,124 +2430,6 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_settings_chrome(
-        &mut self,
-        rect: Rect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        crate::compose::sidebar_panel_body::paint_settings_chrome(
-            self,
-            &theme,
-            rect,
-            line_height,
-            header_text,
-            query,
-            placeholder,
-            active,
-        );
-    }
-
-    /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
-    /// honor `rect` exactly via `PaintSurface::surface_fill_rect`.
-    fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
-        self.surface_fill_rect(rect, color);
-        // Chrome-only paint (no text of its own) — see
-        // `TuiBackend::draw_solid_fill`'s identical registration for why.
-        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
-
-    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_multi_section_view called outside enter_frame_scope",
-        );
-        // Section headers and Tree/List body rows are sidebar chrome
-        // (`ChromePrimitive::MultiSectionView`). The font swaps to chrome,
-        // and `line_height` uses the chrome metric so row spacing matches
-        // the compose layer's `chrome_line_height()`-based hit regions.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        let char_width = self.chrome_char_width;
-        let caret_visible = self.caret_visible.get();
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::multi_section_view::draw_multi_section_view(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                view,
-                &theme,
-                &self.current_style,
-                line_height,
-                char_width,
-                caret_visible,
-            )
-        }
-    }
-    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        super::multi_section_view::mac_msv_layout(view, rect, self.chrome_line_height)
-    }
-    fn msv_metrics(&self) -> MsvLayoutMetrics {
-        super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
-    }
-    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        super::tree::mac_tree_layout(
-            tree,
-            rect,
-            self.resolved_row_height(self.chrome_line_height),
-            &self.chrome_font,
-            self.current_style.row_padding_x,
-        )
-    }
-    fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.chrome_line_height),
-        );
-        tree.vscrollbar_with_track_width(
-            rect,
-            row_h as f32,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-        )
-    }
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        true
-    }
-    fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_message_list called outside enter_frame_scope",
-        );
-        // `MessageList` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let font = &self.chrome_font;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::message_list::draw_message_list(
-                ctx,
-                font,
-                list,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                (rect.y + rect.height) as f64,
-                line_height,
-            );
-        }
-    }
-
     fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
         debug_assert!(
             !self.current_cg().is_null(),
@@ -2819,7 +2442,8 @@ impl Backend for MacBackend {
         // `chrome_font` unconditionally (see those methods' docs), so
         // there is nothing for this call to precondition on.
         let theme = self.current_theme;
-        crate::primitives::find_replace::paint(panel, self, &theme);
+        let style = Backend::style(self);
+        crate::primitives::find_replace::paint(panel, self, &theme, &style);
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
@@ -2829,80 +2453,6 @@ impl Backend for MacBackend {
         );
     }
 
-    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
-        let layout = super::split::mac_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        let theme = self.current_theme;
-        crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
-        layout
-    }
-    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
-        super::split::mac_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-    fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-        let theme = self.current_theme;
-        let layout = super::split_tree::mac_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
-        layout
-    }
-    fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-        super::split_tree::mac_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-    fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout {
-        let layout = canvas.layout(rect);
-        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
-        layout
-    }
-    /// Paint via the shared
-    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-    /// — see that fn's doc for the seven named divergences found while
-    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
-    /// `macos::pipeline_view::draw_pipeline_view` and
-    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
-    fn draw_pipeline_view(
-        &mut self,
-        rect: Rect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let theme = self.current_theme;
-        crate::primitives::pipeline_view::native_surface_paint::paint(view, self, &theme, rect)
-    }
-    fn pipeline_view_layout(
-        &self,
-        rect: Rect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        super::pipeline_view::mac_pipeline_view_layout(
-            view,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
     /// Paint via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`].
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
@@ -2921,8 +2471,7 @@ impl Backend for MacBackend {
     }
     /// Paint via the shared
     /// [`crate::primitives::spinner::native_surface_paint::paint`].
-    /// `Spinner` is chrome, not editor content — see `draw_data_table`'s
-    /// comment — so `self` (whose [`crate::paint_surface::PaintSurface`]
+    /// `Spinner` is chrome, not editor content, so `self` (whose [`crate::paint_surface::PaintSurface`]
     /// impl measures/draws through `chrome_font`) is the right surface.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         let theme = self.current_theme;
@@ -2935,96 +2484,6 @@ impl Backend for MacBackend {
         // method painted.
         let font = &self.chrome_font;
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
-    }
-    /// Shared chart painting lives in
-    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
-    /// the divergences resolved while unifying `gtk::chart::draw_chart`,
-    /// `macos::chart::draw_chart` and `win::chart::draw_chart` into one
-    /// implementation.
-    fn draw_chart(
-        &mut self,
-        rect: Rect,
-        chart: &Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) -> ChartLayout {
-        let theme = self.current_theme;
-        let layout = self.chart_layout(rect, chart);
-        crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
-        layout
-    }
-    /// Measured in `chrome_line_height`/`chrome_char_width`, not the
-    /// editor pitch: the geometry this returns reserves room for text —
-    /// the y-axis tick gutter is `char_width * (longest_label + 1)`, and
-    /// the x-tick, x-label and legend rows are each one `line_height`
-    /// tall — and every one of those labels is painted by
-    /// [`crate::primitives::chart::paint`] through plain `self`, whose
-    /// [`PaintSurface`] impl resolves `chrome_font` (see
-    /// [`Self::surface_measure_text`]). Sizing the gutter and rows from
-    /// the editor font while the glyphs that land in them come from the
-    /// chrome font is the metric mismatch the two cached widths exist to
-    /// avoid: axis and legend labels would clip against the plot area or
-    /// spill outside the chart's own bounds whenever the two fonts
-    /// differ in size. [`Self::surface_line_height`] reports the same
-    /// chrome pitch `paint` re-reads for the x-label offset, so layout
-    /// and paint agree on every row.
-    fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout {
-        super::chart::mac_chart_layout(
-            chart,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.chrome_line_height,
-            self.chrome_char_width,
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
-    /// see that fn's doc for the two named divergences (row/header text
-    /// vertical alignment; header-label ellipsize vs. hard-clip) found
-    /// while unifying `gtk::diff_view::draw_diff_view`,
-    /// `macos::diff_view::draw_diff_view` and
-    /// `win::diff_view::draw_diff_view` into one implementation.
-    fn draw_diff_view(
-        &mut self,
-        rect: Rect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert their own `!ctx.is_null()` internally, so
-        // this method needs no separate ctx/font fetch of its own.
-        //
-        // `DiffView` is editor-class — see `EditorSurface`'s doc.
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        let mut surface = EditorSurface { backend: self };
-        crate::primitives::diff_view::native_surface_paint::paint(
-            view,
-            &mut surface,
-            &theme,
-            rect,
-            line_height,
-        )
-    }
-
-    /// Override of the trait's no-op default, which returns an empty
-    /// `BoardLayout` and paints nothing. Paint via the shared
-    /// [`crate::primitives::board::native_surface_paint::paint`].
-    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
-        let theme = self.current_theme;
-        crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
-    }
-
-    fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout {
-        super::board::mac_board_layout(
-            model,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
     }
 
     // ─── Clipping ────────────────────────────────────────────────────────
@@ -3493,6 +2952,10 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_pop_clip()
     }
 
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.backend.surface_overlay_scrollbar_opacity()
+    }
+
     fn surface_blit_alpha(
         &mut self,
         dest: Rect,
@@ -3820,6 +3283,10 @@ impl PaintSurface for MacBackend {
         );
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { CGContextRestoreGState(ctx) };
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.scrollbar_fade_opacity()
     }
 
     fn surface_blit_alpha(
@@ -4359,42 +3826,6 @@ mod tests {
         assert_eq!(b.wheel_delta_rows(10.0, f32::NAN), 10.0);
     }
 
-    #[test]
-    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
-        let b = MacBackend::new();
-        assert_eq!(b.line_height(), 16.0);
-        let tree = TreeView {
-            id: WidgetId::new("tree"),
-            rows: vec![crate::primitives::tree::TreeRow {
-                path: vec![0],
-                indent: 0,
-                icon: None,
-                text: crate::types::StyledText::plain("a"),
-                badge: None,
-                is_expanded: None,
-                decoration: crate::Decoration::Normal,
-                edit: None,
-            }],
-            selection_mode: crate::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::TreeStyle::default(),
-            has_focus: true,
-        };
-        let row_height = b.tree_scroll_row_height(&tree);
-        // The real painted pitch is floored at `Style::row_height` and
-        // run through the tree's own 1.4x row-pitch formula, so it must
-        // not equal the raw editor `line_height()`.
-        assert_ne!(row_height, b.line_height());
-        assert_eq!(
-            row_height as f64,
-            crate::primitives::layout_metrics::tree_row_pitch(
-                &tree,
-                b.resolved_row_height(b.chrome_line_height() as f64)
-            )
-        );
-    }
-
     /// The registry itself now lives in `BackendCore` — its
     /// `contains_key` isn't reachable from here anymore, so this observes
     /// the same round trip behaviourally via `match_keypress`.
@@ -4790,7 +4221,7 @@ mod tests {
         assert_eq!(b.char_width(), overridden_char_width);
 
         // The override doesn't clear `current_font` — draw_* methods that
-        // require a font (see e.g. `draw_tree`'s `.expect(...)`) must
+        // require a font (see e.g. `TreeView`'s paint's `.expect(...)`) must
         // keep working after a metrics override.
         assert!(b.current_font.is_some());
     }
@@ -5301,6 +4732,7 @@ mod tests {
             h_scroll,
             max_content_width: Some(content_width),
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -6118,7 +5550,12 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             Backend::push_clip(b, Rect::new(0.0, 0.0, 10.0, 10.0));
-            b.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), red),
+                &(),
+            );
             Backend::pop_clip(b);
         });
         backend.end_frame();
@@ -6163,13 +5600,23 @@ mod tests {
             // this reaches (0,0)..(20,20) but not past it; if it dropped
             // clipping entirely, it would reach the whole 40x40 surface,
             // including (30,30) checked below.
-            b.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), green);
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), green),
+                &(),
+            );
             Backend::pop_clip(b);
             // Paint only after the outer pop, confined to pixels
             // (20,20)..(40,40) — entirely outside the now-popped outer clip,
             // so this fill can only land there if the outer pop actually
             // cleared clipping rather than leaving the outer rect active.
-            b.draw_solid_fill(Rect::new(20.0, 20.0, 20.0, 20.0), white);
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
+                Rect::new(20.0, 20.0, 20.0, 20.0),
+                &crate::testing::solid_canvas(Rect::new(20.0, 20.0, 20.0, 20.0), white),
+                &(),
+            );
         });
         backend.end_frame();
 
@@ -6889,13 +6336,11 @@ mod tests {
         );
     }
 
-    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    // ── Chart real-pixel driver tests ───────────────────────────────────
     //
-    // Ported from the deleted `macos::chart::tests` (that module already
-    // drove the real `MacBackend::draw_chart` via its own local
-    // `paint_via_backend` helper — the shape every other backend's #810
-    // migration now also uses) to live alongside every other
-    // `draw_*`-family driver test in this module.
+    // Drive a chart through `draw_primitive` end to end on a real
+    // CoreGraphics bitmap, alongside every other driver test in this
+    // module.
 
     use super::super::headless::BitmapSurface;
     use crate::primitives::chart::{
@@ -6931,7 +6376,7 @@ mod tests {
     fn paint_chart_via_backend(
         chart: &ChartModel,
         hovered: Option<(usize, usize)>,
-    ) -> (BitmapSurface, ChartLayout) {
+    ) -> (BitmapSurface, crate::primitives::chart::ChartLayout) {
         let surface = BitmapSurface::new(CHART_W, CHART_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
@@ -6939,13 +6384,16 @@ mod tests {
         backend.begin_frame(Viewport::new(CHART_W as f32, CHART_H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_chart(
+            let chart = ChartModel {
+                hovered_point: hovered,
+                ..chart.clone()
+            };
+            let l = crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(0.0, 0.0, CHART_W as f32, CHART_H as f32),
-                chart,
-                hovered,
-                None,
+                &chart,
             );
-            *layout.borrow_mut() = Some(l);
+            *layout.borrow_mut() = Some(l.chart);
         });
         backend.end_frame();
         (surface, layout.into_inner().unwrap())
@@ -7125,11 +6573,14 @@ mod tests {
                 Rect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
                 sentinel,
             );
-            b.draw_chart(
+            let chart = ChartModel {
+                hovered_point: Some((0, 0)),
+                ..chart.clone()
+            };
+            crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(chart_x, chart_y, chart_w, chart_h),
                 &chart,
-                Some((0, 0)),
-                None,
             );
         });
         backend.end_frame();
@@ -7145,7 +6596,7 @@ mod tests {
         );
     }
 
-    /// `chart_layout` reserves the y-axis tick gutter and the
+    /// The chart layout reserves the y-axis tick gutter and the
     /// x-tick/legend rows from cached font metrics, but every label that
     /// lands in those regions is painted by `primitives::chart::paint`
     /// through plain `self`, whose `PaintSurface` impl resolves
@@ -7209,16 +6660,15 @@ mod tests {
         backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
         let layout_cell = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_chart(
+            let l = crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(0.0, 0.0, CW as f32, CH as f32),
                 &chart,
-                None,
-                None,
             );
-            *layout_cell.borrow_mut() = Some(l);
+            *layout_cell.borrow_mut() = Some(l.chart);
         });
         backend.end_frame();
-        let layout = layout_cell.into_inner().expect("draw_chart ran");
+        let layout = layout_cell.into_inner().expect("the chart painted");
         let runs = backend.text_runs();
         let run_for = |label: &str| {
             runs.iter()
@@ -8146,7 +7596,7 @@ mod tests {
     }
 
     /// Acceptance test: paint a `TreeView` through the real
-    /// `Backend::draw_tree` path and verify its painted row-label extent
+    /// `TreeView`'s paint path and verify its painted row-label extent
     /// tracks `set_ui_font`, not `set_editor_font`. Same structure as
     /// `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
     /// (`gtk/backend.rs`): paint the same single-row tree under two
@@ -8160,11 +7610,11 @@ mod tests {
     /// Pango layout's font description there changes only the glyphs.
     /// `MacBackend` **derives** them, inside `set_editor_font` — and row
     /// pitch (`line_height * 1.4`) plus the leaf row's own horizontal
-    /// chevron reservation (`macos::tree::draw_tree`'s
+    /// chevron reservation (the tree paint's
     /// `cursor_x += line_height * 0.8`) both read that derived value, by
     /// design: row pitch tracking the editor line height is the
     /// deliberately-deferred half of #624/#1003 (see
-    /// `MacBackend::draw_tree`'s comment), not part of the font swap under
+    /// the tree paint's comment), not part of the font swap under
     /// test. So the two cached metrics are pinned to fixed values after
     /// each `set_editor_font`, leaving the *glyph font* as the only thing
     /// that varies between calls. Without that pin, a `Menlo 60` editor
@@ -8198,7 +7648,7 @@ mod tests {
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut b, f);
             }
-            // White `tab_bar_bg`/`background` so `draw_tree`'s own
+            // White `tab_bar_bg`/`background` so `TreeView`'s paint's own
             // row-background fill doesn't itself read as "non-white" and
             // saturate the rightmost-painted-pixel scan below — mirrors
             // `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`.
@@ -8210,7 +7660,7 @@ mod tests {
             });
             b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
-            let tree = TreeView {
+            let tree = crate::TreeView {
                 id: WidgetId::new("test:tree"),
                 rows: vec![crate::primitives::tree::TreeRow {
                     path: vec![0],
@@ -8229,7 +7679,12 @@ mod tests {
                 has_focus: false,
             };
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                backend.draw_tree(Rect::new(0.0, 0.0, W as f32, H as f32), &tree);
+                let _ = crate::backend::DrawsPrimitives::draw_dyn(
+                    backend,
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &tree,
+                    &(),
+                );
             });
             b.end_frame();
 
@@ -8265,84 +7720,6 @@ mod tests {
         );
     }
 
-    /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
-    /// integration tests.
-    fn flat_tree(n_rows: usize) -> TreeView {
-        TreeView {
-            id: WidgetId::new("test:tree:vscrollbar"),
-            rows: (0..n_rows)
-                .map(|i| crate::primitives::tree::TreeRow {
-                    path: vec![i as u16],
-                    indent: 0,
-                    icon: None,
-                    text: crate::types::StyledText::plain(format!("row{i}")),
-                    badge: None,
-                    is_expanded: None,
-                    decoration: crate::types::Decoration::Normal,
-                    edit: None,
-                })
-                .collect(),
-            selection_mode: crate::types::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::types::TreeStyle::default(),
-            has_focus: false,
-        }
-    }
-
-    /// `tree_vscrollbar` must pass `line_height * 1.4` pitch (not raw
-    /// `line_height`) as `TreeView::vscrollbar`'s `row_height`, since that
-    /// is what `mac_tree_layout` actually paints for non-header rows.
-    /// With `current_line_height` at 16px default, 15 rows painted at the
-    /// real 22.4px→22px pitch only fit 13 into a 300px-tall viewport
-    /// (300/22 = 13), so an overflow scrollbar must appear. The row pitch
-    /// governs the minimum thumb length, not the track's (fixed 10px)
-    /// width.
-    #[test]
-    fn mac_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
-        let backend = MacBackend::new();
-        let row_pitch = (backend.chrome_line_height * 1.4).round();
-        let n_rows = ((250.0 / row_pitch).ceil() as usize) + 2;
-        let tree = flat_tree(n_rows);
-        let rect = Rect::new(0.0, 0.0, 20.0, 250.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("rows at chrome_line_height row pitch must overflow a 250px viewport");
-
-        let expected_row_h = row_pitch as f32;
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "track width must stay the fixed VS Code list/tree scrollbar width"
-        );
-        assert!(
-            sb.thumb_len >= expected_row_h,
-            "minimum thumb length (and row pitch) must match tree_layout's \
-             non-header item_height, not the raw line_height"
-        );
-    }
-
-    /// A host-set `TreeStyle::row_height` must be honored
-    /// by `tree_vscrollbar`, exactly as `mac_tree_layout`/`draw_tree`
-    /// honor it — not silently ignored in favor of `line_height`. It
-    /// governs the minimum thumb length, not the track's (fixed 10px)
-    /// width.
-    #[test]
-    fn mac_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
-        let backend = MacBackend::new();
-        let mut tree = flat_tree(15);
-        tree.style.row_height = Some(50);
-        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH
-        );
-        assert!(sb.thumb_len >= 50.0);
-    }
-
     /// `list_vscrollbar`'s track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
@@ -8369,6 +7746,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 

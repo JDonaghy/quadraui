@@ -14,8 +14,8 @@
 //! answer and paints it through the identical code every built-in `Canvas`
 //! leaf already paints through:
 //! [`quadraui::primitives::canvas::native_surface_paint::paint`] on a
-//! pixel backend's [`quadraui::PaintSurface`], [`quadraui::tui::draw_canvas`]
-//! on TUI's cell buffer. Region hit-testing reuses
+//! pixel backend's [`quadraui::PaintSurface`], `Canvas`'s own
+//! `Primitive::paint_cells` on TUI's cell grid. Region hit-testing reuses
 //! [`quadraui::CanvasLayout::region_hit_test`] the same way.
 //!
 //! # Caching — one FFI round trip per widget per frame at most
@@ -628,8 +628,8 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
             surface.surface_char_width(),
             false,
         );
-        let (canvas, canvas_layout) = self.resolve_paint(&ctx, layout.rect, theme);
-        native_surface_paint::paint(&canvas, &canvas_layout, surface);
+        let (canvas, resolved) = self.resolve_paint(&ctx, layout.rect, theme);
+        native_surface_paint::paint(&canvas, &resolved, surface);
     }
 
     // No `#[cfg(feature = "tui")]` here: unlike `quadraui`'s own
@@ -644,29 +644,10 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         cells: &mut dyn quadraui::CellSurface,
         env: &quadraui::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(quadraui::primitive::CELL_BUFFER_REQUIRED);
         let ctx = LayoutCtx::new(1.0, 1.0, false);
-        let (canvas, _) = self.resolve_paint(&ctx, layout.rect, theme);
-        let area = q_rect_to_ratatui(layout.rect);
-        quadraui::tui::draw_canvas(buf, area, &canvas, theme);
+        let (canvas, resolved) = self.resolve_paint(&ctx, layout.rect, env.theme());
+        canvas.paint_cells(&resolved, cells, env);
     }
-}
-
-/// Converts a `quadraui::Rect` (f32, native-unit) into the
-/// `ratatui::layout::Rect` (u16 cells) [`quadraui::tui::draw_canvas`]
-/// takes — same rounding [`quadraui::tui::backend`]'s own (crate-private)
-/// conversion uses, reproduced here since that helper isn't part of this
-/// crate's public surface.
-fn q_rect_to_ratatui(r: Rect) -> ratatui::layout::Rect {
-    let x = r.x.max(0.0).round() as u16;
-    let y = r.y.max(0.0).round() as u16;
-    let w = r.width.max(0.0).round() as u16;
-    let h = r.height.max(0.0).round() as u16;
-    ratatui::layout::Rect::new(x, y, w, h)
 }
 
 /// Lets [`ScriptedPrimitive`] sit directly in [`crate::render::RenderFrame::extra`]
@@ -878,7 +859,7 @@ mod tests {
             &quadraui::PaintEnv::new(&Theme::default(), &quadraui::Style::default()),
         );
 
-        assert_ne!(buf[(0, 0)].symbol().chars().next().unwrap_or(' '), ' ');
+        assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Rgb(0, 0, 200));
     }
 
     #[test]

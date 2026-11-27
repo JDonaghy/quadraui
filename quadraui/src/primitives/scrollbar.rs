@@ -784,7 +784,11 @@ impl crate::primitive::Primitive for Scrollbar {
         ScrollbarLayout::resolve(self, rect)
     }
 
-    /// The shared pixel painter, against the track `layout` resolved.
+    /// The shared pixel painter, against the track `layout` resolved, at
+    /// the surface's overlay idle-fade opacity
+    /// ([`crate::PaintSurface::surface_overlay_scrollbar_opacity`]): an
+    /// idle bar is hidden until the user scrolls. A bar under the
+    /// pointer or being dragged paints at full opacity.
     fn paint(
         &self,
         layout: &ScrollbarLayout,
@@ -797,7 +801,20 @@ impl crate::primitive::Primitive for Scrollbar {
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
-        native_surface_paint::paint(&self.on_track(layout.track), surface, theme);
+        {
+            let engaged = self.hovered || self.dragging || env.is_hovered(&self.id);
+            let opacity = if engaged {
+                1.0
+            } else {
+                surface.surface_overlay_scrollbar_opacity()
+            };
+            native_surface_paint::paint_with_opacity(
+                &self.on_track(layout.track),
+                surface,
+                theme,
+                opacity,
+            );
+        }
         #[cfg(not(any(
             feature = "gtk",
             feature = "win",

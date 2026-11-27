@@ -617,7 +617,7 @@ fn data_table_divider_drag_overflows_into_h_scroll_parity_tui_and_gtk_agree() {
 // coordinate spaces comparable without naming either unit in the shared body.
 
 /// Resolves a declared column width through one backend's own
-/// `data_table_layout`, so the assertions below read real per-backend font
+/// `layout_primitive`, so the assertions below read real per-backend font
 /// metrics rather than a test-local approximation of them.
 trait ColumnUnitProbe {
     /// Resolved native width of `table`'s first column.
@@ -628,11 +628,11 @@ trait ColumnUnitProbe {
 }
 
 impl ColumnUnitProbe for TuiDriver<DataTableApp> {
-    #[allow(deprecated)]
     fn probe_column_width(&self, table: &DataTable) -> f32 {
         // Same viewport the shared `DataTableDriverCtor` builds, in cells.
         self.backend()
-            .data_table_layout(Rect::new(0.0, 0.0, 100.0, 26.0), table)
+            .layout_primitive(Rect::new(0.0, 0.0, 100.0, 26.0), table)
+            .layout
             .columns[0]
             .width
     }
@@ -643,11 +643,11 @@ impl ColumnUnitProbe for TuiDriver<DataTableApp> {
 }
 
 impl ColumnUnitProbe for GtkDriver<DataTableApp> {
-    #[allow(deprecated)]
     fn probe_column_width(&self, table: &DataTable) -> f32 {
         // Same viewport the shared `DataTableDriverCtor` builds, in pixels.
         self.backend()
-            .data_table_layout(Rect::new(0.0, 0.0, 900.0, 600.0), table)
+            .layout_primitive(Rect::new(0.0, 0.0, 900.0, 600.0), table)
+            .layout
             .columns[0]
             .width
     }
@@ -764,7 +764,7 @@ fn native_width_is_exactly_n_cells_on_tui_and_n_px_on_gtk() {
 // ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────────
 //
 // An activity bar's `ActivityBarRowHit`s carry `y_start`/`y_end` **bar-relative** —
-// measured from the `rect` the bar was drawn into. `AppShell` adds
+// measured from the `rect` the bar was drawn into. `ShellView` adds
 // `activity_bar_bounds.y` itself in both its click reader (`cached_activity_hit`)
 // and its hover reader (`update_hover`), so a painter that also folded the origin in
 // would place every hit region `activity_bar_bounds.y` too low. That offset is

@@ -1489,23 +1489,14 @@ where
     // [`crate::backend::DrawsPrimitives::draw_primitive`] uses, so the
     // scalars — including `line_height`'s row-height floor — match the
     // paint pass exactly.
-    let ctx = crate::backend::primitive_layout_ctx(backend);
-    let layout = {
-        // The same measurer
-        // [`crate::backend::DrawsPrimitives::draw_primitive`] attaches, so
-        // the layout this hit-test runs against is the one that was
-        // painted — a widget that sizes text through
-        // [`crate::primitive::LayoutCtx::text_width`] would otherwise
-        // resolve different geometry here than on screen. Scoped so the
-        // closure's shared borrow ends before the `&mut backend` calls
-        // below.
-        let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
-        let style = backend.style();
-        node.widget
-            .layout(&ctx.with_measurer(&measurer).with_style(&style), node.rect)
-    };
+    let units = crate::backend::primitive_layout_ctx(backend).units();
+    // The same measurer, style and recorded paint state
+    // [`crate::backend::DrawsPrimitives::draw_dyn`] laid the widget out
+    // with, so this hit-test runs against the geometry that was painted —
+    // text measured as it was drawn, rows shifted by the scroll they
+    // were drawn at.
+    let layout = crate::backend::layout_like_paint(&*backend, node.widget.as_ref(), node.rect);
     let currently_focused = backend.focus_tree().focused().copied();
-    let units = ctx.units();
 
     let mut intents = WidgetHostIntents::default();
     let text_surface = backend.paint_surface();
@@ -2810,6 +2801,7 @@ mod widget_routing_tests {
             layout: Box::new(()),
             sub_regions: Vec::new(),
             hover_targets: None,
+            paint_state: Default::default(),
         });
         let move_to = |x: f32| UiEvent::MouseMoved {
             position: Point::new(x, 1.0),

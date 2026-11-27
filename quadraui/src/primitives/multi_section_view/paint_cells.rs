@@ -351,10 +351,44 @@ mod tests {
     use super::paint_empty_body;
     use crate::primitives::multi_section_view::*;
     use crate::theme::Theme;
-    use crate::tui::{draw_multi_section_view, tui_msv_layout, BufferCellSurface};
+    use crate::tui::BufferCellSurface;
     use crate::types::{Icon, StyledText, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as TuiRect;
+
+    fn q_rect(area: TuiRect) -> crate::event::Rect {
+        crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        )
+    }
+
+    /// Paint `view` into `area` on `buf` through its own cell painter;
+    /// `nerd_fonts_enabled` reaches the tree and list bodies.
+    fn paint_view(
+        buf: &mut Buffer,
+        area: TuiRect,
+        view: &MultiSectionView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) {
+        use crate::primitive::{LayoutCtx, Primitive};
+        let ctx = LayoutCtx::new(1.0, 1.0, nerd_fonts_enabled);
+        let layout = Primitive::layout(view, &ctx, q_rect(area));
+        let style = crate::Style::default();
+        view.paint_cells(
+            &layout,
+            &mut BufferCellSurface::new(buf),
+            &crate::PaintEnv::new(theme, &style),
+        );
+    }
+
+    /// The chrome layout [`paint_view`] paints `view` with in `area`.
+    fn chrome_layout(view: &MultiSectionView, area: TuiRect) -> MultiSectionViewLayout {
+        cell_msv_layout(view, q_rect(area))
+    }
 
     fn empty_section(id: &str, size: SectionSize) -> Section {
         Section {
@@ -398,7 +432,7 @@ mod tests {
     fn paints_chevron_and_uppercase_title_in_header() {
         let mut buf = Buffer::empty(TuiRect::new(0, 0, 30, 6));
         let v = view_with(vec![empty_section("a", SectionSize::EqualShare)]);
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 30, 6),
             &v,
@@ -416,7 +450,7 @@ mod tests {
         let mut buf = Buffer::empty(TuiRect::new(0, 0, 30, 6));
         let mut v = view_with(vec![empty_section("a", SectionSize::EqualShare)]);
         v.axis = Axis::Horizontal;
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 30, 6),
             &v,
@@ -438,7 +472,7 @@ mod tests {
             enabled: true,
         }];
         let v = view_with(vec![s]);
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 30, 6),
             &v,
@@ -464,7 +498,7 @@ mod tests {
             has_focus: false,
         }));
         let v = view_with(vec![s]);
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 30, 6),
             &v,
@@ -491,9 +525,9 @@ mod tests {
 
     /// Paint into `buf` and return the layout the rasteriser used. Hit
     /// tests query the SAME layout instance — that's the source-of-truth
-    /// contract the harness verifies. (`draw_multi_section_view`
-    /// internally calls `tui_msv_layout`; calling it again here returns
-    /// an equivalent layout because `tui_msv_layout` is pure: same
+    /// contract the harness verifies. (`paint_view`
+    /// internally calls `chrome_layout`; calling it again here returns
+    /// an equivalent layout because `chrome_layout` is pure: same
     /// `view` + `area` → identical bounds.)
     fn paint_then_layout(
         buf: &mut Buffer,
@@ -502,8 +536,8 @@ mod tests {
         theme: &Theme,
         nerd_fonts_enabled: bool,
     ) -> MultiSectionViewLayout {
-        draw_multi_section_view(buf, area, view, theme, nerd_fonts_enabled);
-        tui_msv_layout(view, area)
+        paint_view(buf, area, view, theme, nerd_fonts_enabled);
+        chrome_layout(view, area)
     }
 
     fn tree_section(id: &str, items: &[&str], size: SectionSize) -> Section {
@@ -562,7 +596,7 @@ mod tests {
     /// section. Uses a fractional `EqualShare` distribution (4 sections
     /// in 21 cells = 5.25 each) — the worst case for paint/click drift.
     ///
-    /// Run at both the origin and a non-zero `area` origin. `tui_msv_layout`
+    /// Run at both the origin and a non-zero `area` origin. `chrome_layout`
     /// bakes `area.x`/`area.y` straight into the returned bounds (absolute
     /// frame), and `paint_then_layout` already takes `area` as a parameter,
     /// so this re-runs the identical logic at a shifted origin. `find_row_with`/
@@ -935,7 +969,7 @@ mod tests {
         if let SectionBody::Tree(t) = &mut v.sections[0].body {
             t.scroll_offset = 2; // thumb lands away from the top
         }
-        let layout = tui_msv_layout(&v, area);
+        let layout = chrome_layout(&v, area);
         let sb = layout.sections[0].scrollbar_bounds.unwrap();
         let thumb = layout.sections[0].thumb_bounds.unwrap();
 
@@ -973,7 +1007,7 @@ mod tests {
         if let SectionBody::Tree(t) = &mut v.sections[0].body {
             t.scroll_offset = 2;
         }
-        let layout = tui_msv_layout(&v, area);
+        let layout = chrome_layout(&v, area);
         let sb = layout.sections[0].scrollbar_bounds.unwrap();
         let thumb = layout.sections[0].thumb_bounds.unwrap();
 
@@ -1038,7 +1072,7 @@ mod tests {
             empty_section("b", SectionSize::EqualShare),
         ]);
         // Without allow_resize: no divider strip, sections take 4 rows each.
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 10, 8),
             &v,
@@ -1054,7 +1088,7 @@ mod tests {
 
         v.allow_resize = true;
         let mut buf = Buffer::empty(TuiRect::new(0, 0, 10, 9));
-        draw_multi_section_view(
+        paint_view(
             &mut buf,
             TuiRect::new(0, 0, 10, 9),
             &v,
@@ -1179,7 +1213,7 @@ mod tests {
 
         fn click(&mut self, x: f32, y: f32, area: TuiRect) {
             let view = self.build_view();
-            let layout = tui_msv_layout(&view, area);
+            let layout = chrome_layout(&view, area);
             match layout.hit_test(x, y) {
                 MultiSectionViewHit::Header { section, .. } => {
                     self.active_section = Some(section);
@@ -1274,7 +1308,7 @@ mod tests {
 
         // Find the header row of section 2 by querying the layout.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let hb = layout.sections[2].header_bounds;
         let click_x = hb.x + hb.width / 2.0;
         let click_y = hb.y + 0.5;
@@ -1310,8 +1344,8 @@ mod tests {
         let mut state = debug_sidebar_state();
         let view = state.build_view();
         // Paint, then find the row with text "v2" (vars section, 3rd row).
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
-        let layout = tui_msv_layout(&view, area);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = chrome_layout(&view, area);
         let body_b = layout.sections[0].body_bounds;
         let body_y_start = body_b.y.round() as u16;
         let body_y_end = (body_b.y + body_b.height).round() as u16;
@@ -1351,7 +1385,7 @@ mod tests {
         let mut state = debug_sidebar_state();
         // Section 3 (`bps`) has 0 rows.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let body_b = layout.sections[3].body_bounds;
         let click_x = body_b.x + body_b.width / 2.0;
         let click_y = body_b.y + body_b.height / 2.0;
@@ -1389,7 +1423,7 @@ mod tests {
         state.sections[1].selected_path = Some(vec![4]);
 
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
 
         // Section 0 (vars) overflows — it must have a scrollbar.
         let sb = layout.sections[0]
@@ -1437,7 +1471,7 @@ mod tests {
         let area = TuiRect::new(0, 0, 30, 24);
         let mut state = debug_sidebar_state();
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
 
         let viewport_rows = layout.sections[0].body_bounds.height as usize;
         let row_count = state.sections[0].rows.len();
@@ -1482,8 +1516,8 @@ mod tests {
 
         // Paint the new state.
         let view = state.build_view();
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
-        let layout = tui_msv_layout(&view, area);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = chrome_layout(&view, area);
 
         // The body of section 0 now shows v3, v4, v5, ... at the top.
         // Find "v3" in the buffer; assert it's painted at body's first
@@ -1646,7 +1680,7 @@ mod tests {
         /// TitleArea→activate w/o select; outside→blur input.
         fn click(&mut self, x: f32, y: f32, area: TuiRect) {
             let view = self.build_view();
-            let layout = tui_msv_layout(&view, area);
+            let layout = chrome_layout(&view, area);
             match layout.hit_test(x, y) {
                 MultiSectionViewHit::Aux {
                     kind: AuxHit::Input,
@@ -1732,7 +1766,7 @@ mod tests {
 
         // Click on the aux row to focus the input.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let aux_b = layout.sections[0]
             .aux_bounds
             .expect("section 0 has aux=Input");
@@ -1750,7 +1784,7 @@ mod tests {
 
         // Paint and verify aux row shows the typed text.
         let view = state.build_view();
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
         let aux_y = aux_b.y.round() as u16;
         let painted = buf_row(&buf, aux_y);
         assert!(
@@ -1764,7 +1798,7 @@ mod tests {
         assert_eq!(state.commit_message, "h");
         assert_eq!(state.commit_caret, 1);
         let mut buf2 = Buffer::empty(area);
-        draw_multi_section_view(
+        paint_view(
             &mut buf2,
             area,
             &state.build_view(),
@@ -1788,7 +1822,7 @@ mod tests {
         let mut state = SCState::new();
         // Focus the input.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let aux_b = layout.sections[0].aux_bounds.unwrap();
         state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
         assert!(state.commit_input_active);
@@ -1811,14 +1845,14 @@ mod tests {
 
         // Activate section 1 via header click.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let header1 = layout.sections[1].header_bounds;
         state.click(header1.x + 5.0, header1.y + 0.5, area);
         assert_eq!(state.active_section, Some(1));
 
         // Click aux to focus input.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let aux_b = layout.sections[0].aux_bounds.unwrap();
         state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
         assert!(state.commit_input_active);
@@ -1844,7 +1878,7 @@ mod tests {
 
         // Click aux directly (no prior section activation).
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         let aux_b = layout.sections[0].aux_bounds.unwrap();
         state.click(aux_b.x + 1.0, aux_b.y + 0.5, area);
         assert!(state.commit_input_active);
@@ -1877,8 +1911,8 @@ mod tests {
         // Paint and find the chevron in section 1's header row.
         // Default TreeStyle shows '▾' for expanded, '▸' for collapsed.
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = chrome_layout(&view, area);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
         let header_y = layout.sections[1].header_bounds.y.round() as u16;
         let painted = buf_row(&buf, header_y);
         assert!(
@@ -1896,8 +1930,8 @@ mod tests {
         // Re-paint; chevron flips to '▸'.
         let mut buf = Buffer::empty(area);
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        let layout = chrome_layout(&view, area);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
         let header_y = layout.sections[1].header_bounds.y.round() as u16;
         let painted = buf_row(&buf, header_y);
         assert!(
@@ -1928,7 +1962,7 @@ mod tests {
         state.sections[1].collapsed = true;
 
         let view = state.build_view();
-        draw_multi_section_view(&mut buf, area, &view, &Theme::default(), false);
+        paint_view(&mut buf, area, &view, &Theme::default(), false);
 
         // Scan every row: no row should contain any of section 1's
         // item text ("s0".."s3"). The header text "STAGED" is fine.
@@ -1959,7 +1993,7 @@ mod tests {
         let mut state = SCState::new();
         state.sections[1].collapsed = true;
         let view = state.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
 
         for y in 0..area.height {
             for x in 0..area.width {
@@ -1998,7 +2032,7 @@ mod tests {
                 });
             }
             let view = state.build_view();
-            let layout = tui_msv_layout(&view, area);
+            let layout = chrome_layout(&view, area);
 
             for s in &layout.sections {
                 assert_eq!(
@@ -2289,7 +2323,7 @@ mod tests {
         }];
 
         let v = view_with(vec![form_section("opts", fields, SectionSize::EqualShare)]);
-        draw_multi_section_view(&mut buf, area, &v, &Theme::default(), false);
+        paint_view(&mut buf, area, &v, &Theme::default(), false);
 
         let toggle_y = find_row_with(&buf, "Enabled").expect("Toggle field not painted");
         let row = row_text(&buf, toggle_y);

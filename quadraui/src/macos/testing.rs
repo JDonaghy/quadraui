@@ -69,11 +69,11 @@ use super::text::make_font;
 /// Use this constructor in tests that need to verify the full
 /// `ShellApp → ShellAdapter → dispatch_event` integration path on the macOS
 /// backend — e.g. confirming that shell chrome (activity bar, sidebar
-/// panel) renders and that panel switches reach the real [`AppShell`]
+/// panel) renders and that panel switches reach the real [`ShellView`]
 /// instance [`crate::shell_adapter::ShellAdapter`] paints, not a shadow
 /// copy.
 ///
-/// [`AppShell`]: crate::compose::app_shell::AppShell
+/// [`ShellView`]: crate::compose::app_shell::ShellView
 ///
 /// # Example
 ///
@@ -82,7 +82,7 @@ use super::text::make_font;
 /// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
 /// # struct MyApp;
 /// # impl ShellApp for MyApp {
-/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::ShellLayout) {}
 /// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
 /// # }
 /// let config = ShellConfig::new("Demo", vec![]);

@@ -34,7 +34,6 @@ use crate::compose::Handled;
 use crate::interactive::WidgetAction;
 use crate::primitive::LayoutCtx;
 use crate::primitives::form::{Form, FormEvent};
-use crate::primitives::multi_section_view::MsvLayoutMetrics;
 use crate::{
     Backend, MsvAxis, MultiSectionView, Point, Rect, ScrollMode, Section, SectionBody,
     SectionHeader, SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState,
@@ -1198,15 +1197,7 @@ mod contract {
         /// Cell metrics, so `handle_cached` lays the sidebar out on a
         /// terminal grid.
         fn cells(ss: &mut SidebarSystem) {
-            ss.set_backend_info(
-                1.0,
-                MsvLayoutMetrics {
-                    header_size: 1.0,
-                    divider_size: 0.0,
-                    scrollbar_size: 1.0,
-                    cell_quantum: 1.0,
-                },
-            );
+            ss.set_backend_info(1.0);
         }
 
         fn layout(ss: &SidebarSystem, rect: Rect) -> SidebarLayout {
@@ -2410,11 +2401,9 @@ impl SidebarSystem {
         self.sidebar.panel_scroll = offset.max(0.0);
     }
 
-    /// Cache the metrics [`Self::handle_cached`] lays the sidebar out
-    /// with. `metrics` is the header/divider/gutter set the backend
-    /// reports; the layout derives the same set from `line_height`.
-    pub fn set_backend_info(&mut self, line_height: f32, metrics: MsvLayoutMetrics) {
-        let _ = metrics;
+    /// Cache the line height [`Self::handle_cached`] lays the sidebar out
+    /// with; the header/divider/gutter metrics derive from it.
+    pub fn set_backend_info(&mut self, line_height: f32) {
         let char_width = if line_height <= 1.0 {
             1.0
         } else {

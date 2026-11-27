@@ -153,11 +153,7 @@ pub mod pixel {
     /// constant (which equals its default, `10.0`). Each backend's own
     /// `Backend::list_vscrollbar` hit-testing implementation passes that
     /// same live `self.current_style.scrollbar_width`, so paint and
-    /// hit-test can't drift apart at a non-default style. `Backend::
-    /// tree_vscrollbar` still passes this constant literally — a
-    /// per-backend follow-up threads a live `Style` through it too, which
-    /// is a no-op today since the constant equals the style field's
-    /// default.
+    /// hit-test can't drift apart at a non-default style.
     pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
 
     /// [`crate::Form`] horizontal padding (both sides combined) reserved
@@ -268,7 +264,7 @@ pub fn tab_close_hover_bg(
 /// (`line_height * 0.65` for the glyph) since no [`TextMeasure`] is
 /// available here — every backend already made this same tradeoff
 /// independently. Callers with a real measurer should prefer
-/// [`tree_layout_measured`], which measures
+/// [`pixel_tree_layout_measured`], which measures
 /// [`crate::types::TreeStyle::chevron_expanded`] /
 /// [`crate::types::TreeStyle::chevron_collapsed`] exactly instead of
 /// estimating.
@@ -284,30 +280,53 @@ pub fn tab_close_hover_bg(
 /// this fn computes lines up with where the chevron glyph is actually
 /// painted. Pass [`crate::style::Style::default`]'s value when no live
 /// `Style` is reachable.
-pub fn tree_layout(
+pub fn pixel_tree_layout(
     tree: &TreeView,
     area: QRect,
     line_height: f64,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, None, row_padding_x)
+    tree_layout_inner(tree, area, line_height, None, row_padding_x, None)
 }
 
-/// Like [`tree_layout`], but measures the chevron glyph actually
+/// Like [`pixel_tree_layout`], but measures the chevron glyph actually
 /// configured on `tree.style` (`chevron_expanded` / `chevron_collapsed`)
 /// through `measure` instead of estimating its pixel width as
 /// `line_height * 0.65`. This is the pixel-backend equivalent of
 /// `tui::tree::tui_tree_layout`'s exact character-count measurement —
 /// TUI cells are fixed-width so an exact count is free there; pixel
 /// backends need a real [`TextMeasure`] to get the same precision.
-pub fn tree_layout_measured(
+pub fn pixel_tree_layout_measured(
     tree: &TreeView,
     area: QRect,
     line_height: f64,
     measure: &dyn TextMeasure,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x)
+    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x, None)
+}
+
+/// [`pixel_tree_layout_measured`] resolved against a pixel-precise
+/// scroll position: `scroll_px: Some(px)` wins over
+/// [`TreeView::scroll_offset`] and places the first visible row
+/// partially clipped, through [`TreeView::layout_with_scroll_px`];
+/// `None` lays out exactly as [`pixel_tree_layout_measured`] does.
+pub fn pixel_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    measure: &dyn TextMeasure,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    tree_layout_inner(
+        tree,
+        area,
+        line_height,
+        Some(measure),
+        row_padding_x,
+        scroll_px,
+    )
 }
 
 fn tree_layout_inner(
@@ -316,13 +335,14 @@ fn tree_layout_inner(
     line_height: f64,
     measure: Option<&dyn TextMeasure>,
     row_padding_x: f32,
+    scroll_px: Option<f32>,
 ) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
     use crate::primitives::tree::tree_cell;
     let indent_px = tree_cell::tree_indent_px(line_height as f32);
     let show_chevrons = tree.style.show_chevrons;
-    tree.layout(area.width, area.height, |i| {
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
         let row = &tree.rows[i];
         let is_header = matches!(row.decoration, Decoration::Header);
         let row_h = if is_header {
@@ -363,14 +383,14 @@ fn tree_layout_inner(
     })
 }
 
-/// The non-header row pitch [`tree_layout`] uses for the bulk of a
+/// The non-header row pitch [`pixel_tree_layout`] uses for the bulk of a
 /// tree's rows: [`crate::types::TreeStyle::row_height`] when the host
 /// set one, else `(line_height * 1.4).round()`.
 ///
 /// [`TreeView::vscrollbar`] takes a single, uniform `row_height` — it
 /// has no way to reproduce `tree_layout`'s header-vs-leaf/branch split
 /// (headers pitch at `line_height * 1.2`) — so this is the pitch every
-/// pixel backend's `tree_vscrollbar` should pass it. Passing the leaf/branch
+/// caller of `TreeView::vscrollbar` should pass it. Passing the leaf/branch
 /// pitch instead of raw `line_height` matches what `tree_layout` paints for
 /// non-header rows (the overwhelming majority of rows in any real tree),
 /// and respects `TreeStyle::row_height` when set.
@@ -378,7 +398,7 @@ fn tree_layout_inner(
 /// `TreeStyle::row_height` is in screen pixels.  On a cell grid (TUI,
 /// where `line_height` is architecturally `1.0`), a raw px value would
 /// become an absurd cell count, so the px field is suppressed — the
-/// same guard `AppShell::compute_layout` applies to its own px fields.
+/// same guard `ShellView::compute_layout` applies to its own px fields.
 pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
     let is_cell_grid = line_height <= 1.0;
     tree.style
@@ -837,10 +857,10 @@ pub fn pixel_pipeline_view_layout(
 /// the last bit of drift, the three near-identical wrapper calls.
 pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) -> BoardLayout {
     use crate::primitives::board::{
-        board_layout, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
-        BOARD_HEADER_H_PX,
+        measured_board_layout, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX,
+        BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
     };
-    board_layout(
+    measured_board_layout(
         model,
         x,
         y,
@@ -879,6 +899,48 @@ pub fn pixel_data_table_layout(
         header_height,
         pixel::DATA_TABLE_SCROLLBAR_WIDTH,
         |col| ColumnMeasure::new(measure.width_of(&col.title)),
+    )
+}
+
+/// [`pixel_data_table_layout`] with the header titles a `Content` column
+/// sizes to measured by `header_measure` — the font the header paints
+/// them in — while `measure` keeps the plain body font for the average
+/// glyph a `FixedCells` column is sized from.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn pixel_data_table_layout_with_header(
+    table: &DataTable,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    measure: &dyn TextMeasure,
+    header_measure: &dyn TextMeasure,
+) -> DataTableLayout {
+    let header_height = (line_height * 1.2).round();
+    // `DataTable::layout` hands the measurer either one of the table's
+    // own columns (a header title) or a sample column of its own (the
+    // average-glyph probe); only the first is painted in the header font.
+    let own_columns = table.columns.as_ptr_range();
+    table.layout(
+        w,
+        h,
+        line_height,
+        header_height,
+        pixel::DATA_TABLE_SCROLLBAR_WIDTH,
+        |col| {
+            // A header title rounds up to a whole unit, so the painter's
+            // own measurement of the same text never lands a hair over
+            // the column it sized.
+            if own_columns.contains(&std::ptr::from_ref(col)) {
+                ColumnMeasure::new(header_measure.width_of(&col.title).ceil())
+            } else {
+                ColumnMeasure::new(measure.width_of(&col.title))
+            }
+        },
     )
 }
 
@@ -1596,6 +1658,7 @@ mod tests {
             h_scroll: 0,
             max_content_width,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -1724,8 +1787,8 @@ mod tests {
         // measured here, not the configured string's.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
-        let estimated = tree_layout(&tree, area, 16.0, 8.0);
-        let measured = tree_layout_measured(&tree, area, 16.0, &FakeMeasure, 8.0);
+        let estimated = pixel_tree_layout(&tree, area, 16.0, 8.0);
+        let measured = pixel_tree_layout_measured(&tree, area, 16.0, &FakeMeasure, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -1749,8 +1812,8 @@ mod tests {
         // disagree about where the chevron is.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
-        let narrow = tree_layout(&tree, area, 16.0, 2.0);
-        let wide = tree_layout(&tree, area, 16.0, 12.0);
+        let narrow = pixel_tree_layout(&tree, area, 16.0, 2.0);
+        let wide = pixel_tree_layout(&tree, area, 16.0, 12.0);
 
         let narrow_x = narrow.hit_regions[0].0.width;
         let wide_x = wide.hit_regions[0].0.width;

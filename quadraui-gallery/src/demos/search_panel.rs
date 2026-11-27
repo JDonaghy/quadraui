@@ -22,7 +22,7 @@ use crate::demo::{extract_region, Demo};
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -219,7 +219,7 @@ impl Demo for SearchPanelDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let panel_rect = Self::panel_rect(area, backend);
-        backend.draw_multi_section_view(panel_rect, &self.build_view(variant));
+        backend.draw_primitive(panel_rect, &self.build_view(variant));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -235,7 +235,7 @@ impl Demo for SearchPanelDemo {
         if let UiEvent::MouseDown { position, .. } = event {
             let panel_rect = Self::panel_rect(area, backend);
             let view = self.build_view(variant);
-            let layout = backend.msv_layout(panel_rect, &view);
+            let layout = backend.layout_primitive(panel_rect, &view).chrome;
             match layout.hit_test(position.x, position.y) {
                 MultiSectionViewHit::Aux {
                     kind: AuxHit::Input,
@@ -246,8 +246,7 @@ impl Demo for SearchPanelDemo {
                 MultiSectionViewHit::Body { section, .. } => {
                     if let Some(sl) = layout.sections.get(section) {
                         if let SectionBody::Tree(ref tree) = view.sections[section].body {
-                            #[allow(deprecated)]
-                            let tree_layout = backend.tree_layout(sl.body_bounds, tree);
+                            let tree_layout = backend.layout_primitive(sl.body_bounds, tree).layout;
                             let local_x = position.x - sl.body_bounds.x;
                             let local_y = position.y - sl.body_bounds.y;
                             match tree_layout.hit_test(local_x, local_y) {
@@ -370,7 +369,7 @@ mod tui_tests {
         let area = Rect::new(0.0, 0.0, 60.0, 20.0);
         let panel_rect = SearchPanelDemo::panel_rect(area, &backend);
         let view = demo.build_view(0);
-        let layout = backend.msv_layout(panel_rect, &view);
+        let layout = backend.layout_primitive(panel_rect, &view).chrome;
         let sl = &layout.sections[0];
         let tree_rect = sl.body_bounds;
         // First row of the tree body is the first file header.

@@ -1,4 +1,4 @@
-//! Demo: AppShell with a bottom panel tab strip plus an independently-gated
+//! Demo: ShellView with a bottom panel tab strip plus an independently-gated
 //! bottom band.
 //!
 //! Demonstrates `ShellConfig.with_bottom_panel_config()`:
@@ -16,7 +16,7 @@
 //!
 //! `q` / Esc quits.
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, BottomBand, PanelDefinition};
+use quadraui::compose::app_shell::{BottomBand, PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::compose::bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
 };
@@ -168,7 +168,7 @@ impl Default for BottomPanelDemo {
 }
 
 impl ShellApp for BottomPanelDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
 
         // Sidebar placeholder.
@@ -208,7 +208,7 @@ impl ShellApp for BottomPanelDemo {
     // The independently-gated status band, when visible. A separate
     // `ShellApp` hook (not read off `layout` in `render_content` above) —
     // see `render_bottom_band`'s doc for why bottom-band bounds aren't a
-    // field on `AppShellLayout`.
+    // field on `ShellLayout`.
     fn render_bottom_band(&self, backend: &mut dyn Backend, id: &WidgetId, bounds: Rect) {
         if *id != status_band_id() {
             return;
@@ -256,15 +256,15 @@ impl ShellApp for BottomPanelDemo {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
         self.last_event = match event {
-            AppShellEvent::PanelChanged { panel_id } => {
+            ShellEvent::PanelChanged { panel_id } => {
                 format!("Panel: {}", panel_id.as_str())
             }
-            AppShellEvent::SidebarResized { new_width } => {
+            ShellEvent::SidebarResized { new_width } => {
                 format!("Sidebar resized: {new_width:.0}")
             }
-            AppShellEvent::BottomPanelResized { new_height } => {
+            ShellEvent::BottomPanelResized { new_height } => {
                 format!("Panel resized: {new_height:.0}")
             }
             _ => return,

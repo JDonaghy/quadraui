@@ -194,18 +194,32 @@ impl AppLogic for ChartApp {
         let lh = backend.line_height();
 
         let chart_rect = Rect::new(1.0, lh, viewport.width - 2.0, viewport.height - lh * 3.0);
-        let hp = self.hovered_point;
-        let cx = self.crosshair_x;
+        let hovered_point = self.hovered_point;
+        let crosshair_x = self.crosshair_x;
         match self.active_kind {
             ChartKind::Sparkline => {
                 let spark_rect = Rect::new(1.0, lh, viewport.width - 2.0, lh);
-                let _ = backend.draw_chart(spark_rect, &self.sparkline(), hp, None);
+                let chart = Chart {
+                    hovered_point,
+                    ..self.sparkline()
+                };
+                let _ = backend.draw_primitive(spark_rect, &chart);
             }
             ChartKind::Line => {
-                let _ = backend.draw_chart(chart_rect, &self.line_chart(), hp, cx);
+                let chart = Chart {
+                    hovered_point,
+                    crosshair_x,
+                    ..self.line_chart()
+                };
+                let _ = backend.draw_primitive(chart_rect, &chart);
             }
             kind @ (ChartKind::Bar | ChartKind::BarGrouped) => {
-                let _ = backend.draw_chart(chart_rect, &self.bar_chart(kind), hp, cx);
+                let chart = Chart {
+                    hovered_point,
+                    crosshair_x,
+                    ..self.bar_chart(kind)
+                };
+                let _ = backend.draw_primitive(chart_rect, &chart);
             }
             _ => {}
         }
@@ -276,7 +290,7 @@ impl AppLogic for ChartApp {
                     ChartKind::Line => self.line_chart(),
                     kind => self.bar_chart(kind),
                 };
-                let layout = backend.chart_layout(chart_rect, &chart);
+                let layout = backend.layout_primitive(chart_rect, &chart).chart;
                 let snap = backend.line_height() * 2.0;
                 self.hovered_point = layout.nearest_point(position.x, position.y, snap);
                 let data_len = chart.max_data_len();

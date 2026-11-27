@@ -1,7 +1,7 @@
 //! `Canvas` v2 op `AppLogic` + `quadraui::gtk::run` example.
 //!
 //! Same chart-style demo as `tui_canvas_shapes`, painted via Cairo
-//! through the same `Backend::draw_canvas` call — no per-backend app
+//! through the same `draw_primitive` call — no per-backend app
 //! code at all.
 //!
 //! ```sh

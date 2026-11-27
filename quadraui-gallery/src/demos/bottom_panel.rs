@@ -1,21 +1,24 @@
 //! `BottomPanel` demo — adapted from
 //! `quadraui/examples/common/bottom_panel_demo.rs`.
 //!
-//! Drives `compose::bottom_panel::BottomPanelController` directly rather
-//! than through `ShellConfig::with_bottom_panel_config` (that path needs
-//! a full `AppShell`, which this gallery's own shell already is) — the
-//! controller is a stateful value with its own `render`/`handle_click_event`,
-//! so a host can mount it inside any rect, exactly as done here.
+//! Drives the `BottomPanel` descriptor directly rather than through
+//! `ShellConfig::with_bottom_panel_config` (that path needs a full
+//! `ShellView`, which this gallery's own shell already is): the demo owns
+//! the descriptor, its state and each tab's content, paints the strip
+//! through `draw_dyn`, resolves clicks with `BottomPanel::click` and
+//! applies what they ask for — so a host can mount it inside any rect,
+//! exactly as done here.
 
 use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::compose::bottom_panel::{
-    BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelTab,
+    BackendWidget, BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelPrimitiveLayout,
+    BottomPanelState, BottomPanelTab,
 };
 use quadraui::{
-    Backend, BackendCaps, Color, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
-    WidgetId,
+    Backend, BackendCaps, Color, Handled, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -26,7 +29,7 @@ const SOURCE: &str = include_str!("bottom_panel.rs");
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -125,33 +128,80 @@ fn build_tabs() -> Vec<BottomPanelTab> {
     ]
 }
 
-/// `variant == 1` starts already maximised, showing the full-height tab
-/// strip a user would get after clicking `^`.
-fn build_controller(variant: usize) -> BottomPanelController {
-    let tabs = build_tabs();
-    let active_tab_id = tabs[0].id.clone();
-    BottomPanelController::new(BottomPanelConfig {
-        tabs,
-        active_tab_id,
-        maximised: variant == 1,
-        height_fraction: 1.0,
-    })
+/// One mounted panel: the descriptor, its state, each tab's content and
+/// the layout the last frame painted, which clicks resolve against.
+struct MountedPanel {
+    panel: BottomPanel,
+    state: BottomPanelState,
+    contents: Vec<BottomPanelTab>,
+    last_layout: Option<BottomPanelPrimitiveLayout>,
+}
+
+impl MountedPanel {
+    /// `variant == 1` starts already maximised, showing the full-height
+    /// tab strip a user would get after clicking `^`.
+    fn new(variant: usize) -> Self {
+        let tabs = build_tabs();
+        let active_tab_id = tabs[0].id.clone();
+        let config = BottomPanelConfig {
+            tabs,
+            active_tab_id,
+            maximised: variant == 1,
+            height_fraction: 1.0,
+        };
+        Self {
+            panel: BottomPanel::from_config(&config),
+            state: BottomPanelState::default(),
+            contents: config.tabs,
+            last_layout: None,
+        }
+    }
+
+    fn render(&mut self, backend: &mut dyn Backend, rect: Rect) {
+        self.last_layout = backend
+            .draw_dyn(rect, &self.panel, &())
+            .downcast_ref::<BottomPanelPrimitiveLayout>()
+            .cloned();
+        let Some(content) = self.last_layout.as_ref().map(|l| l.content_bounds) else {
+            return;
+        };
+        if content.width > 0.0 && content.height > 0.0 {
+            if let Some(tab) = self
+                .contents
+                .iter()
+                .find(|t| t.id == self.panel.active_tab_id)
+            {
+                tab.content.render(backend, content);
+            }
+        }
+    }
+
+    fn click(&mut self, position: quadraui::Point) -> Option<BottomPanelEvent> {
+        let layout = self.last_layout.as_ref()?;
+        match self.panel.click(&mut self.state, layout, position) {
+            Handled::Event(event) => {
+                self.panel.apply(&event);
+                Some(event)
+            }
+            _ => None,
+        }
+    }
 }
 
 pub struct BottomPanelDemo {
-    // `BottomPanelController::render` needs `&mut self` to cache its hit
-    // map for `handle_click_event` — `Demo::render` only hands out `&self` —
-    // so each variant's controller lives behind its own `RefCell`.
-    controllers: [RefCell<BottomPanelController>; 2],
+    // Painting records the layout clicks resolve against, and
+    // `Demo::render` only hands out `&self`, so each variant's panel lives
+    // behind its own `RefCell`.
+    panels: [RefCell<MountedPanel>; 2],
     last_event: String,
 }
 
 impl BottomPanelDemo {
     pub fn new() -> Self {
         Self {
-            controllers: [
-                RefCell::new(build_controller(0)),
-                RefCell::new(build_controller(1)),
+            panels: [
+                RefCell::new(MountedPanel::new(0)),
+                RefCell::new(MountedPanel::new(1)),
             ],
             last_event: "click a tab, × to close, ^ to maximise".into(),
         }
@@ -180,7 +230,7 @@ impl Demo for BottomPanelDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - row_h).max(0.0));
-        self.controllers[variant]
+        self.panels[variant]
             .borrow_mut()
             .render(backend, panel_rect);
 
@@ -207,13 +257,9 @@ impl Demo for BottomPanelDemo {
         _area: Rect,
     ) -> Reaction {
         if let UiEvent::MouseDown { position, .. } = event {
-            // `last_hits` / `last_strip_bounds` were populated by the
-            // `render` call this same frame already made.
-            if let Some(ev) = self.controllers[variant]
-                .borrow_mut()
-                .handle_click_event(position.x, position.y)
-                .into_event()
-            {
+            // The layout was recorded by the `render` call this same
+            // frame already made.
+            if let Some(ev) = self.panels[variant].borrow_mut().click(*position) {
                 self.last_event = match ev {
                     BottomPanelEvent::TabActivated(id) => format!("Tab activated: {id}"),
                     BottomPanelEvent::TabClosed(id) => format!("Tab closed: {id}"),
@@ -231,11 +277,12 @@ impl Demo for BottomPanelDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        let controller = self.controllers[variant].borrow();
+        let mounted = self.panels[variant].borrow();
+        let panel = &mounted.panel;
         serde_json::json!({
-            "active_tab_id": controller.active_tab_id,
-            "maximised": controller.maximised,
-            "tabs": controller.tabs().iter().map(|t| &t.label).collect::<Vec<_>>(),
+            "active_tab_id": panel.active_tab_id,
+            "maximised": panel.maximised,
+            "tabs": panel.tabs.iter().map(|t| &t.label).collect::<Vec<_>>(),
         })
     }
 
@@ -252,16 +299,16 @@ mod tests {
     #[test]
     fn closing_a_tab_removes_it() {
         let demo = BottomPanelDemo::new();
-        assert_eq!(demo.controllers[0].borrow().tabs().len(), 2);
-        demo.controllers[0].borrow_mut().close_tab("bp:problems");
-        assert_eq!(demo.controllers[0].borrow().tabs().len(), 1);
+        assert_eq!(demo.panels[0].borrow().panel.tabs.len(), 2);
+        demo.panels[0].borrow_mut().panel.close_tab("bp:problems");
+        assert_eq!(demo.panels[0].borrow().panel.tabs.len(), 1);
     }
 
     #[test]
     fn variant_one_starts_maximised() {
         let demo = BottomPanelDemo::new();
-        assert!(!demo.controllers[0].borrow().maximised);
-        assert!(demo.controllers[1].borrow().maximised);
+        assert!(!demo.panels[0].borrow().panel.maximised);
+        assert!(demo.panels[1].borrow().panel.maximised);
     }
 
     /// On a pixel backend (a GTK-shaped chrome line height, simulated via

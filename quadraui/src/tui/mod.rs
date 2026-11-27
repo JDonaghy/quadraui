@@ -22,10 +22,7 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 use crate::types::{Color, Decoration, StyledText};
 
 pub mod backend;
-mod board;
 pub(crate) mod braille;
-mod canvas;
-mod cell_grid;
 // `pub(crate)` rather than private: widget code outside `crate::tui` builds
 // a `TuiCellSurface` over a bare `Buffer` for its own painters and tests.
 // The public adapter is `BufferCellSurface`, re-exported below.
@@ -36,14 +33,11 @@ pub(crate) mod cell_surface;
 // re-exports in the `pub use` block below.
 #[doc(hidden)]
 pub mod caps;
-mod chart;
 #[doc(hidden)]
 pub mod color;
 // `pub(crate)` rather than private: `CommandLine`'s own
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
-mod data_table;
-mod diff_view;
 pub mod events;
 mod find_replace;
 mod focus_ring;
@@ -62,25 +56,18 @@ mod image_decode;
 // emit_osc52_with` reuses them instead of carrying its own copy.
 mod kitty_graphics;
 mod list;
-mod message_list;
-mod multi_section_view;
-mod pipeline_view;
 mod progress;
 mod run;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod solid_fill;
 mod spinner;
-mod split;
-mod split_tree;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
 // `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
-mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
 
@@ -93,41 +80,18 @@ pub mod vt_testing;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[doc(hidden)]
-pub use crate::primitives::tree_table::paint_cells::{draw_tree_table, tree_table_layout};
 pub use backend::TuiBackend;
-#[doc(hidden)]
-pub use board::{draw_board, tui_board_layout};
-#[doc(hidden)]
-pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
-#[doc(hidden)]
-pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
 pub use cell_surface::BufferCellSurface;
-#[doc(hidden)]
-pub use chart::{draw_chart, tui_chart_layout};
-pub use data_table::draw_data_table;
-pub(crate) use data_table::draw_data_table_inner;
-#[doc(hidden)]
-pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
-pub(crate) use data_table::{
-    draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx,
-};
-#[doc(hidden)]
-pub use diff_view::draw_diff_view;
 #[doc(hidden)]
 pub use find_replace::draw_find_replace;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
+pub(crate) use list::draw_list_with_overflow;
 #[doc(hidden)]
 pub use list::{
     draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
     tui_list_layout_with_scroll_px,
 };
-#[doc(hidden)]
-pub use message_list::draw_message_list;
-pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
-#[doc(hidden)]
-pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub(crate) use progress::draw_progress_layout;
 #[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
@@ -137,15 +101,9 @@ pub use scrollbar::draw_scrollbar;
 pub(crate) use scrollbar::draw_scrollbar_layout;
 #[doc(hidden)]
 pub use services::TuiPlatformServices;
-#[doc(hidden)]
-pub use solid_fill::draw_solid_fill;
 pub(crate) use spinner::draw_spinner_layout;
 #[doc(hidden)]
 pub use spinner::{draw_spinner, tui_spinner_layout};
-#[doc(hidden)]
-pub use split::{draw_split, tui_split_layout};
-#[doc(hidden)]
-pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 // The cell-measure constants live with the primitive, next to the shared
 // cell-grid painter that reads them; `tui::` re-exports them under the
 // names apps already build their `TabMeasure`s against.
@@ -153,13 +111,13 @@ pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use crate::primitives::tab_bar::{
     TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
+pub(crate) use crate::primitives::tree::paint_cells::paint_tree_cell;
+pub use crate::primitives::tree::paint_cells::tui_tree_layout;
+#[doc(hidden)]
+pub use crate::primitives::tree::paint_cells::tui_tree_layout_with_scroll_px;
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
-pub(crate) use tree::paint_tree_cell;
-pub use tree::{draw_tree, tui_tree_layout};
-#[doc(hidden)]
-pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the
@@ -226,7 +184,7 @@ pub(crate) fn set_cell_wide(
 /// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
 /// the short name internal modules use (mirrors vimcode's tui rasteriser
 /// helper of the same name).
-fn qc(c: Color) -> RatatuiColor {
+pub(crate) fn qc(c: Color) -> RatatuiColor {
     ratatui_color(c)
 }
 

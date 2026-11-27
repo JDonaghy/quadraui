@@ -166,6 +166,10 @@ impl Primitive for Split {
     type Layout = SplitLayout;
     type Event = SplitDividerDrag;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Split(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }
@@ -269,6 +273,10 @@ impl Interactive for Split {
 impl Primitive for SplitTree {
     type Layout = SplitTreeLayout;
     type Event = SplitDividerDrag;
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::SplitTree(self.clone())
+    }
 
     /// [`SplitTree::cell_layout`] on a cell grid; on pixels, the shared
     /// pixel-backend divider thickness. Every leaf's rect is in the
@@ -614,7 +622,7 @@ mod split_cell_tests {
         );
     }
 
-    fn draw_split(buf: &mut Buffer, area: RRect, split: &Split, theme: &Theme) -> SplitLayout {
+    fn paint_split(buf: &mut Buffer, area: RRect, split: &Split, theme: &Theme) -> SplitLayout {
         let layout = split.cell_layout(cell_rect(area));
         paint(split, &layout, buf, theme);
         layout
@@ -656,7 +664,7 @@ mod split_cell_tests {
         let area = RRect::new(origin_x, origin_y, 41, 10);
         let mut buf = Buffer::empty(area);
         let split = hsplit(0.5);
-        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let layout = paint_split(&mut buf, area, &split, &Theme::default());
 
         let div_x = layout.divider_bounds.x.round() as u16;
         assert_eq!(cell_char(&buf, div_x, origin_y), '│');
@@ -688,7 +696,7 @@ mod split_cell_tests {
         let area = RRect::new(origin_x, origin_y, 40, 21);
         let mut buf = Buffer::empty(area);
         let split = vsplit(0.5);
-        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let layout = paint_split(&mut buf, area, &split, &Theme::default());
 
         let div_y = layout.divider_bounds.y.round() as u16;
         assert_eq!(cell_char(&buf, origin_x, div_y), '─');
@@ -721,12 +729,12 @@ mod split_cell_tests {
         let mut buf = Buffer::empty(buf_area);
         let area = RRect::new(0, 0, 0, 0);
         let split = hsplit(0.5);
-        let _layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let _layout = paint_split(&mut buf, area, &split, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
     /// An app that manually nests two independent
-    /// `draw_split` calls (rather than a `SplitTree`) still gets a
+    /// `paint_split` calls (rather than a `SplitTree`) still gets a
     /// junction glyph where the second, full-extent divider crosses the
     /// first, shorter one already sitting in the buffer — this is the
     /// "read the four neighbours back out of the buffer" trick the
@@ -750,7 +758,7 @@ mod split_cell_tests {
         // of the area — its '─' row lands at y=5, x=0..9.
         let inner_area = RRect::new(0, 0, 10, 11);
         let inner = vsplit(0.5);
-        let inner_layout = draw_split(&mut buf, inner_area, &inner, &theme);
+        let inner_layout = paint_split(&mut buf, inner_area, &inner, &theme);
         let inner_row = inner_layout.divider_bounds.y.round() as u16;
         assert_eq!(cell_char(&buf, 4, inner_row), '─');
 
@@ -758,7 +766,7 @@ mod split_cell_tests {
         // ratio chosen so its '│' column (x=5) crosses the inner row —
         // painted *last*, so it can see the inner run already there.
         let outer = hsplit(0.25);
-        let outer_layout = draw_split(&mut buf, area, &outer, &theme);
+        let outer_layout = paint_split(&mut buf, area, &outer, &theme);
         let outer_col = outer_layout.divider_bounds.x.round() as u16;
         assert_eq!(outer_col, 5);
 
@@ -772,7 +780,7 @@ mod split_cell_tests {
         let area = RRect::new(0, 0, 41, 10);
         let mut buf = Buffer::empty(area);
         let split = hsplit(0.3);
-        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let layout = paint_split(&mut buf, area, &split, &Theme::default());
 
         let div_x = layout.divider_bounds.x.round() as u16;
         // 41 cols, 1-cell divider → 40 available. 0.3 * 40 = 12.
@@ -793,7 +801,7 @@ mod split_cell_tests {
         let area = RRect::new(0, 0, 101, 10); // available = 100
         let mut buf = Buffer::empty(area);
         let split = hsplit(0.207); // position = 20.7
-        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let layout = paint_split(&mut buf, area, &split, &Theme::default());
         assert!((layout.divider_bounds.x - 20.7).abs() < 0.01);
 
         assert_eq!(cell_char(&buf, 20, 0), '│');
@@ -811,7 +819,7 @@ mod split_cell_tests {
         let area = RRect::new(0, 0, 80, 10); // available = 79, position = 39.5
         let mut buf = Buffer::empty(area);
         let split = hsplit(0.5);
-        let layout = draw_split(&mut buf, area, &split, &Theme::default());
+        let layout = paint_split(&mut buf, area, &split, &Theme::default());
         assert!((layout.divider_bounds.x - 39.5).abs() < 0.01);
 
         let painted_cell = 39u16;
@@ -834,7 +842,7 @@ mod split_cell_tests {
     fn pane_bounds_abut_the_painted_divider_cell_for_a_half_cell_ratio() {
         let area = RRect::new(0, 0, 20, 4); // available = 19, position = 9.5
         let mut buf = Buffer::empty(area);
-        let layout = draw_split(&mut buf, area, &hsplit(0.5), &Theme::default());
+        let layout = paint_split(&mut buf, area, &hsplit(0.5), &Theme::default());
         assert_eq!(cell_char(&buf, 9, 0), '│');
         assert_eq!(layout.first_bounds.x, 0.0);
         assert_eq!(layout.first_bounds.width, 9.0);
@@ -871,7 +879,7 @@ mod split_tree_cell_tests {
         );
     }
 
-    fn draw_split_tree(
+    fn paint_split_tree(
         buf: &mut Buffer,
         area: RRect,
         tree: &SplitTree,
@@ -910,7 +918,7 @@ mod split_tree_cell_tests {
         let area = RRect::new(origin_x, origin_y, 41, 10);
         let mut buf = Buffer::empty(area);
         let tree = two_pane(SplitDirection::Horizontal, 0.5);
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
 
         let d = &layout.dividers[0];
         let cell = d.cell_position();
@@ -958,7 +966,7 @@ mod split_tree_cell_tests {
         let area = RRect::new(0, 0, 40, 21);
         let mut buf = Buffer::empty(area);
         let tree = two_pane(SplitDirection::Vertical, 0.5);
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
 
         let d = &layout.dividers[0];
         let cell = d.cell_position();
@@ -994,7 +1002,7 @@ mod split_tree_cell_tests {
             ),
             SplitTree::leaf(wid("b")),
         );
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
         assert_eq!(layout.dividers.len(), 2);
 
         for div in &layout.dividers {
@@ -1049,7 +1057,7 @@ mod split_tree_cell_tests {
             ),
             SplitTree::leaf(wid("b")),
         );
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
 
         let outer = &layout.dividers[0]; // Horizontal (│), full height
         let inner = &layout.dividers[1]; // Vertical (─), left pane only
@@ -1103,7 +1111,7 @@ mod split_tree_cell_tests {
                 SplitTree::leaf(wid("d")),
             ),
         );
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
         assert_eq!(layout.dividers.len(), 3);
 
         let outer = &layout.dividers[0]; // Vertical (─), full width
@@ -1133,7 +1141,7 @@ mod split_tree_cell_tests {
         // Unrounded position origin_x + 20.7; the cell layout places the
         // divider on the whole cell it truncates to.
         let tree = two_pane(SplitDirection::Horizontal, 0.207);
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
         assert_eq!(layout.dividers[0].position, origin_x as f32 + 20.0);
 
         let cross_row = origin_y + 5;
@@ -1173,7 +1181,7 @@ mod split_tree_cell_tests {
         let mut buf = Buffer::empty(buf_area);
         let area = RRect::new(0, 0, 0, 0);
         let tree = two_pane(SplitDirection::Horizontal, 0.5);
-        let _layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let _layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -1182,7 +1190,7 @@ mod split_tree_cell_tests {
         let area = RRect::new(0, 0, 41, 10);
         let mut buf = Buffer::empty(area);
         let tree = two_pane(SplitDirection::Horizontal, 0.3);
-        let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
+        let layout = paint_split_tree(&mut buf, area, &tree, &Theme::default());
 
         let cell = layout.dividers[0].cell_position();
         // 41 cols, 1-cell divider -> 40 available. 0.3 * 40 = 12.

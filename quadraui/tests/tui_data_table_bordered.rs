@@ -4,11 +4,12 @@
 //! matches the inset paint, and a focus ring over the same `area` that
 //! never overwrites table content.
 
-use quadraui::tui::{draw_data_table, draw_focus_ring, ratatui_color};
+use quadraui::tui::{draw_focus_ring, ratatui_color, BufferCellSurface};
 use quadraui::{
     Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit, Decoration, SortDirection,
     StyledText, Theme, WidgetId,
 };
+use quadraui::{LayoutCtx, PaintEnv, Primitive, Style};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
@@ -56,8 +57,21 @@ fn make_table() -> DataTable {
 
 fn paint(table: &DataTable, area: Rect) -> (Buffer, quadraui::DataTableLayout) {
     let mut buf = Buffer::empty(area);
-    let layout = draw_data_table(&mut buf, area, table, &Theme::default(), None);
-    (buf, layout)
+    let rect = quadraui::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    );
+    let layout = Primitive::layout(table, &LayoutCtx::new(1.0, 1.0, false), rect);
+    let theme = Theme::default();
+    let style = Style::default();
+    table.paint_cells(
+        &layout,
+        &mut BufferCellSurface::new(&mut buf),
+        &PaintEnv::new(&theme, &style),
+    );
+    (buf, layout.layout)
 }
 
 /// The header and row 0 paint one cell inset from `area`'s top-left; the

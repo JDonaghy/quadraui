@@ -8,15 +8,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::{
-    Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
-    PressZone, Rect, ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit,
-    TabBarLayout, TextDisplayHit, TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    CanvasHit, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point, PressZone, Rect,
+    ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
+    TextDisplayHit, TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout,
+    UiEvent, WidgetId,
 };
 
 use quadraui::primitive::DynWidget;
 
-use crate::extra_paint::{extra_as, ExtraPaint};
+use crate::extra_paint::ExtraPaint;
 use crate::wire::DragRole;
 
 /// `(layout, scroll_offset, total_rows)` — the state [`PaintedHit::Extra::
@@ -59,7 +59,7 @@ pub fn loaded_row_path(
 
 /// One primitive this app painted during the current frame: its id and the
 /// hit-testable layout its backend `draw_*` call returned (or, for
-/// `Backend::draw_tree`/`draw_list`, which paint without returning one, the
+/// `TreeView`'s paint/`draw_list`, which paint without returning one, the
 /// layout its no-paint twin `tree_layout`/`list_layout` produced for the
 /// same `area`). Recorded into the binding's own hit-map cache by `draw_bands` /
 /// `paint_layout` / `paint_leaf`, in paint order, and consulted by
@@ -276,13 +276,13 @@ pub enum PaintedHit {
         /// `Some((layout, scroll_offset, total_rows))` when `extra`
         /// downcasts to a [`quadraui::TreeTable`] — the real
         /// [`quadraui::TreeTableLayout`] resolved via
-        /// `Backend::draw_tree_table` at paint time, plus the two extra
+        /// `TreeTable`'s paint at paint time, plus the two extra
         /// pieces of state [`quadraui::TreeTableLayout::hit_test`] needs
         /// (`TreeTable::table.scroll_offset`, `TreeTable::table.rows.len()`).
         /// Stashed here — the same reason [`PaintedHit::DataTable`] carries
         /// its own `layout` rather than recomputing one — because
         /// [`hit_test_painted`] has no live `Backend` to call
-        /// `tree_table_layout` with at click time, and
+        /// `TreeTable` layout with at click time, and
         /// [`ExtraPaint::hit_test`]'s `bool`-only signature has no way to
         /// distinguish a chevron click from the rest of the row. `None`
         /// for every other extra.
@@ -595,15 +595,14 @@ pub enum HitDetail {
     /// arm for this detail and falls through to `None`) by
     /// [`crate::engine::InteractionEngine::handle`].
     WidgetBody,
-    /// Landed on a declared [`quadraui::CanvasRegion`] of a
-    /// [`quadraui::Canvas`] — `region` is that region's own
-    /// [`WidgetId`] (`CanvasRegion::id`), resolved
-    /// through [`quadraui::CanvasLayout::region_hit_test`] ahead of
-    /// [`Self::ExtraBody`]'s coarser "landed somewhere on the canvas"
-    /// answer, the same disambiguation [`Self::ExtraChrome`]
-    /// does for a chrome bar's own clickable children. A `Canvas` with no
-    /// matching region (including one with an empty `regions` list) still
-    /// falls back to `ExtraBody`.
+    /// Landed on a declared region of a script-defined widget — `region`
+    /// is that region's own [`WidgetId`], resolved through
+    /// [`crate::scripted::ScriptedExtra::scripted_hit_test`] ahead of
+    /// [`Self::ExtraBody`]'s coarser "landed somewhere on the widget"
+    /// answer, the same disambiguation [`Self::ExtraChrome`] does for a
+    /// chrome bar's own clickable children. A point in no region still
+    /// falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions
+    /// through `Canvas`'s own `Interactive` instead.
     CanvasRegion {
         region: WidgetId,
     },
@@ -819,21 +818,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
                     return Some((*action, HitDetail::ExtraChrome { bar: *id }));
                 }
-                if let Some(canvas) = extra_as::<Canvas>(extra) {
-                    match canvas
-                        .layout(*area)
-                        .region_hit_test(canvas, point.x, point.y)
-                    {
-                        CanvasHit::Region { id: region } => {
-                            return Some((*id, HitDetail::CanvasRegion { region }));
-                        }
-                        CanvasHit::Inside => return Some((*id, HitDetail::ExtraBody)),
-                        CanvasHit::Outside => {}
-                        // `CanvasHit` is `#[non_exhaustive]` -- see
-                        // `quadraui::CanvasHit`'s own doc.
-                        _ => {}
-                    }
-                } else if let Some((layout, scroll_offset, total_rows)) = tree_table_hit {
+                if let Some((layout, scroll_offset, total_rows)) = tree_table_hit {
                     if area.contains(point) {
                         match layout.hit_test(
                             point.x - area.x,
@@ -848,8 +833,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                         }
                     }
                 } else if let Some(scripted) = extra.as_scripted() {
-                    // Mirrors the `Canvas` arm above exactly -- a
-                    // script-defined widget's own declared regions
+                    // A script-defined widget's own declared regions
                     // (`ScriptWidget::paint`'s returned `ScriptedPaint::regions`)
                     // resolve through the identical `CanvasHit` vocabulary,
                     // via `crate::scripted::ScriptedExtra::scripted_hit_test`
@@ -1317,6 +1301,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let area = Rect::new(0.0, -320.0, 200.0, 1600.0);
         let layout = list.layout(area.width, area.height, 0.0, |_| ListItemMeasure::new(16.0));
@@ -1479,8 +1464,7 @@ mod tests {
     /// `crate::scripted`'s own `Swatch` test widget): one region covering
     /// its right half — the minimum needed to prove `hit_test_painted`'s
     /// `Extra` arm resolves a `crate::scripted::ScriptedExtra`-exposing
-    /// extra's declared region exactly the way it already does for a
-    /// hand-written `quadraui::Canvas`.
+    /// extra's declared region.
     struct HalfRegionWidget;
 
     impl crate::scripted::ScriptWidget for HalfRegionWidget {
@@ -1522,8 +1506,7 @@ mod tests {
     }
 
     /// A point inside a script-defined widget's declared region resolves
-    /// to [`HitDetail::CanvasRegion`] (the same detail a hand-written
-    /// `Canvas` leaf's own region already resolves to); a point inside
+    /// to [`HitDetail::CanvasRegion`]; a point inside
     /// the widget's body but outside every declared region resolves to
     /// the coarser [`HitDetail::ExtraBody`] instead — mirroring
     /// [`quadraui::CanvasHit::Inside`]'s own fallback.
@@ -1539,8 +1522,7 @@ mod tests {
         );
         // Populates the paint cache `ScriptedExtra::scripted_hit_test`
         // reads from — a fresh `ScriptedPrimitive` reports `Outside`
-        // everywhere until its first paint, same as a `Canvas` with no
-        // `CanvasLayout` resolved yet. Paints straight through
+        // everywhere until its first paint. Paints straight through
         // `Primitive::paint_cells`, the same seam `crate::scripted`'s own
         // tests use, rather than standing up a whole `Backend`.
         let ctx = LayoutCtx::new(1.0, 1.0, false);

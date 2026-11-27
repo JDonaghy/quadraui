@@ -892,7 +892,7 @@ fn push_aux_hits(
 /// `line_height`: a header `1.4 ×` the line height, an 8px scrollbar
 /// gutter, a 1px divider when sections are resizable, and no cell
 /// quantisation.
-pub fn msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
+pub fn pixel_msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
     MsvLayoutMetrics {
         header_size: (line_height * 1.4) as f32,
         divider_size: if allow_resize { 1.0 } else { 0.0 },
@@ -979,15 +979,15 @@ pub fn msv_body_measure(
 }
 
 /// The chrome layout a pixel surface resolves for `view` in `bounds` at
-/// `line_height` — [`msv_metrics`] plus [`msv_body_measure`]. A host
+/// `line_height` — [`pixel_msv_metrics`] plus [`msv_body_measure`]. A host
 /// hit-testing a view it paints through a pixel backend calls this with
 /// the backend's chrome line height, the same value the paint used.
-pub fn msv_layout(
+pub fn pixel_msv_layout(
     view: &MultiSectionView,
     bounds: Rect,
     line_height: f64,
 ) -> MultiSectionViewLayout {
-    let metrics = msv_metrics(line_height, view.allow_resize);
+    let metrics = pixel_msv_metrics(line_height, view.allow_resize);
     view.layout(bounds, metrics, |i| {
         msv_body_measure(&view.sections[i].body, &view.sections[i].aux, line_height)
     })
@@ -1021,7 +1021,7 @@ pub use contract_layout::{MultiSectionViewPrimitiveLayout, SectionBodyLayout, Se
     all(feature = "macos", target_os = "macos")
 ))]
 mod contract_layout {
-    use super::{cell_msv_layout, msv_layout};
+    use super::{cell_msv_layout, pixel_msv_layout};
     use crate::event::Rect;
     use crate::primitive::{LayoutCtx, Primitive, Units};
     use crate::primitives::chart::ChartPrimitiveLayout;
@@ -1148,7 +1148,7 @@ mod contract_layout {
                 Units::Cells => (cell_msv_layout(self, rect), 1.0, 1.0),
                 _ => {
                     let lh = ctx.chrome_line_height();
-                    (msv_layout(self, rect, lh as f64), lh, ctx.char_width)
+                    (pixel_msv_layout(self, rect, lh as f64), lh, ctx.char_width)
                 }
             };
             let bodies = chrome

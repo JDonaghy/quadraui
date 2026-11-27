@@ -24,7 +24,7 @@ const SOURCE: &str = include_str!("data_table.rs");
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -295,7 +295,7 @@ impl Demo for DataTableDemo {
         let state = DataTablePaintState::default()
             .with_hovered_idx(hovered)
             .with_striped(variant == 0 && self.striped);
-        let _ = backend.draw_data_table_with_state(table_rect, &self.table(variant), &state);
+        let _ = backend.draw_dyn(table_rect, &self.table(variant), &state);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -352,7 +352,7 @@ impl Demo for DataTableDemo {
             UiEvent::MouseDown { position, .. } => {
                 let table = self.table(variant);
                 #[allow(deprecated)]
-                let layout = backend.data_table_layout(table_rect, &table);
+                let layout = backend.layout_primitive(table_rect, &table).layout;
                 // `DataTableLayout::hit_test` is viewport-relative (measured
                 // from the table's own left/top edge), not absolute like
                 // most other primitives' layouts — localize before testing.
@@ -377,7 +377,7 @@ impl Demo for DataTableDemo {
             UiEvent::MouseMoved { position, .. } => {
                 let table = self.table(variant);
                 #[allow(deprecated)]
-                let layout = backend.data_table_layout(table_rect, &table);
+                let layout = backend.layout_primitive(table_rect, &table).layout;
                 let (lx, ly) = (position.x - table_rect.x, position.y - table_rect.y);
                 let old = self.hovered_idx;
                 self.hovered_idx = match layout.hit_test(lx, ly, 0, total) {
@@ -473,7 +473,7 @@ mod tui_tests {
         // area (offset past the activity bar + sidebar).
         let area = Rect::new(20.0, 0.0, 60.0, 20.0);
         let table_rect = DataTableDemo::table_rect(area, &backend);
-        let layout = backend.data_table_layout(table_rect, &demo.table(0));
+        let layout = backend.layout_primitive(table_rect, &demo.table(0)).layout;
         let col = 1; // "Status".
                      // Click well inside the column, not near either edge — the
                      // header-divider grab zone extends 3 cells either side of a

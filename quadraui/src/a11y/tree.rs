@@ -2342,23 +2342,53 @@ mod tests {
     use crate::frame::{ScreenLayout, Surface};
     use crate::layout::{Anchor, Side};
     use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
-    use crate::primitives::canvas::Canvas;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::chart::{Chart, ChartKind, Series};
     use crate::primitives::completions::{CompletionItem, CompletionKind};
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
     use crate::primitives::float::{Float, FloatMeasure};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::form::Form;
     use crate::primitives::list::ListItem;
     use crate::primitives::message_list::MessageRow;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::multi_section_view::{
         Axis, EmptyBody, ScrollMode, Section, SectionBody, SectionHeader, SectionSize,
     };
     use crate::primitives::palette::{PaletteItem, PaletteMode};
     use crate::primitives::pipeline_view::{PipelineStage, StageStatus};
     use crate::primitives::scrollbar::Scrollbar;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::terminal::{Terminal, TerminalCell};
     use crate::primitives::toolbar::ToolbarButton;
-    use crate::types::{Color, Decoration, SelectionMode, TreeStyle, WidgetId};
+    use crate::types::{Color, Decoration, WidgetId};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    use crate::types::{SelectionMode, TreeStyle};
 
     fn list(id: &str, title: Option<&str>, items: &[&str], selected: usize) -> ListView {
         ListView {
@@ -2380,6 +2410,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -2424,17 +2455,16 @@ mod tests {
         }
     }
 
-    /// A surface whose capture carries no top-level `WidgetId` (the id
-    /// lives on the primitive, not the `Surface` variant itself).
-    fn canvas_surface() -> Surface {
-        Surface::Canvas {
+    /// A surface whose widget carries no `WidgetId` of its own: a drop
+    /// overlay is pure drag feedback.
+    fn id_less_surface() -> Surface {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            canvas: Canvas {
-                id: WidgetId::new("sketch"),
-                ops: Vec::new(),
-                regions: Vec::new(),
-                focusable: false,
-            },
+            widget: Box::new(crate::primitives::drop_zone::DropOverlay {
+                highlight: Some(Rect::new(1.0, 1.0, 2.0, 2.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            }),
         }
     }
 
@@ -2442,9 +2472,9 @@ mod tests {
     /// `BoardModel` mapping (column/card roles and their independent
     /// position-in-set/set-size pairs).
     fn board_surface() -> Surface {
-        Surface::Board {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            model: BoardModel {
+            widget: Box::new(BoardModel {
                 id: WidgetId::new("sprint"),
                 columns: vec![
                     BoardColumn {
@@ -2490,7 +2520,7 @@ mod tests {
                 ],
                 selected_card_id: Some(WidgetId::new("card-2")),
                 col_scroll_offset: 0,
-            },
+            }),
         }
     }
 
@@ -2940,7 +2970,7 @@ mod tests {
 
     #[test]
     fn surfaces_without_a_widget_id_still_appear() {
-        let frame = frame_with(vec![canvas_surface()]);
+        let frame = frame_with(vec![id_less_surface()]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(tree.nodes().len(), 2, "root plus the id-less surface");
         assert_eq!(
@@ -3053,9 +3083,9 @@ mod tests {
             ],
             focused_stage: None,
         };
-        let frame = frame_with(vec![Surface::PipelineView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 60.0, 4.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3154,6 +3184,12 @@ mod tests {
         assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn data_table_maps_rows_cells_and_a_footer_with_no_position() {
         let table = DataTable {
@@ -3196,10 +3232,9 @@ mod tests {
             striped: false,
             glyphs: None,
         };
-        let frame = frame_with(vec![Surface::DataTable {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            table,
-            hovered: None,
+            widget: Box::new(table),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3221,6 +3256,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn data_table_virtualisation_reports_true_set_size_under_a_100k_row_window() {
         let total = 100_000usize;
@@ -3250,10 +3291,9 @@ mod tests {
             striped: false,
             glyphs: None,
         };
-        let frame = frame_with(vec![Surface::DataTable {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            table,
-            hovered: None,
+            widget: Box::new(table),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
 
@@ -3273,6 +3313,12 @@ mod tests {
         assert_eq!(last.info.set_size, Some(100_000));
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn tree_view_maps_rows_flat_with_level_token_and_grouped_sibling_position() {
         let tree_view = TreeView {
@@ -3325,9 +3371,9 @@ mod tests {
             style: TreeStyle::default(),
             has_focus: false,
         };
-        let frame = frame_with(vec![Surface::Tree {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            tree: tree_view,
+            widget: Box::new(tree_view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3352,9 +3398,9 @@ mod tests {
             ],
             scroll_top: 0,
         };
-        let frame = frame_with(vec![Surface::MessageList {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 6.0),
-            list,
+            widget: Box::new(list),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3367,6 +3413,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn multi_section_view_maps_sections_as_groups_with_expanded_and_active_state() {
         let view = MultiSectionView {
@@ -3418,9 +3470,9 @@ mod tests {
             has_focus: false,
             panel_scroll: 0.0,
         };
-        let frame = frame_with(vec![Surface::MultiSectionView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 20.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3433,6 +3485,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn multi_section_view_body_delegates_container_role_label_and_children_for_every_variant() {
         let view = MultiSectionView {
@@ -3613,9 +3671,9 @@ mod tests {
             has_focus: false,
             panel_scroll: 0.0,
         };
-        let frame = frame_with(vec![Surface::MultiSectionView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 30.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

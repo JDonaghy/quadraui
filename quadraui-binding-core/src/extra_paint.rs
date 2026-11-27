@@ -12,8 +12,8 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Canvas, Column, ComboBox, CommandLine, DatePicker, FindReplacePanel, FontRole, Form,
-    Icon, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point,
+    Backend, Column, ComboBox, CommandLine, DatePicker, FindReplacePanel, FontRole, Form, Icon,
+    MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point,
     ProgressBar, Rect, Scrollbar, Spinner, StyledText, TextField, TextInput, TextRegion, Toolbar,
     ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
@@ -670,7 +670,7 @@ impl ExtraPaint for MessageList {
 
 impl ExtraPaint for MultiSectionView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_multi_section_view(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -679,9 +679,8 @@ impl ExtraPaint for MultiSectionView {
 }
 
 impl ExtraPaint for TreeTable {
-    #[allow(deprecated)]
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_tree_table(area, self, None);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -690,7 +689,7 @@ impl ExtraPaint for TreeTable {
 
     /// Whole-area bounds check only, same limitation [`ComboBox::hit_test`]'s
     /// doc describes: this trait's `hit_test` has no `backend` parameter
-    /// to resolve [`quadraui::Backend::tree_table_layout`]'s real column
+    /// to resolve the table's real laid-out column
     /// widths with. The precise chevron/row/header resolution a click
     /// actually gets goes through [`crate::hit::PaintedHit::Extra::tree_table_hit`]
     /// instead — the real [`quadraui::TreeTableLayout`] stashed there at
@@ -1071,35 +1070,6 @@ impl ExtraPaint for Scrollbar {
     }
 }
 
-impl ExtraPaint for Canvas {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_canvas(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Matches [`quadraui::CanvasLayout::hit_test`]'s own "inside these
-    /// bounds at all" answer (see [`quadraui::CanvasHit`]'s doc) — this
-    /// boolean `ExtraPaint` seam has no way to surface a
-    /// [`quadraui::CanvasRegion`] id, so it deliberately stays this
-    /// coarse rather than resolving further. [`crate::hit::hit_test_painted`]
-    /// downcasts the `PaintedHit::Extra` entry back to `Canvas` itself to
-    /// resolve a region hit instead of calling this method.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    /// Mirrors [`quadraui::Canvas::focusable`] — the descriptor's own
-    /// declarative flag decides whether this canvas joins the tab-stop
-    /// list, the same "app sets the flag, this trait just reads it back"
-    /// contract [`quadraui::Canvas::focusable`]'s own doc describes.
-    fn tab_stop(&self) -> bool {
-        self.focusable
-    }
-}
-
 impl ExtraPaint for FindReplacePanel {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_find_replace(area, self);
@@ -1228,7 +1198,6 @@ extra_primitives! {
     "menu_bar" => MenuBar,
     "command_line" => CommandLine,
     "scrollbar" => Scrollbar,
-    "canvas" => Canvas,
     "find_replace" => FindReplacePanel,
     "password" => PasswordInput,
     "textarea" => TextArea,
@@ -1247,15 +1216,15 @@ extra_primitives! {
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
 /// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
 /// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"`, `"image"`,
-/// `"chart"`, `"scroll_view"`, `"board"`, `"pipeline_view"`, `"diff_view"`,
-/// `"checkbox"`, `"slider"`, `"select"` and `"markdown"` are this table's
+/// `"chart"`, `"canvas"`, `"scroll_view"`, `"board"`, `"pipeline_view"`,
+/// `"diff_view"`, `"checkbox"`, `"slider"`, `"select"` and `"markdown"` are this table's
 /// members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry,
 /// none of [`quadraui::IconGrid`], [`quadraui::CellGrid`],
 /// [`quadraui::Switch`], [`quadraui::RadioGroup`], [`quadraui::Button`],
 /// [`quadraui::CommandCenter`], [`quadraui::Terminal`],
 /// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`],
 /// [`quadraui::ContextMenu`], [`quadraui::Editor`], [`quadraui::Minimap`],
-/// [`quadraui::Image`], [`quadraui::Chart`], [`quadraui::ScrollView`],
+/// [`quadraui::Image`], [`quadraui::Chart`], [`quadraui::Canvas`], [`quadraui::ScrollView`],
 /// [`quadraui::BoardModel`], [`quadraui::PipelineView`],
 /// [`quadraui::DiffView`], [`quadraui::Checkbox`], [`quadraui::Slider`],
 /// [`quadraui::Select`] or [`quadraui::Markdown`] has a bespoke
@@ -1300,7 +1269,10 @@ extra_primitives! {
 /// and crosshair are descriptor fields the app owns and its `State` is
 /// empty, and [`quadraui::ScrollView`]'s offset is a descriptor field with
 /// only the scrollbar drag in its `State`, so `"chart"` and
-/// `"scroll_view"` need nothing more either. [`quadraui::BoardModel`],
+/// `"scroll_view"` need nothing more either. [`quadraui::Canvas`]'s own
+/// [`crate::interactive::Interactive`] impl resolves its declared regions
+/// (hover, leave, click and double-click, in canvas-local coordinates),
+/// so `"canvas"` needs nothing more. [`quadraui::BoardModel`],
 /// [`quadraui::PipelineView`] and [`quadraui::DiffView`] keep their
 /// selection, focus and scroll on the descriptor and hold no state at all,
 /// so `"board"`, `"pipeline_view"` and `"diff_view"` need nothing more
@@ -1314,7 +1286,7 @@ extra_primitives! {
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 23] = [
+pub const WIDGET_KINDS: [&str; 24] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1330,6 +1302,7 @@ pub const WIDGET_KINDS: [&str; 23] = [
     "minimap",
     "image",
     "chart",
+    "canvas",
     "scroll_view",
     "board",
     "pipeline_view",
@@ -2594,13 +2567,13 @@ mod tests {
     /// chevron glyph both reach the screen (the chevron via the shared
     /// [`quadraui::primitives::tree_table::native_surface_paint`] this
     /// paints through on GTK/macOS/Win — TUI keeps its own
-    /// [`quadraui::tui::draw_tree_table`] rasteriser). A click elsewhere in
+    /// `TreeTable`'s own cell paint). A click elsewhere in
     /// the body still reaches the handler as a raw `MouseDown`, same as
     /// every other `ExtraBody` hit; a click on the chevron itself resolves
     /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real
     /// [`quadraui::UiEvent::TreeTable`]`(`[`quadraui::TreeTableEvent::ToggleExpanded`]`)`.
-    /// A `message_list` extra paints through the widget contract rather
-    /// than the bespoke `Backend::draw_message_list`, on a pixel backend
+    /// A `message_list` extra paints through the widget contract, on a
+    /// pixel backend
     /// whose editor line height differs from its chrome row height.
     #[test]
     fn message_list_extra_paints_through_the_widget_contract() {
@@ -2630,8 +2603,8 @@ mod tests {
         };
         ExtraPaint::paint(&list, &mut backend, Rect::new(0.0, 0.0, 200.0, 64.0));
         assert!(
-            !backend.calls.contains(&"draw_message_list"),
-            "painted through Backend::draw_message_list: {:?}",
+            backend.calls.is_empty(),
+            "painted through a bespoke Backend method: {:?}",
             backend.calls
         );
     }

@@ -2,7 +2,7 @@
 //!
 //! Same `HelpLayerDemo` `ShellApp` as `tui_help_layer` — proves the help
 //! registry + cheatsheet overlay + palette integration render on GTK with
-//! no per-backend code (composed entirely from `AppShell`'s sidebar panels,
+//! no per-backend code (composed entirely from `ShellView`'s sidebar panels,
 //! `TextDisplay`, and `Palette`, all of which already have GTK rasterisers).
 //!
 //! ```sh

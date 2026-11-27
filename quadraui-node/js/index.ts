@@ -595,7 +595,7 @@ export interface WidgetState {
 }
 
 /**
- * A headless `ShellApp`/`ShellConfig`-backed app: an AppShell (activity bar
+ * A headless `ShellApp`/`ShellConfig`-backed app: a ShellView (activity bar
  * + sidebar + optional bottom-panel tab strip) around JS-registered
  * content and event handlers. Built by `QuiApp.runShell(width, height,
  * config, ...)`, not constructed directly. See the native binding's own

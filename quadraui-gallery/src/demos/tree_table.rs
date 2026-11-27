@@ -30,7 +30,7 @@ const SOURCE: &str = include_str!("tree_table.rs");
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -351,11 +351,6 @@ mod tests {
 
 #[cfg(all(test, feature = "tui"))]
 mod tui_tests {
-    // Tests exercise the deprecated `Backend::tree_table_layout` directly
-    // alongside its `DrawsPrimitives::draw_primitive` replacement — this
-    // deprecation targets callers, not this file's own coverage of the
-    // method it deprecates.
-    #![allow(deprecated)]
     use super::*;
 
     #[test]
@@ -366,7 +361,7 @@ mod tui_tests {
         let table_rect = TreeTableDemo::table_rect(area, &backend);
         let columns = columns_for(table_rect.width);
         let table = demo.controller.flatten(columns.clone());
-        let layout = backend.tree_table_layout(table_rect, &table);
+        let layout = backend.layout_primitive(table_rect, &table).layout;
         let (idx, bounds) = layout.chevrons[0];
         assert_eq!(table.tree[idx].path, vec![0]);
         let event = UiEvent::MouseDown {
@@ -394,7 +389,7 @@ mod tui_tests {
         let table_rect = TreeTableDemo::table_rect(area, &backend);
         let columns = columns_for(table_rect.width);
         let table = demo.controller.flatten(columns);
-        let layout = backend.tree_table_layout(table_rect, &table);
+        let layout = backend.layout_primitive(table_rect, &table).layout;
         let col1 = layout.table.columns[1];
         let event = UiEvent::MouseDown {
             widget: None,

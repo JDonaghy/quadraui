@@ -511,7 +511,7 @@ fn color_to_d2d(color: Color) -> D2D1_COLOR_F {
 /// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
 /// # struct MyApp;
 /// # impl ShellApp for MyApp {
-/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::ShellLayout) {}
 /// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
 /// # }
 /// let config = ShellConfig::new("Demo", vec![]);
@@ -1034,7 +1034,7 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
         FrameInventory {
             text_runs: self.core.backend().text_runs().to_vec(),
             // Zones registered this frame via `Backend::register_zone` —
-            // `AppShell::render`'s shell-chrome zones (activity-bar items,
+            // `ShellView::render`'s shell-chrome zones (activity-bar items,
             // sidebar header/content, status bar, title bar, ...). Primitives
             // that don't yet call `register_zone` contribute no zone,
             // mirroring `GtkDriver::inventory`/`MacDriver::inventory`.

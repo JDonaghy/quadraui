@@ -9,8 +9,8 @@
 //! — `SidebarSystem`'s default. `ScrollMode::WholePanel` (see
 //! `multi_tree.rs`'s `DebugSidebar`) drives the viewport from a single
 //! panel-level scroll offset instead of each section's own
-//! `TreeController::scroll_offset`, so `reveal`'s
-//! `TreeController::scroll_to_visible` call — correct as it is — has no
+//! scroll offset, so `reveal`'s scroll-into-view — correct as it is —
+//! has no
 //! visible effect under that mode. This demo intentionally stays in the
 //! default mode so `reveal` actually moves the screen.
 //!
@@ -118,8 +118,7 @@ impl AppLogic for SidebarRevealDemo {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         // `reveal` is backend-free and needs this cached first — see
         // `SidebarSystem::set_backend_info`.
-        self.sidebar
-            .set_backend_info(backend.line_height(), backend.msv_metrics());
+        self.sidebar.set_backend_info(backend.line_height());
 
         let rect = Self::sidebar_rect(backend);
         match self.sidebar.handle(&event, backend, rect) {

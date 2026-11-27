@@ -24,6 +24,7 @@ use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::{CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use super::text::measure_text;
 use crate::primitives::list::{ListPaintState, ListView, ListViewLayout};
 use crate::style::Style;
@@ -254,12 +255,6 @@ impl CGRectExt for CGRect {
     }
 }
 
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
-}
-
 #[cfg(test)]
 mod tests {
     // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
@@ -320,6 +315,7 @@ mod tests {
             // Field was added to `ListView` after this fixture was written.
             // `false` preserves the fixture's behaviour.
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -804,6 +800,7 @@ mod multi_select_driver_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

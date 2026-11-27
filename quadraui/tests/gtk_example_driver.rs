@@ -214,7 +214,7 @@ fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
         .zones()
         .iter()
         .find(|z| z.id == WidgetId::new("app-shell:divider"))
-        .expect("AppShell::render should register the divider's chrome zone")
+        .expect("ShellView::render should register the divider's chrome zone")
         .bounds;
     assert!(
         divider.height > 8.0,
@@ -242,7 +242,7 @@ fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
 
 /// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
 /// two items (explorer → search → git), and `Enter` activates the
-/// selection — switching the *real* `AppShell` panel, visible as the
+/// selection — switching the *real* `ShellView` panel, visible as the
 /// sidebar header flipping from "EXPLORER" to "SOURCE CONTROL".
 ///
 /// This is the acceptance criterion that the GTK test path and the live
@@ -405,7 +405,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     );
 }
 
-/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// `ctx.shell_mut()` reaches the real `ShellView` instance `ShellAdapter`
 /// renders, so `Ctrl+B` hides/shows the sidebar `driver_with_shell` actually
 /// painted — not a shadow copy. Mirrors `tests/tui_example_driver.rs`'s
 /// `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
@@ -423,7 +423,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "Ctrl+B toggling the real AppShell must redraw"
+        "Ctrl+B toggling the real ShellView must redraw"
     );
     assert!(
         driver.find_bounds("(sidebar content here)").is_none(),
@@ -468,14 +468,29 @@ fn data_table_wide_middle_column_leaves_neighbours_intact_in_painted_texts() {
         "wide-status pod row should be painted: {:?}",
         driver.painted_texts()
     );
+    // The over-long Status value paints as one entry: a prefix of the
+    // full value, ellipsis-truncated to its own column, ending before the
+    // next column's cell starts.
+    const FULL_STATUS: &str =
+        "CrashLoopBackOff: ImagePullBackOff waiting for registry retry backoff window";
+    let texts = driver.painted_texts();
+    let status = texts
+        .iter()
+        .find(|t| t.starts_with("CrashLoopBackOff"))
+        .unwrap_or_else(|| panic!("the wide Status cell should be painted: {texts:?}"));
+    let kept = status
+        .strip_suffix('…')
+        .unwrap_or_else(|| panic!("the wide Status cell is ellipsis-truncated: {status:?}"))
+        .trim_end();
     assert!(
-        driver
-            .painted_texts()
-            .iter()
-            .any(|t| t.contains("ImagePullBackOff waiting for registry retry backoff window")),
-        "the full over-long Status value should still be recorded intact (GTK clips visually \
-         via cr.clip(), not by truncating the underlying text): {:?}",
-        driver.painted_texts()
+        FULL_STATUS.starts_with(kept) && kept.len() < FULL_STATUS.len(),
+        "the truncated Status cell is a prefix of the full value: {status:?}"
+    );
+    let status_bounds = driver.find_bounds(status).expect("Status cell bounds");
+    let age_bounds = driver.find_bounds("1h").expect("Age cell bounds");
+    assert!(
+        status_bounds.x + status_bounds.width <= age_bounds.x,
+        "the Status cell {status_bounds:?} ends before the Age cell {age_bounds:?} starts"
     );
     assert!(
         driver.find_bounds("1h").is_some(),
@@ -628,7 +643,7 @@ fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
     );
 }
 
-/// `ShellApp`'s sidebar rows are painted by `draw_tree`. Clicking one by
+/// `ShellApp`'s sidebar rows are painted by `TreeView`'s paint. Clicking one by
 /// text (not by coordinate) must select it, which the main-content label
 /// echoes — the shell round trip the GTK suite could not assert before
 #[test]
@@ -710,7 +725,7 @@ fn data_table_divider_before_last_column_widens_on_right_drag() {
     );
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel ──────────
+// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
 //
 // GTK twin of `tests/tui_example_driver.rs`'s workspace set. Same
 // `ShellApp`, so the controller is driven through the Pango-measured
@@ -798,7 +813,7 @@ fn workspace_ctrl_tab_cycles_and_wraps() {
 // Driver-tier cover for `primitives::split::native_surface_paint::paint`,
 // the shared implementation for divider fills. The GTK backend drives the
 // *same* backend-agnostic `SplitApp` the `gtk_split` example runs through
-// `GtkBackend::draw_split` -> the shared paint, and asserts on real Cairo
+// `draw_primitive` -> the shared paint, and asserts on real Cairo
 // pixels rather than on a recorded call list.
 //
 // `Split` paints no text at all (see `GtkDriver::painted_texts`' doc), so
@@ -865,7 +880,7 @@ fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path()
     let row = H / 2;
 
     let (x, len) = separator_run_in_row(&mut driver, row)
-        .expect("GtkBackend::draw_split should paint a separator-coloured divider sash");
+        .expect("the split should paint a separator-coloured divider sash");
 
     assert!(
         (1..=2).contains(&len),
@@ -917,7 +932,7 @@ fn split_toggling_direction_repaints_the_divider_as_a_horizontal_band() {
 /// Paint↔hit-test round trip across the shared path: a drag that starts on
 /// the *painted* divider must be recognised as `SplitHit::Divider` by the
 /// layout that painted it, and the next frame must repaint the band at the
-/// new ratio. A paint that drifted from `Backend::split_layout`'s geometry
+/// new ratio. A paint that drifted from `layout_primitive`'s geometry
 /// would fail here even though both halves looked right in isolation.
 #[test]
 fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
@@ -950,16 +965,16 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill vs status bar mechanism ────────────────────────────────
+// ─── solid fill vs status bar mechanism ─────────────────────────────────────
 //
 // A caller that hands a status bar a row rect taller than
 // the backend's `current_line_height` receives a fill exactly as tall as the
-// rect. `Backend::draw_solid_fill` (the replacement for dividers) also fills
-// the whole rect with no segment/text layout — a cheaper primitive.
+// rect. A solid `Canvas` fill also fills the whole rect with no segment/text
+// layout — a cheaper primitive.
 
 /// Paints one rect, taller than the backend's default line height, with each
 /// of the two candidate primitives — a `StatusBar` through the widget
-/// contract and `draw_solid_fill` — side by side so a single frame can assert on both.
+/// contract and a solid `Canvas` fill — side by side so a single frame can assert on both.
 struct SolidFillVsStatusBarProbe;
 
 /// Height of the probe rects — comfortably taller than any backend's
@@ -990,7 +1005,11 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
         let _ = backend.draw_dyn(status_bar_rect, &bar, &());
 
         let solid_fill_rect = quadraui::Rect::new(60.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
-        backend.draw_solid_fill(solid_fill_rect, PROBE_FILL_COLOR);
+        backend.draw_dyn(
+            solid_fill_rect,
+            &quadraui::testing::solid_canvas(solid_fill_rect, PROBE_FILL_COLOR),
+            &(),
+        );
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn quadraui::Backend) -> Reaction {
@@ -1015,7 +1034,7 @@ fn status_bar_fills_a_rect_taller_than_line_height_completely() {
     );
 }
 
-/// `Backend::draw_solid_fill` (the replacement primitive for dividers) must
+/// A solid `Canvas` fill must
 /// fill the *whole* rect it's given — no `current_line_height` ceiling, no
 /// per-row seams. Sampling top, middle, and near the bottom of the same
 /// `PROBE_RECT_HEIGHT`-tall rect must all land on the fill color.
@@ -1032,7 +1051,7 @@ fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
         assert_eq!(
             driver.pixel(80, y),
             expected,
-            "draw_solid_fill should cover the entire rect height, including y={y}",
+            "the solid fill should cover the entire rect height, including y={y}",
         );
     }
 }
@@ -1712,7 +1731,7 @@ fn canvas_demo_gtk_escape_exits() {
 // ─── CanvasShapesApp: the Canvas v2 op set — real GTK rendering (#1627) ────
 //
 // `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
-// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// the whole `draw_primitive` round trip reaches the screen for the new
 // op set generically (every op degrades to TUI's braille grid). These check
 // *real* pixel colour and glyph runs — the GTK rasteriser actually painting
 // each new op (`Polygon` / `Ellipse` / `Arc` / `Bezier` / `DashedLine` /
@@ -2032,7 +2051,7 @@ fn canvas_shapes_demo_gtk_escape_exits() {
 // Neither shipped Canvas example uses a translucent `Color` (every op uses
 // `Color::rgb`, always `a: 255`), so asserting against them alone would
 // never exercise alpha blending. This probe draws two overlapping
-// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas`
+// opaque/translucent `DrawOp::Rect`s through one `draw_primitive`
 // call and checks the overlap is a genuine blend of the two — the same
 // inline-probe pattern `SolidFillVsStatusBarProbe` above established for a
 // narrow mechanism check no shipped demo exercises.
@@ -2062,7 +2081,7 @@ impl quadraui::AppLogic for CanvasAlphaProbe {
                 },
             ],
         };
-        let _ = backend.draw_canvas(rect, &canvas);
+        let _ = quadraui::DrawsPrimitives::draw_primitive(backend, rect, &canvas);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn quadraui::Backend) -> Reaction {

@@ -259,7 +259,7 @@ impl AppLogic for SearchPanelApp {
         let lh = backend.line_height();
         let panel_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
         let view = self.build_view();
-        backend.draw_multi_section_view(panel_rect, &view);
+        backend.draw_primitive(panel_rect, &view);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -357,7 +357,7 @@ impl AppLogic for SearchPanelApp {
                 let lh = backend.line_height();
                 let panel_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
                 let view = self.build_view();
-                let layout = backend.msv_layout(panel_rect, &view);
+                let layout = backend.layout_primitive(panel_rect, &view).chrome;
                 match layout.hit_test(position.x, position.y) {
                     MultiSectionViewHit::Aux {
                         kind: AuxHit::Input,
@@ -370,8 +370,8 @@ impl AppLogic for SearchPanelApp {
                         self.input_active = false;
                         if let Some(sl) = layout.sections.get(section) {
                             if let SectionBody::Tree(ref tree) = view.sections[section].body {
-                                #[allow(deprecated)]
-                                let tree_layout = backend.tree_layout(sl.body_bounds, tree);
+                                let tree_layout =
+                                    backend.layout_primitive(sl.body_bounds, tree).layout;
                                 let local_x = position.x - sl.body_bounds.x;
                                 let local_y = position.y - sl.body_bounds.y;
                                 match tree_layout.hit_test(local_x, local_y) {

@@ -208,7 +208,8 @@ pub enum DiffPane {
     Right,
 }
 
-/// Layout information returned by `draw_diff_view`.
+/// Scroll-clamp summary of a [`DiffView`]'s layout
+/// ([`DiffViewGeometry::as_layout`]).
 ///
 /// Used by `AppLogic` to clamp scroll offsets after a resize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,8 +352,7 @@ pub enum DiffViewHit {
 }
 
 impl DiffViewGeometry {
-    /// The [`DiffViewLayout`] scroll-clamp summary for this geometry —
-    /// every backend's `draw_diff_view` returns this.
+    /// The [`DiffViewLayout`] scroll-clamp summary for this geometry.
     pub fn as_layout(&self) -> DiffViewLayout {
         DiffViewLayout {
             visible_rows: self.visible_rows,
@@ -405,7 +405,7 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 /// The `DiffView` primitive: a two-pane or unified diff viewer.
 ///
 /// Apps build this from pre-computed [`DiffHunk`]s (via
-/// `quadraui::diff::compute_hunks`) and pass it to `backend.draw_diff_view`.
+/// `quadraui::diff::compute_hunks`) and paint it with `draw_primitive`.
 /// The backend never recomputes the diff — it only rasterises.
 ///
 /// # Examples
@@ -667,6 +667,10 @@ impl crate::primitive::Primitive for DiffView {
     type Layout = DiffViewPrimitiveLayout;
     type Event = DiffViewEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::DiffView(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }
@@ -802,9 +806,9 @@ impl crate::interactive::Interactive for DiffView {
     }
 }
 
-// Unified implementation of `draw_diff_view` for all backends (gtk, macos,
-// tui, win), written against [`crate::paint_surface::PaintSurface`] instead
-// of any one backend's drawing API. Uses the layout geometry from
+// The pixel paint for every pixel backend, written against
+// [`crate::paint_surface::PaintSurface`] instead of any one backend's
+// drawing API. Uses the layout geometry from
 // [`DiffView::layout`] and applies row colouring and text from the
 // [`row_colors`] and [`unified_row_style`] functions.
 //
@@ -841,8 +845,7 @@ pub(crate) mod native_surface_paint {
     const UNIFIED_PAD: f32 = 2.0;
 
     /// Paint a [`DiffView`] into `rect` on `surface`, returning
-    /// [`DiffViewLayout`] for scroll clamping — same contract as every
-    /// deleted per-backend `draw_diff_view`.
+    /// [`DiffViewLayout`] for scroll clamping.
     pub(crate) fn paint(
         view: &DiffView,
         surface: &mut dyn PaintSurface,

@@ -46,12 +46,12 @@ pub use crate::shell::{ShellApp, ShellConfig, ShellContext};
 // than one primitive into a single frame; see `frame.rs`'s module doc.
 pub use crate::frame::{ScreenLayout, Surface};
 
-// ── AppShell — the VS Code-style activity-bar/sidebar/editor frame.
-// `AppShellLayout` is what `ShellApp::render_content` receives each
+// ── ShellView — the VS Code-style activity-bar/sidebar/editor frame.
+// `ShellLayout` is what `ShellApp::render_content` receives each
 // frame (see the crate root `README.md` hello-world); `PanelDefinition`
 // and `FormController`/`FormControllerAction` are the other `compose`
 // pieces a typical multi-pane app wires up alongside it.
-pub use crate::compose::{AppShellLayout, FormController, FormControllerAction, PanelDefinition};
+pub use crate::compose::{FormController, FormControllerAction, PanelDefinition, ShellLayout};
 
 // ── A representative sample of primitives (the crate root table's own
 // "representative sample", kept in sync with it — see `lib.rs`'s module

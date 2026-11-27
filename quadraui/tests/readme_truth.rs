@@ -808,11 +808,13 @@ fn readme_compose_section() -> String {
 
 /// For a `src/compose/<stem>.rs` module, the public type name(s) it is
 /// expected to expose, by the convention nearly every compose module
-/// follows: `PascalCase(stem)` directly (`app_shell` -> `AppShell`) or
+/// follows: `PascalCase(stem)` directly (`bottom_panel` -> `BottomPanel`) or
 /// `PascalCase(stem) + "Controller"` (`workspace` -> `WorkspaceController`,
 /// `tab_group` -> `TabGroupController`). A handful of modules don't fit
-/// either shape — because they expose more than one primary type
-/// (`help_layer` -> `HelpRegistry` + `HelpOverlayController`), or because
+/// either shape — because their primary type is named for what it is
+/// rather than its file (`app_shell` -> `ShellView`), because they expose
+/// more than one primary type
+/// (`help_layer` -> `HelpRegistry` + `HelpOverlay`), or because
 /// they're a utility rather than a stateful controller (`markdown`,
 /// `notification`) — and are listed here explicitly instead of guessed at.
 /// Adding a *conventionally-named* module needs no change here: the
@@ -831,10 +833,8 @@ fn expected_compose_type_names(stem: &str) -> Vec<String> {
     }
 
     match stem {
-        "help_layer" => vec![
-            "HelpRegistry".to_string(),
-            "HelpOverlayController".to_string(),
-        ],
+        "app_shell" => vec!["ShellView".to_string()],
+        "help_layer" => vec!["HelpRegistry".to_string(), "HelpOverlay".to_string()],
         // Utility modules, not stateful controllers — the README's prose
         // after the table names them without wrapping a type name in
         // backticks, so these two are matched as plain substrings by

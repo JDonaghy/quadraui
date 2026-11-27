@@ -45,7 +45,7 @@
 //               and paints no text contributes **nothing** to the frame
 //               inventory, and `zones()` stays empty until a paint site
 //               calls `Backend::register_zone` (quadraui#490 — today only
-//               `AppShell::render` does).
+//               `ShellView::render` does).
 //
 // That is why the chrome-only descriptors below (scrollbar, terminal
 // divider, drop overlay) are the sharp end of contract §5b: on a pixel
@@ -196,7 +196,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_message_list",
+            method: "draw_dyn(MessageList)",
             needle: Some("c0msg"),
             paint: |b, area| {
                 let list = MessageList {
@@ -204,7 +204,7 @@ mod ms11_492_c0_paint_smoke {
                     rows: vec![MessageRow::new("c0msg", Color::rgb(220, 220, 220), 0.0)],
                     scroll_top: 0,
                 };
-                b.draw_message_list(area, &list);
+                let _ = b.draw_dyn(area, &list, &());
             },
         },
         PrimitiveCase {
@@ -248,6 +248,7 @@ mod ms11_492_c0_paint_smoke {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 };
                 b.draw_list(area, &list);
             },
@@ -278,7 +279,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_pipeline_view",
+            method: "draw_dyn(PipelineView)",
             needle: Some("c0pipe"),
             paint: |b, area| {
                 let view = PipelineView {
@@ -290,11 +291,11 @@ mod ms11_492_c0_paint_smoke {
                     }],
                     focused_stage: None,
                 };
-                let _ = b.draw_pipeline_view(area, &view);
+                let _ = b.draw_dyn(area, &view, &());
             },
         },
         PrimitiveCase {
-            method: "draw_diff_view",
+            method: "draw_dyn(DiffView)",
             needle: Some("c0diff"),
             paint: |b, area| {
                 // Named by #492 itself: "including the current macOS
@@ -317,7 +318,7 @@ mod ms11_492_c0_paint_smoke {
                     focused_pane: DiffPane::Left,
                     has_focus: false,
                 };
-                let _ = b.draw_diff_view(area, &view);
+                let _ = b.draw_dyn(area, &view, &());
             },
         },
         PrimitiveCase {
@@ -604,7 +605,7 @@ mod ms11_492_c0_paint_smoke {
     //
     // RED TODAY for the chrome-only descriptors on the pixel backend. A
     // GTK scrollbar / terminal divider / drop overlay paints no text, and
-    // no paint site outside `AppShell::render` calls
+    // no paint site outside `ShellView::render` calls
     // `Backend::register_zone` (quadraui#490), so the frame that drew it is
     // byte-identical to the frame that took the trait's no-op default.
     // That indistinguishability is the whole premise of #492.

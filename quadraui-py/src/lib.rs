@@ -156,12 +156,12 @@ use quadraui::NamedKey;
 #[cfg(test)]
 use quadraui::Scrollbar;
 use quadraui::{
-    A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, AppShellEvent, AppShellLayout,
-    Backend, BackendCaps, BottomPanelEvent, Completions, ContextMenu, ContextMenuItem,
-    DialogButton, DialogSeverity, FileDialogOptions, Float, FloatMeasure, GlobalShortcutId,
-    ImageSource, LayoutCtx, MessageDialogOptions, Notification, Point, PointerShape, Reaction,
-    Rect, RgbaImage, RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext, Theme,
-    Toast, ToastCorner, Tooltip, TreeTableNodeData, UiEvent, UserPayload, WidgetId,
+    A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, Backend, BackendCaps,
+    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
+    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, LayoutCtx,
+    MessageDialogOptions, Notification, Point, PointerShape, Reaction, Rect, RgbaImage,
+    RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext, ShellEvent, ShellLayout,
+    Theme, Toast, ToastCorner, Tooltip, TreeTableNodeData, UiEvent, UserPayload, WidgetId,
 };
 use quadraui::{CanvasRegion, DrawOp};
 
@@ -1654,14 +1654,14 @@ struct ShellState {
     on_tick: Option<Py<PyAny>>,
     /// Invoked with no arguments once per frame; its return value, if a
     /// `list[str]`, becomes the lines of a single-line-per-entry
-    /// `TextDisplay` painted into [`crate::AppShellLayout::main_content_bounds`].
+    /// `TextDisplay` painted into [`crate::ShellLayout::main_content_bounds`].
     /// `None` paints nothing into the main content area — the shell chrome
     /// (activity bar, sidebar, bottom-panel tab strip) still renders either
-    /// way, since that is `AppShell`'s own unconditional chrome paint, not
+    /// way, since that is `ShellView`'s own unconditional chrome paint, not
     /// part of [`crate::ShellApp::render_content`].
     render_content: Option<Py<PyAny>>,
-    /// Invoked with one pythonized `AppShellEvent` dict (via
-    /// `pythonize::pythonize`, using `AppShellEvent`'s own `Serialize` impl)
+    /// Invoked with one pythonized `ShellEvent` dict (via
+    /// `pythonize::pythonize`, using `ShellEvent`'s own `Serialize` impl)
     /// whenever [`crate::ShellApp::on_shell_event_ctx`] fires — a panel
     /// switch, the sidebar being hidden/resized, the bottom panel being
     /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
@@ -1689,7 +1689,7 @@ impl ShellState {
     }
 }
 
-/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
+/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanel::tab_bar`
 /// gives the `TabBar` it paints — fixed, not per-config, so
 /// [`QuiShellApp::bottom_panel_tab_center`] can name it directly.
 const BOTTOM_PANEL_TABS_WIDGET_ID: &str = "bottom-panel:tabs";
@@ -1718,7 +1718,7 @@ impl PyShellApp {
 }
 
 impl ShellApp for PyShellApp {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let Some(callback) = self.callback(|s| &s.render_content) else {
             return;
         };
@@ -1769,7 +1769,7 @@ impl ShellApp for PyShellApp {
         })
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
         let Some(callback) = self.callback(|s| &s.on_shell_event) else {
             return;
         };
@@ -1851,7 +1851,7 @@ fn take_pending_shell_error(state: &Rc<RefCell<ShellState>>) -> PyResult<()> {
     core_take_pending_error(&mut state.borrow_mut().pending_error)
 }
 
-/// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
+/// Headless [`ShellApp`]-backed app: a ShellView (activity bar + sidebar +
 /// optional bottom-panel tab strip) around Python-registered content and
 /// event handlers. Built by [`QuiApp::run_shell`] — there is no public
 /// constructor on this type itself, mirroring how `QuiApp::run_native`'s
@@ -1895,7 +1895,7 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one pythonized
-    /// `AppShellEvent` dict whenever a panel switch, sidebar show/hide/
+    /// `ShellEvent` dict whenever a panel switch, sidebar show/hide/
     /// resize, or bottom-panel resize/hide occurs.
     fn set_on_shell_event(&mut self, callback: Py<PyAny>) {
         self.state.borrow_mut().on_shell_event = Some(callback);
@@ -1931,7 +1931,7 @@ impl QuiShellApp {
 
     /// Queues a synthetic `MouseDown` + `MouseUp` left-click at `(x, y)`,
     /// in the backend's native (cell) units — the same coordinates
-    /// `AppShellLayout`'s bounds (as pythonized by `set_on_shell_event`'s
+    /// `ShellLayout`'s bounds (as pythonized by `set_on_shell_event`'s
     /// payloads and this binding's own `find`) are expressed in. Use this
     /// to drive sidebar-toggle / panel-switch / bottom-panel-tab clicks
     /// from Python without hand-building two raw `push_event` dicts.
@@ -2128,7 +2128,7 @@ fn render_output_from_callback(
 // `on_event`/`a11y` methods a Python object, not a wire dict, carries).
 // `Widget.build()` instead leaves a placeholder (`{"canvas": {"ops": [],
 // "regions": []}}`, decoded above as an ordinary, empty
-// `quadraui::Canvas` extra) at its own wire id, and separately stashes
+// `"canvas"` widget leaf) at its own wire id, and separately stashes
 // itself (plus props/state/focusable) in `quadraui.app.widget._PENDING`,
 // a plain Python dict `_take_pending` drains right here -- see that
 // module's own doc for why this is a side channel rather than a call
@@ -2292,7 +2292,10 @@ fn apply_pending_script_widgets_leaf(
     // Only swaps a `Canvas`-shaped placeholder -- a user id collision
     // with an unrelated leaf (same id, wrong kind) leaves that leaf
     // untouched rather than clobbering it.
-    if !matches!(leaf.descriptor, LeafDescriptor::Extra(_)) {
+    if !matches!(
+        leaf.descriptor,
+        LeafDescriptor::Widget { kind: "canvas", .. }
+    ) {
         return;
     }
     let script_widget = PyScriptWidget {
@@ -10774,7 +10777,7 @@ def handle(event):
                 "the first (branch) row must be painted"
             );
             // The row's own label starts two cells past the chevron glyph +
-            // gap (`draw_tree` leaves `col == 2` once the chevron block is
+            // gap (`TreeView`'s paint leaves `col == 2` once the chevron block is
             // painted), so a click 1.5 cells to the left of the label lands
             // inside the chevron's own hit region without assuming the
             // tree's `area.x` is any particular value.
@@ -11818,7 +11821,7 @@ def handle(event):
     /// Dragging a tree's scrollbar thumb must move the painted window by
     /// translating the drag's absolute motion through
     /// [`ThumbDrag::offset_at`] into a semantic `ScrollOffsetChanged`,
-    /// mirroring `compose::TreeController`'s own thumb-drag handling. The
+    /// mirroring `TreeNavCore`'s own thumb-drag handling. The
     /// initial press only arms the drag — the raw `MouseDown` still
     /// reaches Python (the thumb-press arm never replaces `event`, it only
     /// strips the `"hit"` payload) — and the window only actually moves

@@ -113,7 +113,7 @@ impl io::Write for VtSink {
 /// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
 /// # struct MyApp;
 /// # impl ShellApp for MyApp {
-/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::ShellLayout) {}
 /// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
 /// # }
 /// let config = ShellConfig::new("Demo", vec![]);
@@ -722,7 +722,7 @@ mod tests {
     /// incremental diff would skip.
     #[test]
     fn ctrl_l_forces_a_full_repaint_through_the_public_shell_driver_seam() {
-        use crate::compose::app_shell::AppShellLayout;
+        use crate::compose::app_shell::ShellLayout;
         use crate::{Key, Modifiers, ShellApp, ShellConfig, ShellContext};
 
         /// Minimal stand-in for vimcode's `TuiShellApp`: Ctrl+L calls
@@ -730,7 +730,7 @@ mod tests {
         struct CtrlLRepaints;
 
         impl ShellApp for CtrlLRepaints {
-            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
             fn handle(
                 &mut self,

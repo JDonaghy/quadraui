@@ -4,11 +4,11 @@
 //! Three variants stand in for that example's three panels (Explorer,
 //! Source Control, Settings), each with its own
 //! [`quadraui::HelpRegistry`] entry — `?` opens a cheatsheet overlay
-//! ([`HelpOverlayController`]) showing the **active variant's**
+//! ([`HelpOverlay`]) showing the **active variant's**
 //! registered notes, demonstrating the "context-sensitive" contract:
 //! switch variants, reopen `?`, and the content changes. The Settings
 //! variant intentionally has **no** registered help, exercising
-//! [`HelpOverlayController::render`]'s fallback — `?` still opens a
+//! the overlay's no-help fallback — `?` still opens a
 //! visible "no help available" cheatsheet rather than silently doing
 //! nothing while still swallowing the key.
 //!
@@ -16,13 +16,13 @@
 //! registry's actions via `p` — that's the exact behaviour the
 //! gallery's own "Command Palette" demo (`DualModePaletteController`)
 //! already covers, so it isn't duplicated here; this demo is scoped to
-//! [`HelpOverlayController`] itself.
+//! [`HelpOverlay`] itself.
 
 use quadraui::compose::Handled;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, HelpAction, HelpNote, HelpOverlayController, HelpRegistry,
-    Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, ViewHelp, WidgetId,
+    Backend, BackendCaps, Color, HelpAction, HelpNote, HelpOverlay, HelpRegistry, Reaction, Rect,
+    StatusBar, StatusBarSegment, Style, UiEvent, ViewHelp, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -33,7 +33,7 @@ const SOURCE: &str = include_str!("help_overlay.rs");
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -51,7 +51,7 @@ const SETTINGS_PANEL: &str = "gallery:help:settings";
 
 pub struct HelpOverlayDemo {
     registry: HelpRegistry,
-    overlay: HelpOverlayController,
+    overlay: HelpOverlay,
 }
 
 impl HelpOverlayDemo {
@@ -98,7 +98,7 @@ impl HelpOverlayDemo {
 
         Self {
             registry,
-            overlay: HelpOverlayController::new().with_id("gallery:help:cheatsheet"),
+            overlay: HelpOverlay::new(WidgetId::new("gallery:help:cheatsheet")),
         }
     }
 
@@ -170,14 +170,13 @@ impl Demo for HelpOverlayDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_dyn(
-            bar_rect,
-            &Self::status_bar(variant, self.overlay.is_open()),
-            &(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &Self::status_bar(variant, self.overlay.open), &());
 
-        self.overlay
-            .render(area, backend, self.active_view_help(variant));
+        let overlay = HelpOverlay {
+            help: self.active_view_help(variant).cloned(),
+            ..self.overlay.clone()
+        };
+        let _ = backend.draw_dyn(area, &overlay, &());
     }
 
     fn handle(
@@ -187,7 +186,11 @@ impl Demo for HelpOverlayDemo {
         _backend: &mut dyn Backend,
         _area: Rect,
     ) -> Reaction {
-        match self.overlay.handle_event(event) {
+        let handled = self.overlay.handle_event(event);
+        if let Handled::Event(action) = handled {
+            self.overlay.apply(action);
+        }
+        match handled {
             Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
@@ -201,12 +204,12 @@ impl Demo for HelpOverlayDemo {
         serde_json::json!({
             "panel": Self::panel_label(variant),
             "has_help": self.active_view_help(variant).is_some(),
-            "overlay_open": self.overlay.is_open(),
+            "overlay_open": self.overlay.open,
         })
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
-        // `HelpOverlayController` is an in-canvas compose controller with
+        // `HelpOverlay` is an in-canvas widget with
         // no `Backend` capability flag — it works identically on every
         // backend, including the Settings variant's no-help fallback.
         None

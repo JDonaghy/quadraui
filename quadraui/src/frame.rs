@@ -18,9 +18,7 @@
 //! call.
 //!
 //! `ScreenLayout::tab_stops` derives Tab order from the same pushed
-//! surfaces, and `ScreenLayout::tree_frame` (see its own doc) is an
-//! in-progress, not-yet-consumed handle-based alternative to
-//! re-walking every pushed `Surface::Tree` each frame.
+//! surfaces.
 //!
 //! ## `Surface` vs. calling `Backend::draw_*` directly
 //!
@@ -64,7 +62,7 @@
 //! data readable and round-trippable instead of only probeable via
 //! [`FrameHitMap::hit_test`].
 //!
-//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::Tree { idx: 3
+//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::List { idx: 3
 //! }`) plus a frame-local surface index: it carries no primitive
 //! content, no accessibility role, no label, no value, and cannot by
 //! itself feed an AccessKit `TreeUpdate` node, be re-painted by a web
@@ -196,10 +194,7 @@
 //! assert!(check_frame_order(&[Rung::Palette, Rung::Editor]).is_err());
 //! ```
 
-use std::collections::{HashMap, HashSet};
-
 use crate::backend::DrawsPrimitives;
-use crate::descriptor_store::{DescriptorStore, Handle};
 use crate::event::Rect;
 use crate::primitive::DynWidget;
 use crate::primitives::activity_bar::ActivityBar;
@@ -263,21 +258,9 @@ use crate::Backend;
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Surface {
-    MultiSectionView {
-        rect: Rect,
-        view: MultiSectionView,
-    },
-    Tree {
-        rect: Rect,
-        tree: TreeView,
-    },
     List {
         rect: Rect,
         list: ListView,
-    },
-    Split {
-        rect: Rect,
-        split: Split,
     },
     Scrollbar {
         rect: Rect,
@@ -286,11 +269,6 @@ pub enum Surface {
     FindReplace {
         rect: Rect,
         panel: FindReplacePanel,
-    },
-    DataTable {
-        rect: Rect,
-        table: DataTable,
-        hovered: Option<usize>,
     },
     /// Any type-erased [`DynWidget`] — paints through
     /// [`crate::backend::DrawsPrimitives::draw_dyn`] rather than a
@@ -305,36 +283,6 @@ pub enum Surface {
         rect: Rect,
         widget: Box<dyn DynWidget>,
     },
-    Chart {
-        rect: Rect,
-        chart: Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    },
-    /// App-defined escape-hatch drawing: a declarative list of
-    /// [`crate::primitives::canvas::DrawOp`]s painted in order. See
-    /// [`Canvas`]'s module doc for the coordinate frame and the
-    /// per-backend degrade table.
-    Canvas {
-        rect: Rect,
-        canvas: Canvas,
-    },
-    Board {
-        rect: Rect,
-        model: BoardModel,
-    },
-    DiffView {
-        rect: Rect,
-        view: DiffView,
-    },
-    MessageList {
-        rect: Rect,
-        list: MessageList,
-    },
-    PipelineView {
-        rect: Rect,
-        view: PipelineView,
-    },
     Progress {
         rect: Rect,
         bar: ProgressBar,
@@ -342,13 +290,6 @@ pub enum Surface {
     Spinner {
         rect: Rect,
         spinner: Spinner,
-    },
-    /// Structural chrome, like [`Surface::Split`] — a divider set with
-    /// no independent focusable identity, so excluded from
-    /// [`ScreenLayout::tab_stops`].
-    SplitTree {
-        rect: Rect,
-        tree: SplitTree,
     },
 }
 
@@ -386,25 +327,13 @@ pub enum FrameZone {
     TabBar {
         idx: usize,
     },
-    MultiSectionView {
-        idx: usize,
-    },
-    Tree {
-        idx: usize,
-    },
     List {
-        idx: usize,
-    },
-    Split {
         idx: usize,
     },
     Scrollbar {
         idx: usize,
     },
     FindReplace {
-        idx: usize,
-    },
-    DataTable {
         idx: usize,
     },
     /// The zone for a [`Surface::Widget`] — carries the widget's own id
@@ -416,31 +345,10 @@ pub enum FrameZone {
         idx: usize,
         id: Option<WidgetId>,
     },
-    Chart {
-        idx: usize,
-    },
-    Canvas {
-        idx: usize,
-    },
-    Board {
-        idx: usize,
-    },
-    DiffView {
-        idx: usize,
-    },
-    MessageList {
-        idx: usize,
-    },
-    PipelineView {
-        idx: usize,
-    },
     Progress {
         idx: usize,
     },
     Spinner {
-        idx: usize,
-    },
-    SplitTree {
         idx: usize,
     },
     Empty,
@@ -534,16 +442,12 @@ impl FrameHitMap {
 /// z-order, then call [`Self::draw`] to render and get a hit map.
 pub struct ScreenLayout {
     surfaces: Vec<Surface>,
-    tree_store: DescriptorStore<TreeView>,
-    tree_handles: HashMap<WidgetId, Handle<TreeView>>,
 }
 
 impl ScreenLayout {
     pub fn new() -> Self {
         Self {
             surfaces: Vec::new(),
-            tree_store: DescriptorStore::new(),
-            tree_handles: HashMap::new(),
         }
     }
 
@@ -563,87 +467,6 @@ impl ScreenLayout {
     /// [`FrameZone`] carries) is stable.
     pub fn surfaces_mut(&mut self) -> &mut [Surface] {
         &mut self.surfaces
-    }
-
-    /// Geometry for every pushed [`Surface::Tree`] as `(Handle, Rect)`
-    /// pairs instead of cloning each tree's rows into the returned
-    /// `Vec`.
-    ///
-    /// Each tree is kept in an internal [`DescriptorStore`] keyed by its
-    /// [`WidgetId`]. A tree whose id was already seen — e.g. the same
-    /// logical tree replaced in place via [`Self::surfaces_mut`] on a
-    /// *retained* `ScreenLayout` — reuses its existing [`Handle`] and
-    /// store slot rather than being removed and re-inserted. An id that
-    /// stops being pushed (the surface was replaced with a different
-    /// id, or dropped) has its handle and store slot evicted by this
-    /// same call, so a retained layout's store stays bounded by the
-    /// number of tree ids pushed *this* frame, not by how many have
-    /// ever been pushed.
-    ///
-    /// This only pays off for a `ScreenLayout` an app keeps across
-    /// frames and mutates via [`Self::surfaces_mut`]; a fresh
-    /// `ScreenLayout::new()` built every frame (every in-repo example
-    /// and the `templates/app` scaffold do this today) still inserts —
-    /// and clones — every tree from an empty store each call. And even
-    /// on a retained layout, this still compares the *whole* tree
-    /// (`PartialEq` over every row) to decide whether to skip the
-    /// clone, so a changed tree costs a full compare-then-clone rather
-    /// than the zero-diff in-place [`DescriptorStore::update`] the
-    /// store is designed around — a caller that wants that property
-    /// has to mutate through the returned [`Handle`] itself instead of
-    /// calling this on a freshly diffed `Surface::Tree`.
-    ///
-    /// Pushing two [`Surface::Tree`] entries with the same
-    /// [`WidgetId`] is not rejected, but only the last one survives in
-    /// the store: both resolve to the same [`Handle`], so the earlier
-    /// tree's content is overwritten by the later one before either is
-    /// returned.
-    ///
-    /// This leaves [`Self::draw`], [`Self::hit_map`] and
-    /// [`Self::tab_stops`] untouched; they still paint and hit-test
-    /// directly off [`Self::surfaces`]. No in-crate caller consumes
-    /// this yet — `draw`/`hit_map`/`tab_stops`/[`OwnedFrame`] still
-    /// read [`Self::surfaces`] directly — so treat this as an early,
-    /// additive building block rather than a finished migration.
-    pub fn tree_frame(&mut self) -> Vec<(Handle<TreeView>, Rect)> {
-        let mut frame = Vec::new();
-        let mut seen = HashSet::new();
-        for surface in &self.surfaces {
-            if let Surface::Tree { rect, tree } = surface {
-                seen.insert(tree.id);
-                let handle = match self.tree_handles.get(&tree.id) {
-                    Some(&handle) => {
-                        if self.tree_store.get(handle) != Some(tree) {
-                            self.tree_store.update(handle, |slot| *slot = tree.clone());
-                        }
-                        handle
-                    }
-                    None => {
-                        let handle = self.tree_store.insert(tree.clone());
-                        self.tree_handles.insert(tree.id, handle);
-                        handle
-                    }
-                };
-                frame.push((handle, *rect));
-            }
-        }
-
-        // Evict any id that was tracked before but wasn't pushed this
-        // call, so a replaced or removed `Surface::Tree` doesn't keep
-        // its old slot (and clone) alive forever.
-        let stale: Vec<WidgetId> = self
-            .tree_handles
-            .keys()
-            .filter(|id| !seen.contains(*id))
-            .copied()
-            .collect();
-        for id in stale {
-            if let Some(handle) = self.tree_handles.remove(&id) {
-                self.tree_store.remove(handle);
-            }
-        }
-
-        frame
     }
 
     /// Render all surfaces via `backend` in z-order and return a
@@ -669,33 +492,15 @@ impl ScreenLayout {
 
         for (idx, surface) in self.surfaces.iter().enumerate() {
             match surface {
-                Surface::MultiSectionView { rect, view } => {
-                    backend.draw_multi_section_view(*rect, view);
-                }
-                #[allow(deprecated)]
-                Surface::Tree { rect, tree } => {
-                    backend.draw_tree(*rect, tree);
-                }
                 #[allow(deprecated)]
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
-                }
-                Surface::Split { rect, split } => {
-                    backend.draw_split(*rect, split);
                 }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
                 }
                 Surface::FindReplace { rect, panel } => {
                     backend.draw_find_replace(*rect, panel);
-                }
-                #[allow(deprecated)]
-                Surface::DataTable {
-                    rect,
-                    table,
-                    hovered,
-                } => {
-                    backend.draw_data_table(*rect, table, *hovered);
                 }
                 Surface::Widget { rect, widget } => {
                     // A widget the platform presents itself (a native menu
@@ -704,37 +509,11 @@ impl ScreenLayout {
                         backend.draw_dyn(*rect, widget.as_ref(), &());
                     }
                 }
-                Surface::Chart {
-                    rect,
-                    chart,
-                    hovered_point,
-                    crosshair_x,
-                } => {
-                    backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
-                }
-                Surface::Canvas { rect, canvas } => {
-                    backend.draw_canvas(*rect, canvas);
-                }
-                Surface::Board { rect, model } => {
-                    backend.draw_board(*rect, model);
-                }
-                Surface::DiffView { rect, view } => {
-                    backend.draw_diff_view(*rect, view);
-                }
-                Surface::MessageList { rect, list } => {
-                    backend.draw_message_list(*rect, list);
-                }
-                Surface::PipelineView { rect, view } => {
-                    backend.draw_pipeline_view(*rect, view);
-                }
                 Surface::Progress { rect, bar } => {
                     backend.draw_progress(*rect, bar);
                 }
                 Surface::Spinner { rect, spinner } => {
                     backend.draw_spinner(*rect, spinner);
-                }
-                Surface::SplitTree { rect, tree } => {
-                    backend.draw_split_tree(*rect, tree);
                 }
             }
 
@@ -807,24 +586,13 @@ impl ScreenLayout {
             .surfaces
             .iter()
             .flat_map(|s| match s {
-                Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
-                Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
-                Surface::DataTable { rect, table, .. } => vec![(table.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
-                Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
-                Surface::Board { rect, model } => vec![(model.id, *rect)],
-                Surface::DiffView { rect, view } => vec![(view.id, *rect)],
-                Surface::MessageList { rect, list } => vec![(list.id, *rect)],
-                Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
                 Surface::Spinner { .. }
-                | Surface::Canvas { .. }
                 | Surface::Progress { .. }
-                | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
-                | Surface::FindReplace { .. }
-                | Surface::SplitTree { .. } => Vec::new(),
+                | Surface::FindReplace { .. } => Vec::new(),
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -865,13 +633,9 @@ impl ScreenLayout {
     #[allow(deprecated)]
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
-            Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
-            Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
-            Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
             Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
-            Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Widget { rect, widget } => (
                 *rect,
                 FrameZone::Widget {
@@ -879,15 +643,8 @@ impl ScreenLayout {
                     id: widget.id().copied(),
                 },
             ),
-            Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
-            Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
-            Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
-            Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
-            Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
-            Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
-            Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
         }
     }
 
@@ -1083,9 +840,46 @@ impl OwnedContent {
             OwnedContent::TextDisplay(td) => {
                 backend.draw_primitive(rect, td);
             }
-            OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
-            #[allow(deprecated)]
-            OwnedContent::Tree(tree) => backend.draw_tree(rect, tree),
+            OwnedContent::MultiSectionView(view) => {
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, view);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, view);
+                }
+            }
+            OwnedContent::Tree(tree) => {
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, tree);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, tree);
+                }
+            }
             #[allow(deprecated)]
             OwnedContent::List(list) => backend.draw_list(rect, list),
             OwnedContent::ListWidget(list) => {
@@ -1128,7 +922,7 @@ impl OwnedContent {
                 let _ = bar.present(backend, rect);
             }
             OwnedContent::Split(split) => {
-                backend.draw_split(rect, split);
+                backend.draw_primitive(rect, split);
             }
             OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
             OwnedContent::Palette(palette) => {
@@ -1137,21 +931,37 @@ impl OwnedContent {
             OwnedContent::Toast(stack) => {
                 backend.draw_primitive(rect, stack);
             }
-            #[allow(deprecated)]
             OwnedContent::DataTable(table) => {
-                backend.draw_data_table(rect, table, None);
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, table);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, table);
+                }
             }
             OwnedContent::CellGrid(grid) => {
                 backend.draw_primitive(rect, grid);
             }
             OwnedContent::Chart(chart) => {
-                backend.draw_chart(rect, chart, None, None);
+                backend.draw_primitive(rect, chart);
             }
             OwnedContent::Canvas(canvas) => {
-                backend.draw_canvas(rect, canvas);
+                backend.draw_primitive(rect, canvas);
             }
             OwnedContent::Board(model) => {
-                backend.draw_board(rect, model);
+                backend.draw_primitive(rect, model);
             }
             OwnedContent::CommandCenter(cc) => {
                 // `impl Primitive for CommandCenter` is unconditional, like
@@ -1160,17 +970,19 @@ impl OwnedContent {
                 backend.draw_primitive(rect, cc);
             }
             OwnedContent::DiffView(view) => {
-                backend.draw_diff_view(rect, view);
+                backend.draw_primitive(rect, view);
             }
             OwnedContent::Image(image) => {
                 backend.draw_primitive(rect, image);
             }
-            OwnedContent::MessageList(list) => backend.draw_message_list(rect, list),
+            OwnedContent::MessageList(list) => {
+                backend.draw_primitive(rect, list);
+            }
             OwnedContent::Minimap(minimap) => {
                 backend.draw_primitive(rect, minimap);
             }
             OwnedContent::PipelineView(view) => {
-                backend.draw_pipeline_view(rect, view);
+                backend.draw_primitive(rect, view);
             }
             OwnedContent::Progress(bar) => {
                 backend.draw_progress(rect, bar);
@@ -1184,7 +996,7 @@ impl OwnedContent {
                 backend.draw_spinner(rect, spinner);
             }
             OwnedContent::SplitTree(tree) => {
-                backend.draw_split_tree(rect, tree);
+                backend.draw_primitive(rect, tree);
             }
             OwnedContent::TextInput(ti) => {
                 backend.draw_primitive(rect, ti);
@@ -1270,8 +1082,14 @@ impl OwnedContent {
                 idx,
                 id: Some(td.id),
             },
-            OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
-            OwnedContent::Tree(_) => FrameZone::Tree { idx },
+            OwnedContent::MultiSectionView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
+            OwnedContent::Tree(tree) => FrameZone::Widget {
+                idx,
+                id: Some(tree.id),
+            },
             OwnedContent::List(_) => FrameZone::List { idx },
             OwnedContent::ListWidget(list) => FrameZone::Widget {
                 idx,
@@ -1285,7 +1103,10 @@ impl OwnedContent {
                 idx,
                 id: Some(bar.id),
             },
-            OwnedContent::Split(_) => FrameZone::Split { idx },
+            OwnedContent::Split(split) => FrameZone::Widget {
+                idx,
+                id: Some(split.id),
+            },
             OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
             OwnedContent::Palette(palette) => FrameZone::Widget {
                 idx,
@@ -1319,36 +1140,57 @@ impl OwnedContent {
                 idx,
                 id: Some(stack.id),
             },
-            OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
+            OwnedContent::DataTable(table) => FrameZone::Widget {
+                idx,
+                id: Some(table.id),
+            },
             OwnedContent::CellGrid(grid) => FrameZone::Widget {
                 idx,
                 id: Some(grid.id),
             },
-            OwnedContent::Chart(_) => FrameZone::Chart { idx },
-            OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
-            OwnedContent::Board(_) => FrameZone::Board { idx },
+            OwnedContent::Chart(chart) => FrameZone::Widget {
+                idx,
+                id: Some(chart.id),
+            },
+            OwnedContent::Canvas(canvas) => FrameZone::Widget {
+                idx,
+                id: Some(canvas.id),
+            },
+            OwnedContent::Board(model) => FrameZone::Widget {
+                idx,
+                id: Some(model.id),
+            },
             OwnedContent::CommandCenter(cc) => FrameZone::Widget {
                 idx,
                 id: Some(cc.id),
             },
-            OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
+            OwnedContent::DiffView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
             OwnedContent::Image(image) => FrameZone::Widget {
                 idx,
                 id: Some(image.id),
             },
-            OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
+            OwnedContent::MessageList(list) => FrameZone::Widget {
+                idx,
+                id: Some(list.id),
+            },
             OwnedContent::Minimap(minimap) => FrameZone::Widget {
                 idx,
                 id: Some(minimap.id),
             },
-            OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
+            OwnedContent::PipelineView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
             OwnedContent::Progress(_) => FrameZone::Progress { idx },
             OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
                 idx,
                 id: Some(panel.id),
             },
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
-            OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
+            OwnedContent::SplitTree(_) => FrameZone::Widget { idx, id: None },
             OwnedContent::TextInput(ti) => FrameZone::Widget {
                 idx,
                 id: Some(ti.id),
@@ -1593,49 +1435,16 @@ impl OwnedFrame {
 /// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
-        Surface::MultiSectionView { rect, view } => (
-            *rect,
-            Some(view.id),
-            OwnedContent::MultiSectionView(view.clone()),
-        ),
-        Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree(tree.clone())),
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
-        Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
         Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
-        Surface::DataTable { rect, table, .. } => (
-            *rect,
-            Some(table.id),
-            OwnedContent::DataTable(table.clone()),
-        ),
         Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
-        Surface::Chart { rect, chart, .. } => {
-            (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
-        }
-        Surface::Canvas { rect, canvas } => (*rect, None, OwnedContent::Canvas(canvas.clone())),
-        Surface::Board { rect, model } => {
-            (*rect, Some(model.id), OwnedContent::Board(model.clone()))
-        }
-        Surface::DiffView { rect, view } => {
-            (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
-        }
-        Surface::MessageList { rect, list } => (
-            *rect,
-            Some(list.id),
-            OwnedContent::MessageList(list.clone()),
-        ),
-        Surface::PipelineView { rect, view } => (
-            *rect,
-            Some(view.id),
-            OwnedContent::PipelineView(view.clone()),
-        ),
         Surface::Progress { rect, bar } => (
             *rect,
             if bar.cancellable { Some(bar.id) } else { None },
             OwnedContent::Progress(bar.clone()),
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
-        Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
     }
 }
 
@@ -1758,8 +1567,6 @@ pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderVi
 #[allow(deprecated)] // exercises `FrameHitMap`/`FrameZone` directly; see their own `#[deprecated]` notes.
 mod tests {
     use super::*;
-    use crate::primitives::tree::TreeRow;
-    use crate::types::{SelectionMode, StyledText, TreeStyle};
 
     #[test]
     fn hit_test_returns_highest_z_surface() {
@@ -1767,7 +1574,7 @@ mod tests {
         // Background surface covers entire area.
         map.push(
             Rect::new(0.0, 0.0, 100.0, 100.0),
-            FrameZone::Tree { idx: 0 },
+            FrameZone::List { idx: 0 },
         );
         // Overlay covers top-left quadrant.
         map.push(
@@ -1778,7 +1585,7 @@ mod tests {
         // Point in the overlay → highest-z wins.
         assert_eq!(map.hit_test(25.0, 25.0), FrameZone::FindReplace { idx: 1 });
         // Point outside the overlay but inside the tree.
-        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Tree { idx: 0 });
+        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::List { idx: 0 });
         // Point outside everything.
         assert_eq!(map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -1793,7 +1600,7 @@ mod tests {
     #[test]
     fn multiple_overlapping_zones_last_wins() {
         let mut map = FrameHitMap::new();
-        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::Tree { idx: 0 });
+        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::List { idx: 0 });
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
@@ -1801,7 +1608,7 @@ mod tests {
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
-        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Tree { idx: 0 });
+        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::List { idx: 0 });
         assert_eq!(map.hit_test(40.0, 23.5), FrameZone::Scrollbar { idx: 2 });
     }
 
@@ -1809,163 +1616,6 @@ mod tests {
     fn screen_layout_default_is_empty() {
         let layout = ScreenLayout::default();
         assert_eq!(layout.surfaces.len(), 0);
-    }
-
-    fn sample_tree(id: &str, scroll_offset: usize) -> TreeView {
-        TreeView {
-            id: WidgetId::new(id),
-            rows: vec![TreeRow {
-                path: vec![0],
-                indent: 0,
-                icon: None,
-                text: StyledText::plain("src/"),
-                badge: None,
-                is_expanded: Some(true),
-                decoration: Default::default(),
-                edit: None,
-            }],
-            selection_mode: SelectionMode::Single,
-            selected_path: Some(vec![0]),
-            scroll_offset,
-            style: TreeStyle::default(),
-            has_focus: false,
-        }
-    }
-
-    #[test]
-    fn tree_frame_carries_handles_with_matching_rects() {
-        let mut layout = ScreenLayout::new();
-        layout.push(Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:explorer", 0),
-        });
-
-        let frame = layout.tree_frame();
-
-        assert_eq!(frame.len(), 1);
-        let (handle, rect) = frame[0];
-        assert_eq!(rect, Rect::new(0.0, 0.0, 40.0, 10.0));
-        assert_eq!(
-            layout.tree_store.get(handle).map(|t| &t.id),
-            Some(&WidgetId::new("tree:explorer"))
-        );
-    }
-
-    #[test]
-    fn tree_frame_reuses_the_same_handle_across_frames_without_rebuilding() {
-        let mut layout = ScreenLayout::new();
-        layout.push(Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:explorer", 0),
-        });
-
-        let first = layout.tree_frame();
-        let first_handle = first[0].0;
-        assert_eq!(layout.tree_store.len(), 1);
-
-        // Simulate a retained layout's next frame: the same logical tree,
-        // unchanged, is still at the same surface index.
-        let second = layout.tree_frame();
-        assert_eq!(second[0].0, first_handle);
-        assert_eq!(layout.tree_store.len(), 1);
-
-        // Replace the surface in place (same `WidgetId`, different scroll
-        // state) the way a retained `ScreenLayout` caller would via
-        // `surfaces_mut`, and confirm the identity-keyed slot is updated
-        // rather than inserted as a new entry.
-        layout.surfaces_mut()[0] = Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:explorer", 5),
-        };
-        let third = layout.tree_frame();
-        assert_eq!(third[0].0, first_handle);
-        assert_eq!(layout.tree_store.len(), 1);
-        assert_eq!(
-            layout.tree_store.get(third[0].0).map(|t| t.scroll_offset),
-            Some(5)
-        );
-
-        // A genuinely new tree id grows the store by exactly one slot.
-        layout.push(Surface::Tree {
-            rect: Rect::new(0.0, 10.0, 40.0, 10.0),
-            tree: sample_tree("tree:outline", 0),
-        });
-        let fourth = layout.tree_frame();
-        assert_eq!(fourth.len(), 2);
-        assert_eq!(layout.tree_store.len(), 2);
-    }
-
-    #[test]
-    fn tree_frame_evicts_handles_for_ids_no_longer_pushed() {
-        let mut layout = ScreenLayout::new();
-        layout.push(Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:explorer", 0),
-        });
-
-        let first = layout.tree_frame();
-        let stale_handle = first[0].0;
-        assert_eq!(layout.tree_store.len(), 1);
-
-        // Swap the surface in place for a *different* tree id — the
-        // pattern `surfaces_mut`'s doc calls out (a per-tab explorer, a
-        // closed panel reused for a new one). Without eviction this
-        // would leave the old id's slot occupied forever.
-        layout.surfaces_mut()[0] = Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:outline", 0),
-        };
-        let second = layout.tree_frame();
-
-        assert_eq!(layout.tree_store.len(), 1);
-        assert!(layout.tree_store.get(stale_handle).is_none());
-        assert_eq!(
-            layout.tree_store.get(second[0].0).map(|t| &t.id),
-            Some(&WidgetId::new("tree:outline"))
-        );
-
-        // Dropping the surface entirely (no `Surface::Tree` pushed at
-        // all) evicts the last tracked id too, instead of leaving an
-        // orphaned slot with nothing in `surfaces` to ever revisit it.
-        let mut empty_layout = ScreenLayout::new();
-        empty_layout.push(Surface::Tree {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            tree: sample_tree("tree:explorer", 0),
-        });
-        empty_layout.tree_frame();
-        assert_eq!(empty_layout.tree_store.len(), 1);
-        empty_layout.surfaces_mut()[0] = Surface::Widget {
-            rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            widget: Box::new(Editor {
-                id: "ed".into(),
-                rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-                lines: Vec::new(),
-                cursor: None,
-                extra_cursors: Vec::new(),
-                selection: None,
-                extra_selections: Vec::new(),
-                yank_highlight: None,
-                scroll_top: 0,
-                scroll_left: 0,
-                total_lines: 0,
-                max_col: 0,
-                gutter_char_width: 0,
-                is_active: true,
-                show_active_bg: false,
-                has_git_diff: false,
-                has_breakpoints: false,
-                diagnostic_gutter: std::collections::HashMap::new(),
-                code_action_lines: std::collections::HashSet::new(),
-                bracket_match_positions: Vec::new(),
-                active_indent_col: None,
-                tabstop: 4,
-                cursorline: false,
-                lightbulb_glyph: '\0',
-                paint_options: Default::default(),
-            }),
-        };
-        empty_layout.tree_frame();
-        assert_eq!(empty_layout.tree_store.len(), 0);
     }
 
     #[test]
@@ -2062,7 +1712,10 @@ mod tests {
                 rows: Vec::new(),
                 scroll_top: 0,
             };
-            Surface::MessageList { rect, list }
+            Surface::Widget {
+                rect,
+                widget: Box::new(list),
+            }
             // `list`'s binding dies here; the `Surface` keeps the value.
         };
 
@@ -2074,7 +1727,10 @@ mod tests {
         assert_eq!(hit_map.zones()[0].0, rect);
         assert_eq!(
             hit_map.hit_test(3.0, 4.0),
-            FrameZone::MessageList { idx: 0 }
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ml".into())
+            }
         );
         assert_eq!(hit_map.hit_test(100.0, 100.0), FrameZone::Empty);
     }
@@ -2093,9 +1749,9 @@ mod tests {
                 scroll_top: 0,
             };
             let mut layout = ScreenLayout::new();
-            layout.push(Surface::MessageList {
+            layout.push(Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-                list,
+                widget: Box::new(list),
             });
             layout
         }
@@ -2104,10 +1760,15 @@ mod tests {
 
         let mut backend = RecordingBackend::new();
         let drawn = layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_message_list"));
 
         assert_eq!(drawn, layout.hit_map());
-        assert_eq!(drawn.hit_test(1.0, 1.0), FrameZone::MessageList { idx: 0 });
+        assert_eq!(
+            drawn.hit_test(1.0, 1.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ml".into())
+            }
+        );
     }
 
     /// `tab_stops` derives Tab order from geometry (reading order),
@@ -2177,9 +1838,9 @@ mod tests {
             widget: Box::new(palette),
         });
         // Structural chrome: must not appear in tab order at all.
-        layout.push(Surface::Split {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 30.0, 100.0, 1.0),
-            split,
+            widget: Box::new(split),
         });
 
         let stops = layout.tab_stops();
@@ -2298,12 +1959,18 @@ mod tests {
 
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Board { rect, model: board });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(board),
+        });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(cc),
         });
-        layout.push(Surface::DiffView { rect, view: diff });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(diff),
+        });
         layout.push(Surface::Widget {
             rect: overlay.bounds(),
             widget: Box::new(overlay.clone()),
@@ -2312,17 +1979,17 @@ mod tests {
             rect,
             widget: Box::new(image),
         });
-        layout.push(Surface::MessageList {
+        layout.push(Surface::Widget {
             rect,
-            list: message_list,
+            widget: Box::new(message_list),
         });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(minimap),
         });
-        layout.push(Surface::PipelineView {
+        layout.push(Surface::Widget {
             rect,
-            view: pipeline,
+            widget: Box::new(pipeline),
         });
         layout.push(Surface::Progress {
             rect,
@@ -2333,9 +2000,9 @@ mod tests {
             widget: Box::new(sidebar),
         });
         layout.push(Surface::Spinner { rect, spinner });
-        layout.push(Surface::SplitTree {
+        layout.push(Surface::Widget {
             rect,
-            tree: split_tree,
+            widget: Box::new(split_tree),
         });
         layout.push(Surface::Widget {
             rect,
@@ -2350,7 +2017,13 @@ mod tests {
         assert_eq!(hit_map.len(), 14);
 
         let zones: Vec<&FrameZone> = hit_map.zones().iter().map(|(_, z)| z).collect();
-        assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
+        assert_eq!(
+            zones[0],
+            &FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("board")),
+            }
+        );
         assert_eq!(
             zones[1],
             &FrameZone::Widget {
@@ -2358,7 +2031,13 @@ mod tests {
                 id: Some("cc".into())
             }
         );
-        assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
+        assert_eq!(
+            zones[2],
+            &FrameZone::Widget {
+                idx: 2,
+                id: Some(WidgetId::new("diff")),
+            }
+        );
         assert_eq!(zones[3], &FrameZone::Widget { idx: 3, id: None });
         assert_eq!(
             zones[4],
@@ -2367,7 +2046,13 @@ mod tests {
                 id: Some(WidgetId::new("img")),
             }
         );
-        assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
+        assert_eq!(
+            zones[5],
+            &FrameZone::Widget {
+                idx: 5,
+                id: Some(WidgetId::new("ml")),
+            }
+        );
         assert_eq!(
             zones[6],
             &FrameZone::Widget {
@@ -2375,7 +2060,13 @@ mod tests {
                 id: Some(WidgetId::new("mm")),
             }
         );
-        assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
+        assert_eq!(
+            zones[7],
+            &FrameZone::Widget {
+                idx: 7,
+                id: Some(WidgetId::new("pv")),
+            }
+        );
         assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
         assert_eq!(
             zones[9],
@@ -2385,7 +2076,7 @@ mod tests {
             }
         );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
-        assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
+        assert_eq!(zones[11], &FrameZone::Widget { idx: 11, id: None });
         assert_eq!(
             zones[12],
             &FrameZone::Widget {
@@ -2410,16 +2101,16 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "pv", "ti"] {
+        for id in ["board", "cc", "diff", "pv", "ti"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        // A `SidebarPanel` and a `Minimap` are pointer-only
-        // (`FocusSpec::None`), and a toolbar with no button has nothing to
-        // focus.
-        for id in ["img", "mm", "sn", "pb", "leaf", "sp", "tb"] {
+        // A `SidebarPanel`, a `Minimap` and a `MessageList` are
+        // pointer-only (`FocusSpec::None`), and a toolbar with no button
+        // has nothing to focus.
+        for id in ["img", "mm", "ml", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 6);
+        assert_eq!(stop_ids.len(), 5);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel
@@ -2957,6 +2648,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
 
         let mut layout = ScreenLayout::new();
@@ -3115,7 +2807,13 @@ mod tests {
     #[test]
     fn frame_hit_map_serde_round_trip() {
         let mut map = FrameHitMap::new();
-        map.push(Rect::new(0.0, 0.0, 10.0, 10.0), FrameZone::Board { idx: 0 });
+        map.push(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("board")),
+            },
+        );
         map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Spinner { idx: 1 });
 
         let json = serde_json::to_string(&map).expect("FrameHitMap serializes");

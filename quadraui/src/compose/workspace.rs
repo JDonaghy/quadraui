@@ -57,7 +57,7 @@
 //! - **No persistence.** The host app owns session save/restore; the
 //!   controller is pure in-memory state.
 //! - **No content ownership.** See above.
-//! - **No shell slot.** Mounting a document tab strip into `AppShell`'s
+//! - **No shell slot.** Mounting a document tab strip into `ShellView`'s
 //!   chrome is #469's remaining half; this controller is deliberately
 //!   mountable into *any* rect, which is what lets a consumer put one
 //!   inside a single panel.

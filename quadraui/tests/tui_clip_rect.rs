@@ -14,14 +14,14 @@
 //! `TuiDriver`'s `AppLogic` event loop — no primitive wires this seam up
 //! yet (that is the follow-up issue), so there is no app-level event
 //! path for most of it. The last test *does* go through `TuiDriver`: it
-//! calls `push_clip`/`draw_solid_fill`/`pop_clip` from inside an
+//! calls `push_clip`/a solid `Canvas` fill/`pop_clip` from inside an
 //! `AppLogic::render`, which is enough to exercise the frame-boundary
 //! invariant (`TuiBackend::begin_frame` clearing `clip_stack`) through
 //! the real `event -> handle -> render` path.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::TuiBackend;
-use quadraui::{AppLogic, Backend, Color, Reaction, Rect as QRect, UiEvent};
+use quadraui::{AppLogic, Backend, Color, DrawsPrimitives, Reaction, Rect as QRect, UiEvent};
 use ratatui::backend::TestBackend;
 use ratatui::style::Color as RColor;
 use ratatui::Terminal;
@@ -40,7 +40,11 @@ fn push_clip_confines_an_overflowing_fill_to_the_clipped_cells() {
         .draw(|frame| {
             backend.enter_frame_scope(frame, |b| {
                 b.push_clip(QRect::new(0.0, 0.0, 2.0, 2.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 8.0, 8.0), red);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 8.0, 8.0),
+                    &quadraui::testing::solid_canvas(QRect::new(0.0, 0.0, 8.0, 8.0), red),
+                    &(),
+                );
                 b.pop_clip();
             });
         })
@@ -82,10 +86,18 @@ fn nested_pop_restores_the_outer_clips_own_paint_not_the_pre_push_blank() {
             backend.enter_frame_scope(frame, |b| {
                 // Outer clip: cells (0,0)..(6,6).
                 b.push_clip(QRect::new(0.0, 0.0, 6.0, 6.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), blue);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 10.0, 10.0),
+                    &quadraui::testing::solid_canvas(QRect::new(0.0, 0.0, 10.0, 10.0), blue),
+                    &(),
+                );
                 // Inner clip, nested inside the outer one: cells (1,1)..(3,3).
                 b.push_clip(QRect::new(1.0, 1.0, 2.0, 2.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), red);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 10.0, 10.0),
+                    &quadraui::testing::solid_canvas(QRect::new(0.0, 0.0, 10.0, 10.0), red),
+                    &(),
+                );
                 // Popping the inner clip must roll its donut back to the
                 // *outer* clip's blue, not all the way to blank.
                 b.pop_clip();
@@ -134,7 +146,14 @@ impl AppLogic for ClipLeakApp {
         self.frame.set(frame + 1);
         if frame == 0 {
             backend.push_clip(QRect::new(0.0, 0.0, 2.0, 2.0));
-            backend.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), Color::rgb(200, 0, 0));
+            backend.draw_dyn(
+                QRect::new(0.0, 0.0, 10.0, 10.0),
+                &quadraui::testing::solid_canvas(
+                    QRect::new(0.0, 0.0, 10.0, 10.0),
+                    Color::rgb(200, 0, 0),
+                ),
+                &(),
+            );
             // Deliberately no `pop_clip()` — the bug this test guards against.
         } else {
             // If `begin_frame` had not cleared frame 0's leaked entry,
@@ -142,7 +161,14 @@ impl AppLogic for ClipLeakApp {
             // instead of the full 10x10 buffer, narrowing this fill to
             // 2x2 cells instead of the 10x10 this frame actually asks for.
             backend.push_clip(QRect::new(0.0, 0.0, 10.0, 10.0));
-            backend.draw_solid_fill(QRect::new(0.0, 0.0, 10.0, 10.0), Color::rgb(0, 0, 200));
+            backend.draw_dyn(
+                QRect::new(0.0, 0.0, 10.0, 10.0),
+                &quadraui::testing::solid_canvas(
+                    QRect::new(0.0, 0.0, 10.0, 10.0),
+                    Color::rgb(0, 0, 200),
+                ),
+                &(),
+            );
             backend.pop_clip();
         }
     }

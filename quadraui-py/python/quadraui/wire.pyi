@@ -212,6 +212,7 @@ class ListViewDescriptor(TypedDict):
     h_scroll: NotRequired[int]
     max_content_width: NotRequired[Optional[int]]
     show_v_scrollbar: NotRequired[bool]
+    striped: NotRequired[bool]
     scroll_px: NotRequired[float]  # binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
     items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
@@ -586,6 +587,7 @@ class StyleValue(TypedDict):
     tooltip_auto_dismiss_ms: NotRequired[int]
     status_bar_cell_gap: NotRequired[float]
     status_bar_cell_overflow: NotRequired[Literal['ellipsis', 'clip']]
+    list_cell_overflow: NotRequired[Literal['ellipsis', 'clip']]
     font_family: NotRequired[str]
     font_size: NotRequired[float]
     font_weight: NotRequired[Literal['normal', 'bold']]
@@ -1817,7 +1819,6 @@ LayoutLeafNode = TypedDict(
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
-        "canvas": NotRequired[CanvasDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
@@ -1836,6 +1837,7 @@ LayoutLeafNode = TypedDict(
         "minimap": NotRequired[MinimapDescriptor],
         "image": NotRequired[ImageDescriptor],
         "chart": NotRequired[ChartDescriptor],
+        "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "board": NotRequired[BoardModelDescriptor],
         "pipeline_view": NotRequired[PipelineViewDescriptor],
@@ -1880,7 +1882,6 @@ class RenderFrameDict(TypedDict):
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
-    canvas: NotRequired[Optional[CanvasDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
@@ -1899,6 +1900,7 @@ class RenderFrameDict(TypedDict):
     minimap: NotRequired[Optional[MinimapDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
     chart: NotRequired[Optional[ChartDescriptor]]
+    canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
     pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
@@ -2724,7 +2726,7 @@ class _UiEventDict(TypedDict):
     PathPicker: NotRequired[Tuple[WidgetId, Any]]
     DualModePalette: NotRequired[Tuple[WidgetId, Any]]
     AppMenu: NotRequired[Tuple[WidgetId, Any]]
-    AppShell: NotRequired[Tuple[WidgetId, Any]]
+    ShellView: NotRequired[Tuple[WidgetId, Any]]
     BottomPanel: NotRequired[Tuple[WidgetId, Any]]
     Workspace: NotRequired[Tuple[WidgetId, Any]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]

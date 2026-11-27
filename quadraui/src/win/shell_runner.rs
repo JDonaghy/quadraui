@@ -1,5 +1,5 @@
 //! Win-GUI shell runner: `run_with_shell()` wraps a [`ShellApp`] in an
-//! AppShell and drives it through the standard Win32 message loop.
+//! ShellView and drives it through the standard Win32 message loop.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
@@ -25,7 +25,7 @@ use crate::shell::{ShellApp, ShellConfig};
 use crate::shell_adapter::build_shell_adapter;
 use crate::RunError;
 
-/// Run a [`ShellApp`] with AppShell chrome on the Win-GUI backend.
+/// Run a [`ShellApp`] with ShellView chrome on the Win-GUI backend.
 ///
 /// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` does —
@@ -43,7 +43,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Res
 
 /// Build a [`ShellApp`] as a [`crate::win::run::WinRunner`] instead of
 /// entering [`run_with_shell`]'s blocking Win32 message loop — for a host
-/// that wants the AppShell chrome but also needs
+/// that wants the ShellView chrome but also needs
 /// [`crate::win::run::WinRunner::attach_control`] (see [`crate::control`]'s
 /// module doc), which `run_with_shell` (which owns the process for its
 /// whole lifetime) can't give. Mirrors

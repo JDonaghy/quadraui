@@ -7,7 +7,7 @@
 //! spell out roles, labels and states rather than probing single fields.
 
 use appshell_demo::AppShellDemo;
-use quadraui::compose::app_shell::AppShell;
+use quadraui::compose::app_shell::ShellView;
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
@@ -544,15 +544,15 @@ fn purely_visual_parts_are_presentational_not_omitted() {
                 accent: None,
             },
         })
-        .with_surface(Surface::Split {
+        .with_surface(Surface::Widget {
             rect: rect(1.0, 10.0),
-            split: Split {
+            widget: Box::new(Split {
                 id: WidgetId::new("split"),
                 direction: SplitDirection::Horizontal,
                 ratio: 0.5,
                 first_min: 4.0,
                 second_min: 4.0,
-            },
+            }),
         })
         .with_surface(Surface::Scrollbar {
             rect: Rect::new(79.0, 1.0, 1.0, 10.0),
@@ -620,14 +620,14 @@ fn overlays_and_containers_report_their_own_structure() {
                 accent: None,
             },
         })
-        .with_surface(Surface::SplitTree {
+        .with_surface(Surface::Widget {
             rect: rect(9.0, 10.0),
-            tree: SplitTree::split(
+            widget: Box::new(SplitTree::split(
                 SplitDirection::Vertical,
                 0.25,
                 SplitTree::Leaf(WidgetId::new("editor")),
                 SplitTree::Leaf(WidgetId::new("terminal")),
-            ),
+            )),
         })
         .with_surface(Surface::Widget {
             rect: tooltip
@@ -679,9 +679,9 @@ window \"quadraui\" [focused]
 #[test]
 fn nested_split_of_splits_keeps_all_four_panes() {
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::SplitTree {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 10.0),
-            tree: SplitTree::split(
+            widget: Box::new(SplitTree::split(
                 SplitDirection::Horizontal,
                 0.5,
                 SplitTree::split(
@@ -696,7 +696,7 @@ fn nested_split_of_splits_keeps_all_four_panes() {
                     SplitTree::Leaf(WidgetId::new("top-right")),
                     SplitTree::Leaf(WidgetId::new("bottom-right")),
                 ),
-            ),
+            )),
         })
         .snapshot();
 
@@ -773,9 +773,9 @@ mod appshell_demo;
 
 /// The `appshell_demo` example's shell, built from its own `ShellConfig`
 /// the way `build_shell_adapter` builds it at runtime.
-fn demo_shell() -> AppShell {
+fn demo_shell() -> ShellView {
     let config = AppShellDemo::config();
-    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
+    let mut shell = ShellView::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
         .with_max_width(config.max_sidebar_width)
@@ -797,10 +797,10 @@ fn demo_shell() -> AppShell {
     shell
 }
 
-/// The sidebar header `AppShell::render` paints above the active panel's
+/// The sidebar header `ShellView::render` paints above the active panel's
 /// content. Colours come from the backend theme and are irrelevant to the
 /// accessibility tree, so any palette will do here.
-fn sidebar_header(shell: &AppShell) -> StatusBar {
+fn sidebar_header(shell: &ShellView) -> StatusBar {
     let title = shell
         .active_panel()
         .map(|panel| panel.title.clone())
@@ -818,16 +818,16 @@ fn sidebar_header(shell: &AppShell) -> StatusBar {
     }
 }
 
-/// The whole-window shape an assistive technology sees for the AppShell
+/// The whole-window shape an assistive technology sees for the ShellView
 /// demo: the shell's own chrome (activity bar, sidebar header) plus every
 /// content bar the app paints, in paint order.
 #[test]
 fn appshell_demo_whole_window_tree() {
     let shell = demo_shell();
-    let layout = shell.layout(VIEWPORT, 1.0);
+    let layout = shell.shell_layout(VIEWPORT, 1.0);
     let app = AppShellDemo::new();
 
-    let mut scenario = A11yScenario::new().with_root_label("AppShell Demo");
+    let mut scenario = A11yScenario::new().with_root_label("ShellView Demo");
     scenario.push(Surface::Widget {
         rect: layout.activity_bar_bounds,
         widget: Box::new(shell.build_activity_bar()),
@@ -845,7 +845,7 @@ fn appshell_demo_whole_window_tree() {
 
     scenario.snapshot().assert_matches(
         "\
-window \"AppShell Demo\" [focused]
+window \"ShellView Demo\" [focused]
   toolbar \"Activity bar\" [size=4]
     tab \"Explorer\" [selected pos=1/4]
     tab \"Search\" [pos=2/4]

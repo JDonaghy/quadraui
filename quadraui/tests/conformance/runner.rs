@@ -587,7 +587,7 @@ fn inside_failure(inv: &FrameInventory, needle: &str, zone: &str) -> String {
         (_, None) => format!(
             "zone {zone:?} was never registered this frame, so this step can never pass on \
              this backend — nothing called `Backend::register_zone` for it. Either wire the \
-             registration at the paint site (see `AppShell::register_chrome_zones`) or drop \
+             registration at the paint site (see `ShellView::register_chrome_zones`) or drop \
              the step and record the gap under `docs/TESTING.md` → *Known coordinate-free \
              gaps*. Registered zones: {ids:?}"
         ),

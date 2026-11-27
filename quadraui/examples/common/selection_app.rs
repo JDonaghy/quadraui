@@ -30,7 +30,7 @@
 //! This demo does not embed a PTY, so the call is not needed here. The
 //! canonical example is `tui_terminal.rs` + `common/terminal_app.rs`.
 
-use quadraui::compose::app_shell::AppShellLayout;
+use quadraui::compose::app_shell::ShellLayout;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
@@ -116,7 +116,7 @@ impl Default for SelectionDemo {
 // ── ShellApp impl ─────────────────────────────────────────────────────────────
 
 impl ShellApp for SelectionDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
         let main = layout.main_content_bounds;
 

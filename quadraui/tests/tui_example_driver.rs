@@ -459,7 +459,7 @@ fn hello_renders_the_greeting_and_quit_hint_on_the_first_frame() {
     );
 }
 
-/// The status bar's rect comes from `AppShellLayout::status_bar_bounds` —
+/// The status bar's rect comes from `ShellLayout::status_bar_bounds` —
 /// computed by the shell, not by any viewport arithmetic in
 /// `examples/hello.rs` itself — and still anchors to the bottom row of the
 /// viewport the way the primitive's own doc says a status bar should.
@@ -511,7 +511,7 @@ fn hello_example_has_no_manual_geometry_or_raw_draw_calls() {
         assert!(
             !src.contains(needle),
             "examples/hello.rs should compute no geometry by hand (found `{needle}`) — \
-             use AppShellLayout's precomputed fields instead"
+             use ShellLayout's precomputed fields instead"
         );
     }
     assert!(
@@ -1914,7 +1914,7 @@ fn appshell_demo_escape_cancels_focus_without_switching_panel() {
 
 /// An app can queue a panel switch from inside its own `handle()` via
 /// `ShellApp::take_requested_panel` — no ActivityBar click, no keyboard-cursor
-/// mode — and `ShellAdapter` must apply it to the *real* `AppShell` state
+/// mode — and `ShellAdapter` must apply it to the *real* `ShellView` state
 /// (sidebar header) and re-notify `on_shell_event_ctx`, not just let the
 /// app's own internal view state drift out of sync with the chrome.
 #[test]
@@ -2041,12 +2041,12 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     );
 }
 
-/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// `ctx.shell_mut()` reaches the real `ShellView` instance `ShellAdapter`
 /// renders — `AppShellDemo` binds `Ctrl+B` to `ctx.shell_mut().toggle_sidebar()`,
 /// exactly the call a consumer like vimcode needs for a toggle-sidebar
-/// keybinding. A `ShellApp` can now reach the rendered `AppShell` and push
+/// keybinding. A `ShellApp` can now reach the rendered `ShellView` and push
 /// state back to it. Driving this through `driver_with_shell` — the same
-/// `ShellApp` → `ShellAdapter` → `AppShell` dispatch `run_with_shell` uses in
+/// `ShellApp` → `ShellAdapter` → `ShellView` dispatch `run_with_shell` uses in
 /// production — proves the fix on the real path.
 #[test]
 fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
@@ -2066,7 +2066,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "Ctrl+B toggling the real AppShell must redraw"
+        "Ctrl+B toggling the real ShellView must redraw"
     );
     assert!(
         !driver.screen_contains("(sidebar content"),
@@ -2099,7 +2099,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
 
 /// `t` reveals/hides the title bar at runtime via
 /// `ctx.shell_mut().set_title_bar_visible(..)`. Reserving that row shifts
-/// everything below it down — `AppShell::compute_layout` re-derives
+/// everything below it down — `ShellView::compute_layout` re-derives
 /// `sidebar_content_bounds` (and other layout bounds) from `band_y` on
 /// every call rather than caching an offset, so this is a real layout
 /// reflow. Tracking the sidebar-content label's row (rather than asserting
@@ -2150,7 +2150,7 @@ fn appshell_demo_t_toggles_title_bar_and_reflows_sidebar_content_row() {
 }
 
 /// `ShellApp::on_shell_event_ctx` receives a `&ShellContext`, so an app can
-/// push state back into the real `AppShell` on the *same* frame the shell
+/// push state back into the real `ShellView` on the *same* frame the shell
 /// event fires — no intervening `ShellApp::handle` dispatch required.
 /// `AppShellDemo::on_shell_event_ctx` reveals the title bar via
 /// `ctx.shell_mut().set_title_bar_visible(true)` the moment a PanelChanged
@@ -3203,7 +3203,7 @@ fn tab_group_drag_start_does_not_panic() {
 /// The default two-pane layout's root divider lands on a half-cell
 /// position at this driver width: `content width = 120`, divider
 /// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
-/// which `tui::split::draw_split` paints at the truncated cell `59`.
+/// which the split's cell paint lands on the truncated cell `59`.
 /// `TabGroupController::handle_drag_start` hit-tests
 /// `DividerInfo::divider_bounds` by hand (not through
 /// `SplitLayout::hit_test`), so it must use the backend's snapped click
@@ -3254,12 +3254,12 @@ fn palette_dual_mode_typing_in_input_mode_updates_query() {
     );
 }
 
-// ─── ShellApp: AppShell keyboard activity-bar nav ───────────────────────────
+// ─── ShellApp: ShellView keyboard activity-bar nav ───────────────────────────
 //
-// `ShellApp` uses `AppShell` (not the raw `ActivityBar` primitive directly).
+// `ShellApp` uses `ShellView` (not the raw `ActivityBar` primitive directly).
 // These tests verify that the new keyboard navigation API (`set_activity_keyboard_focused`,
 // `activity_select_next/prev`, `activity_activate_selected`) is correctly wired
-// through `AppShell::build_activity_bar()` → TUI backend → `UiEvent::ActivityBar`
+// through `ShellView::build_activity_bar()` → TUI backend → `UiEvent::ActivityBar`
 // → `ShellApp::handle()` round-trip.
 
 #[test]
@@ -3527,7 +3527,7 @@ fn shell_app_activity_bar_active_hovered_and_keyboard_selected_rows_paint_distin
 /// `NamedKey::BackTab` keycode (not `Tab` plus a shift modifier) — this
 /// raw `KeyPressed` event isn't intercepted by the Tab-focuses-activity-bar
 /// special case (which matches only `NamedKey::Tab`) or by
-/// `AppShell::handle` (no `BackTab` arm at all), so it falls through to
+/// `ShellView::handle_event` (no `BackTab` arm at all), so it falls through to
 /// `SidebarSystem::handle`'s own `NamedKey::BackTab` arm, which calls
 /// `cycle_active(-1)`. `SidebarSystem::build_view` prefixes the active
 /// section's title with `"▶ "` — the focus indicator this test follows
@@ -3693,14 +3693,14 @@ fn full_chrome_title_bar_close_button_exits() {
 
 // ─── FullChromeDemo: runtime title-bar visibility toggle ───────────────────
 //
-// `AppShell::set_title_bar_visible` is the runtime counterpart to the
+// `ShellView::set_title_bar_visible` is the runtime counterpart to the
 // construction-time `ShellConfig::with_title_bar` builder — see its doc
 // comment in `compose/app_shell.rs` for the motivating vimcode case (a menu
 // bar painted into the title-bar row that the app shows/hides at runtime).
-// Unit tests alongside `AppShell::layout()` already prove the layout math
+// Unit tests alongside `ShellView::shell_layout()` already prove the layout math
 // directly; these tests prove the `ctx.shell_mut()` integration point a
 // `ShellApp` actually uses works end-to-end through the real
-// `ShellAdapter`-rendered `AppShell` — the same precedent
+// `ShellAdapter`-rendered `ShellView` — the same precedent
 // `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar` set for
 // `toggle_sidebar()`.
 
@@ -3726,7 +3726,7 @@ fn full_chrome_ctrl_t_hides_and_shows_the_real_rendered_title_bar() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "Ctrl+T toggling the real AppShell must redraw"
+        "Ctrl+T toggling the real ShellView must redraw"
     );
     assert!(
         !driver.screen_contains("TITLE BAR"),
@@ -3803,7 +3803,7 @@ fn full_chrome_ctrl_t_hands_the_title_bar_row_to_the_activity_bar() {
 ///
 /// The *left* border isn't a usable equivalent here: `FullChromeDemo`'s
 /// activity bar sits flush against column 0 and spans the full band
-/// height, and `AppShell::handle` already claims the whole
+/// height, and `ShellView::handle_event` already claims the whole
 /// `activity_bar_bounds` rect for panel-switching before `ShellApp::handle`
 /// (and thus `window_edge`) ever sees the event — so West/NorthWest/
 /// SouthWest resize is unreachable in this particular demo layout. That's
@@ -3955,14 +3955,14 @@ fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
 //
 // `ShellMenuDemo` opens a `MenuSystem` dropdown whose bar spans the full
 // viewport width, so the dropdown sits directly over the activity bar strip.
-// Before the fix, `ShellAdapter::handle` ran `AppShell::handle` first, which
+// Before the fix, `ShellAdapter::handle` ran `ShellView::handle_event` first, which
 // hit-tested `MouseDown` purely by screen position and swallowed any click
 // whose x fell inside the activity bar's width, even though the event was
 // tagged for the open modal.
 
 /// Clicking a dropdown item whose x lands inside the activity bar's width
 /// must still activate it — the regression this issue is about. Before the
-/// fix this click was silently swallowed by `AppShell`'s chrome hit-test
+/// fix this click was silently swallowed by `ShellView`'s chrome hit-test
 /// and the app never saw it.
 #[test]
 fn shell_menu_dropdown_item_over_activity_bar_activates() {
@@ -4032,7 +4032,7 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
         driver.screen_contains("Sidebar hidden"),
         "clicking the active panel's activity-bar row with no modal open \
          should still be handled by shell chrome \
-         (AppShellEvent::SidebarHidden):\n{}",
+         (ShellEvent::SidebarHidden):\n{}",
         driver.screen()
     );
 }
@@ -4701,9 +4701,9 @@ fn help_layer_demo_palette_query_matches_description_not_label() {
 }
 
 /// A panel with no registered help still lets `?` open a visible cheatsheet
-/// and `Escape` still closes it. `HelpOverlayController::render` draws nothing
-/// when the active view has no `ViewHelp`, but `handle()` still accepts input
-/// to dismiss the modal — without this, an unregistered panel would appear frozen.
+/// and `Escape` still closes it. An open `HelpOverlay` with no `ViewHelp`
+/// still paints a card and still accepts input to dismiss the modal —
+/// without this, an unregistered panel would appear frozen.
 #[test]
 fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
     let config = HelpLayerDemo::config();
@@ -4766,14 +4766,14 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
 /// that field every frame. Tracking the divider glyph's own painted
 /// column (rather than reading `SplitApp.ratio` directly, which has no
 /// public accessor) is what makes this a real paint round-trip: a drag
-/// handler that updated `ratio` but never affected `backend.draw_split`'s
+/// handler that updated `ratio` but never affected `draw_primitive`'s
 /// layout — or vice versa — would fail this, not just a hand-inspected
 /// field.
 ///
 /// Clicks land on `find_bounds("│")`'s left edge, not its center like
 /// most tests in this file: an 80-wide area with a 1-cell divider gives
 /// `available = 79`, so a 0.5 ratio places the divider at the half-cell
-/// position `39.5`. `tui/split.rs::draw_split` paints the glyph at the
+/// position `39.5`. The split's cell paint puts the glyph at the
 /// truncated cell `39`, and the click target
 /// (`SplitLayout::divider_hit_bounds()`) is snapped to that same cell —
 /// `[39.0, 40.0)` — so either the left edge (`39.0`, used here) or the
@@ -7897,12 +7897,12 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
 //
 // `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
 // viewport is driven by a single panel-level scroll offset, not each
-// section's own `TreeController::scroll_offset` — under that mode, even
+// section's own scroll offset — under that mode, even
 // *interactive* arrow-key nav never moves the screen, so it can't prove
 // anything about `reveal`. `SidebarRevealDemo` (`examples/common/
 // sidebar_reveal_demo.rs`) stays on `SidebarSystem`'s default
 // `PerSection` scroll mode instead, so `reveal`'s call to
-// `TreeController::scroll_to_visible` has a real, on-screen effect these
+// `TreeNavCore::scroll_to_visible` has a real, on-screen effect these
 // tests can read back off the rendered grid — not by inspecting
 // `scroll_offset` (see the `compose::sidebar_system::tests` module note
 // by the same name for the unit-level state-transition coverage).
@@ -7934,7 +7934,7 @@ fn sidebar_reveal_scrolls_offscreen_row_into_view() {
 }
 
 /// `reveal` selects the target row, not just scrolls to it. Proven
-/// behaviorally: `TreeController::move_selection_by` treats "no selection yet"
+/// behaviorally: `TreeNavCore::move_selection_by` treats "no selection yet"
 /// specially — pressing Up with nothing selected jumps to the last row, not up
 /// by one. If `reveal` had only scrolled, Up afterward would land back there.
 /// It instead lands on the previous row, which is only possible if `reveal`
@@ -7995,7 +7995,7 @@ fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
 
 /// Default chrome mode is `HeaderAndSearch`: the header text and the
 /// (empty-query) search placeholder are both visible, painted by one
-/// `draw_settings_chrome` call — exactly the "header + search" combination
+/// settings chrome paint — exactly the "header + search" combination
 /// this rung needs without hand-rolling per backend.
 #[test]
 fn sidebar_panel_body_starts_with_header_and_search_chrome() {
@@ -8052,7 +8052,7 @@ fn sidebar_panel_body_cycle_removes_chrome_and_shifts_body_up() {
 /// `c` twice lands on `Header`-only chrome: the title row stays, but the
 /// search row (and its placeholder) must not — proving the composer
 /// treats the two variants independently rather than always painting
-/// both rows [`crate::Backend::draw_settings_chrome`] can produce.
+/// both rows the settings chrome can produce.
 #[test]
 fn sidebar_panel_body_header_only_mode_has_no_search_row() {
     let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
@@ -8166,8 +8166,8 @@ fn data_table_flipping_sort_direction_reorders_visible_rows() {
 //
 // `tui_bottom_panel`'s real ShellApp is `BottomPanelDemo`, driven through
 // `driver_with_shell` so the full `ShellApp -> ShellAdapter -> dispatch_event`
-// path (including `BottomPanelController::handle_click_event`) is exercised —
-// not a hand-built `BottomPanelController` in isolation, which is already
+// path (including `BottomPanel::click`) is exercised — not a hand-built
+// `BottomPanel` in isolation, which is already
 // covered by `compose::bottom_panel`'s own unit tests.
 
 /// Locate a glyph within the (first) rendered row that contains `row_anchor`.
@@ -8317,7 +8317,7 @@ fn bottom_panel_closing_both_tabs_hides_the_panel() {
 // `BottomPanelDemo::config()` also registers one `BottomBand` (`band:status`)
 // via `ShellConfig::with_bottom_bands` — separate from the tabbed panel
 // above it. These tests exercise the real `ShellApp -> ShellAdapter ->
-// AppShell::layout` path so paint (the demo's `render_bottom_band` hook)
+// ShellView::shell_layout` path so paint (the demo's `render_bottom_band` hook)
 // and the runtime toggle (the demo's `s` keybinding, which drives
 // `ctx.shell_mut().set_bottom_band_visible`) agree with each other.
 
@@ -9444,7 +9444,7 @@ fn image_demo_q_exits() {
 // ─── CanvasApp: the `Canvas` primitive's custom gauge ─────────────────────
 //
 // `Canvas` degrades on TUI: `DrawOp::Rect`/`DrawOp::TextRun` ops reach the
-// screen end to end through `Backend::draw_canvas` and `Backend::canvas_layout`.
+// screen end to end through `draw_primitive` and `layout_primitive`.
 
 #[test]
 fn canvas_demo_paints_the_initial_gauge_label() {
@@ -9512,7 +9512,7 @@ fn canvas_demo_value_never_exceeds_100_or_drops_below_0() {
 }
 
 /// Clicking inside the gauge jumps straight to that position's value —
-/// the same `rect`/`Backend::canvas_layout` both `render` and this
+/// the same `rect`/`layout_primitive` both `render` and this
 /// handler build the canvas from, so paint and click-routing can never
 /// disagree (`examples/common/canvas_app.rs`'s own doc comment). The
 /// gauge spans `x` in `[1, 99)` at `y = 2` on a 100-wide viewport
@@ -9561,7 +9561,7 @@ fn canvas_demo_q_exits() {
 // DashedLine/StrokeRect/StyledTextRun) on a chart-style demo ───────────────
 //
 // Every new op degrades to the sub-cell braille grid on TUI; this just
-// proves the whole `Backend::draw_canvas` round trip reaches the screen
+// proves the whole `draw_primitive` round trip reaches the screen
 // end to end for the new descriptor shape, same as `CanvasApp` above does
 // for the original op set.
 
@@ -9615,7 +9615,7 @@ fn canvas_shapes_demo_escape_exits() {
 //
 // `examples/common/canvas_regions_demo.rs`'s module doc names the three
 // things these assertions prove end to end through
-// `Backend::canvas_layout`/`CanvasLayout::region_hit_test`: click-per-
+// `layout_primitive`/`CanvasLayout::region_hit_test`: click-per-
 // region toggling, Tab-to-focus via a hand-rolled `AppLogic::tab_stops`,
 // and a key press reaching the focused canvas. On a 100x10 viewport
 // (`line_height() == 1.0` on TUI) the canvas rect is
@@ -10055,7 +10055,7 @@ fn float_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the float demo");
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel ──────────
+// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
 //
 // An ordered set of opaque document ids with one active, rendered through
 // `TabBar` into the sidebar panel's content rect, with the active document's
@@ -11395,7 +11395,7 @@ fn status_bar_priority_demo_pressing_q_exits() {
 
 // ─── flex-layout rewire: packing must stay identical with and without `layout` ─
 //
-// `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
+// `ShellView`, `Form` and `Toolbar` each route their 1D position arithmetic
 // through `crate::flex::pack_1d` when the `layout` feature is enabled, and
 // through the original hand-rolled arithmetic when it is not. The three
 // tests below assert the *packing* each primitive is responsible for —

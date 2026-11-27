@@ -168,6 +168,24 @@ pub trait CellSurface {
     /// surface can't support.
     fn get(&self, x: u16, y: u16) -> Option<(char, CellStyle)>;
 
+    /// Blend `color` over the background of the cell at `(x, y)` at
+    /// `color.a / 255`, leaving its glyph, foreground and modifiers as
+    /// they are — the cell-grid form of a translucent
+    /// [`crate::PaintSurface::surface_fill_rect`]. A cell whose background
+    /// is not a literal colour, or that lies out of bounds, is left alone.
+    ///
+    /// Default: read the cell back through [`Self::get`] and rewrite it
+    /// with [`Self::put_char`], which keeps only the cell's first char.
+    fn tint_bg(&mut self, x: u16, y: u16, color: Color) {
+        let Some((ch, mut style)) = self.get(x, y) else {
+            return;
+        };
+        if let Some(base) = style.bg {
+            style.bg = Some(base.blend(color, color.a as f64 / 255.0));
+            self.put_char(x, y, ch, style);
+        }
+    }
+
     /// Request the terminal cursor be shown at `(x, y)` in `shape` once
     /// this frame is presented.
     fn set_cursor(&mut self, x: u16, y: u16, shape: CursorShape);

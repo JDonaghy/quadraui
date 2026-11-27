@@ -604,7 +604,7 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
 /// not quadraui's — goes unobserved there.
 ///
 /// Within this module, all fixtures assert on the exact combined
-/// `SetColors` sequence `draw_pipeline_view` paints stage names with:
+/// `SetColors` sequence `draw_primitive` paints stage names with:
 /// `Theme::default()`'s `(foreground, surface_bg)` pair. They drive the
 /// real `tui::run` event loop. The quantised numbers are pinned
 /// independently in `src/tui/color.rs`'s unit test — if quadraui's own
@@ -613,7 +613,7 @@ fn tui_chat_escape_glued_to_sgr_motion_in_one_write_does_not_leak() {
 mod sgr_color_depth {
     use super::*;
 
-    /// The exact combined-`SetColors` SGR sequence `draw_pipeline_view` emits
+    /// The exact combined-`SetColors` SGR sequence `draw_primitive` emits
     /// for `(fg, bg)` at 24-bit truecolor: `Theme::default().foreground` =
     /// `Color::rgb(220, 220, 220)`, `.surface_bg` = `Color::rgb(28, 32, 44)`.
     const TRUECOLOR_PIPELINE_SGR: &[u8] = b"\x1b[38;2;220;220;220;48;2;28;32;44m";

@@ -67,7 +67,7 @@ mod ms11_542_structural_parity {
     use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, AppShell, Backend, Color, DrawsPrimitives, PanelDefinition, Reaction, Rect, StatusBar,
+        AppLogic, Backend, Color, DrawsPrimitives, PanelDefinition, Reaction, Rect, ShellView, ShellViewState, StatusBar,
         StatusBarSegment, Tooltip, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
     };
 
@@ -167,18 +167,19 @@ mod ms11_542_structural_parity {
         }
     }
 
-    /// Draws the shell chrome `AppShell` composes — activity bar, sidebar
+    /// Draws the shell chrome `ShellView` composes — activity bar, sidebar
     /// header/content, resize divider, status bar. #542 ask 3 names the
     /// status bar, sidebar chrome and the terminal divider as primitives
     /// "that have consumers today"; this is the fixture that carries them.
     struct ShellChromeFixture {
-        shell: AppShell,
+        shell: ShellView,
+        _state: ShellViewState,
     }
 
     impl ShellChromeFixture {
         fn new() -> Self {
             Self {
-                shell: AppShell::new(
+                shell: ShellView::new(
                     vec![
                         PanelDefinition {
                             id: WidgetId::new("panel:explorer"),
@@ -198,6 +199,7 @@ mod ms11_542_structural_parity {
                     18.0,
                 )
                 .with_status_bar(),
+                _state: ShellViewState::default(),
             }
         }
     }
@@ -207,9 +209,7 @@ mod ms11_542_structural_parity {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let vp = backend.viewport();
-            let _ = self
-                .shell
-                .render(backend, Rect::new(0.0, 0.0, vp.width, vp.height));
+            let _ = backend.draw_dyn(Rect::new(0.0, 0.0, vp.width, vp.height), &self.shell, &());
         }
 
         fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -513,7 +513,7 @@ mod ms11_542_structural_parity {
 
     /// #542 ask 3 — the primitives with consumers today: status bar,
     /// sidebar chrome, the resize divider. Unlike the tooltip clauses this
-    /// one is the **ratchet half**: `AppShell` already registers these
+    /// one is the **ratchet half**: `ShellView` already registers these
     /// regions on both backends, so it should be green today and stay
     /// green. It is here so that a #542 implementation which reworks the
     /// surface-recording path cannot quietly drop the chrome that is

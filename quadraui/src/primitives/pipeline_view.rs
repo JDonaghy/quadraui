@@ -456,6 +456,10 @@ impl crate::primitive::Primitive for PipelineView {
     type Layout = PipelineViewPrimitiveLayout;
     type Event = PipelineEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::PipelineView(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }
@@ -648,8 +652,7 @@ pub(crate) mod native_surface_paint {
     }
 
     /// Paint a [`PipelineView`] into `rect` on `surface`, returning
-    /// [`PipelineViewLayout`] for host click dispatch — same contract as
-    /// every deleted per-backend `draw_pipeline_view`.
+    /// [`PipelineViewLayout`] for host click dispatch.
     pub(crate) fn paint(
         view: &PipelineView,
         surface: &mut dyn PaintSurface,

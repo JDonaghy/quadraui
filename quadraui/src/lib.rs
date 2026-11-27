@@ -608,7 +608,7 @@ pub use primitives::activity_bar::{
     DEFAULT_ACTIVITY_ICON_SIZE_PX,
 };
 pub use primitives::board::{
-    board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
+    measured_board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
 pub use primitives::button::{
@@ -697,7 +697,7 @@ pub use primitives::icon_grid::IconGridPrimitiveLayout;
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
-    ListViewLayout, VisibleListItem,
+    ListViewLayout, ListViewSubPart, VisibleListItem,
 };
 // `ListView`'s `Primitive::Layout` — defined on every feature set the
 // pilot `impl Primitive for ListView` itself is (see that impl's own
@@ -784,9 +784,8 @@ pub use primitives::split_tree::{
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
 };
 pub use primitives::status_bar::{
-    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout,
-    StatusBarOverflow, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
-    VisibleStatusSegment,
+    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
+    StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 pub use primitives::text_area::{TextArea, TextAreaAction};
@@ -843,7 +842,7 @@ pub use primitives::tree::{
 pub use primitives::tree_table::{
     TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
 };
-pub use style::Style;
+pub use style::{CellOverflow, Style};
 pub use text_util::{
     fuzzy_score, next_char_boundary, prev_char_boundary, safe_prefix, safe_slice,
     snap_to_char_boundary, word_wrap, wrap_spans, WrapPolicy,
@@ -966,25 +965,23 @@ pub use compose::markdown::{
 ))]
 pub use compose::SidebarLayout;
 pub use compose::{
-    filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
-    AppShellLayout, BackendWidget, BottomBand, BottomPanel, BottomPanelConfig,
-    BottomPanelController, BottomPanelEvent, BottomPanelItem, BottomPanelLayout,
-    BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab, Chat, ChatController,
-    ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones,
-    ContextMenuController, ContextMenuOutcome, DualModePaletteAction, DualModePaletteController,
-    Edge, FilePickerController, FilePickerMode, FolderPickerController, FormController,
+    filter_help_actions, help_actions_to_palette_items, notify_or_toast, BackendWidget, BottomBand,
+    BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
+    BottomPanelState, BottomPanelTab, Chat, ChatController, ChatControllerAction, ChatEvent,
+    ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones, ContextMenuController,
+    ContextMenuOutcome, DualModePaletteAction, DualModePaletteController, Edge,
+    FilePickerController, FilePickerMode, FolderPickerController, FormController,
     FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
-    HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef,
-    MenuEvent, MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
-    PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion,
+    HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
+    PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
     ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
     SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
     SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent,
     TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
     TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace,
-    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
-    WorkspaceState, PALETTE_CHROME_ROWS,
+    ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
+    WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
@@ -1002,14 +999,13 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
-// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`, `HelpOverlayEvent`,
+// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
 // `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
 // `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>`, `HelpOverlayController::handle_event`'s
-// `Handled<HelpOverlayAction>`, `DualModePaletteController::handle_event`'s
+// `Handled<ToastStackAction>`, `DualModePaletteController::handle_event`'s
 // `Handled<DualModePaletteAction>`, `FilePickerController`/
 // `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
 // `FormController::handle_event`/`handle_cached_event`'s
@@ -1020,8 +1016,7 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 #[allow(deprecated)]
 pub use compose::{
     ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
-    FormControllerEvent, FormDialogEvent, HelpOverlayEvent, MessageDialogEvent, StatusBarAction,
-    ToastStackEvent,
+    FormControllerEvent, FormDialogEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

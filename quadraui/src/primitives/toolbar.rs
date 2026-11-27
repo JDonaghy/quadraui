@@ -780,7 +780,7 @@ pub(crate) fn hover_target(hit: &ToolbarHit) -> Option<WidgetId> {
 /// Per-button Nerd-Font glyph + ASCII fallback pairs for a [`Toolbar`],
 /// keyed by the owning [`ToolbarButton::Action`]'s `id`.
 ///
-/// Mirrors [`crate::compose::app_shell::AppShell::with_panel_icon`]'s
+/// Mirrors [`crate::compose::app_shell::ShellView::with_panel_icon`]'s
 /// override-by-id shape. Register the pairs once, then call
 /// [`Self::apply`] with the backend's Nerd-Font flag to get a `Toolbar`
 /// whose buttons already carry the right half of each pair:
@@ -869,7 +869,7 @@ impl ToolbarIcons {
     /// owned clone whose `icon` field is the pair's `glyph` (when
     /// `nerd_fonts_enabled`) or `fallback` (otherwise) — the override wins
     /// outright, replacing whatever the button's own `icon` held, exactly
-    /// like [`crate::compose::app_shell::AppShell`] does for
+    /// like [`crate::compose::app_shell::ShellView`] does for
     /// `PanelDefinition::icon`. A [`ToolbarButton::Group`] resolves each of
     /// its `items` the same way, recursively, so a registered pair reaches
     /// a group's children too; the group itself only clones when at least
@@ -2498,7 +2498,7 @@ where
 /// With the `layout` feature this runs through [`crate::flex`]'s shared
 /// flexbox engine (a `Row` of fixed-width, `flex_shrink: 0.0` leaves) so
 /// `Toolbar` composes with the same engine [`crate::primitives::Form`] and
-/// [`crate::compose::AppShell`] use. Without it, the same arithmetic is
+/// [`crate::compose::ShellView`] use. Without it, the same arithmetic is
 /// done by hand. Both arms are covered by this module's exact-value tests
 /// (`layout_places_buttons_left_to_right`, `layout_clips_to_bar_width`,
 /// `origin_offset_propagates`) to guarantee they agree bit-for-bit.

@@ -685,6 +685,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("h_scroll", int_()),
             field_opt("max_content_width", nullable(int_())),
             field_opt("show_v_scrollbar", bool_()),
+            field_opt("striped", bool_()),
             with_doc(
                 field_opt("scroll_px", float_()),
                 "binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.",
@@ -1151,7 +1152,7 @@ pub fn schema() -> Vec<DefJson> {
         (u64) => {
             int_()
         };
-        (StatusBarOverflow) => {
+        (CellOverflow) => {
             lit(&["ellipsis", "clip"])
         };
     }
@@ -2953,7 +2954,6 @@ pub fn schema() -> Vec<DefJson> {
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
-            "canvas" => canvas_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
@@ -2989,6 +2989,7 @@ pub fn schema() -> Vec<DefJson> {
             "minimap" => minimap_descriptor.clone(),
             "image" => image_descriptor.clone(),
             "chart" => chart_descriptor.clone(),
+            "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "board" => board_model_descriptor.clone(),
             "pipeline_view" => pipeline_view_descriptor.clone(),
@@ -4131,7 +4132,7 @@ pub fn schema() -> Vec<DefJson> {
             ("AppMenu", tup(vec![re("WidgetId"), any_()])),
             // A shell, bottom-panel or workspace intent rides as the
             // event's own externally-tagged serde shape.
-            ("AppShell", tup(vec![re("WidgetId"), any_()])),
+            ("ShellView", tup(vec![re("WidgetId"), any_()])),
             ("BottomPanel", tup(vec![re("WidgetId"), any_()])),
             ("Workspace", tup(vec![re("WidgetId"), any_()])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
@@ -4960,7 +4961,8 @@ mod coverage {
             bordered,
             h_scroll,
             max_content_width,
-            show_v_scrollbar
+            show_v_scrollbar,
+            striped
         }
     );
     assert_fields!(
@@ -7148,7 +7150,7 @@ mod coverage {
                 "PathPicker",
                 "DualModePalette",
                 "AppMenu",
-                "AppShell",
+                "ShellView",
                 "BottomPanel",
                 "Workspace",
                 "Toolbar",

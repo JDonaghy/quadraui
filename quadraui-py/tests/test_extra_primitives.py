@@ -2800,9 +2800,9 @@ def test_canvas_region_double_click_emits_a_typed_region_double_clicked_event():
 
 
 def test_canvas_region_hover_emits_region_hovered_alongside_mouse_entered_and_left():
-    # Mirrors the generic `MouseEntered`/`MouseLeft` hover bookkeeping every
-    # other extra already gets, plus the region-specific
-    # `Canvas`/`RegionHovered` translation layered alongside it.
+    # Entering the canvas reports the generic `MouseEntered` for its body,
+    # and the canvas's own `Interactive` reports the region it entered on
+    # (or `None` on leaving) as `Canvas`/`RegionHovered`.
     app = QuiApp(40, 20)
     app.set_render(_canvas_with_region_render)
     app.screen()
@@ -2815,33 +2815,37 @@ def test_canvas_region_hover_emits_region_hovered_alongside_mouse_entered_and_le
     assert len(received) == 3
     assert received[0] == {
         "MouseEntered": {"widget": "canvas:regions"},
-        "hit": {"kind": "canvas_region", "region": "region:a"},
+        "hit": {"kind": "widget_body"},
     }
     widget_id, canvas_event = received[1]["Canvas"]
     assert widget_id == "canvas:regions"
     assert canvas_event == {"RegionHovered": {"region": "region:a"}}
 
     received.clear()
-    # (30, 10) is still inside the canvas's own bounds but outside the
-    # declared region, so this also synthesizes a generic `MouseEntered`
-    # for the canvas's `extra_body` right behind the region-leaving pair
-    # below -- four events in total, not three.
+    # (30, 10) is still inside the canvas but outside the declared region.
+    # Hover is tracked per widget, as on the native runtime, so a move that
+    # stays on the canvas reports nothing beyond the move itself.
     app.push_event(
         {"MouseMoved": {"position": {"x": 30.0, "y": 10.0}, "buttons": {}}}
     )
     app.run(1)
-    assert len(received) == 4
+    assert len(received) == 1
+    assert "MouseMoved" in received[0]
+
+    received.clear()
+    # Leaving the canvas reports `MouseLeft` and the region-leaving
+    # `RegionHovered`.
+    app.push_event(
+        {"MouseMoved": {"position": {"x": 60.0, "y": 30.0}, "buttons": {}}}
+    )
+    app.run(1)
     assert received[0] == {
         "MouseLeft": {"widget": "canvas:regions"},
-        "hit": {"kind": "canvas_region", "region": "region:a"},
+        "hit": {"kind": "widget_body"},
     }
     widget_id, canvas_event = received[1]["Canvas"]
     assert widget_id == "canvas:regions"
     assert canvas_event == {"RegionHovered": {"region": None}}
-    assert received[2] == {
-        "MouseEntered": {"widget": "canvas:regions"},
-        "hit": {"kind": "extra_body"},
-    }
 
 
 def _click(app, x, y):

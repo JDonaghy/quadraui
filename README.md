@@ -25,7 +25,7 @@ impl Hello {
 }
 
 impl ShellApp for Hello {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         // The shell already computed where the status bar goes —
         // no viewport arithmetic here. Describe the UI as plain data;
         // the widget paints itself on whichever backend is running.
@@ -95,7 +95,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 8,800 tests, including headless
+- **Heavily tested.** Around 8,500 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -352,15 +352,14 @@ the table against the module list. -->
 
 | Controller | What it handles |
 |---|---|
-| `AppShell` | Activity bar + sidebar + editor area: the VS Code-style application frame. Owns a `ShellView` widget and its state. |
-| `BottomPanel` | A tabbed, dockable panel along the bottom of an `AppShell`. |
+| `ShellView` | Activity bar + sidebar + editor area: the VS Code-style application frame, with its gesture state in a `ShellViewState` beside it. |
+| `BottomPanel` | A tabbed, dockable panel along the bottom of a `ShellView`. |
 | `WorkspaceController` | Many open documents, one visible: open, switch, close. |
 | `TabGroupController` | Tabbed split panes. |
 | `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
 | `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
-| `TreeController` | A keyboard-navigable tree: selection, expand/collapse, scroll-follow. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
 | `FormController` | A form's focus, editing and validation. |
 | `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
@@ -369,7 +368,7 @@ the table against the module list. -->
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
 | `MessageDialogController` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
-| `HelpOverlayController` | A context-sensitive key-binding help overlay. |
+| `HelpOverlay` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
 | `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |
 
@@ -387,7 +386,7 @@ common, so none of them re-derives its own: `ensure_visible` /
 `ensure_visible_px` (scroll the minimum amount to bring a target back
 into view), `FlatNav` (clamped or wrapping index movement with
 disabled-item skipping) and `TreeNavCore` (the row-type-agnostic core
-`TreeController` is built on: selection by path, arrow/page/Home/End
+`TreeView` navigates with: selection by path, arrow/page/Home/End
 movement, scroll-follow and scrollbar drag over any flattened rows), and
 `Typeahead` (debounced type-to-jump).
 

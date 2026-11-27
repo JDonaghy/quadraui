@@ -1,7 +1,8 @@
 //! Form painted through a real macOS backend via
 //! [`crate::DrawsPrimitives::draw_dyn`], and the settings chrome painted
-//! through `MacBackend`'s [`crate::Backend::draw_settings_chrome`],
-//! read back off a bitmap.
+//! onto a `MacBackend` surface through the shared
+//! [`crate::compose::sidebar_panel_body::paint_settings_chrome`], read
+//! back off a bitmap.
 
 use crate::event::Rect as QRect;
 use crate::event::Viewport;
@@ -605,8 +606,8 @@ fn password_input_with_multibyte_cursor_does_not_panic() {
 
 // ── Settings chrome ─────────────────────────────────────────────────
 
-/// Paint the settings chrome through the real
-/// `Backend::draw_settings_chrome` path at an arbitrary origin.
+/// Paint the settings chrome onto a real `MacBackend` surface at an
+/// arbitrary origin.
 fn paint_settings_chrome_at(
     origin: QRect,
     header: &str,
@@ -623,14 +624,25 @@ fn paint_settings_chrome_at(
     let lh = backend.line_height() as f64;
     backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
     backend.enter_frame_scope(surface.context_ptr(), |b| {
-        b.draw_settings_chrome(origin, header, query, placeholder, active);
+        let theme = b.theme();
+        let line_height = b.line_height();
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            b,
+            &theme,
+            origin,
+            line_height,
+            header,
+            query,
+            placeholder,
+            active,
+        );
     });
     backend.end_frame();
     (surface, lh)
 }
 
-/// Width of `text` in the font `Backend::draw_settings_chrome`
-/// actually paints with.
+/// Width of `text` in the font the settings chrome actually paints
+/// with.
 ///
 /// The settings header and search row are chrome, so the backend
 /// renders them through [`crate::FontRole::Chrome`] regardless of

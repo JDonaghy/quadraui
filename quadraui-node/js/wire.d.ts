@@ -228,6 +228,7 @@ export interface ListViewDescriptor {
   h_scroll?: number;
   max_content_width?: number | null;
   show_v_scrollbar?: boolean;
+  striped?: boolean;
   scroll_px?: number; // binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
   items_window?: ItemsWindow | null; // binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 }
@@ -633,6 +634,7 @@ export interface StyleValue {
   tooltip_auto_dismiss_ms?: number;
   status_bar_cell_gap?: number;
   status_bar_cell_overflow?: "ellipsis" | "clip";
+  list_cell_overflow?: "ellipsis" | "clip";
   font_family?: string;
   font_size?: number;
   font_weight?: "normal" | "bold";
@@ -1953,7 +1955,6 @@ export interface LayoutLeafNode {
   menu_bar?: MenuBarDescriptor;
   command_line?: CommandLineDescriptor;
   scrollbar?: ScrollbarDescriptor;
-  canvas?: CanvasDescriptor;
   find_replace?: FindReplacePanelDescriptor;
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
@@ -1972,6 +1973,7 @@ export interface LayoutLeafNode {
   minimap?: MinimapDescriptor;
   image?: ImageDescriptor;
   chart?: ChartDescriptor;
+  canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   board?: BoardModelDescriptor;
   pipeline_view?: PipelineViewDescriptor;
@@ -2014,7 +2016,6 @@ export interface RenderFrameDict {
   menu_bar?: MenuBarDescriptor | null;
   command_line?: CommandLineDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
-  canvas?: CanvasDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
@@ -2033,6 +2034,7 @@ export interface RenderFrameDict {
   minimap?: MinimapDescriptor | null;
   image?: ImageDescriptor | null;
   chart?: ChartDescriptor | null;
+  canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   board?: BoardModelDescriptor | null;
   pipeline_view?: PipelineViewDescriptor | null;
@@ -2815,7 +2817,7 @@ export interface RowsRequestedEvent {
 }
 
 /** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. */
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { ScrollbarMoved: _ScrollbarMovedPayload; hit?: HitDetail; } | { SwitchToggled: _SwitchToggledPayload; hit?: HitDetail; } | { RadioGroupSelectionChanged: _RadioGroupSelectionChangedPayload; hit?: HitDetail; } | { ButtonActivated: _WidgetPayload; hit?: HitDetail; } | { CommandCenterActivated: _CommandCenterActivatedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { Editor: [WidgetId, EditorEvent]; hit?: HitDetail; } | { Minimap: [WidgetId, MinimapEvent]; hit?: HitDetail; } | { Board: [WidgetId, unknown]; hit?: HitDetail; } | { PipelineView: [WidgetId, unknown]; hit?: HitDetail; } | { DiffView: [WidgetId, unknown]; hit?: HitDetail; } | { MessageList: [WidgetId, unknown]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { CellGrid: [WidgetId, CellGridEvent]; hit?: HitDetail; } | { MultiSectionView: [WidgetId, unknown]; hit?: HitDetail; } | { Chat: [WidgetId, unknown]; hit?: HitDetail; } | { Sidebar: [WidgetId, unknown]; hit?: HitDetail; } | { TabGroup: [WidgetId, unknown]; hit?: HitDetail; } | { ScrollView: [WidgetId, ScrollViewEvent]; hit?: HitDetail; } | { HelpOverlay: [WidgetId, unknown]; hit?: HitDetail; } | { PathPicker: [WidgetId, unknown]; hit?: HitDetail; } | { DualModePalette: [WidgetId, unknown]; hit?: HitDetail; } | { AppMenu: [WidgetId, unknown]; hit?: HitDetail; } | { AppShell: [WidgetId, unknown]; hit?: HitDetail; } | { BottomPanel: [WidgetId, unknown]; hit?: HitDetail; } | { Workspace: [WidgetId, unknown]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { ScrollbarMoved: _ScrollbarMovedPayload; hit?: HitDetail; } | { SwitchToggled: _SwitchToggledPayload; hit?: HitDetail; } | { RadioGroupSelectionChanged: _RadioGroupSelectionChangedPayload; hit?: HitDetail; } | { ButtonActivated: _WidgetPayload; hit?: HitDetail; } | { CommandCenterActivated: _CommandCenterActivatedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { Editor: [WidgetId, EditorEvent]; hit?: HitDetail; } | { Minimap: [WidgetId, MinimapEvent]; hit?: HitDetail; } | { Board: [WidgetId, unknown]; hit?: HitDetail; } | { PipelineView: [WidgetId, unknown]; hit?: HitDetail; } | { DiffView: [WidgetId, unknown]; hit?: HitDetail; } | { MessageList: [WidgetId, unknown]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { CellGrid: [WidgetId, CellGridEvent]; hit?: HitDetail; } | { MultiSectionView: [WidgetId, unknown]; hit?: HitDetail; } | { Chat: [WidgetId, unknown]; hit?: HitDetail; } | { Sidebar: [WidgetId, unknown]; hit?: HitDetail; } | { TabGroup: [WidgetId, unknown]; hit?: HitDetail; } | { ScrollView: [WidgetId, ScrollViewEvent]; hit?: HitDetail; } | { HelpOverlay: [WidgetId, unknown]; hit?: HitDetail; } | { PathPicker: [WidgetId, unknown]; hit?: HitDetail; } | { DualModePalette: [WidgetId, unknown]; hit?: HitDetail; } | { AppMenu: [WidgetId, unknown]; hit?: HitDetail; } | { ShellView: [WidgetId, unknown]; hit?: HitDetail; } | { BottomPanel: [WidgetId, unknown]; hit?: HitDetail; } | { Workspace: [WidgetId, unknown]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
 
 /** `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;

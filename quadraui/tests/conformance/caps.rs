@@ -430,18 +430,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "a terminal cell cannot grow; the `false` default is the correct answer, not a missing \
          one — scaled rows render bold at normal cell height",
     ),
-    // TUI: `tree_paints_own_scrollbar` — scrolling a tree in a terminal has
-    // no spare pixels for an overlay scrollbar, so `draw_tree` never paints
-    // one and the default `false` is the honest answer: the host
-    // (`TreeController`) reserves a column and paints the scrollbar itself.
-    // GTK, macOS and Win all override this to `true` because each paints the
-    // overlay inside `draw_tree`.
-    (
-        "tui",
-        "tree_paints_own_scrollbar",
-        "a terminal has no spare pixels for an overlay scrollbar, so `draw_tree` never paints \
-         one — the host reserves a column and paints it instead (quadraui#1476)",
-    ),
     // TUI: `has_font_family` answers "does the platform have
     // this font installed", which a terminal emulator's hosting process
     // cannot answer — the terminal's own font choice is invisible to
@@ -516,58 +504,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "doesn't honour `ShellConfig::client_side_titlebar` yet (#947 wired macOS only) — the \
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
-    ),
-    // `diff_view_layout` ships with a trait default that is a pure function of
-    // `Backend::line_height()` and `DiffView::mode` — the exact same values every
-    // backend's own `draw_diff_view` already resolves them to. There is no
-    // backend-specific measurement it could add, unlike `board_layout` /
-    // `list_layout`, which route through backend-native constants and have no default at
-    // all. All four backends take the default as the honest answer.
-    //
-    // `diff_view_layout`'s default still holds after the row/pane geometry lift: its
-    // default body keeps its own copy of the pane math rather than delegating to
-    // `DiffView::layout`, differing only in one degenerate corner.
-    (
-        "tui",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "gtk",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "macos",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "win",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
-    // alone, with no backend-specific metric. All four backends take the default.
-    (
-        "tui",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "gtk",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "macos",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "win",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
     ),
     // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
     // over the content edge. GTK is the only backend that hosts its content inside
@@ -747,24 +683,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "wheel_delta_rows",
         "Win32's raw_delta / WHEEL_DELTA is already in row-notch units, so the identity default \
          is correct — see Backend::wheel_delta_rows's own doc",
-    ),
-    // ── tree_scroll_row_height: the row-pitch basis
-    // `TreeController::scroll_by_wheel` converts wheel notches into the
-    // `scroll_px` currency with. A backend only needs to override it
-    // when its painted `TreeView` row pitch differs from
-    // `Self::line_height` — `GtkBackend`, `MacBackend` and `WinBackend`
-    // all do (they run `layout_metrics::tree_row_pitch` over a font
-    // metric of their own), so all three override it. TUI does not
-    // paint a sub-row `scroll_px` for `TreeView` at all, so the
-    // default's exact relationship to its own `tree_layout` row pitch is
-    // TUI's own pixel-smooth-tree-scroll issue's job to verify when it
-    // wires that up. See `Backend::tree_scroll_row_height`'s own doc.
-    (
-        "tui",
-        "tree_scroll_row_height",
-        "TUI's tree painter ignores the sub-row scroll_px, so this basis is unobservable there; \
-         verifying it against TUI's own tree row pitch is a TUI pixel-smooth-tree-scroll \
-         sibling issue's job",
     ),
     // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
     // `TuiBackend` overrides both, reusing `tui::canvas`'s own
@@ -1417,7 +1335,10 @@ mod tests {
             fn_name("fn cancel_text_selection_drag_impl(&mut self) {"),
             Some("cancel_text_selection_drag_impl")
         );
-        assert_eq!(fn_name("fn draw_chart<T>(&mut self) {"), Some("draw_chart"));
+        assert_eq!(
+            fn_name("fn draw_widget<T>(&mut self) {"),
+            Some("draw_widget")
+        );
         assert_eq!(fn_name("let x = 1;"), None);
     }
 }

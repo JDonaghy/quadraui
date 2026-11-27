@@ -1182,6 +1182,7 @@ A virtualised `{start, total}` window: `start` is the index, into the widget's t
 | `h_scroll` | `number` | no |  |
 | `max_content_width` | `number \| null` | no |  |
 | `show_v_scrollbar` | `boolean` | no |  |
+| `striped` | `boolean` | no |  |
 | `scroll_px` | `number` | no | binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field. |
 | `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
@@ -1747,6 +1748,7 @@ A per-node "style" override, scoped to that node's own subtree: every quadraui::
 | `tooltip_auto_dismiss_ms` | `number` | no |  |
 | `status_bar_cell_gap` | `number` | no |  |
 | `status_bar_cell_overflow` | `"ellipsis" \| "clip"` | no |  |
+| `list_cell_overflow` | `"ellipsis" \| "clip"` | no |  |
 | `font_family` | `string` | no |  |
 | `font_size` | `number` | no |  |
 | `font_weight` | `"normal" \| "bold"` | no |  |
@@ -3736,7 +3738,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
-| `canvas` | `CanvasDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
@@ -3755,6 +3756,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `minimap` | `MinimapDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
 | `chart` | `ChartDescriptor` | no |  |
+| `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `board` | `BoardModelDescriptor` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor` | no |  |
@@ -3805,7 +3807,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
-| `canvas` | `CanvasDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
@@ -3824,6 +3825,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
 | `chart` | `ChartDescriptor \| null` | no |  |
+| `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `board` | `BoardModelDescriptor \| null` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |
@@ -5359,7 +5361,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `PathPicker` | `[WidgetId, unknown]` |  |
 | `DualModePalette` | `[WidgetId, unknown]` |  |
 | `AppMenu` | `[WidgetId, unknown]` |  |
-| `AppShell` | `[WidgetId, unknown]` |  |
+| `ShellView` | `[WidgetId, unknown]` |  |
 | `BottomPanel` | `[WidgetId, unknown]` |  |
 | `Workspace` | `[WidgetId, unknown]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |

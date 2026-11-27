@@ -8,7 +8,7 @@
 //! activity bar and sidebar header paint through their own `Primitive`s,
 //! and the shell sits in the app's `FrameTree`, so a click on an activity
 //! row or a drag on the sidebar divider routes through the shared
-//! widget-contract engine and back out as the `UiEvent::AppShell` intents
+//! widget-contract engine and back out as the `UiEvent::ShellView` intents
 //! this app applies (controlled mode).
 //!
 //! `draw_dyn` publishes the shell's named sub-regions as frame-inventory
@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use quadraui::primitive::painted_sub_center;
 use quadraui::testing::{ConformanceDriver, DriverInput, LogicalViewport};
 use quadraui::{
-    AppLogic, AppShellEvent, Backend, FrameTree, PanelDefinition, Reaction, Rect, ScreenLayout,
+    AppLogic, Backend, FrameTree, PanelDefinition, Reaction, Rect, ScreenLayout, ShellEvent,
     ShellRegion, ShellView, Surface, UiEvent, WidgetId,
 };
 
@@ -57,7 +57,7 @@ struct ShellApp {
     /// The rect the last frame painted into, which the frame tree routes
     /// against.
     painted: std::cell::Cell<Rect>,
-    events: Vec<AppShellEvent>,
+    events: Vec<ShellEvent>,
 }
 
 impl ShellApp {
@@ -96,16 +96,16 @@ impl AppLogic for ShellApp {
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::AppShell(id, ev) = event {
+        if let UiEvent::ShellView(id, ev) = event {
             assert_eq!(id, shell_id(), "intents carry the shell's own id");
             match &ev {
-                AppShellEvent::PanelChanged { panel_id } => {
+                ShellEvent::PanelChanged { panel_id } => {
                     self.shell.active_panel =
                         self.shell.panels.iter().position(|p| p.id == *panel_id);
                     self.shell.sidebar_visible = true;
                 }
-                AppShellEvent::SidebarHidden => self.shell.sidebar_visible = false,
-                AppShellEvent::SidebarResized { .. } => {}
+                ShellEvent::SidebarHidden => self.shell.sidebar_visible = false,
+                ShellEvent::SidebarResized { .. } => {}
                 _ => {}
             }
             self.events.push(ev);
@@ -157,15 +157,12 @@ fn activity_clicks_switch_then_hide<D: DriverInput>(driver: &mut D, app: impl Fn
     click_at(driver, region_center(ShellRegion::ActivityItem(1)));
     assert_eq!(
         app(driver).events,
-        vec![AppShellEvent::PanelChanged {
+        vec![ShellEvent::PanelChanged {
             panel_id: WidgetId::new("panel:search")
         }]
     );
     click_at(driver, region_center(ShellRegion::ActivityItem(1)));
-    assert_eq!(
-        app(driver).events.last(),
-        Some(&AppShellEvent::SidebarHidden)
-    );
+    assert_eq!(app(driver).events.last(), Some(&ShellEvent::SidebarHidden));
 }
 
 #[cfg(feature = "tui")]
@@ -213,7 +210,7 @@ mod tui {
                 .app()
                 .events
                 .iter()
-                .any(|e| matches!(e, AppShellEvent::SidebarResized { .. })),
+                .any(|e| matches!(e, ShellEvent::SidebarResized { .. })),
             "{:?}",
             driver.app().events
         );

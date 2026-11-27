@@ -81,7 +81,7 @@
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
 //! [`Self::row_height`] and [`Self::toolbar_height`] — sizes shell
-//! *chrome* (`AppShell`'s tab strip/status bar/activity bar/sidebar
+//! *chrome* (`ShellView`'s tab strip/status bar/activity bar/sidebar
 //! header, `SidebarPanel`'s own header, and `List`/`TreeView`/
 //! `DataTable` row pitch) rather than overlay padding/radius/border; no
 //! overlay primitive reads them. They follow the same cell-grid-no-op
@@ -115,6 +115,23 @@
 //! catalogue and the verbs each token is painted through.
 
 use serde::{Deserialize, Serialize};
+
+/// How a cell-grid painter cuts text wider than the cells its layout
+/// left it. Set per widget family on [`Style`]:
+/// [`Style::status_bar_cell_overflow`] for a [`crate::StatusBar`]
+/// segment, [`Style::list_cell_overflow`] for a [`crate::ListView`] row.
+///
+/// `#[non_exhaustive]`: a future overflow style is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CellOverflow {
+    /// End the visible text in `…`, so the cut reads as deliberate.
+    #[default]
+    Ellipsis,
+    /// Cut the text at the last cell with no marker.
+    Clip,
+}
 
 /// Non-colour visual tokens shared by every pixel backend. See the
 /// module doc for why this is a separate type from [`crate::Theme`],
@@ -357,14 +374,8 @@ pub struct Style {
     /// shared painter, not one per backend. Each backend's own
     /// `Backend::list_vscrollbar` hit-testing impl passes this same live
     /// field (`self.current_style.scrollbar_width`), so `List`'s paint and
-    /// hit-test can't drift apart at a non-default style. Win's
-    /// `Backend::tree_vscrollbar` passes this same live field too. GTK's
-    /// and macOS's `Backend::tree_vscrollbar` still pass the fixed
-    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    /// constant (`10.0`, matching this field's default) literally — a
-    /// per-backend follow-up threads a live `Style` through those too,
-    /// which is a no-op today since the constant equals this field's
-    /// default.
+    /// hit-test can't drift apart at a non-default style. `TreeView`'s
+    /// own pixel layout sizes its scrollbar from this field's default.
     ///
     /// **`DataTable` keeps its own fixed
     /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]
@@ -494,15 +505,27 @@ pub struct Style {
 
     /// How a cell-grid [`crate::StatusBar`] cuts a segment whose text is
     /// wider than the cells its layout left it:
-    /// [`crate::StatusBarOverflow::Ellipsis`] ends it in `…`,
-    /// [`crate::StatusBarOverflow::Clip`] cuts it with no marker.
+    /// [`CellOverflow::Ellipsis`] ends it in `…`,
+    /// [`CellOverflow::Clip`] cuts it with no marker.
     ///
     /// **Pixel story: no-op.** Pixel backends always end overlong text
     /// in an ellipsis.
     ///
-    /// Default [`crate::StatusBarOverflow::Ellipsis`].
+    /// Default [`CellOverflow::Ellipsis`].
     #[serde(default)]
-    pub status_bar_cell_overflow: crate::StatusBarOverflow,
+    pub status_bar_cell_overflow: CellOverflow,
+
+    /// How a cell-grid [`crate::ListView`] cuts a row whose text is wider
+    /// than the row: [`CellOverflow::Ellipsis`] ends it in `…`,
+    /// [`CellOverflow::Clip`] cuts it at the row's last cell with no
+    /// marker.
+    ///
+    /// **Pixel story: no-op.** Pixel backends always end overlong text
+    /// in an ellipsis.
+    ///
+    /// Default [`CellOverflow::Ellipsis`].
+    #[serde(default)]
+    pub list_cell_overflow: CellOverflow,
 }
 
 /// `#[serde(default)]` value for [`Style::button_radius`] — a struct
@@ -610,7 +633,8 @@ impl Default for Style {
             tooltip_delay_ms: 500,
             tooltip_auto_dismiss_ms: 0,
             status_bar_cell_gap: crate::primitives::status_bar::MIN_GAP_CELLS,
-            status_bar_cell_overflow: crate::StatusBarOverflow::Ellipsis,
+            status_bar_cell_overflow: CellOverflow::Ellipsis,
+            list_cell_overflow: CellOverflow::Ellipsis,
         }
     }
 }
@@ -762,8 +786,15 @@ impl Style {
 
     /// Set [`Self::status_bar_cell_overflow`].
     #[must_use]
-    pub fn with_status_bar_cell_overflow(mut self, overflow: crate::StatusBarOverflow) -> Self {
+    pub fn with_status_bar_cell_overflow(mut self, overflow: CellOverflow) -> Self {
         self.status_bar_cell_overflow = overflow;
+        self
+    }
+
+    /// Set [`Self::list_cell_overflow`].
+    #[must_use]
+    pub fn with_list_cell_overflow(mut self, overflow: CellOverflow) -> Self {
+        self.list_cell_overflow = overflow;
         self
     }
 }

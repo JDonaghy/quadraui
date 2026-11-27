@@ -4,7 +4,7 @@
 //! [`BoardApp`] demonstrates a three-column kanban board with cards in
 //! each column, badge icons showing CI / review status, and a decision
 //! hint on the selected card. It uses [`BoardModel`] for state and
-//! [`Backend::draw_board`] for rendering.
+//! [`crate::DrawsPrimitives::draw_primitive`] for rendering.
 //!
 //! Controls:
 //! - j / ↓  — move selection down
@@ -32,7 +32,7 @@ pub struct BoardApp {
     /// Wrapped in `RefCell` so that `render(&self, …)` can update it while
     /// keeping the `AppLogic` signature immutable.  The `BoardLayout` is set
     /// every frame by `render` and read in `handle` for mouse hit-testing —
-    /// avoids calling `backend.draw_board` outside an `enter_frame_scope`.
+    /// avoids calling `draw_primitive` outside an `enter_frame_scope`.
     last_layout: RefCell<Option<BoardLayout>>,
 }
 
@@ -106,10 +106,10 @@ impl AppLogic for BoardApp {
 
         // Board fills the rest of the screen.
         let board_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);
-        let layout = backend.draw_board(board_rect, &self.model);
+        let layout = backend.draw_primitive(board_rect, &self.model);
 
         // Cache the layout so `handle` can hit-test mouse events without
-        // calling `draw_board` outside a frame scope.
+        // calling `draw_primitive` outside a frame scope.
         *self.last_layout.borrow_mut() = Some(layout);
     }
 

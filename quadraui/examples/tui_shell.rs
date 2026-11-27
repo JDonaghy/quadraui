@@ -1,4 +1,4 @@
-//! AppShell `AppLogic` + `quadraui::tui::run` example.
+//! ShellView `AppLogic` + `quadraui::tui::run` example.
 //!
 //! Activity bar + sidebar panel container with toggle/switch/resize.
 //! Click icons, drag divider, press `q` to quit.

@@ -2596,7 +2596,7 @@ fn bootstrap<A: AppLogic + 'static>(
     // come along with `NSWindowStyleMask::Titled`, which
     // `window_style_mask` still sets) but hide the native title text and
     // stop the titlebar drawing an opaque background, so an app-painted
-    // band in `AppShellLayout::title_bar_bounds` shows through instead of
+    // band in `ShellLayout::title_bar_bounds` shows through instead of
     // being double-drawn under it. Must run after `FullSizeContentView`
     // is already in `style` above — `setTitlebarAppearsTransparent` only
     // has an effect when that mask bit is set (see its doc).

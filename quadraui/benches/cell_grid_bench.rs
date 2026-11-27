@@ -117,19 +117,27 @@ criterion_group!(
 #[cfg(feature = "tui")]
 mod tui_bench {
     use super::*;
-    use quadraui::tui::draw_cell_grid;
-    use quadraui::Theme;
+    use quadraui::tui::BufferCellSurface;
+    use quadraui::{LayoutCtx, PaintEnv, Primitive, Style, Theme};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     pub fn bench_paint(c: &mut Criterion) {
         let grid = build_grid(TOTAL_ROWS, TOTAL_COLS, WINDOW_ROWS, WINDOW_COLS);
         let theme = Theme::default();
+        let style = Style::default();
         let area = Rect::new(0, 0, 120, 50);
+        let rect = quadraui::Rect::new(0.0, 0.0, 120.0, 50.0);
         c.bench_function("cell_grid_paint_tui_100x100_window_of_1m_rows", |b| {
             b.iter(|| {
                 let mut buf = Buffer::empty(area);
-                black_box(draw_cell_grid(&mut buf, area, &grid, &theme));
+                let layout = Primitive::layout(&grid, &LayoutCtx::new(1.0, 1.0, false), rect);
+                grid.paint_cells(
+                    &layout,
+                    &mut BufferCellSurface::new(&mut buf),
+                    &PaintEnv::new(&theme, &style),
+                );
+                black_box(layout);
             })
         });
     }

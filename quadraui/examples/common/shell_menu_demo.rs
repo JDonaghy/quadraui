@@ -1,14 +1,14 @@
 //! Backend-agnostic app code for the shell + `MenuSystem` regression demo
 //! ([`tui_shell_menu`] / [`gtk_shell_menu`]).
 //!
-//! When an app-level modal visually overlaps `AppShell` chrome (activity bar,
+//! When an app-level modal visually overlaps `ShellView` chrome (activity bar,
 //! sidebar, dividers, bottom-panel grip), it must still receive its `MouseDown`:
 //! the chrome must not swallow it via pure position-based hit-testing just
 //! because the click's on-screen coordinates land inside a chrome region.
 //!
 //! The menu bar lives in the shell's title-bar band (`ShellConfig::
 //! with_title_bar`) — a plain click on "File" reaches the app normally,
-//! since `AppShell::handle` doesn't intercept title-bar clicks. But the
+//! since `ShellView::handle_event` doesn't intercept title-bar clicks. But the
 //! "File" menu's *dropdown* opens directly below the bar, at the same x
 //! as the leftmost bar item — which puts it squarely over the activity
 //! bar strip underneath. Clicking a dropdown item whose position falls
@@ -22,7 +22,7 @@
 //! - click an activity bar icon  switches panels (when no dropdown is open)
 //! - q / Esc                     quit (when no dropdown is open)
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent, MenuSystem, NamedKey, Reaction, Rect,
@@ -79,7 +79,7 @@ impl ShellMenuDemo {
                 },
             ],
         )
-        // A title-bar band to host the menu bar. `AppShell::handle` doesn't
+        // A title-bar band to host the menu bar. `ShellView::handle_event` doesn't
         // intercept title-bar clicks, so opening the menu always reaches
         // the app — it's the dropdown *below* it, anchored at the same x
         // as the "File" bar item, that overlaps the activity bar strip
@@ -95,7 +95,7 @@ impl Default for ShellMenuDemo {
 }
 
 impl ShellAppTrait for ShellMenuDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         if let Some(bar_rect) = layout.title_bar_bounds {
             self.menu_system.render(backend, bar_rect);
         }
@@ -156,12 +156,12 @@ impl ShellAppTrait for ShellMenuDemo {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
         match event {
-            AppShellEvent::PanelChanged { panel_id } => {
+            ShellEvent::PanelChanged { panel_id } => {
                 self.last_action = format!("Panel: {}", panel_id.as_str());
             }
-            AppShellEvent::SidebarHidden => {
+            ShellEvent::SidebarHidden => {
                 self.last_action = "Sidebar hidden".into();
             }
             _ => {}

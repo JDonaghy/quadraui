@@ -22,10 +22,10 @@
 //! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, Key, ListItem,
-    ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar,
-    TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    Backend, Decoration, DrawsPrimitives, Icon, Key, ListItem, ListView, ListViewHit, Modifiers,
+    NamedKey, PanelDefinition, Reaction, Rect, ShellApp, ShellConfig, ShellContext, ShellEvent,
+    ShellLayout, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar, TabBarHit,
+    TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
@@ -35,7 +35,7 @@ use crate::Demo;
 /// a pixel backend — never shrunk below it, so a chrome font taller than
 /// the design token isn't clipped — or the plain chrome line height on
 /// TUI's fixed cell grid, where every `Style` chrome metric is a
-/// documented no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// documented no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -88,7 +88,7 @@ pub fn group_icon(index: usize) -> &'static str {
 
 /// The [`WidgetId`] `GROUPS[index]`'s activity-bar item is registered
 /// under — both as its `PanelDefinition::id` (see [`GalleryApp::config`])
-/// and as the zone id `AppShell::render` records for it, so
+/// and as the zone id `ShellView::render` records for it, so
 /// `quadraui::testing::ConformanceDriver::inventory()` reports this same
 /// id's real painted bounds. Public so a test that must visit every group
 /// (`tests/gallery_driver.rs`'s registry-driven test) can resolve a
@@ -180,9 +180,9 @@ pub struct GalleryApp {
     /// `crate::capture`) can produce a light-theme gallery without a
     /// second, parallel app type.
     theme: quadraui::Theme,
-    /// `AppShell::hovered_activity_idx` as of the end of the previous
+    /// `ShellView::hovered_activity_idx` as of the end of the previous
     /// [`ShellApp::handle`] dispatch. The shell mutates that field from
-    /// its own `MouseMoved` arms and then reports `AppShellEvent::
+    /// its own `MouseMoved` arms and then reports `ShellEvent::
     /// Ignored`, so this app's `Reaction` is the only thing that can ask
     /// the host for the frame that paints the new highlight; comparing
     /// against the cached value spots both directions of the transition
@@ -344,6 +344,7 @@ impl GalleryApp {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -400,7 +401,7 @@ impl GalleryApp {
     /// `Style::tab_height` on a pixel backend (floored at the chrome line
     /// height so a chrome font taller than the token isn't clipped), the
     /// plain chrome line height on TUI's fixed cell grid. Mirrors
-    /// `AppShell`'s own `tab_height`-derived sidebar header sizing
+    /// `ShellView`'s own `tab_height`-derived sidebar header sizing
     /// (`compose/shell_layout.rs`'s `header_h`) so every tab strip in the
     /// gallery — the shell's own sidebar header and this app's main-pane
     /// strip alike — agrees on how tall a tab bar is. Shared by
@@ -452,7 +453,7 @@ impl ShellApp for GalleryApp {
     }
 
     #[allow(deprecated)]
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = Self::demo_header_row_height(backend);
 
         // ── Sidebar: demos in the active group ──────────────────────
@@ -479,6 +480,7 @@ impl ShellApp for GalleryApp {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 };
                 backend.draw_list(sb, &list);
             } else {
@@ -617,17 +619,17 @@ impl ShellApp for GalleryApp {
         // quitting the gallery when nothing downstream wanted the key.
         let reaction = self.handle_inner(&event, backend, ctx);
 
-        // `ShellAdapter` runs `AppShell::handle` — which updates
+        // `ShellAdapter` runs `ShellView::handle_event` — which updates
         // `hovered_activity_idx` from its own `MouseMoved` arms, with or
         // without a button held — *before* this app's `Reaction` is
-        // consulted, and that call reports `AppShellEvent::Ignored`, so
+        // consulted, and that call reports `ShellEvent::Ignored`, so
         // nothing downstream of it can ask for the frame that paints the
         // new highlight. Diff the shell's index against the one this
         // dispatch started with (rather than testing where the pointer
         // now is) so both ends of the transition repaint: moving onto an
         // icon, and moving off the bar entirely — the latter is the frame
         // that has to *clear* a highlight.
-        let hovered = ctx.shell_mut().hovered_activity_idx();
+        let hovered = ctx.hovered_activity_idx();
         let hover_changed = hovered != self.hovered_activity_idx;
         self.hovered_activity_idx = hovered;
 
@@ -684,8 +686,8 @@ impl ShellApp for GalleryApp {
         ctx.shell_mut().hide_bottom_panel();
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
-        if let AppShellEvent::PanelChanged { panel_id } = event {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
+        if let ShellEvent::PanelChanged { panel_id } = event {
             if let Some(i) = (0..GROUPS.len()).find(|&i| group_panel_id(i) == *panel_id) {
                 self.active_group = i;
                 let first_in_group = self.demos_in_active_group().next();
@@ -1157,7 +1159,7 @@ mod tests {
         assert_eq!(app.selected, Some(0));
 
         let mut backend = quadraui::testing::RecordingBackend::new();
-        let layout = AppShellLayout {
+        let layout = ShellLayout {
             window_bounds: Rect::new(0.0, 0.0, 80.0, 24.0),
             title_bar_bounds: None,
             activity_bar_bounds: Rect::new(0.0, 0.0, 3.0, 24.0),

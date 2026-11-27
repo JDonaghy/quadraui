@@ -11,7 +11,7 @@
 //! and call [`SidebarPanelBody::render`]. It owns no interaction state
 //! of its own: scrolling, search-query editing, and body-widget
 //! selection stay with whatever controller already manages the body
-//! (`TreeController`, `FormController`, [`crate::SidebarSystem`], a raw
+//! (a `TreeView`, `FormController`, [`crate::SidebarSystem`], a raw
 //! `TreeView`, …).
 //!
 //! The panel is a widget-contract [`crate::primitive::Primitive`]
@@ -30,7 +30,7 @@
 //!   [`SidebarPanelChrome::HeaderAndSearch`] (title row + filter-input
 //!   row) — the Settings/Extensions shapes, painted by
 //!   [`paint_settings_chrome`] / [`paint_settings_chrome_cells`], the
-//!   same painters [`crate::Backend::draw_settings_chrome`] forwards to.
+//!   same painters the settings chrome uses wherever it is painted.
 //!
 //!   Two more shapes cover chrome the settings painters can't express
 //!   - [`SidebarPanelChrome::Search`] — a filter row with **no** header
@@ -50,22 +50,20 @@
 //!   for tab content, so a host can share one widget between a
 //!   bottom-panel tab and a sidebar panel if it wants to. `BackendWidget`
 //!   carries a `Send + 'static` bound, so a body that only *borrows* the
-//!   host's app state for one frame (a `TreeController`/`FormController`
+//!   host's app state for one frame (a `FormController`
 //!   behind `Rc<RefCell<_>>`, anything tied to a `!Send` engine) can't
 //!   implement it — [`SidebarPanelBody::render_with`] takes the body as
 //!   an unbounded closure instead, for exactly that case.
 //! - **Scrollbar** — [`SidebarPanelBody::scrollbar_gutter`] reserves a
-//!   fixed-width column on the right of the body rect (mirroring
-//!   [`crate::compose::tree_controller::TreeController`]'s own
-//!   `scrollbar_width` field). [`SidebarPanelBody::render`] does *not*
+//!   fixed-width column on the right of the body rect.
+//!   [`SidebarPanelBody::render`] does *not*
 //!   paint the scrollbar itself — its thumb position depends on scroll
 //!   state this type doesn't own. Call [`SidebarPanelBody::layout`]
 //!   (or read the [`SidebarPanelBodyLayout`] `render` returns),
 //!   build a [`crate::Scrollbar`] with `track` set to
 //!   `layout.scrollbar_rect`, and paint it via
-//!   [`crate::Backend::draw_scrollbar`] — the same two-step
-//!   layout-then-paint split [`crate::compose::tree_controller::TreeController::render`]
-//!   already uses internally.
+//!   [`crate::Backend::draw_scrollbar`] — a two-step
+//!   layout-then-paint split.
 //!
 //! `unit_h` (row height for chrome rows) is the
 //! [`crate::primitive::LayoutCtx`]'s chrome row height — `1.0` cell on
@@ -83,7 +81,7 @@
 //! struct TreeBody;
 //! impl BackendWidget for TreeBody {
 //!     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-//!         backend.draw_solid_fill(rect, Color::rgb(30, 30, 30));
+//!         backend.draw_focus_ring(rect);
 //!     }
 //! }
 //!
@@ -296,7 +294,7 @@ impl SidebarPanelBody {
     /// (`BottomPanelConfig`, `TabGroupController`'s `PaneTab::content`)
     /// and cross into the runner thread. A body that only *borrows* the
     /// host's app state for one frame — `Rc<RefCell<_>>`-backed
-    /// controllers like `TreeController`/`FormController`, or anything
+    /// controllers like `FormController`, or anything
     /// tied to a `!Send` engine — can never satisfy it. Use
     /// [`Self::render_with`] instead; it paints the identical
     /// background/chrome/body/gutter sequence but takes the body as a
@@ -313,7 +311,7 @@ impl SidebarPanelBody {
     /// Same paint sequence as [`Self::render`] — background, then
     /// chrome, then the body — but takes `body` as a borrowed closure
     /// instead of a `&dyn BackendWidget`, so it can close over
-    /// non-`'static`, non-`Send` state (a `&TreeController`, an
+    /// non-`'static`, non-`Send` state (a `&FormController`, an
     /// `Rc<RefCell<Engine>>` borrow, …) that [`BackendWidget`]'s
     /// `Send + 'static` supertrait would otherwise shut out. `body` is
     /// called exactly once, with `layout.body_rect`.
@@ -326,7 +324,7 @@ impl SidebarPanelBody {
     /// ```
     /// use quadraui::compose::sidebar_panel_body::SidebarPanelBody;
     /// use quadraui::testing::RecordingBackend;
-    /// use quadraui::{Color, Rect};
+    /// use quadraui::Rect;
     /// use std::cell::RefCell;
     /// use std::rc::Rc;
     ///
@@ -339,10 +337,10 @@ impl SidebarPanelBody {
     ///     // Borrow the shared, `!Send` state right here, mid-frame.
     ///     let rows = state.borrow();
     ///     if !rows.is_empty() {
-    ///         b.draw_solid_fill(rect, Color::rgb(30, 30, 30));
+    ///         b.draw_focus_ring(rect);
     ///     }
     /// });
-    /// assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+    /// assert_eq!(backend.calls, vec!["draw_focus_ring"]);
     /// ```
     pub fn render_with(
         &self,
@@ -605,9 +603,8 @@ const SETTINGS_SEARCH_PREFIX: &str = " /  ";
 
 /// Paint settings-panel chrome on a pixel surface: a header row and,
 /// when `rect.height` leaves room for it, a search input row beneath it,
-/// designed to sit immediately above a [`crate::Form`] body. Every pixel
-/// backend's [`crate::Backend::draw_settings_chrome`] forwards here with
-/// its own chrome-font surface, line height and theme.
+/// designed to sit immediately above a [`crate::Form`] body, on the
+/// caller's chrome-font surface, line height and theme.
 ///
 /// The header row always paints at one `line_height` tall. The search
 /// row paints only when `rect.height >= line_height * 1.5`, so a caller
@@ -713,8 +710,7 @@ pub fn paint_settings_chrome(
 }
 
 /// Paint settings-panel chrome on a cell grid: the cell counterpart of
-/// [`paint_settings_chrome`], which [`crate::Backend::draw_settings_chrome`]
-/// forwards to on TUI.
+/// [`paint_settings_chrome`].
 ///
 /// Row 0 is the header (`header_bg` / `header_fg`). Row 1, painted only
 /// when `rect` is at least two rows tall, is the search input:
@@ -1149,7 +1145,7 @@ mod tests {
 
     impl BackendWidget for RecordingWidget {
         fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-            backend.draw_solid_fill(rect, Color::rgb(1, 2, 3));
+            backend.draw_focus_ring(rect);
         }
     }
 
@@ -1299,7 +1295,7 @@ mod tests {
         // The background and settings chrome paint through the panel's
         // own `Primitive` (`draw_dyn`), so the only legacy call left is
         // the body widget's own fill.
-        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+        assert_eq!(backend.calls, vec!["draw_focus_ring"]);
     }
 
     #[test]
@@ -1307,7 +1303,7 @@ mod tests {
         let panel = SidebarPanelBody::default();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+        assert_eq!(backend.calls, vec!["draw_focus_ring"]);
     }
 
     #[test]
@@ -1318,7 +1314,6 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
     #[test]
@@ -1355,15 +1350,15 @@ mod tests {
         let layout = panel.render_with(&mut backend, rect(), |b, body_rect| {
             // Mutate through the shared, `!Send` handle mid-frame, then
             // paint based on what's there — exactly the pattern a
-            // `TreeController` body needs and `BackendWidget` forbids.
+            // controller body needs and `BackendWidget` forbids.
             rows.borrow_mut().push("gamma".to_string());
             if !rows.borrow().is_empty() {
-                b.draw_solid_fill(body_rect, Color::rgb(1, 2, 3));
+                b.draw_focus_ring(body_rect);
             }
         });
 
         assert_eq!(rows.borrow().len(), 3);
-        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+        assert_eq!(backend.calls, vec!["draw_focus_ring"]);
         assert_eq!(layout, panel.layout(rect(), 1.0));
     }
 
@@ -1417,12 +1412,12 @@ mod tests {
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
 
-        // `draw_settings_chrome` must never fire for `Search` — its row 0
+        // The settings chrome must never paint for `Search` — its row 0
         // is unconditionally header-styled, which is exactly the
         // phantom-header bug this variant exists to avoid. The background
         // and search row paint through the panel's own `Primitive`, so
         // the only legacy call left is the body widget's own fill.
-        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+        assert_eq!(backend.calls, vec!["draw_focus_ring"]);
     }
 
     #[test]
@@ -1433,7 +1428,6 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
     // StatusBars chrome: title bar + action bars
@@ -1495,7 +1489,7 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
+        assert_eq!(backend.calls, vec!["draw_focus_ring"]);
     }
 
     /// The hit regions `render` surfaces on `SidebarPanelBodyLayout` must

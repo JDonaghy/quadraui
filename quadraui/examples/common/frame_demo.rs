@@ -2,7 +2,7 @@
 //! `ScreenLayout::draw()`, then dispatches clicks by recomputing each
 //! surface's own rect and testing it directly, rather than caching a
 //! `FrameHitMap`/`FrameZone` hit-map across the frame — the same
-//! pattern `activity_style_demo.rs` and `AppShell::compute_layout`'s
+//! pattern `activity_style_demo.rs` and `ShellView::compute_layout`'s
 //! own callers use.
 //!
 //! The ListView rows are intentionally wider than the terminal so the
@@ -138,6 +138,7 @@ impl FrameDemo {
             h_scroll: self.h_scroll,
             max_content_width: Some(self.max_content_width()),
             show_v_scrollbar: self.show_v_scroll,
+            striped: false,
         }
     }
 

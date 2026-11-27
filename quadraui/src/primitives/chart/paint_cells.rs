@@ -624,7 +624,7 @@ mod tests {
 
     /// Lay `chart` out over `area` and paint it into `buf`, the way the
     /// TUI backend does.
-    fn draw_chart(
+    fn paint_chart(
         buf: &mut Buffer,
         area: Rect,
         chart: &Chart,
@@ -680,7 +680,7 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 5, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         assert_eq!(cell_char(&buf, origin_x, origin_y), '▁');
         assert_eq!(cell_char(&buf, origin_x + 4, origin_y), '█');
@@ -708,7 +708,7 @@ mod tests {
         let area = Rect::new(0, 0, 3, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![10.0, 10.0, 10.0]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         // Flat data: all mid-height.
         for col in 0..3 {
             assert_ne!(cell_char(&buf, col, 0), ' ');
@@ -725,7 +725,7 @@ mod tests {
         let chart = spark(vec![5.0, 5.0, 5.0]);
         let theme = Theme::default();
 
-        let _layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+        let _layout = paint_chart(&mut buf, area, &chart, &theme, None, None);
 
         assert_eq!(
             fg_at(&buf, 0, 0),
@@ -759,7 +759,7 @@ mod tests {
         let theme = Theme::default();
         let palette = theme.chart_series();
 
-        let layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &theme, None, None);
 
         let lb = layout.legend_bounds.expect("bar charts get a legend row");
         let row_y = lb.y.round() as u16;
@@ -785,7 +785,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(area);
         let chart = spark(vec![]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -813,7 +813,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         assert!(layout.plot_area.width > 0.0);
         assert!(layout.plot_area.height > 0.0);
@@ -850,7 +850,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         // Bar for max value (3.0) should have filled cells.
         let pa = &layout.plot_area;
@@ -917,7 +917,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         for y in 0..buf.area.height {
             for x in 0..origin_x {
@@ -965,7 +965,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         let lb = layout.legend_bounds.unwrap();
         assert_eq!(
@@ -1050,7 +1050,7 @@ mod tests {
             vec![series_of("B", vec![1.0, 3.0, 2.0], Color::rgb(1, 2, 3))],
             None,
         );
-        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _ = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         // The gutter is now sized from the widest *interior* tick
         // label ("1.4"/"1.8"/"2.2"/"2.6", 3 chars) rather than just the
         // endpoints ("1"/"3", 1 char), so it's a column wider than
@@ -1079,7 +1079,7 @@ mod tests {
             vec![series_of("B", vec![-5.0, -3.0, -1.0], Color::rgb(1, 2, 3))],
             None,
         );
-        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _ = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         // The gutter now reserves room for the widest interior
         // tick label ("-4.2", 4 chars) rather than just the endpoints
         // ("-5"/"-1", 2 chars), shifting every column right by 1. That
@@ -1120,7 +1120,7 @@ mod tests {
             ],
             Some((0.0, 3.0)),
         );
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         let px = layout.plot_area.x.round() as u16;
         let py = layout.plot_area.y.round() as u16;
         let ph = layout.plot_area.height.round() as u16;
@@ -1166,7 +1166,7 @@ mod tests {
             None,
         );
         assert_eq!(chart.effective_y_range(), (0.0, 3.0));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         let px = layout.plot_area.x.round() as u16;
         let py = layout.plot_area.y.round() as u16;
         // Topmost plot row of the first column is painted by series 2.
@@ -1181,7 +1181,7 @@ mod tests {
         let render = |series: Vec<Series>| {
             let mut buf = Buffer::empty(area);
             let chart = bar_chart_of(ChartKind::Bar, series, Some((0.0, 3.0)));
-            let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+            let _ = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
             grid(&buf, area)
         };
 
@@ -1222,7 +1222,7 @@ mod tests {
         );
         // Grouped mode keeps the single-value ceiling.
         assert_eq!(chart.effective_y_range(), (0.0, 3.0));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         let px = layout.plot_area.x.round() as u16;
         let py = layout.plot_area.y.round() as u16;
         let ph = layout.plot_area.height.round() as u16;
@@ -1260,7 +1260,7 @@ mod tests {
         );
         let marker_row = |hovered: (usize, usize)| {
             let mut buf = Buffer::empty(area);
-            let layout = draw_chart(
+            let layout = paint_chart(
                 &mut buf,
                 area,
                 &chart,
@@ -1307,7 +1307,7 @@ mod tests {
             Some((0.0, 3.0)),
         );
         chart.show_legend = true;
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         let lb = layout.legend_bounds.expect("bar charts get a legend row");
         let row: String = (lb.x.round() as u16..(lb.x + lb.width).round() as u16)
             .map(|x| cell_char(&buf, x, lb.y.round() as u16))
@@ -1324,7 +1324,7 @@ mod tests {
         let mut buf = Buffer::empty(buf_area);
         let area = Rect::new(0, 0, 0, 0);
         let chart = spark(vec![1.0, 2.0]);
-        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let _layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -1347,7 +1347,7 @@ mod tests {
         );
         chart.show_grid = true;
         chart.y_ticks = Some(4);
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         let pa = &layout.plot_area;
         let px = pa.x.round() as u16;
@@ -1408,7 +1408,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         let pa = &layout.plot_area;
         let px = pa.x.round() as u16;
@@ -1468,7 +1468,7 @@ mod tests {
             hovered_point: None,
             crosshair_x: None,
         };
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         let pa = &layout.plot_area;
         assert_eq!(
             (pa.x, pa.width),
@@ -1530,7 +1530,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         // 3 ticks at fracs 0, 0.5, 1 over 5 data points -> index values 0, 2, 4.
         let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0, 4.0, 5.0], None, Some(2));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         assert_eq!(layout.x_tick_positions.len(), 3);
 
         let pa = &layout.plot_area;
@@ -1549,7 +1549,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
         let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), Some(1));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         let values: Vec<f64> = layout.x_tick_positions.iter().map(|&(_, v)| v).collect();
         assert_eq!(
@@ -1576,7 +1576,7 @@ mod tests {
         let area = Rect::new(0, 0, 8, 8);
         let mut buf = Buffer::empty(area);
         let chart = line_chart_with_x_axis(vec![1.0, 2.0], Some((1000.0, 2000.0)), Some(1));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
         assert_eq!(
             layout.plot_area.width, 8.0,
             "test fixture assumes a zero-gutter, 8-cell plot"
@@ -1613,7 +1613,7 @@ mod tests {
             origin_y + area.height,
         ));
         let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((1000.0, 2000.0)), Some(1));
-        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let layout = paint_chart(&mut buf, area, &chart, &Theme::default(), None, None);
 
         let pa = &layout.plot_area;
         let ticks_row = (pa.y + pa.height).round() as u16;
@@ -1677,7 +1677,7 @@ mod tests {
         };
 
         let mut buf_without = Buffer::empty(area);
-        let layout_without = draw_chart(
+        let layout_without = paint_chart(
             &mut buf_without,
             area,
             &make(None),
@@ -1694,7 +1694,7 @@ mod tests {
         );
 
         let mut buf_with = Buffer::empty(area);
-        let layout_with = draw_chart(
+        let layout_with = paint_chart(
             &mut buf_with,
             area,
             &make(Some(2)),
@@ -1741,7 +1741,7 @@ mod tests {
         let (col, row) = (3, area.height - 2);
 
         let mut buf = Buffer::empty(area);
-        draw_chart(&mut buf, area, &chart, &theme, None, None);
+        paint_chart(&mut buf, area, &chart, &theme, None, None);
         assert_eq!(
             buf[(col, row)].symbol(),
             " ",
@@ -1750,7 +1750,7 @@ mod tests {
 
         chart.series[0].fill = true;
         let mut buf = Buffer::empty(area);
-        draw_chart(&mut buf, area, &chart, &theme, None, None);
+        paint_chart(&mut buf, area, &chart, &theme, None, None);
         assert_eq!(
             buf[(col, row)].symbol(),
             "\u{28FF}",

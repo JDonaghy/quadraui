@@ -100,6 +100,7 @@ use crate::Handled;
 ///     h_scroll: 0,
 ///     max_content_width: None,
 ///     show_v_scrollbar: false,
+///     striped: false,
 /// };
 ///
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
@@ -166,6 +167,13 @@ pub struct ListView {
     /// both scrollbars can be active simultaneously.
     #[serde(default)]
     pub show_v_scrollbar: bool,
+    /// Tint every other non-selected, non-header item with
+    /// [`crate::theme::Theme::row_alt_bg`] ("zebra striping"), keyed on
+    /// the absolute item index so an item keeps its shade while
+    /// scrolling. A caller's [`crate::primitive::PaintState::striped`]
+    /// also turns it on; `false` (the default) paints no stripe.
+    #[serde(default)]
+    pub striped: bool,
 }
 
 /// One row in a `ListView`.
@@ -762,6 +770,7 @@ mod hscrollbar_tests {
             h_scroll,
             max_content_width: max.then_some(content_width),
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -894,6 +903,7 @@ mod vscrollbar_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         }
     }
 
@@ -1026,16 +1036,11 @@ mod vscrollbar_tests {
 // using real track/thumb geometry that `Backend::list_vscrollbar`
 // already provides.
 //
-// Note: `bordered`'s frame stroke remains backend-specific — GTK
-// clips to (and later strokes) a *rounded* rect, Windows fills a plain
-// square 1-DIP frame, and macOS renders no frame at all yet (see
-// `macos::list`'s module doc, "Scope omissions"). Each backend's thin
-// wrapper still paints its own frame immediately before/after calling
-// this shared `paint` for the content. `supports_border` below only
-// toggles the *content*-side effects of `bordered` (the inset content
-// area + overlay title vs. the flat header+rows layout) that a backend
-// without frame support should skip — matching what `macos::list`'s
-// pre-migration `draw_list` already did.
+// `bordered`'s frame itself is not painted here: `ListView`'s
+// `Primitive::paint` clips this content to a rounded rect and strokes
+// the frame over it. `supports_border` below only toggles the
+// *content*-side effects of `bordered` (the inset content area + overlay
+// title vs. the flat header+rows layout).
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1354,7 +1359,7 @@ pub(crate) mod native_surface_paint {
             // scrolling, the same convention Finder/Explorer use — a
             // header row is never striped, and selection takes priority
             // over the stripe.
-            let is_striped_row = striped
+            let is_striped_row = (striped || list.striped)
                 && !is_selected
                 && !matches!(item.decoration, Decoration::Header)
                 && vis_item.item_idx % 2 == 1;
@@ -1614,6 +1619,7 @@ pub(crate) mod native_surface_paint {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: true,
+                striped: false,
             }
         }
 
@@ -2389,6 +2395,11 @@ pub struct ListViewPrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The list-local layout itself.
     pub layout: ListViewLayout,
+    /// The frame width a [`ListView::bordered`] list keeps clear on every
+    /// edge: `1.0` on a pixel surface, where the painter strokes the
+    /// frame and [`Self::layout`]'s regions start inside it; `0.0` on a
+    /// cell grid and for an unbordered list.
+    pub border_inset: f32,
     /// The vertical scrollbar, in absolute coordinates, exactly where the
     /// painter draws it: the rightmost cell column on a cell grid, an
     /// overlay track [`crate::Style::scrollbar_width`] wide on a pixel
@@ -2408,10 +2419,116 @@ pub struct ListViewPrimitiveLayout {
 ))]
 impl ListViewPrimitiveLayout {
     /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
-    /// origin before delegating to [`ListViewLayout::hit_test`], whose
-    /// `hit_regions` are list-local.
+    /// origin before delegating to [`Self::local_hit_test`].
     pub fn hit_test(&self, x: f32, y: f32) -> ListViewHit {
-        self.layout.hit_test(x - self.area.x, y - self.area.y)
+        self.local_hit_test(x - self.area.x, y - self.area.y)
+    }
+
+    /// Hit-test at a widget-local `(x, y)` (relative to [`Self::area`]'s
+    /// origin): steps inside [`Self::border_inset`] before delegating to
+    /// [`ListViewLayout::hit_test`], whose `hit_regions` start inside the
+    /// frame.
+    pub fn local_hit_test(&self, x: f32, y: f32) -> ListViewHit {
+        self.layout
+            .hit_test(x - self.border_inset, y - self.border_inset)
+    }
+}
+
+/// The frame width a [`ListView::bordered`] list strokes on a pixel
+/// surface, kept clear of rows on every edge.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+const LIST_PIXEL_BORDER: f32 = 1.0;
+
+/// Corner radius of a [`ListView::bordered`] list's pixel frame and of
+/// the clip its content paints inside.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+const LIST_FRAME_RADIUS: f32 = 3.0;
+
+/// A named part of a [`ListView`], carried in a
+/// [`crate::interactive::SubTarget`] so the runtime reports hover and
+/// press per row.
+///
+/// Round-trips through [`Self::sub_target`]/[`Self::from_sub_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ListViewSubPart {
+    /// A row. Index is into `ListView.items`.
+    Item(usize),
+    /// The vertical scrollbar.
+    Scrollbar,
+}
+
+impl ListViewSubPart {
+    /// This part's [`crate::interactive::SubTarget`]: the kind in the
+    /// high 32 bits, the item index in the low 32.
+    pub fn sub_target(self) -> crate::interactive::SubTarget {
+        let (kind, idx) = match self {
+            Self::Item(i) => (1u64, i as u64),
+            Self::Scrollbar => (2, 0),
+        };
+        crate::interactive::SubTarget((kind << 32) | (idx & 0xffff_ffff))
+    }
+
+    /// The part `sub` names, or `None` for a target this widget never
+    /// produces.
+    pub fn from_sub_target(sub: crate::interactive::SubTarget) -> Option<Self> {
+        let idx = (sub.0 & 0xffff_ffff) as usize;
+        match sub.0 >> 32 {
+            1 => Some(Self::Item(idx)),
+            2 => Some(Self::Scrollbar),
+            _ => None,
+        }
+    }
+
+    /// The item this part belongs to, if any.
+    pub fn item(self) -> Option<usize> {
+        match self {
+            Self::Item(i) => Some(i),
+            Self::Scrollbar => None,
+        }
+    }
+}
+
+/// The row a paint tints as hovered and as pressed.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+struct ListRowPointer {
+    hovered: Option<usize>,
+    pressed: Option<usize>,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl ListView {
+    /// The runtime's hovered and pressed row for this list, falling back
+    /// to the caller's own [`crate::primitive::PaintState`].
+    fn row_pointer(&self, env: &crate::PaintEnv) -> ListRowPointer {
+        let in_range = |i: usize| (i < self.items.len()).then_some(i);
+        let row_of = |sub: Option<crate::interactive::SubTarget>| {
+            sub.and_then(ListViewSubPart::from_sub_target)
+                .and_then(ListViewSubPart::item)
+                .and_then(in_range)
+        };
+        ListRowPointer {
+            hovered: row_of(env.hovered_sub(&self.id)).or(env.state.hovered_idx()),
+            pressed: row_of(env.pressed_sub(&self.id)).or(env.state.pressed_idx()),
+        }
     }
 }
 
@@ -2443,33 +2560,45 @@ impl crate::primitive::Primitive for ListView {
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let size = (rect.width, rect.height);
-        let (layout, vscrollbar) = if ctx.units() == crate::primitive::Units::Cells {
+        // The paint state's `scroll_px` shifts the rows and the thumb
+        // exactly as the painters shift them.
+        let scroll_px = ctx.paint_state().scroll_px();
+        let pixels = ctx.units() != crate::primitive::Units::Cells;
+        let border_inset = if pixels && self.bordered {
+            LIST_PIXEL_BORDER
+        } else {
+            0.0
+        };
+        let (layout, vscrollbar) = if !pixels {
             // The vertical scrollbar takes the column the resolver kept
             // from the rows, above the horizontal scrollbar's row.
-            let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, None);
+            let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, scroll_px);
             let hsb_h = if self.hscrollbar(rect, 1.0).is_some() {
                 1.0
             } else {
                 0.0
             };
             let v_area = Rect::new(rect.x, rect.y, rect.width, (rect.height - hsb_h).max(0.0));
-            (layout, self.vscrollbar(v_area, 1.0))
+            // A cell grid scrolls by whole rows.
+            let vscrollbar =
+                self.vscrollbar_with_scroll_px(v_area, 1.0, 1.0, scroll_px.map(f32::floor));
+            (layout, vscrollbar)
         } else {
-            // The shared pixel painter strokes no frame of its own, so no
-            // border is reserved here; each backend's wrapper strokes its
-            // own frame around it.
+            // A bordered list's rows start inside the frame the painter
+            // strokes.
             let layout = self.resolve_layout(
                 ctx.units(),
                 size,
                 ctx.line_height,
                 ctx.char_width,
-                0.0,
-                None,
+                border_inset,
+                scroll_px,
             );
-            let vscrollbar = self.vscrollbar_with_track_width(
+            let vscrollbar = self.vscrollbar_with_scroll_px(
                 rect,
                 ctx.line_height,
                 ctx.style().scrollbar_width,
+                scroll_px,
             );
             (layout, vscrollbar)
         };
@@ -2481,11 +2610,19 @@ impl crate::primitive::Primitive for ListView {
             line_height: ctx.line_height,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
+            border_inset,
             vscrollbar,
             vscrollbar_layout,
         }
     }
 
+    /// The shared pixel painter. A [`ListView::bordered`] list is clipped
+    /// to a rounded rect and its frame stroked in [`crate::Theme::border_fg`]
+    /// over the content, the 1px frame [`Self::layout`] insets the rows
+    /// from. Hover and press come from the runtime's pointer state for a
+    /// row ([`ListViewSubPart::Item`]), else from the caller's
+    /// [`crate::primitive::PaintState`], as do the focus ring, sub-row
+    /// scroll and stripes.
     fn paint(
         &self,
         layout: &Self::Layout,
@@ -2500,9 +2637,11 @@ impl crate::primitive::Primitive for ListView {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            // `supports_border: false`: this shared paint strokes no
-            // frame of its own; a backend wrapper strokes its own frame
-            // around it.
+            let bordered = layout.border_inset > 0.0;
+            if bordered {
+                surface.surface_push_rounded_clip(layout.area, LIST_FRAME_RADIUS);
+            }
+            let pointer = self.row_pointer(env);
             let paint_state = env.state;
             native_surface_paint::paint_with_state(
                 self,
@@ -2510,17 +2649,33 @@ impl crate::primitive::Primitive for ListView {
                 &layout.layout,
                 layout.line_height,
                 layout.nerd_fonts_enabled,
-                /* supports_border */ false,
+                /* supports_border */ bordered,
                 /* supports_hscrollbar */ true,
                 surface,
                 theme,
                 style,
-                paint_state.hovered_idx(),
-                paint_state.pressed_idx(),
+                pointer.hovered,
+                pointer.pressed,
                 paint_state.focus_ring_visible(),
                 paint_state.scroll_px(),
                 paint_state.striped(),
             );
+            if bordered {
+                surface.surface_pop_clip();
+                let a = layout.area;
+                let half = layout.border_inset / 2.0;
+                surface.surface_stroke_rounded_rect(
+                    Rect::new(
+                        a.x + half,
+                        a.y + half,
+                        (a.width - layout.border_inset).max(0.0),
+                        (a.height - layout.border_inset).max(0.0),
+                    ),
+                    LIST_FRAME_RADIUS,
+                    theme.border_fg,
+                    layout.border_inset,
+                );
+            }
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all
         // (`PaintSurface`'s module doc, "Why TUI stays out") — `self`
@@ -2538,14 +2693,13 @@ impl crate::primitive::Primitive for ListView {
         }
     }
 
-    /// Delegates straight to [`crate::tui::draw_list`] — the exact
-    /// function [`crate::tui::backend::TuiBackend::draw_list`] itself
-    /// calls — so painting `ListView` through [`crate::primitive::Primitive`]
-    /// on TUI is byte-for-byte identical to painting it through
-    /// `Backend::draw_list` by construction, not by separately
-    /// maintained parity. See [`crate::primitive::Primitive::paint_cells`]'s
-    /// own doc for why this method exists instead of a cell-quantised
-    /// `PaintSurface` impl.
+    /// Paints through the TUI list rasteriser
+    /// [`crate::tui::backend::TuiBackend::draw_list`] shares, cutting an
+    /// overlong row by [`crate::Style::list_cell_overflow`] (the default
+    /// ellipsis paints exactly what `draw_list` paints). See
+    /// [`crate::primitive::Primitive::paint_cells`]'s own doc for why
+    /// this method exists instead of a cell-quantised `PaintSurface`
+    /// impl.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2559,18 +2713,20 @@ impl crate::primitive::Primitive for ListView {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        let pointer = self.row_pointer(env);
         let paint_state = ListPaintState::default()
-            .with_hovered_idx(env.state.hovered_idx())
-            .with_pressed_idx(env.state.pressed_idx())
+            .with_hovered_idx(pointer.hovered)
+            .with_pressed_idx(pointer.pressed)
             .with_scroll_px(env.state.scroll_px())
             .with_striped(env.state.striped());
-        crate::tui::draw_list_with_state(
+        crate::tui::draw_list_with_overflow(
             buf,
             area,
             self,
             theme,
             layout.nerd_fonts_enabled,
             &paint_state,
+            env.style().list_cell_overflow,
         );
     }
 }
@@ -2896,6 +3052,41 @@ impl Interactive for ListView {
         }
     }
 
+    /// Every visible row as [`ListViewSubPart::Item`] and the vertical
+    /// scrollbar as [`ListViewSubPart::Scrollbar`], widget-local, so the
+    /// runtime's hover and press name the row under the pointer.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let inset = layout.border_inset;
+        let mut out: Vec<(Rect, crate::interactive::SubTarget)> = layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|v| {
+                (
+                    Rect::new(
+                        v.bounds.x + inset,
+                        v.bounds.y + inset,
+                        v.bounds.width,
+                        v.bounds.height,
+                    ),
+                    ListViewSubPart::Item(v.item_idx).sub_target(),
+                )
+            })
+            .collect();
+        if let Some(sb) = &layout.vscrollbar {
+            out.push((
+                Rect::new(
+                    sb.track.x - layout.area.x,
+                    sb.track.y - layout.area.y,
+                    sb.track.width,
+                    sb.track.height,
+                ),
+                ListViewSubPart::Scrollbar.sub_target(),
+            ));
+        }
+        out
+    }
+
     fn handle(
         &self,
         state: &mut ListViewState,
@@ -2910,14 +3101,14 @@ impl Interactive for ListView {
                 mods,
                 ..
             } => {
-                let hit = layout.layout.hit_test(local.x, local.y);
+                let hit = layout.local_hit_test(local.x, local.y);
                 self.handle_mouse_down(state, hit, mods, cx)
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::DoubleClick(MouseButton::Left),
                 local,
                 ..
-            } => match layout.layout.hit_test(local.x, local.y) {
+            } => match layout.local_hit_test(local.x, local.y) {
                 ListViewHit::Item(idx) => Handled::Event(ListViewEvent::ItemDoubleClicked { idx }),
                 _ => Handled::Ignored,
             },
@@ -3013,6 +3204,7 @@ mod interactive_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -3617,6 +3809,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -3651,6 +3844,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -3885,6 +4079,7 @@ mod primitive_parity_tests {
             h_scroll: 0,
             max_content_width: Some(60),
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -3991,22 +4186,14 @@ mod primitive_parity_tests {
         assert_eq!(via_primitive_surface.calls, direct_surface.calls);
     }
 
-    /// A bordered `ListView`'s [`Primitive::layout`] + [`Primitive::paint`]
-    /// strokes no frame of its own — [`native_surface_paint::paint`]
-    /// contains no frame-drawing verb, so `Primitive::layout` must pass
-    /// `border_inset: 0.0` and `Primitive::paint` must pass
-    /// `supports_border: false` to [`crate::primitives::layout_metrics::list_layout`]
-    /// / [`native_surface_paint::paint_with_state`] regardless of
-    /// [`ListView::bordered`], matching [`crate::macos::list`]'s
-    /// pre-migration `draw_list`, which never strokes a frame either.
+    /// A bordered `ListView`'s [`Primitive::layout`] insets its rows by
+    /// the 1px frame, and [`Primitive::paint`] paints the content the
+    /// shared painter paints with `supports_border: true`, inside a clip
+    /// to the list's area, then strokes the frame in `border_fg` over it.
     #[test]
-    fn bordered_list_primitive_seam_strokes_no_frame_of_its_own() {
+    fn bordered_list_primitive_insets_rows_and_strokes_its_frame() {
         let list = ListView {
             bordered: true,
-            // No h-scrollbar thumb to confound the "no frame stroke"
-            // assertion below — `sample_list`'s `max_content_width:
-            // Some(60)` would otherwise paint one via
-            // `fill_rounded_rect`, unrelated to `bordered`.
             max_content_width: None,
             ..sample_list()
         };
@@ -4015,33 +4202,35 @@ mod primitive_parity_tests {
         let theme = Theme::default();
         let style = Style::default();
 
-        let via_primitive_layout = Primitive::layout(&list, &ctx, rect);
-        let mut via_primitive_surface = LogSurface::default();
+        let layout = Primitive::layout(&list, &ctx, rect);
+        assert_eq!(layout.border_inset, 1.0);
+        let mut via_primitive = LogSurface::default();
         Primitive::paint(
             &list,
-            &via_primitive_layout,
-            &mut via_primitive_surface,
+            &layout,
+            &mut via_primitive,
             &crate::PaintEnv::new(&theme, &style),
         );
 
-        let direct_layout = crate::primitives::layout_metrics::list_layout(
-            &list,
-            rect.width as f64,
-            rect.height as f64,
-            ctx.line_height as f64,
-            ctx.char_width as f64,
-            /* border_inset */ 0.0,
+        let direct_layout = list.resolve_layout(
+            crate::primitive::Units::Pixels,
+            (rect.width, rect.height),
+            ctx.line_height,
+            ctx.char_width,
+            1.0,
+            None,
         );
-        let mut direct_surface = LogSurface::default();
+        assert_eq!(layout.layout, direct_layout);
+        let mut content = LogSurface::default();
         native_surface_paint::paint_with_state(
             &list,
             rect,
             &direct_layout,
             ctx.line_height,
             ctx.nerd_fonts_enabled,
-            /* supports_border */ false,
+            /* supports_border */ true,
             true,
-            &mut direct_surface,
+            &mut content,
             &theme,
             &style,
             None,
@@ -4051,17 +4240,36 @@ mod primitive_parity_tests {
             false,
         );
 
-        assert!(
-            !direct_surface
-                .calls
-                .iter()
-                .any(|call| call.starts_with("fill_rounded_rect") || call.starts_with("draw_line")),
-            "a bordered list's own paint must not stroke a frame through this seam — \
-             each backend's thin wrapper strokes its own frame around this call instead, \
-             got {:?}",
-            direct_surface.calls
-        );
-        assert_eq!(via_primitive_surface.calls, direct_surface.calls);
+        let mut expected = vec![format!("push_clip {rect:?}")];
+        expected.extend(content.calls);
+        expected.push("pop_clip".to_string());
+        expected.push(format!(
+            "stroke_rect {:?} {:?} 1",
+            Rect::new(10.5, 20.5, 199.0, 79.0),
+            theme.border_fg
+        ));
+        assert_eq!(via_primitive.calls, expected);
+    }
+
+    /// A click on the last pixel of a bordered list's first row lands on
+    /// that row, not the next: hit-testing steps inside the frame the
+    /// rows were inset by.
+    #[test]
+    fn bordered_list_hit_test_steps_inside_the_frame() {
+        let list = ListView {
+            bordered: true,
+            title: None,
+            max_content_width: None,
+            ..sample_list()
+        };
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let layout = Primitive::layout(&list, &ctx, rect);
+        let first = layout.layout.visible_items[0].bounds;
+        let first_end = rect.y + layout.border_inset + first.y + first.height;
+        let x = rect.x + 20.0;
+        assert_eq!(layout.hit_test(x, first_end - 0.5), ListViewHit::Item(0));
+        assert_eq!(layout.hit_test(x, first_end + 0.5), ListViewHit::Item(1));
     }
 
     /// [`ListViewPrimitiveLayout::hit_test`] subtracts the area's

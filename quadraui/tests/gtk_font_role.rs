@@ -14,8 +14,7 @@
 //! its test would have gone, just above `draw_form_paints_in_chrome_font`
 //! below.
 //!
-//! `Spinner`, `Tooltip`, the settings header/search box
-//! (`Backend::draw_settings_chrome`) and `MessageList` paint through a
+//! `Spinner`, `Tooltip` and `MessageList` paint through a
 //! different seam — each has its own `(cr, pango_layout)` call site in
 //! `GtkBackend` rather than going through `PaintSurface` — but the same
 //! chrome-by-default policy applies to all four (none is editor-class),
@@ -55,7 +54,7 @@
 //! scope. A primitive is intentionally absent from this file if it is
 //! editor-class (paints in the editor font on purpose —
 //! `crate::font_role::EditorClassPrimitive::ALL`) or if it paints no
-//! text of its own (`draw_split`, `draw_split_tree`, `draw_scrollbar`).
+//! text of its own (`Split`, `SplitTree`, `draw_scrollbar`).
 
 #![cfg(feature = "gtk")]
 
@@ -276,7 +275,7 @@ fn terminal_paints_in_editor_font() {
 /// stop lining up with the editor the diff was opened from.
 #[test]
 fn draw_diff_view_paints_in_editor_font() {
-    assert_paints_in_editor_font("draw_diff_view", |b, area| {
+    assert_paints_in_editor_font("DiffView", |b, area| {
         let view = DiffView {
             id: id("diff-view"),
             left: LABEL.to_string(),
@@ -298,21 +297,13 @@ fn draw_diff_view_paints_in_editor_font() {
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
-        let _ = b.draw_diff_view(area, &view);
+        let _ = b.draw_primitive(area, &view);
     });
 }
 
-// `draw_data_table` is deliberately absent from this file: the bounds
-// `draw_data_table` records into `painted_text` (what `find_bounds`
-// reads) are derived from `DataTableLayout`'s declarative column
-// geometry, not re-measured Pango glyph extent (see
-// `GtkBackend::draw_data_table`'s own doc comment on that recording),
-// so a `find_bounds`-width probe can't tell which font shaped a cell's
-// glyphs — both runs report the same column width regardless of font
-// size. `gtk_backend_draw_data_table_uses_ui_font_not_editor_font` in
-// `src/gtk/backend.rs`'s own test module covers this primitive instead,
-// with a pixel-ink scan as the oracle — the same shape
-// `gtk_backend_draw_tree_uses_ui_font_not_editor_font` already uses.
+// `DataTable` is covered by `gtk_data_table_uses_ui_font_not_editor_font`
+// in `src/gtk/backend.rs`'s own test module, with a pixel-ink scan as the
+// oracle.
 
 #[test]
 fn draw_form_paints_in_chrome_font() {
@@ -475,31 +466,69 @@ fn draw_tooltip_paints_in_chrome_font() {
     });
 }
 
-/// The settings panel header/search box is chrome — unambiguously host
-/// UI, not editor content. Its GTK call site
-/// (`GtkBackend::draw_settings_chrome`) paints through its own
-/// `(cr, layout)` pair rather than `PaintSurface`.
-#[test]
-fn draw_settings_chrome_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_settings_chrome", |b, area| {
-        b.draw_settings_chrome(area, LABEL, "", "placeholder", true);
-    });
-}
-
 /// `MessageList` rows are chrome — a transcript panel, not editor
 /// content. Absent from both `ChromePrimitive::ALL` and
 /// `EditorClassPrimitive::ALL` in `crate::font_role`, so per that
-/// module's policy it is chrome by default. Its GTK call site
-/// (`GtkBackend::draw_message_list`) paints through its own
-/// `(cr, pango_layout)` pair rather than `PaintSurface`.
+/// module's policy it is chrome by default.
 #[test]
 fn draw_message_list_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_message_list", |b, area| {
+    assert_paints_in_chrome_font("MessageList", |b, area| {
         let list = MessageList {
             id: id("message-list"),
             rows: vec![MessageRow::new(LABEL, Color::rgb(220, 220, 220), 0.0)],
             scroll_top: 0,
         };
-        b.draw_message_list(area, &list);
+        b.draw_primitive(area, &list);
     });
+}
+
+/// A styled `MessageList` row with `scale` 2.0 (a markdown H1) paints its
+/// glyphs at twice the chrome font's size, so its run is wider and taller
+/// than an unscaled row of the same length.
+#[test]
+fn message_list_scaled_row_paints_larger_glyphs() {
+    let driver = GtkDriver::new(
+        PaintApp {
+            ui_font_desc: "Sans 10",
+            editor_pt: 10.0,
+            paint: |b: &mut dyn Backend, area: Rect| {
+                let list = MessageList {
+                    id: id("message-list-scale"),
+                    rows: vec![
+                        MessageRow::styled(
+                            StyledText {
+                                spans: vec![StyledSpan::plain("HEADINGX")],
+                            },
+                            Color::rgb(220, 220, 220),
+                            0.0,
+                            2.0,
+                        ),
+                        MessageRow::styled(
+                            StyledText {
+                                spans: vec![StyledSpan::plain("BODYTEXT")],
+                            },
+                            Color::rgb(220, 220, 220),
+                            0.0,
+                            1.0,
+                        ),
+                    ],
+                    scroll_top: 0,
+                };
+                b.draw_primitive(area, &list);
+            },
+        },
+        W,
+        H,
+    );
+    let heading = driver
+        .find_bounds("HEADINGX")
+        .unwrap_or_else(|| panic!("no heading run: {:?}", driver.painted_texts()));
+    let body = driver
+        .find_bounds("BODYTEXT")
+        .unwrap_or_else(|| panic!("no body run: {:?}", driver.painted_texts()));
+    assert!(
+        heading.width > body.width * 1.5 && heading.height > body.height * 1.5,
+        "a scale-2.0 row must paint larger glyphs than a scale-1.0 row: \
+         heading={heading:?}, body={body:?}"
+    );
 }
