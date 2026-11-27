@@ -554,10 +554,11 @@ fn run_font(font: &CTFont, run: Option<&crate::TextRunStyle>) -> CTFont {
 }
 
 /// Paint `text` as one line with its top-left at `(x, y)`: each run is
-/// drawn in `font` at its scale, at the advance of the runs before it, in
-/// its own colour, on the baseline of the line's tallest run. Bytes no
-/// run covers are left unpainted. Core Text draws every run in `font`'s
-/// face as-is, so `bold`/`italic` are not applied.
+/// drawn in `font` at its scale, at the advance of the segments before it,
+/// in its own colour, on the baseline of the line's tallest segment. Bytes
+/// no run covers count at `font`'s size but are left unpainted. Core Text
+/// draws every run in `font`'s face as-is, so `bold`/`italic` are not
+/// applied.
 ///
 /// # Safety
 ///
@@ -570,24 +571,19 @@ pub(crate) unsafe fn draw_text_line(
     text: &str,
     runs: &[crate::TextRunStyle],
 ) {
-    let ascent = runs
-        .iter()
-        .map(|run| run_font(font, Some(run)).ascent())
-        .fold(font.ascent(), f64::max);
-    for run in runs {
-        let Some(range) = run.byte_range_in(text) else {
-            continue;
-        };
-        let run_font = run_font(font, Some(run));
-        let prefix_w = text_x_at_index(font, text, runs, range.start);
-        draw_text(
-            ctx,
-            &run_font,
-            &text[range],
-            x + f64::from(prefix_w),
-            y + ascent - run_font.ascent(),
-            super::cg::color_to_cg(run.fg),
-        );
+    let mut segments = Vec::new();
+    crate::paint_surface::styled_segments(text, runs, text.len(), &mut |range, run| {
+        segments.push((range, run, run_font(font, run)));
+    });
+    let ascent = segments.iter().map(|s| s.2.ascent()).fold(0.0, f64::max);
+    let mut pen = x;
+    for (range, run, run_font) in segments {
+        let seg = &text[range];
+        if let Some(run) = run {
+            let top = y + ascent - run_font.ascent();
+            draw_text(ctx, &run_font, seg, pen, top, super::cg::color_to_cg(run.fg));
+        }
+        pen += measure_text(&run_font, seg).0;
     }
 }
 

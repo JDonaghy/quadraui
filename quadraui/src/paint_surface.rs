@@ -188,21 +188,20 @@ pub(crate) fn nearest_text_boundary(
     best.0
 }
 
-/// Advance of `text[..byte_idx]` laid out segment by segment: each run's
-/// bytes are measured by `measure` with that run, bytes no run covers
-/// with `None`. Runs are taken in range order; bytes a later run shares
-/// with an earlier one count once, under the earlier run.
-pub(crate) fn styled_prefix_x(
+/// Walk `text[..byte_idx]` segment by segment in range order, handing
+/// `visit` each segment's byte range with its run, or `None` for bytes no
+/// run covers. Bytes a later run shares with an earlier one belong to the
+/// earlier run.
+pub(crate) fn styled_segments<'r>(
     text: &str,
-    runs: &[TextRunStyle],
+    runs: &'r [TextRunStyle],
     byte_idx: usize,
-    measure: &mut dyn FnMut(&str, Option<&TextRunStyle>) -> f32,
-) -> f32 {
+    visit: &mut dyn FnMut(std::ops::Range<usize>, Option<&'r TextRunStyle>),
+) {
     let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
     let prefix = &text[..end];
     let mut ordered: Vec<&TextRunStyle> = runs.iter().collect();
     ordered.sort_by_key(|r| r.range.start);
-    let mut x = 0.0;
     let mut cursor = 0usize;
     for run in ordered {
         let Some(range) = run.byte_range_in(prefix) else {
@@ -213,14 +212,28 @@ pub(crate) fn styled_prefix_x(
         }
         let start = range.start.max(cursor);
         if start > cursor {
-            x += measure(&prefix[cursor..start], None);
+            visit(cursor..start, None);
         }
-        x += measure(&prefix[start..range.end], Some(run));
+        visit(start..range.end, Some(run));
         cursor = range.end;
     }
     if cursor < prefix.len() {
-        x += measure(&prefix[cursor..], None);
+        visit(cursor..prefix.len(), None);
     }
+}
+
+/// Advance of `text[..byte_idx]` laid out segment by segment: each
+/// [`styled_segments`] segment measured by `measure` with its run.
+pub(crate) fn styled_prefix_x(
+    text: &str,
+    runs: &[TextRunStyle],
+    byte_idx: usize,
+    measure: &mut dyn FnMut(&str, Option<&TextRunStyle>) -> f32,
+) -> f32 {
+    let mut x = 0.0;
+    styled_segments(text, runs, byte_idx, &mut |range, run| {
+        x += measure(&text[range], run);
+    });
     x
 }
 
@@ -883,6 +896,31 @@ pub(crate) fn fit_text_prefix(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn styled_segments_visit_each_byte_once_in_range_order() {
+        let fg = Color::rgb(1, 2, 3);
+        let runs = [
+            TextRunStyle::new(6..9, fg),
+            TextRunStyle::new(1..4, fg).with_scale(2.0),
+            TextRunStyle::new(2..5, fg),
+        ];
+        let mut seen = Vec::new();
+        styled_segments("abcdefghij", &runs, 10, &mut |range, run| {
+            seen.push((range, run.map(|r| r.range.clone())));
+        });
+        assert_eq!(
+            seen,
+            vec![
+                (0..1, None),
+                (1..4, Some(1..4)),
+                (4..5, Some(2..5)),
+                (5..6, None),
+                (6..9, Some(6..9)),
+                (9..10, None),
+            ]
+        );
+    }
 
     /// Minimal mock recording every call it receives — proves the
     /// *default* decompositions of [`PaintSurface::surface_draw_shadow`]

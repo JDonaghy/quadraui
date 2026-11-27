@@ -802,6 +802,46 @@ mod tests {
         );
     }
 
+    /// A line whose every run is scaled down sits on its own runs'
+    /// baseline: it paints exactly as the scaled font drawn top-aligned.
+    #[test]
+    fn draw_text_line_all_runs_scaled_down_take_their_own_baseline() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let fg = Color::rgb(250, 250, 250);
+        let text = "Hxy";
+        let runs = [crate::TextRunStyle::new(0..3, fg).with_scale(0.5)];
+        let via_verb = BitmapSurface::new(W, 30);
+        via_verb.fill(0.0, 0.0, 0.0, 0.0);
+        let mut raw = super::CgSurface {
+            ctx: via_verb.context_ptr(),
+            font: Some(&f),
+        };
+        raw.surface_draw_text_line(
+            crate::Point::new(2.0, 1.0),
+            text,
+            &runs,
+            crate::FontRole::Editor,
+        );
+
+        let reference = BitmapSurface::new(W, 30);
+        reference.fill(0.0, 0.0, 0.0, 0.0);
+        let half = f.clone_with_font_size(f.pt_size() * 0.5);
+        // SAFETY: the bitmap context lives for this whole test.
+        unsafe {
+            crate::macos::text::draw_text(
+                reference.context_ptr(),
+                &half,
+                text,
+                2.0,
+                1.0,
+                crate::macos::cg::color_to_cg(fg),
+            )
+        };
+        assert!(via_verb.bytes().iter().any(|&b| b != 0));
+        assert_eq!(via_verb.bytes(), reference.bytes());
+    }
+
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
         TerminalCell {
             text: ch.to_string(),
