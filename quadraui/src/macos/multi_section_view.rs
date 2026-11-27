@@ -79,15 +79,12 @@ mod tests {
     use super::super::MacBackend;
     use super::*;
     use crate::event::Viewport;
-    use crate::primitives::multi_section_view::{
-        Axis, EmptyBody, SectionAux, SectionBody, SectionHeader,
-    };
+    use crate::primitives::multi_section_view::{Axis, SectionAux, SectionBody};
     use crate::primitives::multi_section_view::{
         MultiSectionViewHit, ScrollMode, Section, SectionHeader, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::theme::Theme;
-    use crate::types::StyledText;
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::Backend;
 

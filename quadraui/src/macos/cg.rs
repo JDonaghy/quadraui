@@ -57,15 +57,3 @@ pub(crate) fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
         c.a as f64 / 255.0,
     )
 }
-
-/// Fill the rect `(x, y, w, h)` with `c` (using `c`'s own alpha).
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-pub(crate) unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
-    let (r, g, b, a) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, rect(x, y, w, h));
-}

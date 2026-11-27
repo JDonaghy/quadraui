@@ -65,15 +65,12 @@ pub fn draw_multi_section_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::multi_section_view::{
-        Axis, EmptyBody, SectionAux, SectionBody, SectionHeader,
-    };
+    use crate::primitives::multi_section_view::{Axis, SectionBody};
     use crate::primitives::multi_section_view::{
         InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionAux,
         SectionHeader, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
-    use crate::types::StyledText;
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
