@@ -579,6 +579,8 @@ class StyleValue(TypedDict):
     tab_padding_x: NotRequired[float]
     tooltip_delay_ms: NotRequired[int]
     tooltip_auto_dismiss_ms: NotRequired[int]
+    status_bar_cell_gap: NotRequired[float]
+    status_bar_cell_overflow: NotRequired[Literal['ellipsis', 'clip']]
     font_family: NotRequired[str]
     font_size: NotRequired[float]
     font_weight: NotRequired[Literal['normal', 'bold']]

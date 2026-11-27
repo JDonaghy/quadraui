@@ -1146,6 +1146,9 @@ pub fn schema() -> Vec<DefJson> {
         (u64) => {
             int_()
         };
+        (StatusBarOverflow) => {
+            lit(&["ellipsis", "clip"])
+        };
     }
     // [`style_override_tokens!`]'s callback for this schema: every colour
     // token decodes through `style_color_value`, every metric token

@@ -553,12 +553,10 @@ fn run_font(font: &CTFont, run: Option<&crate::TextRunStyle>) -> CTFont {
     }
 }
 
-/// Paint `text` as one line with its top-left at `(x, y)`: each run is
-/// drawn in `font` at its scale, at the advance of the segments before it,
-/// in its own colour, on the baseline of the line's tallest segment. Bytes
-/// no run covers count at `font`'s size but are left unpainted. Core Text
-/// draws every run in `font`'s face as-is, so `bold`/`italic` are not
-/// applied.
+/// Paint `text` as one line with its top-left at `(x, y)`: each run in
+/// `font` at its scale and in its own colour, on the tallest segment's
+/// baseline; bytes no run covers count at `font`'s size, unpainted. Core
+/// Text ignores `bold`/`italic`.
 ///
 /// # Safety
 ///
@@ -580,15 +578,8 @@ pub(crate) unsafe fn draw_text_line(
     for (range, run, run_font) in segments {
         let seg = &text[range];
         if let Some(run) = run {
-            let top = y + ascent - run_font.ascent();
-            draw_text(
-                ctx,
-                &run_font,
-                seg,
-                pen,
-                top,
-                super::cg::color_to_cg(run.fg),
-            );
+            let (top, fg) = (y + ascent - run_font.ascent(), run.fg);
+            draw_text(ctx, &run_font, seg, pen, top, super::cg::color_to_cg(fg));
         }
         pen += measure_text(&run_font, seg).0;
     }

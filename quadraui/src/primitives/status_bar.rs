@@ -624,6 +624,7 @@ pub const MIN_GAP_CELLS: f32 = 2.0;
 /// `#[non_exhaustive]`: a future overflow style is additive.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum StatusBarOverflow {
     /// End the visible text in `…`, so the cut reads as deliberate.
     #[default]
