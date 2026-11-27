@@ -379,12 +379,11 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = band(3.0) {
-                let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, rect);
+                let tree_table_hit = paint_extra(backend, extra, rect);
                 hits.push(PaintedHit::Extra {
                     id: extra.id(),
                     area: rect,
                     extra: Rc::clone(extra),
-                    chrome_hits,
                     tree_table_hit,
                 });
             }
@@ -411,26 +410,25 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
 }
 
-/// Paints one additive primitive and returns the `(chrome_hits,
-/// tree_table_hit)` pair its [`PaintedHit::Extra`] entry carries. A
-/// [`TreeTable`] paints through its own `Primitive` directly
-/// (not the generic [`ExtraPaint::paint_chrome`], whose `Vec<(Rect,
-/// WidgetId)>` return shape has no room for the resolved layout) so its
-/// chevron can be hit-tested precisely later without a live `Backend` —
-/// see [`PaintedHit::Extra::tree_table_hit`]'s own doc.
+/// Paints one additive primitive and returns the `tree_table_hit` its
+/// [`PaintedHit::Extra`] entry carries. A [`TreeTable`] paints through its
+/// own `Primitive` directly so its chevron can be hit-tested precisely
+/// later without a live `Backend` — see
+/// [`PaintedHit::Extra::tree_table_hit`]'s own doc.
 #[allow(deprecated)]
 fn paint_extra(
     backend: &mut dyn Backend,
     extra: &Rc<dyn ExtraPaint>,
     area: Rect,
-) -> (Vec<(Rect, WidgetId)>, Option<TreeTableHitState>) {
+) -> Option<TreeTableHitState> {
     if let Some(tree_table) = extra_as::<TreeTable>(extra) {
         let layout = backend.draw_primitive(area, tree_table).layout;
         let scroll_offset = tree_table.table.scroll_offset;
         let total_rows = tree_table.table.rows.len();
-        (Vec::new(), Some((layout, scroll_offset, total_rows)))
+        Some((layout, scroll_offset, total_rows))
     } else {
-        (extra.paint_chrome(backend, area), None)
+        extra.paint(backend, area);
+        None
     }
 }
 
@@ -2931,12 +2929,11 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::Extra(extra) => {
-            let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, area);
+            let tree_table_hit = paint_extra(backend, extra, area);
             hits.push(PaintedHit::Extra {
                 id,
                 area,
                 extra: Rc::clone(extra),
-                chrome_hits,
                 tree_table_hit,
             });
         }

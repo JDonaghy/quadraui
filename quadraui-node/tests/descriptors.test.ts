@@ -666,8 +666,9 @@ test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
   });
   app.run(1);
 
-  assert.equal(received.length, 1, JSON.stringify(received));
-  const [barId, toolbarEvent] = received[0].Toolbar;
+  assert.equal(received.length, 2, JSON.stringify(received));
+  assert.deepStrictEqual(received[0], { FocusChanged: "toolbar:main" });
+  const [barId, toolbarEvent] = received[1].Toolbar;
   assert.equal(barId, "toolbar:main");
   assert.deepStrictEqual(toolbarEvent, {
     ButtonClicked: { id: "toolbar:refresh", is_active: true },

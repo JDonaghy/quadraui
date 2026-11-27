@@ -798,7 +798,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
 - [`_HitDetailWidgetBody`](#wire-_hitdetailwidgetbody)
 - [`_HitDetailCanvasRegion`](#wire-_hitdetailcanvasregion)
-- [`_HitDetailExtraChrome`](#wire-_hitdetailextrachrome)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
 - [`_HitDetailScrollScrollbarTrackBefore`](#wire-_hitdetailscrollscrollbartrackbefore)
 - [`_HitDetailScrollScrollbarThumb`](#wire-_hitdetailscrollscrollbarthumb)
@@ -3728,10 +3727,10 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `text_field` | `TextFieldDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
-| `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
+| `toolbar` | `ToolbarDescriptor` | no |  |
 | `number_input` | `NumberInputDescriptor` | no |  |
 | `combo_box` | `ComboBoxDescriptor` | no |  |
 | `date_picker` | `DatePickerDescriptor` | no |  |
@@ -3797,10 +3796,10 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `text_field` | `TextFieldDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
-| `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
+| `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `number_input` | `NumberInputDescriptor \| null` | no |  |
 | `combo_box` | `ComboBoxDescriptor \| null` | no |  |
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |
@@ -5056,14 +5055,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"canvas_region"` | yes |  |
 | `region` | `WidgetId` | yes |  |
 
-<a id="wire-_hitdetailextrachrome"></a>
-#### `_HitDetailExtraChrome`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"extra_chrome"` | yes |  |
-| `bar` | `WidgetId` | yes |  |
-
 <a id="wire-_hitdetailscrollbody"></a>
 #### `_HitDetailScrollBody`
 
@@ -5097,7 +5088,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

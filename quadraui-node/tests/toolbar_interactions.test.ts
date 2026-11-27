@@ -51,13 +51,11 @@ test("click on a toolbar action button emits Toolbar(ButtonClicked) with the fli
   });
   app.run(1);
 
-  assert.equal(
-    received.length,
-    1,
-    `a toolbar button click carries no leading FocusChanged -- only the bar's own id (not \
-the clicked button's) is a tab stop: ${JSON.stringify(received)}`,
-  );
-  const [event] = received;
+  // The click parks the bar's keyboard cursor on the button, so the bar
+  // takes focus first.
+  assert.equal(received.length, 2, JSON.stringify(received));
+  const [focus, event] = received;
+  assert.deepStrictEqual(focus, { FocusChanged: "toolbar:main" });
   assert.ok(event.Toolbar, `expected a Toolbar event, got: ${JSON.stringify(event)}`);
   const [barId, toolbarEvent] = event.Toolbar;
   assert.equal(barId, "toolbar:main", "the widget id must be the toolbar's own");
@@ -184,12 +182,11 @@ test("a click on the third segment of an exclusive toolbar group emits GroupSele
   });
   app.run(1);
 
-  assert.equal(
-    received.length,
-    1,
-    `a group segment click carries no leading FocusChanged: ${JSON.stringify(received)}`,
-  );
-  const [event] = received;
+  // The click parks the bar's keyboard cursor on the group, so the bar
+  // takes focus first.
+  assert.equal(received.length, 2, JSON.stringify(received));
+  const [focus, event] = received;
+  assert.deepStrictEqual(focus, { FocusChanged: "toolbar:main" });
   assert.ok(event.Toolbar, `expected a Toolbar event, got: ${JSON.stringify(event)}`);
   const [barId, toolbarEvent] = event.Toolbar;
   assert.equal(barId, "toolbar:main", "the widget id must be the toolbar's own");

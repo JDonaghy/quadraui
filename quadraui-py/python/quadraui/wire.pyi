@@ -1804,25 +1804,25 @@ LayoutLeafNode = TypedDict(
         "data_table": NotRequired[DataTableDescriptor],
         "tab_bar": NotRequired[TabBarDescriptor],
         "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
-        "progress": NotRequired[ProgressBarDescriptor],
-        "spinner": NotRequired[SpinnerDescriptor],
         "form": NotRequired[FormDescriptor],
         "text_input": NotRequired[TextInputDescriptor],
         "text_field": NotRequired[TextFieldDescriptor],
+        "tree_table": NotRequired[TreeTableDescriptor],
+        "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
+        "menu_bar": NotRequired[MenuBarDescriptor],
+        "password": NotRequired[PasswordDescriptor],
+        "textarea": NotRequired[TextAreaDescriptor],
+        "toolbar": NotRequired[ToolbarDescriptor],
         "number_input": NotRequired[NumberInputDescriptor],
         "combo_box": NotRequired[ComboBoxDescriptor],
         "date_picker": NotRequired[DatePickerDescriptor],
+        "progress": NotRequired[ProgressBarDescriptor],
+        "spinner": NotRequired[SpinnerDescriptor],
+        "scrollbar": NotRequired[ScrollbarDescriptor],
+        "command_line": NotRequired[CommandLineDescriptor],
         "message_list": NotRequired[MessageListDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
-        "tree_table": NotRequired[TreeTableDescriptor],
-        "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
-        "toolbar": NotRequired[ToolbarDescriptor],
-        "menu_bar": NotRequired[MenuBarDescriptor],
-        "command_line": NotRequired[CommandLineDescriptor],
-        "scrollbar": NotRequired[ScrollbarDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
-        "password": NotRequired[PasswordDescriptor],
-        "textarea": NotRequired[TextAreaDescriptor],
         "icon_grid": NotRequired[IconGridDescriptor],
         "cell_grid": NotRequired[CellGridDescriptor],
         "switch": NotRequired[SwitchDescriptor],
@@ -1867,25 +1867,25 @@ class RenderFrameDict(TypedDict):
     tree: NotRequired[Optional[TreeViewDescriptor]]
     data_table: NotRequired[Optional[DataTableDescriptor]]
     tab_bar: NotRequired[Optional[TabBarDescriptor]]
-    progress: NotRequired[Optional[ProgressBarDescriptor]]
-    spinner: NotRequired[Optional[SpinnerDescriptor]]
     form: NotRequired[Optional[FormDescriptor]]
     text_input: NotRequired[Optional[TextInputDescriptor]]
     text_field: NotRequired[Optional[TextFieldDescriptor]]
+    tree_table: NotRequired[Optional[TreeTableDescriptor]]
+    tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
+    menu_bar: NotRequired[Optional[MenuBarDescriptor]]
+    password: NotRequired[Optional[PasswordDescriptor]]
+    textarea: NotRequired[Optional[TextAreaDescriptor]]
+    toolbar: NotRequired[Optional[ToolbarDescriptor]]
     number_input: NotRequired[Optional[NumberInputDescriptor]]
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
     date_picker: NotRequired[Optional[DatePickerDescriptor]]
+    progress: NotRequired[Optional[ProgressBarDescriptor]]
+    spinner: NotRequired[Optional[SpinnerDescriptor]]
+    scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
+    command_line: NotRequired[Optional[CommandLineDescriptor]]
     message_list: NotRequired[Optional[MessageListDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
-    tree_table: NotRequired[Optional[TreeTableDescriptor]]
-    tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
-    toolbar: NotRequired[Optional[ToolbarDescriptor]]
-    menu_bar: NotRequired[Optional[MenuBarDescriptor]]
-    command_line: NotRequired[Optional[CommandLineDescriptor]]
-    scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
-    password: NotRequired[Optional[PasswordDescriptor]]
-    textarea: NotRequired[Optional[TextAreaDescriptor]]
     icon_grid: NotRequired[Optional[IconGridDescriptor]]
     cell_grid: NotRequired[Optional[CellGridDescriptor]]
     switch: NotRequired[Optional[SwitchDescriptor]]
@@ -2544,10 +2544,6 @@ class _HitDetailCanvasRegion(TypedDict):
     kind: Literal['canvas_region']
     region: WidgetId
 
-class _HitDetailExtraChrome(TypedDict):
-    kind: Literal['extra_chrome']
-    bar: WidgetId
-
 class _HitDetailScrollBody(TypedDict):
     kind: Literal['scroll_body']
 
@@ -2561,7 +2557,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key

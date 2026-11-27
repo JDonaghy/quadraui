@@ -90,6 +90,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   dropped). `combo_box` reports the first filtered option as
   `ComboBoxHighlightChanged` before each typed `ComboBoxTextChanged`, and
   `Enter` on a closed box opens the list rather than committing.
+- `toolbar` decodes through the generic widget leaf (`quadraui::Toolbar`,
+  which carries `overflow`/`overflow_priorities` itself). A click on a
+  button now parks the bar's keyboard cursor there, so the handler
+  receives `{"FocusChanged": "<bar id>"}` before the `Toolbar` event. The bar's
+  keyboard cursor is the widget's own state: after Tab focuses the bar,
+  the arrow keys move it (the first press parks it on the first button)
+  and Enter/Space activate the button under it; the descriptor's
+  `focused_index` no longer chooses what Enter activates. The
+  `"extra_chrome"` hit kind is removed.
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
   requires a `"buttons"` key: a content-bearing dialog may rely on its
   own subtree (a form's Cancel/Save row, a close icon) instead of the

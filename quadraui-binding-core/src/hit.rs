@@ -265,14 +265,6 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         extra: Rc<dyn ExtraPaint>,
-        /// Absolute bounds + action id of each clickable child
-        /// [`ExtraPaint::paint_chrome`] resolved this frame — empty for
-        /// every extra but `Toolbar`'s buttons, `StatusBar`'s segments, and
-        /// `ActivityBar`'s items. Checked by [`hit_test_painted`] ahead of
-        /// [`ExtraPaint::hit_test`], so a click on one of these children
-        /// resolves to the *child's* id rather than just "landed somewhere
-        /// on the bar".
-        chrome_hits: Vec<(Rect, WidgetId)>,
         /// `Some((layout, scroll_offset, total_rows))` when `extra`
         /// downcasts to a [`quadraui::TreeTable`] — the real
         /// [`quadraui::TreeTableLayout`] resolved via
@@ -400,10 +392,7 @@ pub struct ScrollChildHit {
 /// alongside it: [`PaintedHit::Tree`]'s and [`PaintedHit::Scroll`]'s own
 /// `scrollbar.track` (an absolute rect, like [`PaintedHit::Widget`]'s own
 /// `area` — narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
-/// even when the track itself ends up with no overlap) and
-/// [`PaintedHit::Extra`]'s `chrome_hits` (each
-/// entry independently intersected and dropped on no overlap, the same
-/// per-entry treatment `hits` itself gets). The chrome-layout kinds
+/// even when the track itself ends up with no overlap). The chrome-layout kinds
 /// (`Split`/`SplitTree`) carry several independent
 /// sub-region rects apiece with no single outer bounds to narrow, and
 /// aren't realistic `Scroll` content — left as-is.
@@ -429,15 +418,6 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
                 ..
             } => {
                 scrollbar.track = clip_or_empty(scrollbar.track, viewport);
-            }
-            PaintedHit::Extra { chrome_hits, .. } => {
-                chrome_hits.retain_mut(|(rect, _)| match intersect_rect(*rect, viewport) {
-                    Some(clipped) => {
-                        *rect = clipped;
-                        true
-                    }
-                    None => false,
-                });
             }
             _ => {}
         }
@@ -469,7 +449,7 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
 
 /// `rect` intersected with `viewport`, or a zero-area rect at `rect`'s own
 /// origin when they don't overlap at all — for a hit's own secondary
-/// sub-rect (a scrollbar's `track`, one `chrome_hits` entry) where "no
+/// sub-rect (a scrollbar's `track`) where "no
 /// longer inside the viewport" should make just that sub-rect
 /// unreachable, never drop the [`PaintedHit`] entry it's attached to (its
 /// own primary bounds, narrowed separately by [`clip_hits_to_viewport`],
@@ -599,26 +579,11 @@ pub enum HitDetail {
     /// is that region's own [`WidgetId`], resolved through
     /// [`crate::scripted::ScriptedExtra::scripted_hit_test`] ahead of
     /// [`Self::ExtraBody`]'s coarser "landed somewhere on the widget"
-    /// answer, the same disambiguation [`Self::ExtraChrome`] does for a
-    /// chrome bar's own clickable children. A point in no region still
+    /// answer. A point in no region still
     /// falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions
     /// through `Canvas`'s own `Interactive` instead.
     CanvasRegion {
         region: WidgetId,
-    },
-    /// Landed on one of a chrome-bar extra's clickable children
-    /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item).
-    /// [`hit_test_painted`] returns the CHILD's own id alongside this
-    /// detail (mirroring [`TabBarHit::RightSegment`]'s button-id-wins
-    /// convention) — a raw `MouseDown` with no semantic substitution (a
-    /// `Toolbar` button: no typed `UiEvent` exists for it) therefore gets
-    /// `widget` set to the button itself, same as a plain `Button` leaf click.
-    /// `bar` is the enclosing bar's own id, carried here so
-    /// [`crate::semantic::semantic_event_for_hit`] can look it back up in
-    /// the hit map to build `StatusBar`'s/`ActivityBar`'s typed event
-    /// (which wraps the bar's id, not the clicked child's).
-    ExtraChrome {
-        bar: WidgetId,
     },
     /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
     /// on no more specific descendant hit — e.g. empty space between
@@ -812,12 +777,8 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 id,
                 area,
                 extra,
-                chrome_hits,
                 tree_table_hit,
             } => {
-                if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
-                    return Some((*action, HitDetail::ExtraChrome { bar: *id }));
-                }
                 if let Some((layout, scroll_offset, total_rows)) = tree_table_hit {
                     if area.contains(point) {
                         match layout.hit_test(
@@ -1426,33 +1387,6 @@ mod tests {
         assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
     }
 
-    /// [`PaintedHit::Extra::chrome_hits`] entries are absolute rects,
-    /// checked by [`hit_test_painted`] ahead of the surrounding `Extra`'s
-    /// own `area`/[`ExtraPaint::hit_test`] — [`clip_hits_to_viewport`]
-    /// narrows each one independently (dropping it outright when it
-    /// doesn't overlap `viewport` at all), the same per-entry treatment
-    /// `hits` itself gets, so a chrome child painted partly or fully
-    /// outside the viewport it's actually inside never keeps claiming
-    /// clicks there.
-    #[test]
-    fn clip_hits_to_viewport_drops_a_chrome_hit_with_no_overlap() {
-        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::TextInput::new(WidgetId::new("bar")));
-        let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
-        let mut hits = vec![PaintedHit::Extra {
-            id: WidgetId::new("bar"),
-            area: Rect::new(0.0, 0.0, 20.0, 20.0),
-            extra,
-            chrome_hits: vec![(Rect::new(0.0, 15.0, 5.0, 1.0), WidgetId::new("button"))],
-            tree_table_hit: None,
-        }];
-        clip_hits_to_viewport(&mut hits, 0, viewport);
-
-        let PaintedHit::Extra { chrome_hits, .. } = &hits[0] else {
-            panic!("still an Extra hit");
-        };
-        assert!(chrome_hits.is_empty());
-    }
-
     /// A `ScriptWidget` built directly in Rust test code (mirroring
     /// `crate::scripted`'s own `Swatch` test widget): one region covering
     /// its right half — the minimum needed to prove `hit_test_painted`'s
@@ -1532,7 +1466,6 @@ mod tests {
             id: WidgetId::new("widget"),
             area,
             extra: Rc::new(primitive) as Rc<dyn ExtraPaint>,
-            chrome_hits: Vec::new(),
             tree_table_hit: None,
         }];
 

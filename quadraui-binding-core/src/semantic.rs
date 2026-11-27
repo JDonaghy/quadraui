@@ -11,7 +11,7 @@ use quadraui::{
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, extra_as_toolbar, PasswordInput, TextArea};
+use crate::extra_paint::{extra_as, PasswordInput, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 use crate::tree_edit::tree_row_rename_key_event;
@@ -311,15 +311,6 @@ pub fn semantic_event_for_hit(
             }
             _ => None,
         }),
-        HitDetail::ExtraChrome { bar } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id, extra, ..
-            } if *hit_id == *bar => {
-                let toolbar = extra_as_toolbar(extra)?;
-                Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
-            }
-            _ => None,
-        }),
         _ => None,
     }
 }
@@ -483,18 +474,6 @@ pub fn focus_scoped_key_event(
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
                     return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
-                }
-                if let Some(toolbar) = extra_as_toolbar(extra) {
-                    // Enter/Space activates whichever button
-                    // `Toolbar::focused_index` names (set by the host, same
-                    // convention `TabChrome::focused_index` documents);
-                    // every other key is left to the raw fallback since
-                    // `Toolbar` has no `KeyPressed` variant of its own to
-                    // wrap it in.
-                    if matches!(raw_key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
-                        return Some(UiEvent::Toolbar(*id, toolbar.activate_focused()?));
-                    }
-                    return None;
                 }
                 if let Some(password) = extra_as::<PasswordInput>(extra) {
                     return password_key_event(*id, password, raw_key, modifiers, text_editors);
@@ -764,7 +743,6 @@ mod tests {
             id,
             area,
             extra: Rc::new(primitive) as Rc<dyn crate::extra_paint::ExtraPaint>,
-            chrome_hits: Vec::new(),
             tree_table_hit: None,
         }
     }

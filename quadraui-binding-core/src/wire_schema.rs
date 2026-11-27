@@ -2944,7 +2944,6 @@ pub fn schema() -> Vec<DefJson> {
             "form" => form_descriptor.clone(),
             "text_input" => text_input_descriptor.clone(),
             "text_field" => text_field_descriptor.clone(),
-            "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
@@ -2999,6 +2998,7 @@ pub fn schema() -> Vec<DefJson> {
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
+            "toolbar" => toolbar_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3866,7 +3866,6 @@ pub fn schema() -> Vec<DefJson> {
         ("_HitDetailExtraBody", "extra_body", &[]),
         ("_HitDetailWidgetBody", "widget_body", &[]),
         ("_HitDetailCanvasRegion", "canvas_region", &[]),
-        ("_HitDetailExtraChrome", "extra_chrome", &[]),
         ("_HitDetailScrollBody", "scroll_body", &[]),
         (
             "_HitDetailScrollScrollbarTrackBefore",
@@ -3889,9 +3888,6 @@ pub fn schema() -> Vec<DefJson> {
         let mut fields = vec![field("kind", lit(&[kind]))];
         for (fname, fty) in *extra_fields {
             fields.push(field(fname, fty()));
-        }
-        if *kind == "extra_chrome" {
-            fields.push(field("bar", re("WidgetId")));
         }
         if *kind == "canvas_region" {
             fields.push(field("region", re("WidgetId")));
@@ -4695,7 +4691,6 @@ mod coverage {
             HitDetail::ExtraBody => {}
             HitDetail::WidgetBody => {}
             HitDetail::CanvasRegion { region: _ } => {}
-            HitDetail::ExtraChrome { bar: _ } => {}
             HitDetail::ScrollBody => {}
             HitDetail::ScrollScrollbarTrackBefore => {}
             HitDetail::ScrollScrollbarThumb => {}

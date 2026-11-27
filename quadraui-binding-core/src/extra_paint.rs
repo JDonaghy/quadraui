@@ -13,7 +13,7 @@ use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText, TextField,
-    TextInput, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    TextInput, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -83,29 +83,6 @@ pub trait ExtraPaint: std::any::Any {
         NaturalSize::NONE
     }
 
-    /// Paints, returning the absolute bounds and action id of each
-    /// clickable child this descriptor just painted — a chrome bar's
-    /// button ([`quadraui::Toolbar`]).
-    /// `crate::render::draw_bands`/`paint_leaf` call this (not
-    /// [`ExtraPaint::paint`] directly) so the returned regions can be
-    /// recorded into [`crate::hit::PaintedHit::Extra::chrome_hits`] and
-    /// hit-tested ahead of [`ExtraPaint::hit_test`] on a later click —
-    /// `hit_test`'s plain `bool` has no way to say *which* child a point
-    /// landed on.
-    ///
-    /// Hover and press reach the painted widget through the paint env's
-    /// ambient pointer state, so this takes no interaction state of its
-    /// own.
-    ///
-    /// Default: forwards to [`ExtraPaint::paint`] with no clickable
-    /// children — correct for every extra except
-    /// `Toolbar`, which overrides this to report its own per-child click
-    /// targets.
-    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
-        self.paint(backend, area);
-        Vec::new()
-    }
-
     /// This descriptor's [`crate::scripted::ScriptedExtra`] facet, for an
     /// extra that is a script-defined widget — `None` by default, correct
     /// for every hand-built extra above, which has no script-side
@@ -149,21 +126,6 @@ pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
         return Some(&text_area.inner);
     }
     None
-}
-
-/// Recovers the plain [`Toolbar`] backing the matched `"toolbar"` extra,
-/// whether `extra` is a bare standalone [`Toolbar`] (the shape in-crate
-/// Rust callers build directly, e.g. [`crate::engine`]'s own tests) or a
-/// [`ToolbarWithOverflow`] (the shape a `"toolbar"` wire dict decodes to
-/// once it sets `"overflow"`/`"overflow_priorities"`) —
-/// [`crate::semantic::semantic_event_for_hit`] only needs
-/// `Toolbar::click`/`Toolbar::activate_focused`, which read identically
-/// off either.
-pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
-    if let Some(toolbar) = extra_as::<Toolbar>(extra) {
-        return Some(toolbar);
-    }
-    extra_as::<ToolbarWithOverflow>(extra).map(|w| &w.toolbar)
 }
 
 impl ExtraPaint for Form {
@@ -632,200 +594,6 @@ impl ExtraPaint for TreeTableControllerDescriptor {
     }
 }
 
-/// Paints `bar` through the widget contract and converts the resolved
-/// layout's `visible_items` into the `(Rect, WidgetId)` chrome-hit list
-/// [`ExtraPaint::paint_chrome`] returns — shared by [`Toolbar`]'s own impl
-/// and [`ToolbarWithOverflow`]'s so the two wire shapes agree on exactly
-/// which items become clickable.
-///
-/// Painting through [`Backend::draw_dyn`] records the bar in the painted
-/// widget store, so the ambient pointer state can hit-test its buttons
-/// and the bar paints their hover and press.
-///
-/// The contract's layout is bar-local, so every bound is shifted by
-/// `area`'s origin into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
-/// Disabled actions and non-action items (separators, labels) have no
-/// `action_id` or aren't `clickable`, so they never become a hit region,
-/// matching [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
-/// [`quadraui::ToolbarButton::Group`] item is itself never clickable — its
-/// `group_children` are walked instead, same split
-/// [`quadraui::ToolbarLayout::hit_test`] makes.
-fn paint_toolbar_chrome(
-    backend: &mut dyn Backend,
-    area: Rect,
-    bar: &Toolbar,
-) -> Vec<(Rect, WidgetId)> {
-    let Some(layout) = backend
-        .draw_dyn(area, bar, &())
-        .downcast_ref::<quadraui::primitives::toolbar::ToolbarPrimitiveLayout>()
-        .map(|resolved| resolved.layout.clone())
-    else {
-        return Vec::new();
-    };
-    let absolute = |r: Rect| Rect::new(r.x + area.x, r.y + area.y, r.width, r.height);
-    layout
-        .visible_items
-        .into_iter()
-        .flat_map(|item| -> Vec<(Rect, WidgetId)> {
-            if item.kind == quadraui::ToolbarItemKind::Group {
-                item.group_children
-                    .into_iter()
-                    .filter(|child| child.clickable)
-                    .filter_map(|child| child.action_id.map(|id| (absolute(child.bounds), id)))
-                    .collect()
-            } else if item.clickable {
-                item.action_id
-                    .map(|id| (absolute(item.bounds), id))
-                    .into_iter()
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect()
-}
-
-/// A tab stop whenever at least one button could ever be
-/// [`quadraui::Toolbar::activate_focused`]'s target — matching `Switch`'s
-/// own "interactive, so focusable" rule. A toolbar with no enabled `Action`
-/// (all separators/labels, or every action disabled) is skipped, the same
-/// way an empty `List`/`Tree` still counts (unlike those, nothing here
-/// could ever be activated, so there is no reason to spend a tab stop on
-/// it). Shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s.
-fn toolbar_tab_stop(bar: &Toolbar) -> bool {
-    bar.buttons.iter().any(|button| {
-        matches!(
-            button,
-            ToolbarButton::Action { enabled: true, .. }
-                | ToolbarButton::Field { .. }
-                | ToolbarButton::MenuButton { .. }
-        )
-    })
-}
-
-impl ExtraPaint for Toolbar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
-        paint_toolbar_chrome(backend, area, self)
-    }
-
-    fn tab_stop(&self) -> bool {
-        toolbar_tab_stop(self)
-    }
-}
-
-/// One [`ToolbarWithOverflow::overflow_priorities`] entry: the wire's
-/// `{"id": ..., "priority": ...}` shape for a single
-/// [`quadraui::ToolbarOverflowPriorities`] registration — a list of these,
-/// not a `{id: priority}` map, since [`crate::wire_schema`]'s schema DSL
-/// has no map/record type, only objects with a fixed field set and lists
-/// of them (mirrors [`quadraui::ToolbarIcons`]'s own `Vec<(WidgetId, Icon)>`
-/// registration-by-id shape for the same reason).
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
-pub struct ToolbarOverflowPriorityEntry {
-    pub id: WidgetId,
-    pub priority: i32,
-}
-
-/// Wire-decoded shape of the `"toolbar"` extra when its dict carries an
-/// `"overflow"` and/or `"overflow_priorities"` key — reached via the same
-/// `"toolbar"` kind [`Toolbar`] itself decodes, see
-/// [`Self::deserialize`]. The wire's priorities are a list of
-/// `{"id", "priority"}` entries rather than [`quadraui::Toolbar`]'s own
-/// table, so both knobs are decoded here and folded onto the descriptor
-/// at paint time. Both are `#[serde(default)]` on the wire
-/// (`Self::deserialize`'s `Wire` shape): a payload with neither key
-/// decodes to `overflow: ToolbarOverflow::Clip` and empty
-/// `overflow_priorities`, which [`Self::paint_chrome`] paints
-/// byte-identically to a plain [`Toolbar`] extra.
-#[derive(Debug, Clone)]
-pub struct ToolbarWithOverflow {
-    pub toolbar: Toolbar,
-    pub overflow: quadraui::ToolbarOverflow,
-    /// Per-button drop priority for [`quadraui::ToolbarOverflow::Menu`],
-    /// keyed by the owning `Action`/`Group`'s `id`. Folded into a
-    /// [`quadraui::ToolbarOverflowPriorities`] table by [`Self::priorities`].
-    pub overflow_priorities: Vec<ToolbarOverflowPriorityEntry>,
-}
-
-impl ToolbarWithOverflow {
-    /// [`Self::overflow_priorities`] folded into the
-    /// [`quadraui::ToolbarOverflowPriorities`] table the descriptor
-    /// carries.
-    pub fn priorities(&self) -> quadraui::ToolbarOverflowPriorities {
-        self.overflow_priorities.iter().fold(
-            quadraui::ToolbarOverflowPriorities::new(),
-            |table, entry| table.with(entry.id, entry.priority),
-        )
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ToolbarWithOverflow {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(serde::Deserialize)]
-        struct Wire {
-            id: WidgetId,
-            buttons: Vec<ToolbarButton>,
-            #[serde(default)]
-            bg: Option<quadraui::Color>,
-            #[serde(default)]
-            focused_index: Option<usize>,
-            #[serde(default)]
-            overflow: quadraui::ToolbarOverflow,
-            #[serde(default)]
-            overflow_priorities: Vec<ToolbarOverflowPriorityEntry>,
-        }
-        let wire = Wire::deserialize(deserializer)?;
-        let mut toolbar = Toolbar::new(wire.id)
-            .with_buttons(wire.buttons)
-            .with_focused_index(wire.focused_index);
-        if let Some(bg) = wire.bg {
-            toolbar = toolbar.with_bg(bg);
-        }
-        Ok(Self {
-            toolbar,
-            overflow: wire.overflow,
-            overflow_priorities: wire.overflow_priorities,
-        })
-    }
-}
-
-impl ExtraPaint for ToolbarWithOverflow {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.toolbar.id
-    }
-
-    /// Paints the descriptor with [`Self::overflow`] and
-    /// [`Self::priorities`] folded on — for `ToolbarOverflow::Clip` with no
-    /// registered priorities, identical to a plain [`Toolbar`] extra.
-    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
-        let bar = self
-            .toolbar
-            .clone()
-            .with_overflow(self.overflow)
-            .with_overflow_priorities(self.priorities());
-        paint_toolbar_chrome(backend, area, &bar)
-    }
-
-    fn tab_stop(&self) -> bool {
-        toolbar_tab_stop(&self.toolbar)
-    }
-}
-
 impl ExtraPaint for MenuBar {
     /// Installed as the platform's own menu bar under a native menu
     /// style, painted otherwise — see [`MenuBar::present`].
@@ -923,7 +691,6 @@ extra_primitives! {
     "text_field" => TextField,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
-    "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
     "password" => PasswordInput,
     "textarea" => TextArea,
@@ -1012,7 +779,8 @@ extra_primitives! {
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 34] = [
+pub const WIDGET_KINDS: [&str; 35] = [
+    "toolbar",
     "number_input",
     "combo_box",
     "date_picker",
@@ -1070,7 +838,7 @@ mod tests {
     use crate::hit::PaintedHit;
     use crate::layout::{LayoutLeaf, LeafDescriptor};
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, FormEvent, Reaction, UiEvent};
+    use quadraui::{AppLogic, FormEvent, Reaction, Toolbar, ToolbarButton, UiEvent};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -1183,17 +951,11 @@ mod tests {
         );
     }
 
-    /// A `Toolbar` placed directly as a `LayoutNode::Leaf` paints through
-    /// [`crate::render::paint_layout`]'s `Extra` arm, which calls
-    /// [`ExtraPaint::paint_chrome`] (not just [`ExtraPaint::paint`]) and
-    /// records its clickable buttons into [`crate::hit::PaintedHit::Extra::chrome_hits`]
-    /// — exactly the same chrome-click path [`crate::render::draw_bands`]
-    /// uses for a flat-slot `"toolbar"`. A `MouseDown` on the recorded
-    /// button rect round-trips through [`crate::engine::InteractionEngine::handle`]'s
-    /// `HitDetail::ExtraChrome` arm into the same
-    /// `UiEvent::Toolbar(.., ToolbarEvent::ButtonClicked)` a slot-painted
-    /// toolbar dispatches, proving the chrome-bar leaf path carries its
-    /// semantic click all the way to the handler, not just its paint.
+    /// A `Toolbar` placed directly as a `LayoutNode::Leaf` is a generic
+    /// widget leaf: a `MouseDown` on its button round-trips through
+    /// [`crate::engine::InteractionEngine::handle`] into the toolbar's own
+    /// `Interactive::handle`, which reports
+    /// `UiEvent::Toolbar(.., ToolbarEvent::ButtonClicked)`.
     #[test]
     fn toolbar_leaf_click_emits_button_clicked_through_the_interaction_engine() {
         use crate::engine::InteractionEngine;
@@ -1225,7 +987,10 @@ mod tests {
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "toolbar:main".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(toolbar)),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "toolbar",
+                            widget: Rc::new(toolbar),
+                        },
                         scroll_px: None,
                     })],
                     Spacing::default(),
@@ -1253,19 +1018,10 @@ mod tests {
         };
         let mut driver = TuiDriver::new(app, 20, 5);
 
-        let button_point = {
-            let hits = driver.app().engine.hit_map();
-            hits.iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Extra {
-                        id, chrome_hits, ..
-                    } if *id == WidgetId::new("toolbar:main") => chrome_hits
-                        .first()
-                        .map(|(rect, _)| Point::new(rect.x, rect.y)),
-                    _ => None,
-                })
-                .expect("toolbar leaf should have painted a chrome hit for its button")
-        };
+        let button_point = toolbar_button_points(5)
+            .into_iter()
+            .next()
+            .expect("toolbar leaf should have painted its button");
 
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -1286,7 +1042,24 @@ mod tests {
         );
     }
 
-    /// A toolbar extra paints through `draw_dyn`, so it is recorded in the
+    /// The first painted point of each distinct `"toolbar:main"` button
+    /// on row 0, scanning `width` columns of the painted widget store.
+    fn toolbar_button_points(width: usize) -> Vec<Point> {
+        let mut seen = Vec::new();
+        let mut points = Vec::new();
+        for x in 0..width {
+            let point = Point::new(x as f32, 0.0);
+            if let Some((id, Some(sub))) = quadraui::primitive::painted_hit(point.x, point.y) {
+                if id == WidgetId::new("toolbar:main") && !seen.contains(&sub) {
+                    seen.push(sub);
+                    points.push(point);
+                }
+            }
+        }
+        points
+    }
+
+    /// A toolbar leaf paints through `draw_dyn`, so it is recorded in the
     /// painted widget store under its own id with one sub-part per button,
     /// and [`crate::engine::InteractionEngine::handle`] feeds a pointer move
     /// over a button into the ambient pointer state, asking for a redraw
@@ -1322,7 +1095,10 @@ mod tests {
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "toolbar:main".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(toolbar)),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "toolbar",
+                            widget: Rc::new(toolbar),
+                        },
                         scroll_px: None,
                     })],
                     Spacing::default(),
@@ -1347,23 +1123,7 @@ mod tests {
         let mut driver = TuiDriver::new(app, 30, 5);
         quadraui::interaction::reset_ambient_interaction();
 
-        let button_points: Vec<Point> = driver
-            .app()
-            .engine
-            .hit_map()
-            .iter()
-            .find_map(|hit| match hit {
-                PaintedHit::Extra {
-                    id, chrome_hits, ..
-                } if *id == WidgetId::new("toolbar:main") => Some(
-                    chrome_hits
-                        .iter()
-                        .map(|(rect, _)| Point::new(rect.x, rect.y))
-                        .collect(),
-                ),
-                _ => None,
-            })
-            .expect("toolbar leaf should have painted its buttons");
+        let button_points = toolbar_button_points(30);
         assert_eq!(button_points.len(), 2);
 
         let painted = |p: Point| quadraui::primitive::painted_hit(p.x, p.y);

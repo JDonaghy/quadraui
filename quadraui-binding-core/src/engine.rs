@@ -12133,9 +12133,8 @@ mod tests {
         );
     }
 
-    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` extra —
-    /// the leaf/standalone shape ([`crate::hit::HitDetail::ExtraChrome`]),
-    /// distinct from the `SidebarPanel`-embedded shape the test above
+    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` widget
+    /// slot, distinct from the `SidebarPanel`-embedded shape the test above
     /// covers — so a test can drive its click and Enter/Space keyboard
     /// activation with no host-language FFI type in scope.
     struct ToolbarLogic {
@@ -12149,12 +12148,10 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
-                HashMap::new();
-            extra.insert(
+            let mut widgets: HashMap<String, std::rc::Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert(
                 "toolbar".to_string(),
-                std::rc::Rc::new(self.toolbar.clone())
-                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
+                std::rc::Rc::new(self.toolbar.clone()) as std::rc::Rc<dyn DynWidget>,
             );
             draw_bands(
                 backend,
@@ -12164,8 +12161,8 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
-                    widgets: crate::render::no_widgets(),
+                    extra: crate::render::no_extras(),
+                    widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -12235,20 +12232,21 @@ mod tests {
         });
 
         let dispatched = &driver.app().sink.borrow().dispatched;
-        // No leading `FocusChanged`, unlike a tab-stoppable fixed-slot
-        // primitive's own click (e.g. `click_on_a_button_focuses_it_then_
-        // dispatches_the_click` above): the *clicked button's* id (not the
-        // bar's) is what resolves against the hit map, and only the bar's
-        // id is a tab stop, so click-to-focus never fires here.
+        // The click parks the bar's keyboard cursor on the button, so the
+        // bar takes focus first.
         assert_eq!(
             dispatched.len(),
-            1,
-            "expected exactly the Toolbar click, no FocusChanged: {:?}",
+            2,
+            "expected FocusChanged then the Toolbar click: {:?}",
             dispatched
         );
         assert!(
+            matches!(&dispatched[0].0, UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("toolbar:main")),
+            "{dispatched:?}"
+        );
+        assert!(
             matches!(
-                &dispatched[0].0,
+                &dispatched[1].0,
                 UiEvent::Toolbar(
                     bar,
                     ToolbarEvent::ButtonClicked { id, is_active: true },
@@ -12261,7 +12259,7 @@ mod tests {
 
     /// The binding-host leg of the menu widgets' three-way event parity:
     /// a click on the first enabled button of a standalone `"toolbar"`
-    /// extra dispatches exactly the event the widget contract's own
+    /// leaf dispatches exactly the toolbar event the widget contract's own
     /// TuiDriver leg (`quadraui/tests/widget_contract_menus_event_parity.rs`)
     /// and its `a11y::route_widget_action` leg resolve the same bar to.
     #[test]
@@ -12299,6 +12297,7 @@ mod tests {
             .dispatched
             .iter()
             .map(|(event, _)| event.clone())
+            .filter(|event| matches!(event, UiEvent::Toolbar(..)))
             .collect();
         assert_eq!(
             dispatched,
@@ -12358,22 +12357,15 @@ mod tests {
         );
     }
 
-    /// Tab must land focus on a standalone toolbar (it now opts into
-    /// [`crate::extra_paint::ExtraPaint::tab_stop`] whenever it has at least
-    /// one enabled `Action`), and Enter on the focused toolbar must activate
-    /// whichever button [`quadraui::Toolbar::focused_index`] names — the
-    /// same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click produces.
+    /// Tab must land focus on a standalone toolbar (a focus stop whenever
+    /// it has at least one enabled `Action`), the arrow keys move the
+    /// bar's own keyboard cursor, and Enter activates the button under it
+    /// — the same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click
+    /// produces.
     #[test]
     fn tab_focuses_a_toolbar_and_enter_activates_its_focused_button() {
-        // `focused_index: Some(1)` simulates the host having already
-        // responded to the prior `FocusChanged` by marking "Reset" (the
-        // second button) as the keyboard-focused one — the same
-        // host-driven convention `Switch::focused` documents.
-        let mut toolbar = two_action_toolbar();
-        toolbar.focused_index = Some(1);
-
         let logic = ToolbarLogic {
-            toolbar,
+            toolbar: two_action_toolbar(),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -12397,11 +12389,15 @@ mod tests {
             );
         }
 
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Enter),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        // The first arrow press parks the cursor on the first button, the
+        // second moves it to "Reset".
+        for key in [NamedKey::Right, NamedKey::Right, NamedKey::Enter] {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(key),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
 
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(

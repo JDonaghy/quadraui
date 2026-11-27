@@ -1971,10 +1971,8 @@ def test_status_bar_renders_segment_text():
 def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
     # A click on a toolbar `Action` button reaches the handler as a typed
     # `Toolbar` event: `(bar_id, {"ButtonClicked": {"id", "is_active"}})`,
-    # where `is_active` is the button's flipped state. The clicked button's
-    # id (not the bar's) is what resolves against the hit map, and only the
-    # bar is a tab stop, so no `FocusChanged` precedes it and `_click`
-    # (which asserts exactly one event) applies directly.
+    # where `is_active` is the button's flipped state. The click parks the
+    # bar's keyboard cursor on the button, so the bar takes focus first.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -1988,8 +1986,9 @@ def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
     )
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     assert "MouseDown" not in event, event
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
@@ -2010,23 +2009,24 @@ def test_clicking_an_active_toolbar_button_reports_it_toggled_off():
     )
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
     assert payload == {"ButtonClicked": {"id": "toolbar:wrap", "is_active": False}}
 
 
 def test_enter_on_a_focused_toolbar_activates_its_focused_button():
-    # Tab focuses the toolbar (its only tab stop); Enter then activates the
-    # button `focused_index` names, emitting the same `Toolbar` event shape
-    # a mouse click does.
+    # Tab focuses the toolbar (its only tab stop); the arrow keys move the
+    # bar's own keyboard cursor (the first press parks it on the first
+    # button) and Enter activates the button under it, emitting the same
+    # `Toolbar` event shape a mouse click does.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
             "toolbar": {
                 "id": "toolbar:main",
-                "focused_index": 1,
                 "buttons": [
                     {"Action": {"id": "toolbar:filter", "label": "Filter"}},
                     {"Action": {"id": "toolbar:reset", "label": "Reset"}},
@@ -2038,7 +2038,7 @@ def test_enter_on_a_focused_toolbar_activates_its_focused_button():
 
     received = []
     app.set_handler(lambda event: received.append(event))
-    for key in ("Tab", "Enter"):
+    for key in ("Tab", "Right", "Right", "Enter"):
         app.push_event(
             {"KeyPressed": {"key": {"Named": key}, "modifiers": {}, "repeat": False}}
         )
@@ -2142,8 +2142,9 @@ def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
     app.set_render(render)
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     assert "MouseDown" not in event, event
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
