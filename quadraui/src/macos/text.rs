@@ -581,7 +581,14 @@ pub(crate) unsafe fn draw_text_line(
         let seg = &text[range];
         if let Some(run) = run {
             let top = y + ascent - run_font.ascent();
-            draw_text(ctx, &run_font, seg, pen, top, super::cg::color_to_cg(run.fg));
+            draw_text(
+                ctx,
+                &run_font,
+                seg,
+                pen,
+                top,
+                super::cg::color_to_cg(run.fg),
+            );
         }
         pen += measure_text(&run_font, seg).0;
     }

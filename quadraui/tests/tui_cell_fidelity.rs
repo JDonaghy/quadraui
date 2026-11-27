@@ -13,8 +13,9 @@ use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, Color, ControlWidth, Decoration, FieldKind, Form, FormField, Reaction, Rect,
-    ScreenLayout, SelectionMode, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
-    TabChrome, TabItem, TabSeparator, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    ScreenLayout, SelectionMode, StatusBar, StatusBarOverflow, StatusBarSegment, Style, StyledText,
+    Surface, TabBar, TabChrome, TabItem, TabSeparator, TreeRow, TreeStyle, TreeView, UiEvent,
+    WidgetId,
 };
 
 /// Paints one widget into `rect` every frame.
@@ -188,6 +189,58 @@ fn status_bar_left_text_that_cannot_fit_still_ends_in_an_ellipsis() {
     let line = row(&d, 0);
     assert!(line.contains('…'), "{line:?}");
     assert!(line.contains("1:1"), "{line:?}");
+}
+
+/// Paints one status bar every frame under a host-set `Style`.
+struct StyledBar {
+    bar: StatusBar,
+    style: Style,
+}
+
+impl AppLogic for StyledBar {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        backend.set_style(self.style);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect: Rect::new(0.0, 0.0, 30.0, 1.0),
+            widget: Box::new(self.bar.clone()),
+        });
+        frame.draw(backend);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+fn overflowing_bar_row(style: Style) -> String {
+    let bar = StatusBar {
+        id: WidgetId::new("status"),
+        left_segments: vec![segment("a status message far too long for this bar")],
+        right_segments: vec![segment(" 1:1 ")],
+    };
+    let d = TuiDriver::new(StyledBar { bar, style }, 30, 2);
+    d.screen().lines().next().unwrap_or_default().to_string()
+}
+
+#[test]
+fn status_bar_clip_with_no_gap_cuts_left_text_flush_against_the_right_group() {
+    let style = Style::default()
+        .with_status_bar_cell_gap(0.0)
+        .with_status_bar_cell_overflow(StatusBarOverflow::Clip);
+
+    assert_eq!(overflowing_bar_row(style), "a status message far too  1:1 ");
+}
+
+#[test]
+fn status_bar_gap_sets_where_an_ellipsised_left_group_stops() {
+    let no_gap = overflowing_bar_row(Style::default().with_status_bar_cell_gap(0.0));
+    assert_eq!(no_gap, "a status message far too… 1:1 ");
+
+    let default_gap = overflowing_bar_row(Style::default());
+    assert_eq!(default_gap, "a status message far t…   1:1 ");
 }
 
 // ── Form ────────────────────────────────────────────────────────────────

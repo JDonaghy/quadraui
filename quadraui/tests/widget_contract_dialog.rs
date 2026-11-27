@@ -381,7 +381,11 @@ fn a_long_body_over_a_vertical_button_stack_keeps_its_title_and_every_button_on_
     let mut driver = TuiDriver::new(app, 80, 24);
     assert!(driver.screen_contains(TITLE), "{}", driver.screen());
     for label in labels {
-        assert!(driver.screen_contains(label), "{label}: {}", driver.screen());
+        assert!(
+            driver.screen_contains(label),
+            "{label}: {}",
+            driver.screen()
+        );
     }
     click_label_in(&mut driver, "Echo");
     assert_eq!(

@@ -763,8 +763,9 @@ pub use primitives::split_tree::{
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
 };
 pub use primitives::status_bar::{
-    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
-    StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
+    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout,
+    StatusBarOverflow, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
+    VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 // `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with

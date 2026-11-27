@@ -479,6 +479,30 @@ pub struct Style {
     /// auto-dismiss timeout.
     #[serde(default = "default_tooltip_auto_dismiss_ms")]
     pub tooltip_auto_dismiss_ms: u64,
+
+    /// Minimum gap, in cells, a cell-grid [`crate::StatusBar`] keeps
+    /// between its left and right groups. The gap still gives way before
+    /// left text is cut; `0.0` lets the left group run right up to the
+    /// right group.
+    ///
+    /// **Pixel story: no-op.** Pixel backends keep their own pixel gap,
+    /// [`crate::primitives::status_bar::PIXEL_MIN_GAP`].
+    ///
+    /// Default [`crate::primitives::status_bar::MIN_GAP_CELLS`] (`2.0`).
+    #[serde(default = "default_status_bar_cell_gap")]
+    pub status_bar_cell_gap: f32,
+
+    /// How a cell-grid [`crate::StatusBar`] cuts a segment whose text is
+    /// wider than the cells its layout left it:
+    /// [`crate::StatusBarOverflow::Ellipsis`] ends it in `…`,
+    /// [`crate::StatusBarOverflow::Clip`] cuts it with no marker.
+    ///
+    /// **Pixel story: no-op.** Pixel backends always end overlong text
+    /// in an ellipsis.
+    ///
+    /// Default [`crate::StatusBarOverflow::Ellipsis`].
+    #[serde(default)]
+    pub status_bar_cell_overflow: crate::StatusBarOverflow,
 }
 
 /// `#[serde(default)]` value for [`Style::button_radius`] — a struct
@@ -551,6 +575,12 @@ fn default_tooltip_delay_ms() -> u64 {
     500
 }
 
+/// `#[serde(default)]` value for [`Style::status_bar_cell_gap`] — see
+/// [`default_tab_height`].
+fn default_status_bar_cell_gap() -> f32 {
+    crate::primitives::status_bar::MIN_GAP_CELLS
+}
+
 /// `#[serde(default)]` value for [`Style::tooltip_auto_dismiss_ms`] — a
 /// struct serialized before this field existed deserializes with
 /// auto-dismiss disabled, matching [`Style::default`].
@@ -579,6 +609,8 @@ impl Default for Style {
             tab_padding_x: 10.0,
             tooltip_delay_ms: 500,
             tooltip_auto_dismiss_ms: 0,
+            status_bar_cell_gap: crate::primitives::status_bar::MIN_GAP_CELLS,
+            status_bar_cell_overflow: crate::StatusBarOverflow::Ellipsis,
         }
     }
 }
@@ -718,6 +750,20 @@ impl Style {
     #[must_use]
     pub fn with_tooltip_auto_dismiss_ms(mut self, tooltip_auto_dismiss_ms: u64) -> Self {
         self.tooltip_auto_dismiss_ms = tooltip_auto_dismiss_ms;
+        self
+    }
+
+    /// Set [`Self::status_bar_cell_gap`].
+    #[must_use]
+    pub fn with_status_bar_cell_gap(mut self, status_bar_cell_gap: f32) -> Self {
+        self.status_bar_cell_gap = status_bar_cell_gap;
+        self
+    }
+
+    /// Set [`Self::status_bar_cell_overflow`].
+    #[must_use]
+    pub fn with_status_bar_cell_overflow(mut self, overflow: crate::StatusBarOverflow) -> Self {
+        self.status_bar_cell_overflow = overflow;
         self
     }
 }
