@@ -1343,6 +1343,7 @@ mod tests {
 
     // ── Keyboard ────────────────────────────────────────────────────
 
+    #[cfg(feature = "tui")]
     fn ctrl() -> Modifiers {
         Modifiers {
             ctrl: true,
@@ -1350,6 +1351,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn ctrl_shift() -> Modifiers {
         Modifiers {
             ctrl: true,
