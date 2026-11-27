@@ -456,12 +456,10 @@ pub mod run_error;
 pub mod paint_surface;
 
 // ── CellSurface ─────────────────────────────────────────────────────────
-// `PaintSurface`'s cell-grid counterpart — the ~9-verb drawing seam
-// underneath the TUI backend, formalising the informal `set_cell`/
-// `set_cell_wide`/`draw_styled_text` API `tui/mod.rs` already has.
-// Compiled unconditionally, same rationale as `paint_surface` above:
-// every type it trades in is already feature-independent, and only its
-// one `ratatui`-naming method is gated on `feature = "tui"`.
+// `PaintSurface`'s cell-grid counterpart — the drawing seam every cell
+// painter writes through. Compiled unconditionally, same rationale as
+// `paint_surface` above: every type it trades in is already
+// feature-independent.
 pub mod cell_surface;
 
 // ── Primitive ──────────────────────────────────────────────────────────────

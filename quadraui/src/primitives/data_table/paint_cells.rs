@@ -1063,7 +1063,7 @@ mod tests {
         // holds '語'. A display-width budget fits only two whole glyphs
         // (日, 本 — 4 cells) before the ellipsis, leaving each glyph's
         // second cell as the wide-char continuation marker that
-        // `set_cell_wide` writes, so column 2 holds '本' and column 1 is
+        // `put_wide` writes, so column 2 holds '本' and column 1 is
         // the empty continuation of column 0's glyph.
         assert_eq!(
             row[2], '本',

@@ -6,27 +6,21 @@
 //! stays out of that trait entirely: a terminal paints a cell grid, not a
 //! pixel canvas, so there is no sub-cell `Rect`, no fractional stroke
 //! width, and glyph selection (box-drawing corners, double-width CJK) has
-//! no pixel-shaped equivalent. [`crate::tui::backend::TuiBackend`] still
-//! needs *some* shared drawing seam though — today it has only an
-//! informal one: `set_cell`/`set_cell_wide`/`set_cell_styled`/
-//! `draw_styled_text` in `crate::tui` plus `truncate_to_width`/
-//! `truncate_to_width_ellipsis` in `crate::tui::text`, called directly by
-//! each of the ~52 `tui/<widget>.rs` rasterisers against a raw
-//! `&mut ratatui::buffer::Buffer`.
+//! no pixel-shaped equivalent. A cell painter still needs a shared drawing
+//! seam, and `CellSurface` is it, the same way `PaintSurface` is the
+//! pixel backends' one: a widget's cell painter takes
+//! `&mut dyn CellSurface` rather than a concrete ratatui type, and lives
+//! in the widget's own module.
 //!
-//! `CellSurface` formalises that informal API into a trait, the same way
-//! `PaintSurface` formalised each pixel backend's private fill/stroke/text
-//! helpers. A widget's cell painter can then take `&mut dyn CellSurface`
-//! instead of a concrete ratatui type, living in the widget's own module
-//! rather than reaching into `crate::tui` for free functions.
+//! # Scope
 //!
-//! # Scope — additive only
-//!
-//! This module adds the trait and `crate::tui::TuiCellSurface`'s
-//! implementation of it. Nothing in this crate paints through it yet;
-//! every `tui/<widget>.rs` rasteriser keeps calling `crate::tui::set_cell`
-//! and friends directly. Moving them onto `CellSurface` is later, per-widget
-//! work.
+//! Every cell painter writes through this trait's verbs alone: glyphs
+//! ([`CellSurface::put_char`] and friends), fills and borders, and the
+//! in-place decorations ([`CellSurface::tint_bg`],
+//! [`CellSurface::set_bg`], [`CellSurface::add_modifier`]) that recolour
+//! or mark a cell another painter already wrote.
+//! `crate::tui::BufferCellSurface` is the one implementor, over a ratatui
+//! buffer.
 //!
 //! # Why this stays unconditional
 //!
@@ -78,10 +72,8 @@ pub struct CellStyle {
 pub enum BorderSet {
     /// `┌─┐│└─┘` — sharp corners.
     Square,
-    /// `╭─╮│╰─╯` — the rounded corners every existing TUI dialog/board/
-    /// tree-rename border already paints via its own direct `set_cell`
-    /// calls (`crate::tui::dialog`, `crate::tui::board`,
-    /// `crate::tui::focus_ring`).
+    /// `╭─╮│╰─╯` — the rounded corners the TUI dialog, board, tree and
+    /// focus-ring borders paint.
     Rounded,
     /// `╔═╗║╚═╝` — double-line.
     Double,
@@ -109,7 +101,7 @@ pub trait CellSurface {
 
     /// Write a single-width `char` at `(x, y)` in `style`. Out-of-bounds
     /// coordinates are silently ignored — matches
-    /// `crate::tui::set_cell`'s own bounds check, so a caller painting
+    /// `crate::tui::set_cell_styled`'s own bounds check, so a caller painting
     /// right up to a surface's edge never has to clamp first.
     fn put_char(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
@@ -117,7 +109,7 @@ pub trait CellSurface {
     /// `(x, y)`, and blank `(x + 1, y)` — the continuation cell every
     /// double-width glyph occupies on a terminal grid — so the renderer's
     /// diff doesn't paint a stray character on top of the wide glyph's
-    /// second column. Mirrors `crate::tui::set_cell_wide`.
+    /// second column. Mirrors `crate::tui::set_cell_wide_styled`.
     fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
     /// Write one grapheme cluster — a base character plus any combining
