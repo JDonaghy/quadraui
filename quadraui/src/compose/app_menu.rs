@@ -1465,9 +1465,6 @@ mod tests {
         fn char_width(&self) -> f32 {
             1.0
         }
-        fn list_char_width(&self) -> f32 {
-            1.0
-        }
         fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
             (text.chars().count() as f32, 1.0)
         }
@@ -1478,31 +1475,6 @@ mod tests {
                 ui_family: String::new(),
                 ui_size_pt: 0.0,
             }
-        }
-        fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
-        fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
-            l.layout(r.width, r.height, 0.0, |_| {
-                crate::primitives::list::ListItemMeasure::new(1.0)
-            })
-        }
-        fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-            unimplemented!()
-        }
-        fn draw_spinner(&mut self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            unimplemented!()
-        }
-        fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            unimplemented!()
         }
     }
 

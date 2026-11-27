@@ -5,42 +5,26 @@
 //! everything. [`ScreenLayout::draw`]'s [`FrameHitMap`] return value and
 //! [`ScreenLayout::hit_map`] are both `#[deprecated]` — route
 //! [`Surface::Widget`] clicks through [`ScreenLayout::into_frame_tree`]
-//! and [`crate::frame_tree::FrameTree`] instead; every other `Surface`
-//! variant's app recomputes its own rects for hit-testing the way
-//! `examples/common/frame_demo.rs` does, since there is no
-//! [`crate::interactive::Interactive`] widget behind it for a
-//! [`crate::frame_tree::FrameTree`] node to hold.
+//! and [`crate::frame_tree::FrameTree`] instead.
 //!
 //! Apps that already paint each surface at its natural call site can
 //! instead push the same [`Surface`] entries into a `ScreenLayout` purely
 //! for hit-testing and call the deprecated [`ScreenLayout::hit_map`],
-//! which registers every zone without invoking any `backend.draw_*()`
-//! call.
+//! which registers every zone without painting anything.
 //!
 //! `ScreenLayout::tab_stops` derives Tab order from the same pushed
 //! surfaces.
 //!
-//! ## `Surface` vs. calling `Backend::draw_*` directly
+//! ## `Surface` vs. calling `draw_dyn` directly
 //!
 //! `ScreenLayout` + [`Surface`] is the **canonical path for a consumer
-//! assembling a top-level screen out of multiple primitives**: pushing
-//! `Surface` entries and calling [`ScreenLayout::draw`] routes both
-//! backends through the same call site, so they cannot each paint the
-//! identical primitive a different way. `Backend::draw_<name>` remains
-//! public, low-level API — `ScreenLayout::draw` calls it internally,
-//! and rasteriser tests / compose helpers call it directly by design.
-//! See `quadraui/docs/decisions/DECISIONS.md` D-006 for the full
-//! decision and `quadraui/docs/PRIMITIVE_RULES.md` "One primitive,
-//! one canonical paint path" for the authoring rule this implies for
-//! new primitives.
-//!
-//! ## `Surface` coverage
-//!
-//! Every primitive that has a `Backend::draw_*` method has a matching
-//! [`Surface`] variant (`Board`, `DiffView`, `MessageList`,
-//! `PipelineView`, `Progress`, `Spinner`, `SplitTree` included). `Backend::draw_<name>` stays reachable directly for the
-//! reasons above; there is no primitive that is categorically
-//! unreachable through the declarative path.
+//! assembling a top-level screen out of multiple widgets**: pushing
+//! `Surface` entries and calling [`ScreenLayout::draw`] routes every
+//! backend through the same call site, so they cannot each paint the
+//! identical widget a different way. Every [`Surface::Widget`] paints
+//! with [`crate::backend::DrawsPrimitives::draw_dyn`], which stays public
+//! for a host that paints one widget at its own call site; there is no
+//! widget that is unreachable through the declarative path.
 //!
 //! ## `FrameHitMap` is serializable; [`OwnedFrame`] is the owned `Frame`
 //!
@@ -62,7 +46,7 @@
 //! data readable and round-trippable instead of only probeable via
 //! [`FrameHitMap::hit_test`].
 //!
-//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::List { idx: 3
+//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::TabBar { idx: 3
 //! }`) plus a frame-local surface index: it carries no primitive
 //! content, no accessibility role, no label, no value, and cannot by
 //! itself feed an AccessKit `TreeUpdate` node, be re-painted by a web
@@ -256,14 +240,6 @@ use crate::Backend;
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Surface {
-    List {
-        rect: Rect,
-        list: ListView,
-    },
-    Scrollbar {
-        rect: Rect,
-        sb: Scrollbar,
-    },
     /// Any type-erased [`DynWidget`] — paints through
     /// [`crate::backend::DrawsPrimitives::draw_dyn`] rather than a
     /// bespoke `Backend::draw_*` method, on every backend including a
@@ -276,14 +252,6 @@ pub enum Surface {
     Widget {
         rect: Rect,
         widget: Box<dyn DynWidget>,
-    },
-    Progress {
-        rect: Rect,
-        bar: ProgressBar,
-    },
-    Spinner {
-        rect: Rect,
-        spinner: Spinner,
     },
 }
 
@@ -321,12 +289,6 @@ pub enum FrameZone {
     TabBar {
         idx: usize,
     },
-    List {
-        idx: usize,
-    },
-    Scrollbar {
-        idx: usize,
-    },
     /// The zone for a [`Surface::Widget`] — carries the widget's own id
     /// (from [`DynWidget::id`]), since there is no per-variant field name
     /// (`grid.id`, `bar.id`, ...) for a caller to read it off `Surface`
@@ -335,12 +297,6 @@ pub enum FrameZone {
     Widget {
         idx: usize,
         id: Option<WidgetId>,
-    },
-    Progress {
-        idx: usize,
-    },
-    Spinner {
-        idx: usize,
     },
     Empty,
 }
@@ -483,25 +439,12 @@ impl ScreenLayout {
 
         for (idx, surface) in self.surfaces.iter().enumerate() {
             match surface {
-                #[allow(deprecated)]
-                Surface::List { rect, list } => {
-                    backend.draw_list(*rect, list);
-                }
-                Surface::Scrollbar { rect, sb } => {
-                    backend.draw_scrollbar(*rect, sb);
-                }
                 Surface::Widget { rect, widget } => {
                     // A widget the platform presents itself (a native menu
                     // bar) is not painted in the window.
                     if !widget.native_presentation(backend, *rect) {
                         backend.draw_dyn(*rect, widget.as_ref(), &());
                     }
-                }
-                Surface::Progress { rect, bar } => {
-                    backend.draw_progress(*rect, bar);
-                }
-                Surface::Spinner { rect, spinner } => {
-                    backend.draw_spinner(*rect, spinner);
                 }
             }
 
@@ -544,39 +487,14 @@ impl ScreenLayout {
     /// [`crate::runner::AppLogic::extra_tab_stops`]; see that method's doc for
     /// the opt-in contract.
     ///
-    /// Only surfaces that carry both a plain `rect` and an owning
-    /// [`WidgetId`] participate. Excluded, deliberately:
-    /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
-    ///   containers/controls with no independent focusable identity of
-    ///   their own.
-    /// - `Image`, `Spinner` and `Canvas` — purely decorative, never
-    ///   focusable, regardless of the "carries a `rect` plus an owning
-    ///   `WidgetId`" rule: a consumer that adopts them would otherwise
-    ///   get dead stops in its Tab order. `Canvas`'s own hit-test
-    ///   ([`crate::primitives::canvas::CanvasHit`]) only ever answers
-    ///   "inside"/"outside" of its bounds — it has no activation
-    ///   affordance to reach by keyboard.
-    /// - `Progress` **unless** `ProgressBar::cancellable` is set — a
-    ///   bare progress readout has nothing to activate, but a
-    ///   cancellable one has a real affordance ([`ProgressBarHit::Cancel`])
-    ///   worth reaching by keyboard. `Minimap` stays included even
-    ///   though it is also mostly visual, because it is click-to-scroll
-    ///   and so has a real interaction to land on.
-    ///
-    /// `Widget` doesn't fit the per-variant allow/exclude list above — it
-    /// consults [`DynWidget::focus`] directly instead; see
-    /// [`Self::widget_tab_stops`].
+    /// Each [`Surface::Widget`] contributes what its
+    /// [`DynWidget::focus`] declares; see [`Self::widget_tab_stops`].
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         let mut stops: Vec<(WidgetId, Rect)> = self
             .surfaces
             .iter()
             .flat_map(|s| match s {
-                Surface::List { rect, list } => vec![(list.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
-                Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::Spinner { .. } | Surface::Progress { .. } | Surface::Scrollbar { .. } => {
-                    Vec::new()
-                }
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -587,10 +505,8 @@ impl ScreenLayout {
         stops
     }
 
-    /// [`Self::tab_stops`]'s [`Surface::Widget`] arm: every other
-    /// `Surface` variant above contributes at most one stop, hard-coded
-    /// per variant, but a [`Surface::Widget`] consults [`DynWidget::focus`]
-    /// instead — `FocusSpec::None` contributes none, and both
+    /// One [`Surface::Widget`]'s contribution to [`Self::tab_stops`]:
+    /// `FocusSpec::None` contributes none, and both
     /// `FocusSpec::Stop` and `FocusSpec::Children` contribute exactly one
     /// (the whole widget's `rect`, addressed by the widget's own id).
     /// `(WidgetId, Rect)`'s shape has no field for a per-child sub-target,
@@ -617,8 +533,6 @@ impl ScreenLayout {
     #[allow(deprecated)]
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
-            Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
-            Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
             Surface::Widget { rect, widget } => (
                 *rect,
                 FrameZone::Widget {
@@ -626,8 +540,6 @@ impl ScreenLayout {
                     id: widget.id().copied(),
                 },
             ),
-            Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
-            Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
         }
     }
 
@@ -651,11 +563,9 @@ impl ScreenLayout {
     /// ever set on it) is skipped — there is no [`WidgetId`] to route by.
     pub fn into_frame_tree(self) -> crate::frame_tree::FrameTree {
         let mut tree = crate::frame_tree::FrameTree::new();
-        for surface in self.surfaces {
-            if let Surface::Widget { rect, widget } = surface {
-                if let Some(&id) = widget.id() {
-                    tree.push(id, rect, widget);
-                }
+        for Surface::Widget { rect, widget } in self.surfaces {
+            if let Some(&id) = widget.id() {
+                tree.push(id, rect, widget);
             }
         }
         tree
@@ -702,21 +612,16 @@ pub enum OwnedContent {
     TextDisplay(TextDisplay),
     MultiSectionView(MultiSectionView),
     Tree(TreeView),
-    /// Captured from the legacy [`Surface::List`] — maps to
-    /// [`FrameZone::List`], distinct from [`Self::ListWidget`] below.
-    /// `Surface::List` has no [`DynWidget::capture`] override to reuse
-    /// (it is built directly by [`capture_surface`], not through
-    /// [`Surface::Widget`]), so it keeps its own variant rather than
-    /// colliding with the one [`crate::primitives::list::ListView`]'s
-    /// own `Primitive::capture` produces.
+    /// A [`ListView`] in the wire shape frames recorded before
+    /// [`Self::ListWidget`] existed — replays and hit-tests exactly as
+    /// that variant does.
     List(ListView),
     /// Captured from a [`ListView`] reached through
     /// [`Surface::Widget`] via [`DynWidget::capture`] — maps to
     /// [`FrameZone::Widget`], the same [`FrameZone`] the live
     /// `ScreenLayout::zone_for`'s own `Surface::Widget` arm reports, so
     /// hit-testing a captured frame agrees with hit-testing the live
-    /// one. See [`Self::List`]'s own doc for why this needs a distinct
-    /// variant rather than reusing it.
+    /// one.
     ListWidget(ListView),
     Form(Form),
     /// Captured from a [`MenuBar`] reached through [`Surface::Widget`] via
@@ -863,9 +768,7 @@ impl OwnedContent {
                     let _ = (rect, tree);
                 }
             }
-            #[allow(deprecated)]
-            OwnedContent::List(list) => backend.draw_list(rect, list),
-            OwnedContent::ListWidget(list) => {
+            OwnedContent::List(list) | OwnedContent::ListWidget(list) => {
                 // `ListView: Primitive` is gated the same way
                 // `impl Primitive for ListView` itself is (see that
                 // impl's own `cfg`) — unlike `CellGrid`, whose
@@ -907,7 +810,9 @@ impl OwnedContent {
             OwnedContent::Split(split) => {
                 backend.draw_primitive(rect, split);
             }
-            OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
+            OwnedContent::Scrollbar(sb) => {
+                backend.draw_primitive(rect, sb);
+            }
             OwnedContent::Palette(palette) => {
                 backend.draw_primitive(rect, palette);
             }
@@ -968,7 +873,7 @@ impl OwnedContent {
                 backend.draw_primitive(rect, view);
             }
             OwnedContent::Progress(bar) => {
-                backend.draw_progress(rect, bar);
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::SidebarPanel(panel) => {
                 // `impl Primitive for SidebarPanel` is unconditional, like
@@ -976,7 +881,7 @@ impl OwnedContent {
                 backend.draw_primitive(rect, panel);
             }
             OwnedContent::Spinner(spinner) => {
-                backend.draw_spinner(rect, spinner);
+                backend.draw_primitive(rect, spinner);
             }
             OwnedContent::SplitTree(tree) => {
                 backend.draw_primitive(rect, tree);
@@ -1073,8 +978,7 @@ impl OwnedContent {
                 idx,
                 id: Some(tree.id),
             },
-            OwnedContent::List(_) => FrameZone::List { idx },
-            OwnedContent::ListWidget(list) => FrameZone::Widget {
+            OwnedContent::List(list) | OwnedContent::ListWidget(list) => FrameZone::Widget {
                 idx,
                 id: Some(list.id),
             },
@@ -1090,7 +994,10 @@ impl OwnedContent {
                 idx,
                 id: Some(split.id),
             },
-            OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
+            OwnedContent::Scrollbar(sb) => FrameZone::Widget {
+                idx,
+                id: Some(sb.id),
+            },
             OwnedContent::Palette(palette) => FrameZone::Widget {
                 idx,
                 id: Some(palette.id),
@@ -1167,12 +1074,18 @@ impl OwnedContent {
                 idx,
                 id: Some(view.id),
             },
-            OwnedContent::Progress(_) => FrameZone::Progress { idx },
+            OwnedContent::Progress(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
                 idx,
                 id: Some(panel.id),
             },
-            OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
+            OwnedContent::Spinner(spinner) => FrameZone::Widget {
+                idx,
+                id: Some(spinner.id),
+            },
             OwnedContent::SplitTree(_) => FrameZone::Widget { idx, id: None },
             OwnedContent::TextInput(ti) => FrameZone::Widget {
                 idx,
@@ -1415,15 +1328,7 @@ impl OwnedFrame {
 /// mirrors [`ScreenLayout::zone_for`]'s exactly.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
-        Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
-        Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
         Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
-        Surface::Progress { rect, bar } => (
-            *rect,
-            if bar.cancellable { Some(bar.id) } else { None },
-            OwnedContent::Progress(bar.clone()),
-        ),
-        Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
     }
 }
 
@@ -1553,18 +1458,18 @@ mod tests {
         // Background surface covers entire area.
         map.push(
             Rect::new(0.0, 0.0, 100.0, 100.0),
-            FrameZone::List { idx: 0 },
+            FrameZone::Widget { idx: 0, id: None },
         );
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::Scrollbar { idx: 1 },
+            FrameZone::TabBar { idx: 1 },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Scrollbar { idx: 1 });
+        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::TabBar { idx: 1 });
         // Point outside the overlay but inside the tree.
-        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::List { idx: 0 });
+        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Widget { idx: 0, id: None });
         // Point outside everything.
         assert_eq!(map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -1579,16 +1484,16 @@ mod tests {
     #[test]
     fn multiple_overlapping_zones_last_wins() {
         let mut map = FrameHitMap::new();
-        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::List { idx: 0 });
+        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::Widget { idx: 0, id: None });
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
-            FrameZone::Scrollbar { idx: 2 },
+            FrameZone::TabBar { idx: 2 },
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
-        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::List { idx: 0 });
-        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::Scrollbar { idx: 2 });
+        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Widget { idx: 0, id: None });
+        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::TabBar { idx: 2 });
     }
 
     #[test]
@@ -1970,15 +1875,18 @@ mod tests {
             rect,
             widget: Box::new(pipeline),
         });
-        layout.push(Surface::Progress {
+        layout.push(Surface::Widget {
             rect,
-            bar: progress,
+            widget: Box::new(progress),
         });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(sidebar),
         });
-        layout.push(Surface::Spinner { rect, spinner });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(spinner),
+        });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(split_tree),
@@ -2046,7 +1954,13 @@ mod tests {
                 id: Some(WidgetId::new("pv")),
             }
         );
-        assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
+        assert_eq!(
+            zones[8],
+            &FrameZone::Widget {
+                idx: 8,
+                id: Some(WidgetId::new("pb")),
+            }
+        );
         assert_eq!(
             zones[9],
             &FrameZone::Widget {
@@ -2054,7 +1968,13 @@ mod tests {
                 id: Some(WidgetId::new("sp")),
             }
         );
-        assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
+        assert_eq!(
+            zones[10],
+            &FrameZone::Widget {
+                idx: 10,
+                id: Some(WidgetId::new("sn")),
+            }
+        );
         assert_eq!(zones[11], &FrameZone::Widget { idx: 11, id: None });
         assert_eq!(
             zones[12],
@@ -2090,30 +2010,6 @@ mod tests {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
         assert_eq!(stop_ids.len(), 5);
-    }
-
-    /// A cancellable `Progress` bar *does* get a tab stop — the cancel
-    /// affordance (`ProgressBarHit::Cancel`) is a real interaction, unlike
-    /// a bare progress readout.
-    #[test]
-    fn cancellable_progress_is_a_tab_stop() {
-        let progress = ProgressBar {
-            id: "pb".into(),
-            label: String::new(),
-            value: None,
-            frame_idx: 0,
-            cancellable: true,
-            accent: None,
-        };
-        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
-        let mut layout = ScreenLayout::new();
-        layout.push(Surface::Progress {
-            rect,
-            bar: progress,
-        });
-        let stops = layout.tab_stops();
-        assert_eq!(stops.len(), 1);
-        assert_eq!(stops[0].0.as_str(), "pb");
     }
 
     /// A `Float` pushed as `Surface::Widget` paints through
@@ -2319,12 +2215,10 @@ mod tests {
         assert_eq!(empty_layout.tab_stops(), Vec::new());
     }
 
-    /// `into_frame_tree` keeps only `Surface::Widget` entries, dropping
-    /// every hand-written primitive alongside it — the routing engine it
-    /// feeds (`crate::runtime::preprocess_event`) only ever addresses the
-    /// `Interactive` contract.
+    /// `into_frame_tree` keeps every widget with an id and skips one
+    /// without — there is no id to route an event to.
     #[test]
-    fn into_frame_tree_keeps_only_widget_surfaces() {
+    fn into_frame_tree_keeps_only_widgets_with_an_id() {
         use crate::primitives::cell_grid::{Cell, CellGrid};
         use crate::types::WidgetId as Id;
 
@@ -2358,16 +2252,9 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Progress {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 10.0, 20.0, 1.0),
-            bar: ProgressBar {
-                id: Id::new("status"),
-                label: String::new(),
-                value: None,
-                frame_idx: 0,
-                cancellable: false,
-                accent: None,
-            },
+            widget: Box::new(SplitTree::Leaf("leaf".into())),
         });
         layout.push(Surface::Widget {
             rect: widget_rect,
@@ -2609,9 +2496,7 @@ mod tests {
     /// as [`FrameZone::Widget`] both live (`ScreenLayout::zone_for`) and
     /// after an [`OwnedFrame::from_layout`] capture/replay round trip
     /// (`OwnedContent::ListWidget`'s own `zone()`) — the same parity
-    /// [`OwnedContent::zone`]'s own doc promises, and distinct from the
-    /// legacy [`Surface::List`], which still hit-tests as
-    /// [`FrameZone::List`] on both paths.
+    /// [`OwnedContent::zone`]'s own doc promises.
     #[cfg(feature = "tui")]
     #[test]
     fn list_view_reached_through_surface_widget_round_trips_as_frame_zone_widget() {
@@ -2793,12 +2678,12 @@ mod tests {
                 id: Some(WidgetId::new("board")),
             },
         );
-        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Spinner { idx: 1 });
+        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::TabBar { idx: 1 });
 
         let json = serde_json::to_string(&map).expect("FrameHitMap serializes");
         let restored: FrameHitMap = serde_json::from_str(&json).expect("FrameHitMap deserializes");
         assert_eq!(restored, map);
-        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::Spinner { idx: 1 });
+        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::TabBar { idx: 1 });
 
         // `from_zones` is the inverse of `zones()` — a map rebuilt from
         // its own owned data behaves identically.

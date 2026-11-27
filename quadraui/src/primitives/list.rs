@@ -2502,7 +2502,6 @@ impl ListViewSubPart {
 /// The row a paint tints as hovered and as pressed.
 #[cfg(any(
     feature = "gtk",
-    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2513,7 +2512,6 @@ struct ListRowPointer {
 
 #[cfg(any(
     feature = "gtk",
-    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2695,13 +2693,10 @@ impl crate::primitive::Primitive for ListView {
         }
     }
 
-    /// Paints through the TUI list rasteriser
-    /// [`crate::tui::backend::TuiBackend::draw_list`] shares, cutting an
-    /// overlong row by [`crate::Style::list_cell_overflow`] (the default
-    /// ellipsis paints exactly what `draw_list` paints). See
-    /// [`crate::primitive::Primitive::paint_cells`]'s own doc for why
-    /// this method exists instead of a cell-quantised `PaintSurface`
-    /// impl.
+    /// The cell-grid painter [`paint_cells::paint`], cutting an overlong
+    /// row by [`crate::Style::list_cell_overflow`] and honouring the
+    /// paint state's `scroll_px` and striping. A cell grid paints no
+    /// hover or press tint.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2709,29 +2704,21 @@ impl crate::primitive::Primitive for ListView {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        let pointer = self.row_pointer(env);
-        let paint_state = ListPaintState::default()
-            .with_hovered_idx(pointer.hovered)
-            .with_pressed_idx(pointer.pressed)
-            .with_scroll_px(env.state.scroll_px())
-            .with_striped(env.state.striped());
-        crate::tui::draw_list_with_overflow(
-            buf,
-            area,
+        paint_cells::paint(
+            cells,
+            layout.area,
             self,
-            theme,
+            env.theme(),
             layout.nerd_fonts_enabled,
-            &paint_state,
+            env.state.scroll_px(),
+            env.state.striped(),
             env.style().list_cell_overflow,
         );
     }
 }
+
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
 
 // ── Interactive: keyboard nav + mouse click ─────────────────────────
 //
@@ -3240,7 +3227,12 @@ mod interactive_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
         let mut alone = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_scrollbar(&mut alone, &sb, &theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&sb, sb.track),
+            &mut crate::tui::BufferCellSurface::new(&mut alone),
+            &theme,
+            theme.background,
+        );
         for y in 1..11u16 {
             assert_eq!(
                 painted[(21, y)].symbol(),

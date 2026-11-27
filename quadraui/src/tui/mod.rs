@@ -54,13 +54,9 @@ mod image_decode;
 // escape-sequence plumbing, not graphics-specific, so `services::
 // emit_osc52_with` reuses them instead of carrying its own copy.
 mod kitty_graphics;
-mod list;
-mod progress;
 mod run;
-mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod spinner;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
@@ -83,24 +79,9 @@ pub use backend::TuiBackend;
 pub use cell_surface::BufferCellSurface;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
-pub(crate) use list::draw_list_with_overflow;
-#[doc(hidden)]
-pub use list::{
-    draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
-    tui_list_layout_with_scroll_px,
-};
-pub(crate) use progress::draw_progress_layout;
-#[doc(hidden)]
-pub use progress::{draw_progress, tui_progress_layout};
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};
 #[doc(hidden)]
-pub use scrollbar::draw_scrollbar;
-pub(crate) use scrollbar::draw_scrollbar_layout;
-#[doc(hidden)]
 pub use services::TuiPlatformServices;
-pub(crate) use spinner::draw_spinner_layout;
-#[doc(hidden)]
-pub use spinner::{draw_spinner, tui_spinner_layout};
 // The cell-measure constants live with the primitive, next to the shared
 // cell-grid painter that reads them; `tui::` re-exports them under the
 // names apps already build their `TabMeasure`s against.

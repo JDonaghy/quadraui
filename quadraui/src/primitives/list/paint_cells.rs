@@ -1,172 +1,54 @@
-//! TUI rasteriser for [`crate::ListView`].
+//! Cell-grid painter behind [`ListView`]'s `Primitive::paint_cells`.
 //!
-//! Per D6: this function asks the primitive for a [`crate::ListViewLayout`]
-//! (one cell per item; title row 1 cell when present) and paints the
-//! resolved positions verbatim. Apps that need their own measurer
-//! (variable-height items, e.g.) can compute the layout externally —
-//! this rasteriser computes it inline because TUI list rows are
-//! always uniform 1 cell tall.
+//! Paints through [`CellSurface`] verbs only: every glyph is a
+//! [`CellSurface::put_char`]/[`CellSurface::put_wide`] with a plain
+//! fg/bg [`CellStyle`], and the overflow ellipsis reads the cell it
+//! replaces back with [`CellSurface::get`] so per-span colouring
+//! survives the clamp.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
-
-use super::{draw_styled_text, ratatui_color, set_cell, set_cell_wide};
-use crate::primitives::list::{ListView, ListViewLayout};
+use crate::cell_surface::{solid_style, CellStyle, CellSurface};
+use crate::event::Rect;
+use crate::primitives::list::ListView;
+use crate::primitives::scrollbar::{cell_paint as scrollbar_cells, ScrollbarLayout};
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
-use crate::types::{Decoration, StyledText};
+use crate::types::{Color, Decoration, StyledText};
 use crate::CellOverflow;
 
-/// Compute the TUI cell-unit layout for a [`ListView`] without painting —
-/// the same viewport reservation (h/v scrollbar rows/columns, title row)
-/// [`draw_list`] applies internally before calling [`ListView::layout`].
-/// `draw_list` calls this exact function so paint and no-paint hit-testing
-/// can never drift apart (`PRIMITIVE_RULES.md` rule 5).
-///
-/// Coordinate frame: **LOCAL** — relative to `area`'s origin, `(0, 0)` at
-/// `area`'s top-left, matching `gtk_list_layout` / `win_list_layout` /
-/// `mac_list_layout`. Does **not** account for `ListView::bordered`'s
-/// 1-cell border inset — same as every other backend's list-layout
-/// helper; a bordered list's caller adds that inset itself.
-pub fn tui_list_layout(area: Rect, list: &ListView) -> ListViewLayout {
-    tui_list_layout_with_scroll_px(area, list, None)
+/// One painted row's cell band: the columns `[x, x + w)` on row `y`.
+#[derive(Clone, Copy)]
+struct Band {
+    x: u16,
+    w: u16,
+    y: u16,
 }
 
-/// Like [`tui_list_layout`], but with an explicit pixel-precise scroll
-/// position (`scroll_px`) instead of only [`ListView::scroll_offset`]'s
-/// whole-row value — see [`draw_list_with_scroll_px`].
-pub fn tui_list_layout_with_scroll_px(
-    area: Rect,
-    list: &ListView,
-    scroll_px: Option<f32>,
-) -> ListViewLayout {
-    list.resolve_layout(
-        crate::primitive::Units::Cells,
-        (area.width as f32, area.height as f32),
-        1.0,
-        1.0,
-        0.0,
-        scroll_px,
-    )
-}
-
-/// Draw a [`ListView`] into `area` on `buf`. Honours
-/// [`ListView::bordered`] (rounded box border + title overlay) and
-/// [`ListView::has_focus`] (the selected row only highlights when the
-/// list has focus).
+/// Paint `list` into the cell rect `area` on `surface`.
 ///
 /// # Visual contract
 ///
 /// - **Bordered:** filled with [`Theme::surface_bg`], rounded
-///   `╭─╮ │ ╰─╯` glyphs in [`Theme::border_fg`], optional title
-///   centred-ish on the top border in [`Theme::title_fg`].
-/// - **Non-bordered with title:** the title row is painted as a flat
+///   `╭─╮ │ ╰─╯` glyphs in [`Theme::border_fg`], optional title on the
+///   top border in [`Theme::title_fg`].
+/// - **Non-bordered with title:** the title row is a flat
 ///   [`Theme::header_bg`] / [`Theme::header_fg`] strip.
-/// - **Selected row:** [`Theme::selected_bg`] background and a `▶`
-///   selection prefix in the row's foreground.
+/// - **Selected row** (only while [`ListView::has_focus`]):
+///   [`Theme::selected_bg`] and a `▶` selection prefix.
 /// - **Per-item decoration → fg:** `Error → error_fg`, `Warning →
 ///   warning_fg`, `Muted → muted_fg`, others → [`Theme::surface_fg`].
-/// - **Detail span:** right-aligned in [`Theme::muted_fg`], skipped
-///   when there isn't room past the main text.
+/// - **Detail span:** right-aligned in [`Theme::muted_fg`], pinned to the
+///   viewport, skipped when there isn't room past the main text.
+/// - **Striping** (`striped` or [`ListView::striped`]): every other
+///   non-selected, non-header row on the absolute item index takes
+///   [`Theme::row_alt_bg`].
 ///
-/// `nerd_fonts_enabled` controls which icon variant gets painted —
-/// pass the consumer's own Nerd Font resolver (there is no `icons`
-/// module in this crate; `crate::icons` is `vimcode`'s own capability
-/// probe, not something quadraui ships), or forward the value most
-/// recently given to [`crate::Backend::set_nerd_fonts`], or `false` to
-/// always use ASCII fallbacks.
-pub fn draw_list(
-    buf: &mut Buffer,
-    area: Rect,
-    list: &ListView,
-    theme: &Theme,
-    nerd_fonts_enabled: bool,
-) {
-    draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None)
-}
-
-/// Like [`draw_list`], but with an explicit pixel-precise scroll
-/// position (`scroll_px`) from a
-/// [`crate::primitives::list::ListPaintState`] instead of only
-/// [`ListView::scroll_offset`]'s whole-row value.
-///
-/// TUI is a cell grid: `scroll_px` wins over `scroll_offset` (see
-/// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
-/// to a whole row — the sub-row remainder is computed and then simply
-/// never read, so TUI never paints a partial row. `None` (what
-/// [`draw_list`] passes) resolves to exactly the pre-existing whole-row
-/// behaviour.
-pub fn draw_list_with_scroll_px(
-    buf: &mut Buffer,
-    area: Rect,
-    list: &ListView,
-    theme: &Theme,
-    nerd_fonts_enabled: bool,
-    scroll_px: Option<f32>,
-) {
-    draw_list_inner(
-        buf,
-        area,
-        list,
-        theme,
-        nerd_fonts_enabled,
-        scroll_px,
-        false,
-        CellOverflow::Ellipsis,
-    )
-}
-
-/// [`draw_list_with_scroll_px`], plus [`crate::primitives::list::ListPaintState::striped`]
-/// — tint every other non-selected row with [`Theme::row_alt_bg`]
-/// ("zebra striping"). `striped: false` (what [`draw_list_with_scroll_px`]
-/// passes) paints pixel-identically to it.
-pub fn draw_list_with_state(
-    buf: &mut Buffer,
-    area: Rect,
-    list: &ListView,
-    theme: &Theme,
-    nerd_fonts_enabled: bool,
-    state: &crate::primitives::list::ListPaintState,
-) {
-    draw_list_with_overflow(
-        buf,
-        area,
-        list,
-        theme,
-        nerd_fonts_enabled,
-        state,
-        CellOverflow::Ellipsis,
-    )
-}
-
-/// [`draw_list_with_state`], cutting a row too long for its band by
-/// `overflow`: an `…` in the last cell ([`CellOverflow::Ellipsis`]) or
-/// nothing at all ([`CellOverflow::Clip`]).
-pub(crate) fn draw_list_with_overflow(
-    buf: &mut Buffer,
-    area: Rect,
-    list: &ListView,
-    theme: &Theme,
-    nerd_fonts_enabled: bool,
-    state: &crate::primitives::list::ListPaintState,
-    overflow: CellOverflow,
-) {
-    draw_list_inner(
-        buf,
-        area,
-        list,
-        theme,
-        nerd_fonts_enabled,
-        state.scroll_px,
-        state.striped,
-        overflow,
-    )
-}
-
+/// `scroll_px` wins over [`ListView::scroll_offset`] but is quantised to
+/// a whole row: a cell grid never paints a partial row. `overflow` cuts a
+/// row too long for its band with an `…` in the last cell
+/// ([`CellOverflow::Ellipsis`]) or nothing at all ([`CellOverflow::Clip`]).
 #[allow(clippy::too_many_arguments)]
-fn draw_list_inner(
-    buf: &mut Buffer,
+pub(crate) fn paint(
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
@@ -175,62 +57,45 @@ fn draw_list_inner(
     striped: bool,
     overflow: CellOverflow,
 ) {
-    // Floor to a whole cell up front — see `tui_list_layout_with_scroll_px`'s
-    // doc for why — so the scrollbar thumb below and the row layout
-    // agree on the same quantised position.
+    let cell = |v: f32| v.max(0.0).round() as u16;
+    let (ax, ay, aw, ah) = (cell(area.x), cell(area.y), cell(area.width), cell(area.height));
+    // Floored to a whole cell up front so the scrollbar thumb and the row
+    // layout agree on the same quantised position.
     let scroll_px = scroll_px.map(f32::floor);
-    if area.width == 0 || area.height == 0 {
+    if aw == 0 || ah == 0 {
         return;
     }
 
-    let hdr_fg = ratatui_color(theme.header_fg);
-    let hdr_bg = ratatui_color(theme.header_bg);
-    let fg = ratatui_color(theme.surface_fg);
-    let sel_bg = ratatui_color(theme.selected_bg);
+    let fg = theme.surface_fg;
     let row_bg = if list.bordered {
-        ratatui_color(theme.surface_bg)
-    } else {
-        ratatui_color(theme.background)
-    };
-    let dim_fg = ratatui_color(theme.muted_fg);
-    let error_fg = ratatui_color(theme.error_fg);
-    let warn_fg = ratatui_color(theme.warning_fg);
-    let border_fg = ratatui_color(theme.border_fg);
-    let title_fg = ratatui_color(theme.title_fg);
-    let h_scroll = list.h_scroll;
-    // Zebra stripe fill, computed once — see the row loop below for how
-    // it's applied. A terminal quantised to `ColorDepth::Ansi16` rounds
-    // this back to `row_bg`'s own nearest ANSI colour (see
-    // `tui::color::quantize`), which is how a low-colour terminal drops
-    // the stripe for free.
-    let alt_bg = ratatui_color(theme.row_alt_bg(if list.bordered {
         theme.surface_bg
     } else {
         theme.background
-    }));
+    };
+    let dim_fg = theme.muted_fg;
+    let h_scroll = list.h_scroll;
+    // A terminal quantised to a low colour depth rounds the stripe back to
+    // `row_bg`'s own nearest colour, which drops the stripe for free.
+    let alt_bg = theme.row_alt_bg(row_bg);
 
-    // Reserve the bottom row for a horizontal scrollbar and/or the
-    // rightmost column for a vertical scrollbar when content overflows.
-    // The track + thumb geometry comes from `ListView::hscrollbar` /
-    // `ListView::vscrollbar` — the single source of truth also used by
-    // consumers for thumb hit-testing (via `Backend::list_hscrollbar` /
-    // `Backend::list_vscrollbar`), so the painted thumb and the draggable
-    // thumb can never drift apart. In bordered mode the scrollbars sit
-    // inside the box; in flat mode they occupy the outermost row/column.
-    let layout = tui_list_layout_with_scroll_px(area, list, scroll_px);
-
-    // Re-derive the scrollbar geometry for painting (cheap — pure
-    // functions of `list` + `area`). `tui_list_layout` only needs to know
-    // *whether* a scrollbar reserves space, not its track/thumb geometry.
-    let area_f = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
+    let layout = list.resolve_layout(
+        crate::primitive::Units::Cells,
+        (aw as f32, ah as f32),
+        1.0,
+        1.0,
+        0.0,
+        scroll_px,
     );
+
+    // The scrollbar geometry comes from `ListView::hscrollbar` /
+    // `ListView::vscrollbar`, the same values `ListView`'s primitive
+    // layout reports for hit-testing, so the painted thumb and the
+    // draggable one never drift. Bordered, the bars sit inside the box;
+    // flat, they take the outermost row/column.
+    let area_f = Rect::new(ax as f32, ay as f32, aw as f32, ah as f32);
     let hscrollbar = list.hscrollbar(area_f, 1.0);
     let v_area_f = if hscrollbar.is_some() {
-        crate::event::Rect::new(
+        Rect::new(
             area_f.x,
             area_f.y,
             area_f.width,
@@ -242,140 +107,67 @@ fn draw_list_inner(
     let vscrollbar = list.vscrollbar_with_scroll_px(v_area_f, 1.0, 1.0, scroll_px);
 
     if list.bordered {
-        let top_y = area.y;
-        for col in 0..area.width {
-            let cx = area.x + col;
-            let ch = if col == 0 {
-                '╭'
-            } else if col + 1 == area.width {
-                '╮'
-            } else {
-                '─'
-            };
-            set_cell(buf, cx, top_y, ch, border_fg, row_bg);
+        paint_border(surface, (ax, ay, aw, ah), list, theme, row_bg);
+    } else if let (Some(title_bounds), Some(title)) = (layout.title_bounds, list.title.as_ref()) {
+        let y = ay + title_bounds.y.round() as u16;
+        let header = solid_style(theme.header_fg, theme.header_bg);
+        for x in ax..ax + aw {
+            surface.put_char(x, y, ' ', header);
         }
-        if let Some(ref title) = list.title {
-            let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
-            let label = format!(" {} ", title_text.trim());
-            let mut vcol: u16 = 0;
-            for ch in label.chars() {
-                let w = char_cell_width(ch);
-                let cx = area.x + 2 + vcol;
-                if cx + w >= area.x + area.width {
-                    break;
-                }
-                if w == 2 {
-                    set_cell_wide(buf, cx, top_y, ch, title_fg, row_bg);
-                } else {
-                    set_cell(buf, cx, top_y, ch, title_fg, row_bg);
-                }
-                vcol += w;
-            }
-        }
-        if area.height >= 2 {
-            let bot_y = area.y + area.height - 1;
-            for col in 0..area.width {
-                let cx = area.x + col;
-                let ch = if col == 0 {
-                    '╰'
-                } else if col + 1 == area.width {
-                    '╯'
-                } else {
-                    '─'
-                };
-                set_cell(buf, cx, bot_y, ch, border_fg, row_bg);
-            }
-        }
-        for row in (area.y + 1)..(area.y + area.height - 1) {
-            set_cell(buf, area.x, row, '│', border_fg, row_bg);
-            set_cell(buf, area.x + area.width - 1, row, '│', border_fg, row_bg);
-            for col in 1..(area.width - 1) {
-                set_cell(buf, area.x + col, row, ' ', fg, row_bg);
-            }
-        }
-    } else if let Some(title_bounds) = layout.title_bounds {
-        if let Some(ref title) = list.title {
-            let y = area.y + title_bounds.y.round() as u16;
-            for x in area.x..area.x + area.width {
-                set_cell(buf, x, y, ' ', hdr_fg, hdr_bg);
-            }
-            draw_styled_text(
-                buf,
-                area,
-                y,
-                1,
-                title,
-                hdr_fg,
-                hdr_bg,
-                Decoration::Normal,
-                dim_fg,
-            );
-        }
+        put_styled_text(
+            surface,
+            Band { x: ax, w: aw, y },
+            1,
+            title,
+            (theme.header_fg, theme.header_bg),
+            Decoration::Normal,
+            dim_fg,
+        );
     }
 
     for visible_item in &layout.visible_items {
         let item = &list.items[visible_item.item_idx];
-        let y = area.y + visible_item.bounds.y.round() as u16;
-        let item_x = area.x + visible_item.bounds.x.round() as u16;
-        let item_w = visible_item.bounds.width.round() as u16;
-        let item_area = Rect {
-            x: item_x,
-            y,
-            width: item_w,
-            height: 1,
+        let band = Band {
+            x: ax + visible_item.bounds.x.round() as u16,
+            w: visible_item.bounds.width.round() as u16,
+            y: ay + visible_item.bounds.y.round() as u16,
         };
         let is_selected = visible_item.item_idx == list.selected_idx && list.has_focus;
-        // Striped on the absolute item index, not the visible on-screen
-        // position, so a given row's shading survives scrolling, the
-        // same convention Finder/Explorer use. Selection takes priority
+        // Striped on the absolute item index, not the on-screen position,
+        // so a row's shading survives scrolling. Selection takes priority
         // over the stripe; a header-decorated row is never striped.
         let is_striped_row = (striped || list.striped)
             && !is_selected
             && !matches!(item.decoration, Decoration::Header)
             && visible_item.item_idx % 2 == 1;
         let bg = if is_selected {
-            sel_bg
+            theme.selected_bg
         } else if is_striped_row {
             alt_bg
         } else {
             row_bg
         };
         let decoration_fg = match item.decoration {
-            Decoration::Error => error_fg,
-            Decoration::Warning => warn_fg,
+            Decoration::Error => theme.error_fg,
+            Decoration::Warning => theme.warning_fg,
             Decoration::Muted => dim_fg,
             _ => fg,
         };
+        let row_style = solid_style(decoration_fg, bg);
 
-        // Fill the entire visible row with the background colour first.
-        for x in item_x..item_x + item_w {
-            set_cell(buf, x, y, ' ', decoration_fg, bg);
+        for x in band.x..band.x + band.w {
+            surface.put_char(x, band.y, ' ', row_style);
         }
 
         // `vcol` is the virtual display-cell offset within the full item
-        // content (prefix + icon + text) — a CJK/emoji glyph advances it
-        // by 2, matching `char_cell_width`, not 1 per `char`. Content
-        // whose full width sits before `h_scroll` is skipped; the rest
-        // maps to buf col (vcol - h_scroll). See `put_char_scrolled`.
+        // content (prefix + icon + text): a CJK/emoji glyph advances it by
+        // 2. Content wholly before `h_scroll` is skipped; the rest maps to
+        // band column `vcol - h_scroll`.
         let mut vcol: usize = 0;
-
-        // Selection prefix "▶ " (selected) or "  " (not selected).
         let prefix = if is_selected { "▶ " } else { "  " };
         for ch in prefix.chars() {
-            vcol = put_char_scrolled(
-                buf,
-                vcol,
-                h_scroll,
-                item_x,
-                item_w,
-                y,
-                ch,
-                decoration_fg,
-                bg,
-            );
+            vcol = put_char_scrolled(surface, band, vcol, h_scroll, ch, row_style);
         }
-
-        // Optional icon glyph + trailing space.
         if let Some(ref icon) = item.icon {
             let glyph = if nerd_fonts_enabled {
                 icon.glyph.as_str()
@@ -383,106 +175,53 @@ fn draw_list_inner(
                 icon.fallback.as_str()
             };
             for ch in glyph.chars() {
-                vcol = put_char_scrolled(
-                    buf,
-                    vcol,
-                    h_scroll,
-                    item_x,
-                    item_w,
-                    y,
-                    ch,
-                    decoration_fg,
-                    bg,
-                );
+                vcol = put_char_scrolled(surface, band, vcol, h_scroll, ch, row_style);
             }
-            vcol = put_char_scrolled(
-                buf,
-                vcol,
-                h_scroll,
-                item_x,
-                item_w,
-                y,
-                ' ',
-                decoration_fg,
-                bg,
-            );
+            vcol = put_char_scrolled(surface, band, vcol, h_scroll, ' ', row_style);
         }
 
-        // Main item text — rendered with h_scroll awareness.
         let text_start_vcol = vcol;
-        let vcol_after_text = render_spans_scrolled(
-            buf,
-            vcol,
-            h_scroll,
-            item_x,
-            item_w,
-            y,
-            &item.text,
-            decoration_fg,
-            bg,
-            item.decoration,
-            dim_fg,
-        );
+        let mut vcol_after_text = vcol;
+        for span in &item.text.spans {
+            let span_fg = span_fg(span.fg, item.decoration, decoration_fg, dim_fg);
+            let style = solid_style(span_fg, span.bg.unwrap_or(bg));
+            for ch in span.text.chars() {
+                vcol_after_text =
+                    put_char_scrolled(surface, band, vcol_after_text, h_scroll, ch, style);
+            }
+        }
 
         // The item's own right edge (not `h_scroll`'s left edge) cut the
-        // text off mid-glyph — under `CellOverflow::Ellipsis`, overwrite
-        // the last visible column with `…`, reusing whatever fg/bg that
-        // cell already has so per-span colouring survives the clamp
-        // untouched (same technique as `Tree`'s TUI rasteriser).
+        // text mid-glyph: under `CellOverflow::Ellipsis`, the last visible
+        // column becomes `…`, keeping that cell's own fg/bg.
         if overflow == CellOverflow::Ellipsis
-            && item_w > 0
-            && vcol_after_text > h_scroll + item_w as usize
-            && text_start_vcol < h_scroll + item_w as usize
+            && band.w > 0
+            && vcol_after_text > h_scroll + band.w as usize
+            && text_start_vcol < h_scroll + band.w as usize
         {
-            let last_col = item_x + item_w - 1;
-            // `last_col` may be the empty *continuation* cell of a wide
-            // glyph `render_spans_scrolled` already painted one column
-            // to its left — writing `…` straight into it would either
-            // get swallowed or leave a half-painted glyph next to the
-            // ellipsis. Detect that case (empty symbol) and back up to
-            // overwrite the glyph's own cell instead, clearing its
-            // now-stale continuation.
-            let last_is_continuation = buf
-                .cell((last_col, y))
-                .map(|c| c.symbol().is_empty())
-                .unwrap_or(false);
-            let ellipsis_x = if last_is_continuation && last_col > item_x {
-                last_col - 1
-            } else {
-                last_col
-            };
-            let (ellipsis_fg, ellipsis_bg) = buf
-                .cell((ellipsis_x, y))
-                .map(|existing| (existing.fg, existing.bg))
-                .unwrap_or((decoration_fg, bg));
-            set_cell(buf, ellipsis_x, y, '…', ellipsis_fg, ellipsis_bg);
-            if ellipsis_x != last_col {
-                set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
-            }
+            paint_ellipsis(surface, band, row_style);
         }
 
-        // Buffer column past the last text character (clamped to item_w).
-        // Used to ensure detail text doesn't overwrite main text.
-        let text_buf_col_end = if vcol_after_text > h_scroll {
-            (vcol_after_text - h_scroll).min(item_w as usize)
+        // Band column past the last text character, so the detail never
+        // overwrites the main text.
+        let text_col_end = if vcol_after_text > h_scroll {
+            (vcol_after_text - h_scroll).min(band.w as usize)
         } else {
             0
         };
 
-        // Detail text — right-aligned and pinned to the visible viewport
-        // (does not scroll with h_scroll, so it remains readable at all offsets).
+        // The detail is right-aligned and pinned to the viewport: it does
+        // not scroll with `h_scroll`, so it stays readable at any offset.
         if let Some(ref detail) = item.detail {
             let detail_w: usize = detail.spans.iter().map(|s| display_width(&s.text)).sum();
-            let start = (item_w as usize).saturating_sub(detail_w + 1);
-            if start > text_buf_col_end + 1 {
-                draw_styled_text(
-                    buf,
-                    item_area,
-                    y,
+            let start = (band.w as usize).saturating_sub(detail_w + 1);
+            if start > text_col_end + 1 {
+                put_styled_text(
+                    surface,
+                    band,
                     start,
                     detail,
-                    dim_fg,
-                    bg,
+                    (dim_fg, bg),
                     Decoration::Muted,
                     dim_fg,
                 );
@@ -490,138 +229,262 @@ fn draw_list_inner(
         }
     }
 
-    // ── Horizontal scrollbar ──────────────────────────────────────────────
-    // Drawn after items so it overlays the bottom row's background fill.
-    // Track + thumb geometry was resolved above by `ListView::hscrollbar`;
-    // we just paint it here. Consumers obtain the same `Scrollbar` via
-    // `Backend::list_hscrollbar` and hit-test its thumb for mouse-drag.
-    if let Some(ref hsb) = hscrollbar {
-        let hsb_bg = if list.bordered {
-            theme.surface_bg
-        } else {
-            theme.background
-        };
-        super::draw_scrollbar(buf, hsb, theme, hsb_bg);
-    }
-
-    // ── Vertical scrollbar ────────────────────────────────────────────────
-    // Drawn after items (and the h-scrollbar) so it occupies the rightmost
-    // column without being overwritten. Track + thumb geometry was resolved
-    // above by `ListView::vscrollbar`; consumers obtain the same `Scrollbar`
-    // via `Backend::list_vscrollbar` for thumb hit-testing.
-    if let Some(ref vsb) = vscrollbar {
-        let vsb_bg = if list.bordered {
-            theme.surface_bg
-        } else {
-            theme.background
-        };
-        super::draw_scrollbar(buf, vsb, theme, vsb_bg);
+    // Scrollbars paint after the rows so they overlay the bottom row's and
+    // rightmost column's fill; horizontal first, then vertical.
+    for bar in [hscrollbar, vscrollbar].into_iter().flatten() {
+        scrollbar_cells::paint(
+            &ScrollbarLayout::resolve(&bar, bar.track),
+            surface,
+            theme,
+            row_bg,
+        );
     }
 }
 
-// ── Private rendering helpers ─────────────────────────────────────────────
+/// The rounded box border, its title and the blank interior of a
+/// bordered list occupying the cell rect `(x, y, w, h)`.
+fn paint_border(
+    surface: &mut dyn CellSurface,
+    (x0, y0, w, h): (u16, u16, u16, u16),
+    list: &ListView,
+    theme: &Theme,
+    row_bg: Color,
+) {
+    let border = solid_style(theme.border_fg, row_bg);
+    let edge = |col: u16, left: char, right: char| {
+        if col == 0 {
+            left
+        } else if col + 1 == w {
+            right
+        } else {
+            '─'
+        }
+    };
+    for col in 0..w {
+        surface.put_char(x0 + col, y0, edge(col, '╭', '╮'), border);
+    }
+    if let Some(ref title) = list.title {
+        let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
+        let label = format!(" {} ", title_text.trim());
+        let title_style = solid_style(theme.title_fg, row_bg);
+        let mut vcol: u16 = 0;
+        for ch in label.chars() {
+            let cw = char_cell_width(ch);
+            let cx = x0 + 2 + vcol;
+            if cx + cw >= x0 + w {
+                break;
+            }
+            if cw == 2 {
+                surface.put_wide(cx, y0, ch, title_style);
+            } else {
+                surface.put_char(cx, y0, ch, title_style);
+            }
+            vcol += cw;
+        }
+    }
+    if h >= 2 {
+        let bot_y = y0 + h - 1;
+        for col in 0..w {
+            surface.put_char(x0 + col, bot_y, edge(col, '╰', '╯'), border);
+        }
+    }
+    let interior = solid_style(theme.surface_fg, row_bg);
+    for row in (y0 + 1)..(y0 + h - 1) {
+        surface.put_char(x0, row, '│', border);
+        surface.put_char(x0 + w - 1, row, '│', border);
+        for col in 1..(w - 1) {
+            surface.put_char(x0 + col, row, ' ', interior);
+        }
+    }
+}
 
-/// Write a single character at virtual column `vcol` (a **display-cell**
-/// offset, not a char index — see [`char_cell_width`]) within a
-/// horizontally-scrolled item row. Characters whose full width is
-/// `vcol < h_scroll` are silently dropped; the rest are mapped to buffer
-/// column `vcol - h_scroll` inside the item's `[item_x, item_x + item_w)`
-/// band.
+/// A span's foreground: its own colour, else the muted colour on a
+/// `Muted` row, else the row's default.
+fn span_fg(own: Option<Color>, decoration: Decoration, default_fg: Color, dim_fg: Color) -> Color {
+    match own {
+        Some(c) => c,
+        None if matches!(decoration, Decoration::Muted) => dim_fg,
+        None => default_fg,
+    }
+}
+
+/// Overwrite the band's last column with `…`, keeping that cell's fg/bg.
 ///
-/// A double-width glyph straddling either edge — `h_scroll`'s left edge
-/// or the item's right edge — is never half-painted: the visible half is
-/// blanked instead, matching [`set_cell_wide`]'s all-or-nothing contract.
-///
-/// Returns `vcol + char_cell_width(ch)` so callers can do
-/// `vcol = put_char_scrolled(...)`.
-#[allow(clippy::too_many_arguments)]
+/// When the last column is the trailing half of a double-width glyph,
+/// the `…` goes on the glyph's own cell instead and the trailing half is
+/// blanked, so no half glyph is left beside the ellipsis.
+fn paint_ellipsis(surface: &mut dyn CellSurface, band: Band, fallback: CellStyle) {
+    let last_col = band.x + band.w - 1;
+    let last_is_continuation = last_col > band.x
+        && surface
+            .get(last_col - 1, band.y)
+            .is_some_and(|(ch, _)| char_cell_width(ch) == 2);
+    let ellipsis_x = if last_is_continuation {
+        last_col - 1
+    } else {
+        last_col
+    };
+    let style = surface
+        .get(ellipsis_x, band.y)
+        .map(|(_, existing)| solid_style_of(existing))
+        .unwrap_or(fallback);
+    surface.put_char(ellipsis_x, band.y, '…', style);
+    if ellipsis_x != last_col {
+        surface.put_char(last_col, band.y, ' ', style);
+    }
+}
+
+/// `existing`'s colours with no modifiers — what a plain glyph written
+/// over that cell keeps.
+fn solid_style_of(existing: CellStyle) -> CellStyle {
+    CellStyle {
+        fg: existing.fg,
+        bg: existing.bg,
+        ..CellStyle::default()
+    }
+}
+
+/// Write `ch` at virtual column `vcol` (a display-cell offset) of a
+/// horizontally scrolled row band. A glyph wholly before `h_scroll` or
+/// past the band is dropped; a double-width glyph straddling either edge
+/// is blanked rather than half-painted. Returns the next virtual column.
 fn put_char_scrolled(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
+    band: Band,
     vcol: usize,
     h_scroll: usize,
-    item_x: u16,
-    item_w: u16,
-    y: u16,
     ch: char,
-    fg: RatatuiColor,
-    bg: RatatuiColor,
+    style: CellStyle,
 ) -> usize {
     let w = char_cell_width(ch) as usize;
     if vcol + w <= h_scroll {
-        // Entirely scrolled off past the left edge.
         return vcol + w;
     }
     if vcol < h_scroll {
-        // Straddles `h_scroll`'s left edge: only the glyph's trailing
-        // half would land at buffer column 0. Blank it rather than
-        // paint half a glyph.
-        if item_w > 0 {
-            set_cell(buf, item_x, y, ' ', fg, bg);
+        if band.w > 0 {
+            surface.put_char(band.x, band.y, ' ', style);
         }
         return vcol + w;
     }
-    let buf_col = (vcol - h_scroll) as u16;
-    if buf_col >= item_w {
-        // Entirely past the item's right edge.
+    let col = (vcol - h_scroll) as u16;
+    if col >= band.w {
         return vcol + w;
     }
     if w == 2 {
-        if buf_col + 1 < item_w {
-            set_cell_wide(buf, item_x + buf_col, y, ch, fg, bg);
+        if col + 1 < band.w {
+            surface.put_wide(band.x + col, band.y, ch, style);
         } else {
-            // Straddles the item's right edge: only the glyph's leading
-            // half fits. Blank it rather than paint half a glyph.
-            set_cell(buf, item_x + buf_col, y, ' ', fg, bg);
+            surface.put_char(band.x + col, band.y, ' ', style);
         }
     } else {
-        set_cell(buf, item_x + buf_col, y, ch, fg, bg);
+        surface.put_char(band.x + col, band.y, ch, style);
     }
     vcol + w
 }
 
-/// Render a [`StyledText`]'s spans starting at virtual column `vcol`,
-/// skipping the first `h_scroll` virtual columns. Returns the virtual column
-/// past the last character of `text` (i.e. the next `vcol` for subsequent
-/// content in the same item row).
-///
-/// Span foreground / background and `decoration` semantics mirror
-/// [`super::draw_styled_text`].
-#[allow(clippy::too_many_arguments)]
-fn render_spans_scrolled(
-    buf: &mut Buffer,
-    vcol_start: usize,
-    h_scroll: usize,
-    item_x: u16,
-    item_w: u16,
-    y: u16,
+/// Write `text`'s spans from band column `start_col`, clipped to the
+/// band, returning the column past the last glyph. A span's own colours
+/// win; otherwise `(fg, bg)` apply, with `decoration` `Muted` dimming the
+/// foreground to `dim_fg`.
+fn put_styled_text(
+    surface: &mut dyn CellSurface,
+    band: Band,
+    start_col: usize,
     text: &StyledText,
-    default_fg: RatatuiColor,
-    bg: RatatuiColor,
+    (fg, bg): (Color, Color),
     decoration: Decoration,
-    dim_fg: RatatuiColor,
+    dim_fg: Color,
 ) -> usize {
-    let mut vcol = vcol_start;
+    let mut col = start_col;
+    let width = band.w as usize;
     for span in &text.spans {
-        let span_fg = if let Some(c) = span.fg {
-            ratatui_color(c)
-        } else if matches!(decoration, Decoration::Muted) {
-            dim_fg
-        } else {
-            default_fg
-        };
-        let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
+        let style = solid_style(
+            span_fg(span.fg, decoration, fg, dim_fg),
+            span.bg.unwrap_or(bg),
+        );
         for ch in span.text.chars() {
-            vcol = put_char_scrolled(buf, vcol, h_scroll, item_x, item_w, y, ch, span_fg, span_bg);
+            if col >= width {
+                return col;
+            }
+            let w = char_cell_width(ch) as usize;
+            if w == 2 && col + 1 < width {
+                surface.put_wide(band.x + col as u16, band.y, ch, style);
+            } else {
+                surface.put_char(band.x + col as u16, band.y, ch, style);
+            }
+            col += w;
         }
     }
-    vcol
+    col
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::list::{ListItem, ListView};
-    use crate::types::{Color, StyledSpan, StyledText, WidgetId};
+    use crate::primitives::list::{ListItem, ListPaintState};
+    use crate::tui::{ratatui_color, BufferCellSurface};
+    use crate::types::{StyledSpan, WidgetId};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn rect_of(area: Rect) -> crate::event::Rect {
+        crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        )
+    }
+
+    fn draw_list_with_scroll_px(
+        buf: &mut Buffer,
+        area: Rect,
+        list: &ListView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+        scroll_px: Option<f32>,
+    ) {
+        paint(
+            &mut BufferCellSurface::new(buf),
+            rect_of(area),
+            list,
+            theme,
+            nerd_fonts_enabled,
+            scroll_px,
+            false,
+            CellOverflow::Ellipsis,
+        );
+    }
+
+    fn draw_list(
+        buf: &mut Buffer,
+        area: Rect,
+        list: &ListView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) {
+        draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None);
+    }
+
+    fn draw_list_with_state(
+        buf: &mut Buffer,
+        area: Rect,
+        list: &ListView,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+        state: &ListPaintState,
+    ) {
+        paint(
+            &mut BufferCellSurface::new(buf),
+            rect_of(area),
+            list,
+            theme,
+            nerd_fonts_enabled,
+            state.scroll_px,
+            state.striped,
+            CellOverflow::Ellipsis,
+        );
+    }
 
     fn item(text: &str, dec: Decoration) -> ListItem {
         ListItem {
@@ -1473,7 +1336,7 @@ mod multi_select_driver_tests {
     use crate::runner::{AppLogic, Reaction};
     use crate::tui::testing::TuiDriver;
     use crate::{
-        apply_selection_gesture, Backend, Decoration, Key, ListViewEvent, Modifiers, NamedKey,
+        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, Key, ListViewEvent, Modifiers, NamedKey,
         Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
     };
 
@@ -1528,11 +1391,11 @@ mod multi_select_driver_tests {
     impl AppLogic for ListApp {
         type AreaId = ();
 
-        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_list(
+            let _ = backend.draw_dyn(
                 Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
                 &self.list,
+                &(),
             );
         }
 

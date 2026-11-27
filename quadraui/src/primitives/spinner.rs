@@ -283,9 +283,7 @@ impl crate::primitive::Primitive for Spinner {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_spinner_layout`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] into the layout's bounds.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -293,12 +291,7 @@ impl crate::primitive::Primitive for Spinner {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_spinner_layout(buf, self, layout, theme);
+        cell_paint::paint(self, layout, cells, env.theme());
     }
 }
 
@@ -585,5 +578,128 @@ mod tests {
             _ => panic!(),
         }
         assert_eq!(layout.hit_test(500.0, 28.0, &s.id), SpinnerHit::Empty);
+    }
+}
+
+/// Cell-grid paint and hit-test round trips through the widget's own
+/// cell painter onto a plain buffer.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use crate::primitives::spinner::{cell_paint, cell_spinner_layout, Spinner, SpinnerLayout};
+    use crate::theme::Theme;
+    use crate::tui::BufferCellSurface;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    /// The cell layout for `area`, painted onto `buf` through the
+    /// widget's own cell painter.
+    fn draw_spinner(
+        buf: &mut Buffer,
+        area: Rect,
+        spinner: &Spinner,
+        theme: &Theme,
+    ) -> SpinnerLayout {
+        let layout = cell_spinner_layout(
+            spinner,
+            crate::event::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+        );
+        cell_paint::paint(spinner, &layout, &mut BufferCellSurface::new(buf), theme);
+        layout
+    }
+    use crate::primitives::spinner::SpinnerHit;
+    use crate::types::WidgetId;
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn mk_spinner(label: &str, frame: usize) -> Spinner {
+        Spinner {
+            id: WidgetId::new("spin"),
+            label: label.into(),
+            frame_idx: frame,
+            accent: None,
+        }
+    }
+
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends".
+    // `tui_spinner_layout` bakes `area.x`/`area.y`
+    // straight into `spinner.layout`'s returned bounds (absolute
+    // frame), so the regression guard is a full paint+hit_test round
+    // trip re-run at a non-zero origin.
+    fn glyph_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 1);
+        let mut buf = Buffer::empty(area);
+        let spinner = mk_spinner("Loading", 0);
+        let layout = draw_spinner(&mut buf, area, &spinner, &Theme::default());
+
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '⠋');
+        assert_eq!(cell_char(&buf, origin_x + 2, origin_y), 'L');
+
+        let hit = layout.hit_test(origin_x as f32 + 0.5, origin_y as f32 + 0.5, &spinner.id);
+        assert_eq!(hit, SpinnerHit::Body(WidgetId::new("spin")));
+    }
+
+    #[test]
+    fn glyph_paint_and_hit_round_trip() {
+        glyph_round_trip_at(0, 0);
+    }
+
+    /// The same glyph paint + hit_test round trip must hold when the
+    /// spinner isn't painted at the screen origin.
+    #[test]
+    fn glyph_paint_and_hit_round_trip_at_nonzero_origin() {
+        glyph_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn frame_advances_glyph() {
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        let spinner = mk_spinner("", 3);
+        draw_spinner(&mut buf, area, &spinner, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), '⠸');
+    }
+
+    #[test]
+    fn outside_returns_empty() {
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        let spinner = mk_spinner("Test", 0);
+        let layout = draw_spinner(&mut buf, area, &spinner, &Theme::default());
+        assert_eq!(layout.hit_test(50.0, 0.5, &spinner.id), SpinnerHit::Empty);
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let spinner = mk_spinner("Test", 0);
+        let _layout = draw_spinner(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    /// An area with columns but no rows has nowhere to put the glyph
+    /// row, so it paints nothing — the height half of the no-op above,
+    /// which a width-only clamp would have let through.
+    #[test]
+    fn zero_height_is_a_no_op() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let spinner = mk_spinner("Test", 0);
+        let layout = draw_spinner(
+            &mut buf,
+            Rect::new(0, 0, 10, 0),
+            &spinner,
+            &Theme::default(),
+        );
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(layout.bounds.height, 0.0);
     }
 }

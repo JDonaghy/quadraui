@@ -1575,12 +1575,9 @@ impl crate::runtime::PreprocessBackend for TuiBackend {
 
 /// Convert a [`crate::Rect`] (f32 coordinates) to a
 /// [`ratatui::layout::Rect`] (u16). Any negative values clamp to 0;
-/// fractional widths/heights round to nearest. Used by every trait
-/// `draw_*` method to translate the trait's `Rect` argument, and by
-/// [`crate::primitives::list::ListView`]'s `Primitive::layout`/
-/// `paint_cells` (`primitives/list.rs`) so the cell-quantised area a
-/// `Primitive` caller lays out against is identical to the one
-/// `draw_list` paints into — `pub(crate)` for that cross-module reuse.
+/// fractional widths/heights round to nearest. Shared by every cell
+/// painter that hands a widget's `Rect` to ratatui, so they all quantise
+/// it the same way.
 pub(crate) fn q_rect_to_ratatui(r: QRect) -> Rect {
     let x = r.x.max(0.0).round() as u16;
     let y = r.y.max(0.0).round() as u16;
@@ -2772,14 +2769,6 @@ impl Backend for TuiBackend {
         1.0
     }
 
-    /// One terminal cell, same as [`Self::char_width`] — `draw_list`
-    /// paints every row on the same fixed character grid `char_width`
-    /// measures, so there is no mismatch on TUI: a column is a column
-    /// regardless of which primitive it belongs to.
-    fn list_char_width(&self) -> f32 {
-        1.0
-    }
-
     /// `role` is ignored — a terminal cell grid has one font by
     /// definition (see [`crate::FontRole`]'s module doc) — and `height`
     /// is always one cell. `width` is [`display_width`]'s cell count,
@@ -2858,110 +2847,6 @@ impl Backend for TuiBackend {
         top.pop(frame.buffer_mut());
     }
 
-    // ─── Drawing ───────────────────────────────────────────────────────────
-    //
-    // Implementations call into the public `crate::tui::draw_*` free
-    // functions; this trait impl is the thin wrapper. The frame is
-    // stashed by `enter_frame_scope`; the theme by `set_current_theme`.
-    // Calling these outside `enter_frame_scope` is a programmer error: a
-    // `debug_assert!` makes it loud in dev builds, per
-    // `current_frame_mut`'s doc; release builds degrade instead of
-    // aborting — a void method silently skips the paint, a
-    // layout-returning method falls back to its pure `*_layout`/
-    // `*_hits`-style twin (or an already-computed local `layout`) so a
-    // host that queries geometry still gets a real answer, and
-    // a method with a paint result reports the same "nothing painted"
-    // value its "no rasteriser available" path already does elsewhere.
-
-    fn draw_list(&mut self, rect: QRect, list: &ListView) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_list called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
-    }
-
-    /// Honours `state.scroll_px` via `crate::tui::draw_list_with_scroll_px`
-    /// (`#[doc(hidden)]`, so not linked here)
-    /// — TUI quantises it to a whole row (never a partial one); see that
-    /// function's doc. Hover/press tinting (`state.hovered_idx`/
-    /// `pressed_idx`) isn't painted on TUI today, the same gap
-    /// [`Self::draw_list`] already has.
-    fn draw_list_with_state(
-        &mut self,
-        rect: QRect,
-        list: &ListView,
-        state: &crate::primitives::list::ListPaintState,
-        _focus_ring_visible: bool,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_list_with_state called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_list_with_state(frame.buffer_mut(), area, list, &theme, nerd_fonts, state);
-    }
-
-    fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
-        // Snap through the same u16 cell truncation `draw_list` uses so
-        // the consumer's thumb hit-region matches the painted thumb.
-        let area = q_rect_to_ratatui(rect);
-        list.hscrollbar(
-            crate::event::Rect::new(
-                area.x as f32,
-                area.y as f32,
-                area.width as f32,
-                area.height as f32,
-            ),
-            1.0,
-        )
-    }
-
-    fn list_vscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
-        // Snap through the same u16 cell truncation `draw_list` uses so
-        // the consumer's thumb hit-region matches the painted thumb.
-        let area = q_rect_to_ratatui(rect);
-        list.vscrollbar(
-            crate::event::Rect::new(
-                area.x as f32,
-                area.y as f32,
-                area.width as f32,
-                area.height as f32,
-            ),
-            1.0,
-        )
-    }
-
-    fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
-        crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
-    }
-
-    // ─── Layout-passthrough primitives — Stage 3 / trait migration ──────
-    //
-    // These take a pre-computed `*Layout` in their existing TUI
-    // shims. Migrating them through the trait needs either the
-    // trait to take `&Layout` (per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2)
-    // or a per-method recompute. Deferred until Stage 3.
-
-    // Phase B.5b Stage 9: trait extended with `&Layout` parameters
-    // per `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The TUI free functions
-    // for these primitives take `&Layout` directly — the trait impls
-    // are now thin pass-throughs, mirroring the GTK impls in
-    // `gtk/backend.rs`.
-
-    // ─── #13: trait coverage for the rest of the rasterised primitives ──
-
     /// Steers the terminal emulator's hardware caret via DECSCUSR
     /// (crossterm's `SetCursorStyle`) — see [`Backend::set_caret_shape`]'s
     /// doc for why TUI is the one backend that overrides this (issue
@@ -2984,83 +2869,6 @@ impl Backend for TuiBackend {
             crate::EditorCursorShape::Bar => crate::CursorShape::Bar,
             crate::EditorCursorShape::Underline => crate::CursorShape::Underline,
         });
-    }
-
-    fn draw_scrollbar(
-        &mut self,
-        _rect: QRect,
-        scrollbar: &crate::primitives::scrollbar::Scrollbar,
-    ) {
-        let theme = self.current_theme;
-        let cell_bg = theme.background;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_scrollbar called outside enter_frame_scope"
-            );
-            return;
-        };
-        // The standalone TUI scrollbar primitive paints from its own
-        // `track` bounds; `rect` is unused (the primitive owns layout).
-        // Forward-compat parameter for backends that need a clip rect.
-        crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
-        // A scrollbar paints only glyphs (thumb/track), so on a
-        // pixel backend it would otherwise be indistinguishable from the
-        // no-op default. Register the primitive's own id at its own
-        // track bounds (not `_rect`, which the primitive ignores).
-        self.register_zone(scrollbar.id, scrollbar.track);
-    }
-
-    fn draw_progress(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::progress::ProgressBar,
-    ) -> crate::primitives::progress::ProgressBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_progress called outside enter_frame_scope"
-            );
-            return self.progress_layout(rect, bar);
-        };
-        crate::tui::draw_progress(frame.buffer_mut(), area, bar, &theme)
-    }
-
-    fn progress_layout(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::progress::ProgressBar,
-    ) -> crate::primitives::progress::ProgressBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_progress_layout(bar, area)
-    }
-
-    fn draw_spinner(
-        &mut self,
-        rect: QRect,
-        spinner: &crate::primitives::spinner::Spinner,
-    ) -> crate::primitives::spinner::SpinnerLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_spinner called outside enter_frame_scope"
-            );
-            return self.spinner_layout(rect, spinner);
-        };
-        crate::tui::draw_spinner(frame.buffer_mut(), area, spinner, &theme)
-    }
-
-    fn spinner_layout(
-        &self,
-        rect: QRect,
-        spinner: &crate::primitives::spinner::Spinner,
-    ) -> crate::primitives::spinner::SpinnerLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_spinner_layout(spinner, area)
     }
 
     // ─── Window control ─────────────────────────────────────────────────
@@ -3209,30 +3017,10 @@ mod tests {
             crate::backend::BackendCaps::empty()
         }
 
-        fn draw_list(&mut self, rect: QRect, list: &ListView) {
-            self.calls.push(DrawCall::List {
-                rect,
-                item_count: list.items.len(),
-            });
-        }
-
-        fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_vscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
-            None
-        }
-        fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
-            crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
-        }
-
         fn char_width(&self) -> f32 {
             1.0
         }
         fn line_height(&self) -> f32 {
-            1.0
-        }
-        fn list_char_width(&self) -> f32 {
             1.0
         }
 
@@ -3249,57 +3037,6 @@ mod tests {
             }
         }
 
-        // ── #13: stubs for the trait methods added with this issue ──
-
-        fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
-
-        fn draw_progress(
-            &mut self,
-            _r: QRect,
-            bar: &crate::primitives::progress::ProgressBar,
-        ) -> crate::primitives::progress::ProgressBarLayout {
-            bar.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::progress::ProgressBarMeasure::new(_r.width, _r.height),
-            )
-        }
-
-        fn progress_layout(
-            &self,
-            _r: QRect,
-            bar: &crate::primitives::progress::ProgressBar,
-        ) -> crate::primitives::progress::ProgressBarLayout {
-            bar.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::progress::ProgressBarMeasure::new(_r.width, _r.height),
-            )
-        }
-
-        fn draw_spinner(
-            &mut self,
-            _r: QRect,
-            spinner: &crate::primitives::spinner::Spinner,
-        ) -> crate::primitives::spinner::SpinnerLayout {
-            spinner.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
-            )
-        }
-
-        fn spinner_layout(
-            &self,
-            _r: QRect,
-            spinner: &crate::primitives::spinner::Spinner,
-        ) -> crate::primitives::spinner::SpinnerLayout {
-            spinner.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
-            )
-        }
     }
 
     /// Generic helper — the minimal "app render code" that consumes
@@ -3307,7 +3044,7 @@ mod tests {
     /// changes.
     fn paint_overlays<B: Backend>(backend: &mut B, palette: &Palette, list: &ListView) {
         crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
-        backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(0.0, 20.0, 80.0, 4.0), list, &());
     }
 
     fn sample_palette() -> Palette {
@@ -5123,65 +4860,11 @@ mod tests {
         assert!(backend.services().show_message_dialog(opts).is_none());
     }
 
-    /// Issue #506: `list_layout` is documented **LOCAL** — a caller
-    /// subtracts `rect.x`/`rect.y` itself before hit-testing — so a
-    /// non-zero origin must not change the returned geometry at all.
-    #[test]
-    fn list_layout_ignores_rect_origin() {
-        let backend = TuiBackend::new();
-        let list = sample_list();
-
-        let at_origin = backend.list_layout(QRect::new(0.0, 0.0, 20.0, 5.0), &list);
-        let shifted = backend.list_layout(QRect::new(7.0, 3.0, 20.0, 5.0), &list);
-
-        assert_eq!(
-            at_origin, shifted,
-            "list_layout must ignore rect.x/rect.y (LOCAL frame, issue #505)"
-        );
-        assert!(
-            !at_origin.visible_items.is_empty(),
-            "sanity: the sample list has an item to lay out"
-        );
-    }
-
-    /// `list_layout` must be the exact resolver `draw_list` uses
-    /// internally, not a parallel reimplementation that can drift from
-    /// it (`PRIMITIVE_RULES.md` rule 5) — paint into a real `Buffer` (the
-    /// same free-fn path `crate::tui::draw_list` uses) and compare the
-    /// helper both paths share.
-    #[test]
-    fn list_layout_matches_draw_list_resolver() {
-        let backend = TuiBackend::new();
-        let list = sample_list();
-        let rect = QRect::new(3.0, 1.0, 20.0, 5.0);
-        let area = q_rect_to_ratatui(rect);
-
-        let no_paint = backend.list_layout(rect, &list);
-
-        // `draw_list` returns `()`, but it computes its geometry by
-        // calling `tui_list_layout(area, list)` internally (see
-        // `tui/list.rs::draw_list`) — the same helper `list_layout`
-        // calls. Paint into a real buffer (proving it doesn't panic on
-        // the shared geometry) and assert the helper output directly.
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_list(&mut buf, area, &list, &backend.current_theme, false);
-        let via_paint_helper = crate::tui::tui_list_layout(area, &list);
-
-        assert_eq!(
-            no_paint, via_paint_helper,
-            "list_layout must equal the exact helper draw_list uses internally"
-        );
-        assert!(
-            !no_paint.visible_items.is_empty(),
-            "sanity: the sample list has an item to lay out"
-        );
-    }
-
     /// `ListView` painted through `crate::primitive::Primitive`
     /// (via [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
     /// body, which calls [`crate::backend::Backend::cell_surface`] then
-    /// `Primitive::paint_cells`) must match `TuiBackend::draw_list`'s own
-    /// output byte-for-byte — the `Primitive` pilot's TUI story. Routed
+    /// `Primitive::paint_cells`) must match the list's cell painter run
+    /// straight onto a buffer, byte-for-byte. Routed
     /// through `&mut dyn Backend`, not a concrete `&mut TuiBackend` — the
     /// shape every `compose::*` controller's `render` is handed — so this
     /// proves the seam works through the generic trait path, not only an
@@ -5192,7 +4875,7 @@ mod tests {
     /// overflowing `max_content_width` for the horizontal one, more items
     /// than fit for the vertical one).
     #[test]
-    fn list_primitive_paint_cells_matches_draw_list() {
+    fn list_primitive_paint_cells_matches_the_cell_painter() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -5234,22 +4917,23 @@ mod tests {
             })
             .expect("draw");
 
-        let mut via_draw_list_backend = TuiBackend::new();
-        let mut via_draw_list_terminal =
-            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
-        via_draw_list_terminal
-            .draw(|frame| {
-                via_draw_list_backend.enter_frame_scope(frame, |b| {
-                    b.draw_list(rect, &list);
-                });
-            })
-            .expect("draw");
+        let mut direct = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 12));
+        crate::primitives::list::paint_cells::paint(
+            &mut crate::tui::BufferCellSurface::new(&mut direct),
+            rect,
+            &list,
+            &crate::Theme::default(),
+            false,
+            None,
+            false,
+            crate::CellOverflow::Ellipsis,
+        );
 
         assert_eq!(
             via_primitive_terminal.backend().buffer(),
-            via_draw_list_terminal.backend().buffer(),
+            &direct,
             "ListView painted through Primitive::paint_cells must match \
-             TuiBackend::draw_list byte-for-byte"
+             its cell painter byte-for-byte"
         );
         let screen = screen_text(via_primitive_terminal.backend().buffer());
         assert!(
@@ -5261,10 +4945,10 @@ mod tests {
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s returned
     /// [`crate::ListViewPrimitiveLayout`] must hit-test against the same
     /// absolute area it was just painted into — not merely paint the
-    /// same pixels `draw_list` does
-    /// ([`list_primitive_paint_cells_matches_draw_list`] above), but also
-    /// resolve to the same row [`TuiBackend::list_layout`] does for a
-    /// click at that row's position. Routed through `&mut dyn Backend`,
+    /// same cells the painter does
+    /// ([`list_primitive_paint_cells_matches_the_cell_painter`] above), but
+    /// also resolve to the same row its local [`crate::ListViewLayout`]
+    /// does for a click at that row's position. Routed through `&mut dyn Backend`,
     /// same reasoning as that test.
     #[test]
     fn list_primitive_draw_primitive_layout_hit_tests_correctly() {
@@ -5287,12 +4971,11 @@ mod tests {
             .expect("draw");
         let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
 
-        let no_paint_layout = backend.list_layout(rect, &list);
         assert_eq!(
             primitive_layout.hit_test(rect.x, rect.y),
-            no_paint_layout.hit_test(0.0, 0.0),
+            primitive_layout.layout.hit_test(0.0, 0.0),
             "Primitive::layout's absolute hit_test must agree with \
-             TuiBackend::list_layout's local one at the same point"
+             the list's local layout at the same point"
         );
     }
 
@@ -6297,7 +5980,7 @@ mod tests {
     }
 
     /// A list app whose selected row paints a `▶ ` prefix no other row
-    /// has (`tui::list::draw_list`'s own tests document this) — enough
+    /// has (the list cell painter's own tests document this) — enough
     /// to tell one row's text apart from another's in a captured
     /// screenshot without needing any style assertion.
     struct ScreenshotListApp {

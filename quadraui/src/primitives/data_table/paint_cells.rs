@@ -483,7 +483,12 @@ pub(crate) fn draw_data_table_body(
             1.0,
             layout.visible_rows as f32,
         );
-        crate::tui::draw_scrollbar(buf, &sb, theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&sb, sb.track),
+            &mut crate::tui::BufferCellSurface::new(buf),
+            theme,
+            theme.background,
+        );
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
@@ -500,7 +505,12 @@ pub(crate) fn draw_data_table_body(
             visible_w,
             1.0,
         );
-        crate::tui::draw_scrollbar(buf, &hsb, theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&hsb, hsb.track),
+            &mut crate::tui::BufferCellSurface::new(buf),
+            theme,
+            theme.background,
+        );
     }
 
     // ── Footer (pinned summary row) ────────────────────────────────────
