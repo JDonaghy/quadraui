@@ -468,14 +468,29 @@ fn data_table_wide_middle_column_leaves_neighbours_intact_in_painted_texts() {
         "wide-status pod row should be painted: {:?}",
         driver.painted_texts()
     );
+    // The over-long Status value paints as one entry: a prefix of the
+    // full value, ellipsis-truncated to its own column, ending before the
+    // next column's cell starts.
+    const FULL_STATUS: &str =
+        "CrashLoopBackOff: ImagePullBackOff waiting for registry retry backoff window";
+    let texts = driver.painted_texts();
+    let status = texts
+        .iter()
+        .find(|t| t.starts_with("CrashLoopBackOff"))
+        .unwrap_or_else(|| panic!("the wide Status cell should be painted: {texts:?}"));
+    let kept = status
+        .strip_suffix('…')
+        .unwrap_or_else(|| panic!("the wide Status cell is ellipsis-truncated: {status:?}"))
+        .trim_end();
     assert!(
-        driver
-            .painted_texts()
-            .iter()
-            .any(|t| t.contains("ImagePullBackOff waiting for registry retry backoff window")),
-        "the full over-long Status value should still be recorded intact (GTK clips visually \
-         via cr.clip(), not by truncating the underlying text): {:?}",
-        driver.painted_texts()
+        FULL_STATUS.starts_with(kept) && kept.len() < FULL_STATUS.len(),
+        "the truncated Status cell is a prefix of the full value: {status:?}"
+    );
+    let status_bounds = driver.find_bounds(status).expect("Status cell bounds");
+    let age_bounds = driver.find_bounds("1h").expect("Age cell bounds");
+    assert!(
+        status_bounds.x + status_bounds.width <= age_bounds.x,
+        "the Status cell {status_bounds:?} ends before the Age cell {age_bounds:?} starts"
     );
     assert!(
         driver.find_bounds("1h").is_some(),
