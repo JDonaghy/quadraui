@@ -486,6 +486,7 @@ impl Primitive for Counter {
         surface.surface_draw_text_run(*layout, &counter_label(self.count), theme.accent_fg);
     }
 
+    #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
         layout: &Rect,
