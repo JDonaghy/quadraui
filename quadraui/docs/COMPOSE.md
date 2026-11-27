@@ -270,35 +270,39 @@ let config = ShellConfig::new("App", panels).with_bottom_panel_config(BottomPane
 
 ---
 
-## `ChatController` — `src/compose/chat_controller.rs`
+## `Chat` — `src/compose/chat.rs`
 
 **Owns:** a chat overlay — scrollable transcript, multi-line input with
 history navigation, status strip, collapsible turns.
 
-**Controller only.** `ChatController::new(id)`; push turns with
-`set_transcript`, paint with `render(backend, rect)`, route with
-`handle_event(&event, backend, rect)` → `Handled<ChatControllerAction>`.
+**Widget:** `Chat` (`State` = `ChatState`, `Action` = `ChatEvent`, delivered
+as `UiEvent::Chat(id, event)`). Every visible field is on the descriptor;
+`Chat::apply` stores each write-back event (`InputChanged`,
+`TranscriptScrolled`, `FocusedTurnChanged`, `TurnCollapsed`).
 
-**Actions (`ChatControllerAction`):** `Submit { text }`,
+**Semantic events (`ChatEvent`):** `Submit { text }`,
 `StreamChunk { text }`, `Cancelled`, `StopRequested`,
 `KeyPressed { key, modifiers }`, `TurnClicked { turn_idx, row_in_turn }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut chat = ChatController::new("chat");
-chat.set_transcript(turns.clone());
-chat.render(backend, area);
-// in handle():
-if let Handled::Event(ChatControllerAction::Submit { text }) =
-    chat.handle_event(&event, backend, area)
-{
-    send_to_model(text);
+// render(): paint it; frame_tree(): register it.
+frame.push(Surface::Widget { rect: area, widget: Box::new(chat.clone()) });
+tree.push(chat.id, area, Box::new(chat.clone()));
+// handle():
+if let UiEvent::Chat(_, event) = event {
+    chat.apply(&event);
+    if let ChatEvent::Submit { text } = event {
+        send_to_model(text);
+        chat.clear_input();
+    }
 }
 ```
 
-<!-- TODO(0.12 final pass): after D3 (#2949) ports Chat onto the contract, add
-its widget (name, State, Action, UiEvent variant) and recheck this section. -->
+A host whose events do not pass through `AppLogic::frame_tree` (a
+`ShellApp`) keeps a `ChatState` and drives the chat with
+`compose::drive_ui_event`.
 
 **Example:** `examples/tui_chat.rs` / `examples/gtk_chat.rs`
 (`examples/common/chat_demo.rs`).
@@ -349,9 +353,10 @@ e.g. "new branch name"). `Tab` switches modes without clearing the query.
 **Widget:** `DualModePalette` (`State` = `DualModePaletteState`, `Action` =
 `DualModePaletteAction`, delivered as `UiEvent::DualModePalette(id, action)`).
 
-**Controller:** `DualModePaletteController::new(title, input_label, items)`;
-`render(rect, backend)`; `handle_event(&event, visible_rows)` →
-`Handled<DualModePaletteAction>`.
+`DualModePalette::apply(&action, visible_rows)` stores the query, mode and
+highlight changes. An unmodified `j`/`k` moves the highlight in list mode
+only with `vim_keys` set (`with_vim_keys(true)`); by default both type into
+the query.
 
 **Actions (`DualModePaletteAction`):** `ItemConfirmed { idx }`,
 `TextConfirmed { value }`, `QueryChanged { value }`,
@@ -360,12 +365,16 @@ e.g. "new branch name"). `Tab` switches modes without clearing the query.
 **Smallest wiring:**
 
 ```rust,ignore
-let mut pal = DualModePaletteController::new("Branches", Some("New branch name:".to_string()), items);
-pal.render(popup_rect, backend);
-match pal.handle_event(&event, visible_rows) {
-    Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => checkout(idx),
-    Handled::Event(DualModePaletteAction::TextConfirmed { value }) => create_branch(value),
-    _ => {}
+let pal = DualModePalette::new(id, "Branches", Some("New branch name:".to_string()), items);
+// render()/frame_tree(): Surface::Widget + tree.push(pal.id, popup_rect, ...).
+// handle():
+if let UiEvent::DualModePalette(_, action) = event {
+    pal.apply(&action, visible_rows);
+    match action {
+        DualModePaletteAction::ItemConfirmed { idx } => checkout(idx),
+        DualModePaletteAction::TextConfirmed { value } => create_branch(value),
+        _ => {}
+    }
 }
 ```
 

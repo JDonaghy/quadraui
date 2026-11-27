@@ -1866,7 +1866,6 @@ impl TestHost {
 mod tests {
     use super::*;
     use crate::testing::RecordingBackend;
-    use crate::Backend;
 
     // Tests use `RecordingBackend` for its `draw_text_input`/`text_input_layout`
     // and `draw_spinner`/`spinner_layout` implementations, which return real layouts
