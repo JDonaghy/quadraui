@@ -747,7 +747,10 @@ pub use contract::{ChartPrimitiveLayout, ChartState};
     all(feature = "macos", target_os = "macos")
 ))]
 pub(crate) use paint_pixels::paint;
-#[cfg(all(test, feature = "gtk"))]
+#[cfg(all(
+    test,
+    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
+))]
 pub(crate) use paint_pixels::SERIES_COLORS;
 
 #[cfg(test)]
