@@ -7,20 +7,19 @@
 //! - pushed by a host as a type-erased `Surface::Widget` at
 //!   `DropOverlay::bounds()`, painted by `DynWidget::paint` →
 //!   `Primitive::paint_cells`;
-//! - painted by `TabGroupController::render` while a tab drag hovers a
-//!   drop zone, which also registers the `DROP_OVERLAY_ZONE_ID` zone so the
-//!   text-free overlay is attributable in the frame inventory.
+//! - opened as a popup by a routed `TabGroup` while a tab drag hovers a
+//!   drop zone, with the host registering the `DROP_OVERLAY_ZONE_ID` zone
+//!   so the text-free overlay is attributable in the frame inventory.
 //!
 //! The overlay is `non_interactive!`: a click over it reaches the app as
 //! the plain mouse event and takes no focus.
 
-use std::cell::RefCell;
-
 use quadraui::testing::ConformanceDriver;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, BackendWidget, Button, DropOverlay, PaneTab, Reaction, Rect, ScreenLayout,
-    SplitDirection, Surface, TabGroupController, Theme, UiEvent, WidgetId, DROP_OVERLAY_ZONE_ID,
+    AppLogic, Backend, Button, DropOverlay, FrameTree, Reaction, Rect, ScreenLayout,
+    SplitDirection, Surface, TabGroup, TabGroupPane, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupTab, Theme, UiEvent, WidgetId, DROP_OVERLAY_ZONE_ID,
 };
 
 const COLS: u16 = 60;
@@ -158,41 +157,36 @@ fn clicking_an_overlay_reaches_the_app_and_takes_no_focus() {
     );
 }
 
-// ── `TabGroupController` painting the overlay during a tab drag ───────────
+// ── A routed `TabGroup` showing the overlay during a tab drag ─────────────
 
-struct Blank;
+const GROUP: Rect = Rect::new(0.0, 0.0, COLS as f32, ROWS as f32);
 
-impl BackendWidget for Blank {
-    fn render(&self, _backend: &mut dyn Backend, _rect: Rect) {}
-}
-
-fn tab(id: &str, label: &str) -> PaneTab {
-    PaneTab {
-        id: id.to_string(),
-        label: label.to_string(),
-        closable: true,
-        content: Box::new(Blank),
-    }
-}
-
-/// Two side-by-side panes; the test starts and moves a tab drag through
-/// the controller's own drag API, then re-renders.
+/// Two side-by-side panes, painted as a widget and routed through the
+/// app's `FrameTree`. The host registers the overlay's zone at the rect
+/// the group's stored drag resolves.
 struct TabGroupApp {
-    ctrl: RefCell<TabGroupController>,
+    group: TabGroup,
 }
 
 impl TabGroupApp {
     fn new() -> Self {
-        let mut ctrl = TabGroupController::with_pane(
-            "left",
-            vec![tab("a", "alpha.rs"), tab("b", "beta.rs")],
-            "a",
+        let mut group = TabGroup::with_pane(
+            "tg",
+            TabGroupPane::new(
+                "left",
+                vec![
+                    TabGroupTab::new("a", "alpha.rs"),
+                    TabGroupTab::new("b", "beta.rs"),
+                ],
+                "a",
+            ),
             SplitDirection::Horizontal,
         );
-        ctrl.add_pane_with_tab("right", tab("c", "gamma.rs"));
-        Self {
-            ctrl: RefCell::new(ctrl),
-        }
+        group.add_pane_after(
+            0,
+            TabGroupPane::new("right", vec![TabGroupTab::new("c", "gamma.rs")], "c"),
+        );
+        Self { group }
     }
 }
 
@@ -200,35 +194,47 @@ impl AppLogic for TabGroupApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        self.ctrl
-            .borrow_mut()
-            .render(backend, Rect::new(0.0, 0.0, COLS as f32, ROWS as f32));
+        use quadraui::DrawsPrimitives;
+        let layout = backend
+            .draw_dyn(GROUP, &self.group, &())
+            .downcast_ref::<TabGroupPrimitiveLayout>()
+            .cloned()
+            .expect("a tab group paints its own layout");
+        let overlay = quadraui::with_widget_states(|store| {
+            store
+                .get(&self.group.id)
+                .and_then(|state| state.downcast_ref::<TabGroupState>())
+                .and_then(|state| self.group.drop_overlay(state, &layout))
+        });
+        if let Some(overlay) = overlay {
+            backend.register_zone(WidgetId::new(DROP_OVERLAY_ZONE_ID), overlay.bounds());
+        }
     }
 
-    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        Reaction::Continue
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.group.id, GROUP, Box::new(self.group.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::TabGroup(_, intent) = event {
+            self.group.apply(intent);
+        }
+        Reaction::Redraw
     }
 }
 
-/// Start dragging `beta.rs` and hover the middle of the right pane's
-/// content area, then repaint.
+/// Press `beta.rs` and drag it over the middle of the right pane's
+/// content area, without releasing.
 fn drag_into_right_pane() -> TuiDriver<TabGroupApp> {
     let mut driver = TuiDriver::new(TabGroupApp::new(), COLS, ROWS);
     let (bx, by) = driver.find("beta.rs").expect("beta.rs tab painted");
     let gamma = driver
         .find_bounds("gamma.rs")
         .expect("gamma.rs tab painted");
-    {
-        let mut ctrl = driver.app().ctrl.borrow_mut();
-        assert!(
-            ctrl.handle_tab_drag_start(bx, by),
-            "drag starts on a tab body"
-        );
-        let target_x = gamma.x + 4.0;
-        let target_y = (ROWS / 2) as f32;
-        assert!(ctrl.handle_tab_drag_move(target_x, target_y).is_some());
-    }
-    driver.render();
+    driver.mouse_down(bx, by);
+    driver.mouse_move(gamma.x + 4.0, (ROWS / 2) as f32);
     driver
 }
 
@@ -295,7 +301,7 @@ fn no_overlay_and_no_zone_without_a_drag() {
 // ── Observability on every registered driver ──────────────────────────────
 
 /// A host that paints one overlay with `draw_dyn` and registers its zone,
-/// exactly as `TabGroupController::render` does, in a fixture-sized
+/// exactly as a host of a dragging `TabGroup` does, in a fixture-sized
 /// frame. The overlay hands the backend no text, so the zone is the only
 /// thing in the frame inventory that attributes it.
 struct ZoneFixture;

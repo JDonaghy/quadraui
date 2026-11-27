@@ -2049,7 +2049,7 @@ name = "tui_canvas_regions"
 path = "examples/tui_canvas_regions.rs"
 required-features = ["tui"]
 
-# #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
+# #596 — `Workspace` (open-N-view-one document tabs) mounted
 # inside a `ShellView` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets
 # autodiscovered with no `required-features` and fails

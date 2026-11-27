@@ -1,10 +1,13 @@
-//! `WorkspaceController` demo — adapted from
+//! `Workspace` demo — adapted from
 //! `quadraui/examples/common/workspace_demo.rs`.
 //!
 //! An open-N-view-one document set living **inside a panel**, not in
-//! shell chrome: the controller renders its own tab strip into whatever
+//! shell chrome: the workspace paints its own tab strip into whatever
 //! rect the host hands it, and the host paints the active document's
-//! body wherever it likes.
+//! body wherever it likes. The strip is one of the demo's routed widgets
+//! ([`Demo::frame_tree`]), so clicks on it reach `Workspace`'s own
+//! `Interactive` and come back as `UiEvent::Workspace` intents the demo
+//! applies.
 //!
 //! Two variants show the permanent-vs-preview tab tier: variant 0 opens
 //! only permanent tabs, variant 1 starts with one preview tab already
@@ -12,11 +15,10 @@
 //! the previous preview tab in place rather than accumulating tabs.
 
 use quadraui::DrawsPrimitives;
-use std::cell::RefCell;
 
 use quadraui::{
-    Backend, BackendCaps, Color, Handled, Key, Reaction, Rect, StatusBar, StatusBarSegment, Style,
-    UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
+    Backend, BackendCaps, Color, FrameTree, Key, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, UiEvent, WidgetId, Workspace, WorkspaceDoc, WorkspaceEvent,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -53,10 +55,10 @@ const BACKLOG: [(&str, &str); 2] = [
 const BAR_ID: &str = "gallery:workspace:tabs";
 const VARIANT_COUNT: usize = 2;
 
-/// Build variant `variant`'s initial controller: variant 1 opens one
+/// Build variant `variant`'s initial workspace: variant 1 opens one
 /// extra preview tab on top of the three permanent docs variant 0 has.
-fn build_workspace(variant: usize) -> WorkspaceController {
-    let mut workspace = WorkspaceController::new(BAR_ID);
+fn build_workspace(variant: usize) -> Workspace {
+    let mut workspace = Workspace::new(WidgetId::new(BAR_ID));
     for (id, label) in INITIAL {
         workspace.open(WorkspaceDoc::new(id, label));
     }
@@ -70,25 +72,25 @@ fn build_workspace(variant: usize) -> WorkspaceController {
 }
 
 pub struct WorkspaceDemo {
-    // `RefCell` so `render(&self, …)` can call the controller's `&mut
-    // self` render — each variant gets its own instance and counters so
-    // switching variants doesn't share state.
-    workspaces: [RefCell<WorkspaceController>; VARIANT_COUNT],
+    // Each variant gets its own instance and counters so switching
+    // variants doesn't share state.
+    workspaces: [Workspace; VARIANT_COUNT],
     next_backlog: [usize; VARIANT_COUNT],
     next_preview_backlog: [usize; VARIANT_COUNT],
     last_event: String,
+    /// The strip rect the last `render` painted, which `frame_tree`
+    /// routes clicks against.
+    strip: std::cell::Cell<Rect>,
 }
 
 impl WorkspaceDemo {
     pub fn new() -> Self {
         Self {
-            workspaces: [
-                RefCell::new(build_workspace(0)),
-                RefCell::new(build_workspace(1)),
-            ],
+            workspaces: [build_workspace(0), build_workspace(1)],
             next_backlog: [0; VARIANT_COUNT],
             next_preview_backlog: [0, 1],
             last_event: "ready".into(),
+            strip: std::cell::Cell::new(Rect::default()),
         }
     }
 
@@ -121,9 +123,7 @@ impl WorkspaceDemo {
             return Reaction::Redraw;
         };
         self.next_backlog[variant] += 1;
-        let events = self.workspaces[variant]
-            .borrow_mut()
-            .open(WorkspaceDoc::new(id, label));
+        let events = self.workspaces[variant].open(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
@@ -133,24 +133,25 @@ impl WorkspaceDemo {
             return Reaction::Redraw;
         };
         self.next_preview_backlog[variant] += 1;
-        let events = self.workspaces[variant]
-            .borrow_mut()
-            .open_preview(WorkspaceDoc::new(id, label));
+        let events = self.workspaces[variant].open_preview(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
     fn promote_active(&mut self, variant: usize) -> Reaction {
-        let mut ws = self.workspaces[variant].borrow_mut();
+        let ws = &mut self.workspaces[variant];
         let Some(id) = ws.active_id().map(str::to_string) else {
             return Reaction::Continue;
         };
         match ws.promote(&id) {
-            Some(ev) => {
-                drop(ws);
-                self.record(&[ev])
-            }
+            Some(ev) => self.record(&[ev]),
             None => Reaction::Continue,
         }
+    }
+
+    /// The strip's rect inside the demo's `area`.
+    fn strip_rect(backend: &dyn Backend, area: Rect) -> Rect {
+        let strip_h = chrome_strip_height(backend, |s| s.tab_height);
+        Rect::new(area.x, area.y, area.width, strip_h)
     }
 
     fn label_bar(id: &str, text: String, fg: Color) -> StatusBar {
@@ -188,13 +189,14 @@ impl Demo for WorkspaceDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        let strip_h = chrome_strip_height(backend, |s| s.tab_height);
-        let strip = Rect::new(area.x, area.y, area.width, strip_h);
-        self.workspaces[variant].borrow_mut().render(backend, strip);
+        let strip = Self::strip_rect(backend, area);
+        let strip_h = strip.height;
+        self.strip.set(strip);
+        backend.draw_dyn(strip, &self.workspaces[variant], &());
 
         let row_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let body_rect = Rect::new(area.x, area.y + strip_h, area.width, row_h);
-        let ws = self.workspaces[variant].borrow();
+        let ws = &self.workspaces[variant];
         let body = match ws.active_id() {
             Some(id) if ws.is_preview(id) => format!(" viewing: {id} (preview) "),
             Some(id) => format!(" viewing: {id} "),
@@ -237,28 +239,31 @@ impl Demo for WorkspaceDemo {
                 key: Key::Char('m'),
                 ..
             } => self.promote_active(variant),
+            // Ctrl+Tab / Ctrl+PageUp/PageDown cycle documents whether or
+            // not the strip holds keyboard focus.
             UiEvent::KeyPressed { key, modifiers, .. } => {
-                let handled = self.workspaces[variant]
-                    .borrow_mut()
-                    .handle_key_event(key, *modifiers);
-                match handled {
-                    Handled::Event(ev) => self.record(&[ev]),
-                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
+                match Workspace::cycle_delta(key, *modifiers) {
+                    Some(delta) => match self.workspaces[variant].cycle(delta) {
+                        Some(ev) => self.record(&[ev]),
+                        None => Reaction::Continue,
+                    },
+                    None => Reaction::Continue,
                 }
             }
-            UiEvent::MouseDown {
-                position, button, ..
-            } => {
-                let outcome = self.workspaces[variant]
-                    .borrow_mut()
-                    .handle_click_event(position.x, position.y, *button);
-                match outcome {
-                    Handled::Event(events) => self.record(&events),
-                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
-                }
+            // The strip's clicks, routed through its own `Interactive`.
+            UiEvent::Workspace(_, intent) => {
+                let events = self.workspaces[variant].apply(intent.clone());
+                self.record(&events)
             }
             _ => Reaction::Continue,
         }
+    }
+
+    fn frame_tree(&self, variant: usize, _area: Rect) -> FrameTree {
+        let ws = &self.workspaces[variant];
+        let mut tree = FrameTree::new();
+        tree.push(ws.id, self.strip.get(), Box::new(ws.clone()));
+        tree
     }
 
     fn source(&self) -> &'static str {
@@ -266,9 +271,9 @@ impl Demo for WorkspaceDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        let ws = self.workspaces[variant].borrow();
+        let ws = &self.workspaces[variant];
         serde_json::json!({
-            "docs": ws.docs().iter().map(|d| &d.label).collect::<Vec<_>>(),
+            "docs": ws.docs.iter().map(|d| &d.label).collect::<Vec<_>>(),
             "active": ws.active_id(),
             "last_event": self.last_event,
         })
@@ -287,37 +292,37 @@ mod tests {
     #[test]
     fn open_next_backlog_doc_grows_the_workspace() {
         let mut demo = WorkspaceDemo::new();
-        let before = demo.workspaces[0].borrow().len();
+        let before = demo.workspaces[0].len();
         demo.open_next_backlog_doc(0);
-        assert_eq!(demo.workspaces[0].borrow().len(), before + 1);
+        assert_eq!(demo.workspaces[0].len(), before + 1);
     }
 
     #[test]
     fn preview_doc_replaces_itself_on_repeat() {
         let mut demo = WorkspaceDemo::new();
-        let before = demo.workspaces[0].borrow().len();
+        let before = demo.workspaces[0].len();
         demo.open_next_preview_doc(0);
-        let after_first = demo.workspaces[0].borrow().len();
+        let after_first = demo.workspaces[0].len();
         assert_eq!(after_first, before + 1);
 
         // A second preview open replaces the first preview tab in place
         // rather than accumulating a new tab.
         demo.open_next_preview_doc(0);
-        let after_second = demo.workspaces[0].borrow().len();
+        let after_second = demo.workspaces[0].len();
         assert_eq!(after_second, after_first);
     }
 
     #[test]
     fn variant_one_starts_with_a_preview_tab_already_open() {
         let demo = WorkspaceDemo::new();
-        let ws = demo.workspaces[1].borrow();
+        let ws = &demo.workspaces[1];
         let active = ws.active_id().expect("variant 1 should have an active doc");
         assert!(ws.is_preview(active));
     }
 
     /// On a pixel backend (a GTK-shaped chrome line height, simulated via
     /// `RecordingBackend`), the tab strip `render` hands
-    /// `WorkspaceController` is exactly `Style::tab_height` tall — not the
+    /// the workspace is exactly `Style::tab_height` tall — not the
     /// raw chrome line height, the bug this test guards against
     /// regressing.
     #[test]

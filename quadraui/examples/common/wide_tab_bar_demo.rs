@@ -8,7 +8,7 @@
 //!
 //! Deliberately independent of two other things that look similar:
 //!
-//! - [`super::tab_group_demo::TabGroupDemo`] — its `TabGroupController`
+//! - [`super::tab_group_demo::TabGroupDemo`] — its `TabGroup` tab
 //!   labels are hardcoded ASCII and not settable from outside, so it can't
 //!   host a wide-char label at all.
 //! - `tests/acceptance/ms-11/wide_tab_labels.rs`'s sealed `WideTabFixture`

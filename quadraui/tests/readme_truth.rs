@@ -809,8 +809,8 @@ fn readme_compose_section() -> String {
 /// For a `src/compose/<stem>.rs` module, the public type name(s) it is
 /// expected to expose, by the convention nearly every compose module
 /// follows: `PascalCase(stem)` directly (`bottom_panel` -> `BottomPanel`) or
-/// `PascalCase(stem) + "Controller"` (`workspace` -> `WorkspaceController`,
-/// `tab_group` -> `TabGroupController`). A handful of modules don't fit
+/// `PascalCase(stem) + "Controller"` (`toast_stack` ->
+/// `ToastStackController`). A handful of modules don't fit
 /// either shape — because their primary type is named for what it is
 /// rather than its file (`app_shell` -> `ShellView`), because they expose
 /// more than one primary type
