@@ -1891,6 +1891,50 @@ mod tests {
         assert_eq!(LayoutCtx::resolve_row_height(1.0, &style), 1.0);
     }
 
+    /// A ctx with no paint state attached answers every paint-state
+    /// question with its default; an attached state answers through
+    /// [`LayoutCtx::paint_state`], and `scroll_px` takes part in
+    /// equality since a layout resolves geometry from it.
+    #[test]
+    fn layout_ctx_carries_the_attached_paint_state() {
+        let bare = LayoutCtx::new(16.0, 8.0, false);
+        assert_eq!(bare.paint_state().scroll_px(), None);
+        let state = PaintStateSnapshot {
+            scroll_px: Some(12.5),
+            striped: true,
+            ..PaintStateSnapshot::default()
+        };
+        let scrolled = bare.with_paint_state(&state);
+        assert_eq!(scrolled.paint_state().scroll_px(), Some(12.5));
+        assert!(scrolled.paint_state().striped());
+        assert_ne!(scrolled, bare);
+    }
+
+    /// The record keeps a copy of the state each widget painted with,
+    /// and the last paint of an id wins.
+    #[test]
+    fn painted_state_reads_back_the_last_paint_of_an_id() {
+        let id = WidgetId::new("rows");
+        let mut painted = PaintedWidgets::default();
+        for scroll_px in [Some(4.0), Some(9.5)] {
+            painted.record(PaintedWidget {
+                id,
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                layout: Box::new(()),
+                sub_regions: Vec::new(),
+                hover_targets: None,
+                paint_state: PaintStateSnapshot::of(
+                    &crate::primitives::list::ListPaintState::default().with_scroll_px(scroll_px),
+                ),
+            });
+        }
+        assert_eq!(
+            painted.painted_state(&id).and_then(|s| s.scroll_px),
+            Some(9.5)
+        );
+        assert_eq!(painted.painted_state(&WidgetId::new("other")), None);
+    }
+
     /// [`LayoutCtx::units`] reports [`Units::Cells`] for TUI's whole-cell
     /// `line_height` convention and [`Units::Pixels`] for a real pixel
     /// font metric, matching [`Units::Pixels`]/[`Units::Cells`]'s own

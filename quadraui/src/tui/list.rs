@@ -683,6 +683,26 @@ mod tests {
         assert_eq!(striped_buf[(0, 3)].bg, alt_bg);
     }
 
+    /// The descriptor's own `striped` tints the same rows as a paint
+    /// state's, with no paint state at all.
+    #[test]
+    fn descriptor_striped_tints_alternate_rows_without_a_paint_state() {
+        let mut list = make_list(1);
+        list.items.push(item("delta", Decoration::Normal));
+        list.striped = true;
+        let area = Rect::new(0, 0, 20, 5);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(area);
+        draw_list(&mut buf, area, &list, &theme, false);
+
+        assert_eq!(buf[(0, 2)].bg, ratatui_color(theme.background));
+        assert_eq!(
+            buf[(0, 3)].bg,
+            ratatui_color(theme.row_alt_bg(theme.background))
+        );
+    }
+
     #[test]
     fn no_selection_marker_when_unfocused() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
