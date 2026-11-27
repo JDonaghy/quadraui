@@ -693,11 +693,6 @@ pub fn item_heights(line_height: f32) -> (f32, f32) {
 /// The platform a shortcut hint renders for when the popup paints
 /// through [`Primitive::paint`], which carries no backend identity of its
 /// own: the host OS this build runs on.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 pub(crate) fn host_platform() -> Platform {
     if cfg!(target_os = "macos") {
         Platform::Macos
@@ -1242,11 +1237,10 @@ fn border_inset_for(ctx: &LayoutCtx) -> f32 {
 /// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
 /// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
 /// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
-/// plus a trailing gap plus either a `▶` submenu arrow or
-/// [`ContextMenuItem::detail`]'s text) but measures the real chrome-font
-/// advance instead of counting characters.
-/// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
-/// the same omission `measure_generic_width` documents for itself.
+/// plus a trailing gap plus either a `▶` submenu arrow or the row's
+/// [`shortcut_text`], a rendered [`ContextMenuItem::key_equivalent`]
+/// included) but measures the real chrome-font advance instead of
+/// counting characters.
 pub(crate) fn level_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
     let cells = matches!(ctx.units(), Units::Cells);
     let measure = |text: &str| -> f32 {
@@ -1269,6 +1263,11 @@ pub(crate) fn level_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -
     };
     let checked_w = measure(check_glyph) + space_w;
     let arrow_w = space_w + measure(arrow_glyph);
+    let platform = if cells {
+        Platform::Tui
+    } else {
+        host_platform()
+    };
     let max_content_w = items
         .iter()
         .filter(|item| !item.is_separator())
@@ -1280,8 +1279,7 @@ pub(crate) fn level_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -
             }
             if item.submenu.is_some() {
                 w += arrow_w;
-            } else if let Some(det) = &item.detail {
-                let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
+            } else if let Some(text) = shortcut_text(item, platform) {
                 w += space_w + measure(&text);
             }
             w
@@ -3124,6 +3122,26 @@ mod tests {
             disabled: true,
             ..Default::default()
         }
+    }
+
+    /// A row's rendered key equivalent takes room in its level's width,
+    /// so the right-aligned shortcut never overlaps the label.
+    #[test]
+    fn a_key_equivalent_widens_its_level() {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let plain = vec![action("select-all")];
+        let mut with_key = plain.clone();
+        with_key[0].key_equivalent = Some(Accelerator {
+            id: crate::accelerator::AcceleratorId::new("editor.save"),
+            binding: crate::accelerator::KeyBinding::Save,
+            scope: crate::accelerator::AcceleratorScope::Global,
+            label: None,
+        });
+        let shortcut = shortcut_text(&with_key[0], Platform::Tui).expect("rendered");
+        assert_eq!(
+            level_width(&ctx, &with_key, 1.0) - level_width(&ctx, &plain, 1.0),
+            1.0 + crate::text_util::display_width(&shortcut) as f32
+        );
     }
 
     #[test]
