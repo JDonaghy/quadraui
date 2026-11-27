@@ -18,19 +18,10 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequen
 
 from .wire import (
     Accelerator,
-    ButtonDescriptor,
     ContextMenuItem,
-    DataTableDescriptor,
-    ImageDescriptor,
     ImageSource,
-    ListViewDescriptor,
-    ProgressBarDescriptor,
     ShellConfigDescriptor,
-    SpinnerDescriptor,
     SystemTheme,
-    TabBarDescriptor,
-    TextDisplayDescriptor,
-    TreeViewDescriptor,
     UiEvent,
 )
 
@@ -183,9 +174,7 @@ class QuiApp:
     def viewport(self) -> Tuple[float, float, float]: ...
     def line_height(self) -> float: ...
     def char_width(self) -> float: ...
-    def list_char_width(self) -> float: ...
     def chrome_line_height(self) -> float: ...
-    def scrollbar_reserve(self) -> float: ...
     def scales_text_rows(self) -> bool: ...
     def snap_height(self, h: float) -> float: ...
     def measure_text(self, text: str, role: str = "chrome") -> Tuple[float, float]: ...

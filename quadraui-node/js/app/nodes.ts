@@ -23,30 +23,32 @@ import type {
   ButtonIconPosition,
   ButtonVariant,
   Color,
-  ColumnDescriptor,
+  Column as ColumnDescriptor,
   ControlWidth,
-  DataRowDescriptor,
+  DataRow as DataRowDescriptor,
   FormSpacing,
   Icon,
   LabelAlign,
   LabelPosition,
   LayoutScrollPayload,
-  ListItemDescriptor,
+  ListItem as ListItemDescriptor,
   PaddingValue,
   RowAlign,
   SelectionMode,
   StatusBarSegment,
   StyledText,
-  TabBarSegmentDescriptor,
-  TextDisplayLineDescriptor,
-  ToolbarButtonDescriptor,
-  ToolbarDescriptor,
-  TreePath,
-  TreeRowDescriptor,
+  TabBarSegment as TabBarSegmentDescriptor,
+  TextDisplayLine as TextDisplayLineDescriptor,
+  ToolbarButton as ToolbarButtonDescriptor,
+  Toolbar as ToolbarDescriptor,
+  TreeRow as TreeRowDescriptor,
   TreeStyle,
   ValidationState,
   WidgetId,
 } from "../wire";
+
+/** A row path: the index at each tree depth. */
+type TreePath = number[];
 
 /**
  * A renderable value: a {@link Node}, a `Component` (duck-typed through
@@ -368,7 +370,7 @@ exports.Tabs = Tabs;
 
 // --- leaves -----------------------------------------------------------------
 
-/** `TreeViewDescriptor.style` is a required field on the wire -- used whenever {@link Tree} doesn't pass its own `style`. */
+/** `TreeView.style` is a required field on the wire -- used whenever {@link Tree} doesn't pass its own `style`. */
 const DEFAULT_TREE_STYLE: TreeStyle = {
   indent: 2,
   show_chevrons: true,
@@ -438,7 +440,7 @@ export interface TableOptions {
 }
 
 /**
- * A `DataTableDescriptor`. `onActivate` fires on either `RowDoubleClicked`
+ * A `DataTable`. `onActivate` fires on either `RowDoubleClicked`
  * or `RowActivated` (a mouse double-click and an Enter-to-activate both
  * mean "open this row"); `onSelect` on `RowSelected`; `onHeaderClick` on
  * `HeaderClicked`.
@@ -479,7 +481,7 @@ export interface ListOptions {
 }
 
 /**
- * A `ListViewDescriptor`. `onSelect` fires on `SelectionChanged` (a plain
+ * A `ListView`. `onSelect` fires on `SelectionChanged` (a plain
  * click, or `j`/`k` moving the keyboard selection); `onActivate` fires on
  * either `ItemDoubleClicked` (a mouse double-click) or `ItemActivated`
  * (Enter while a row holds the selection) -- the same "open this row"
@@ -522,7 +524,7 @@ function fieldLabel(label: string | StyledText): StyledText {
 }
 
 /**
- * Options every field kind below shares -- the `FormFieldDescriptor` keys
+ * Options every field kind below shares -- the `FormField` keys
  * that sit alongside `kind`, not inside it. `id` is the field's own wire
  * id; omitted, {@link Form} derives `${formId}:field:${index}` for it, the
  * same positional auto-id shape {@link Tabs}' own tabs use.
@@ -545,7 +547,7 @@ export interface FormFieldCommonOptions {
  * One {@link Form} field, awaiting its own wire id -- built by one of
  * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
  * `PasswordField`/`TextAreaField` below. Not a {@link Node}: a
- * `FormFieldDescriptor` is a flat entry in `FormDescriptor.fields`, not a
+ * `FormField` is a flat entry in `Form.fields`, not a
  * child in the layout tree, so it has no `children` slot of its own and
  * resolves its id from {@link Form}'s own `build` directly rather than
  * through `./runtime.ts`'s `walk`. Passing one of these directly into a
@@ -758,7 +760,7 @@ export interface FormOptions {
 }
 
 /**
- * A `FormDescriptor`: a vertical list of labeled fields built from
+ * A `Form`: a vertical list of labeled fields built from
  * `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
  * `PasswordField`/`TextAreaField` above. Each field's own `onChange`/
  * `onSubmit` is registered under that field's own resolved id (see
@@ -812,7 +814,7 @@ exports.Form = Form;
 // --- standalone leaves matching a Form field kind -----------------------
 //
 // Each of these mirrors a `Form` field kind above but stands on its own in
-// the layout tree as a `LayoutLeafNode` -- not a `FormFieldDescriptor` --
+// the layout tree as a `LayoutLeafNode` -- not a `FormField` --
 // with no `label`/`hint`/validation chrome of its own. Despite that, each
 // still emits its change through the same `FormEvent` shapes (see
 // `./runtime.ts`'s `FORM_FIELD_EVENT_MAP`), wrapped in the same `"Form"`
@@ -821,8 +823,8 @@ exports.Form = Form;
 //
 // `TextInput`/`Toggle` have no standalone-leaf constructor here: the
 // standalone `text_input`/`switch` wire kinds are their own, differently
-// shaped descriptors (`TextInputDescriptor.lines: string[]`, a
-// multi-line editor; `SwitchDescriptor`), not a `FieldKind::TextInput`/
+// shaped descriptors (`TextInput.lines: string[]`, a
+// multi-line editor; `Switch`), not a `FieldKind::TextInput`/
 // `FieldKind::Toggle` payload -- out of scope for this additive pass.
 
 export interface CheckboxOptions {
@@ -833,7 +835,7 @@ export interface CheckboxOptions {
   onChange?: (value: boolean) => void;
 }
 
-/** A `CheckboxDescriptor` leaf. */
+/** A `Checkbox` leaf. */
 function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
   const { id = null, disabled, focused, onChange } = options;
 
@@ -858,7 +860,7 @@ export interface SliderOptions {
   onChange?: (value: number) => void;
 }
 
-/** A `SliderDescriptor` leaf. */
+/** A `Slider` leaf. */
 function Slider(value: number, min: number, max: number, options: SliderOptions = {}): Node {
   const { id = null, step, disabled, focused, onChange } = options;
 
@@ -884,7 +886,7 @@ export interface SelectOptions {
   onChange?: (selectedIdx: number) => void;
 }
 
-/** A `SelectDescriptor` leaf -- the standalone sibling of {@link DropdownField}. */
+/** A `Select` leaf -- the standalone sibling of {@link DropdownField}. */
 function Select(choices: string[], options: SelectOptions = {}): Node {
   const { id = null, selectedIdx, disabled, focused, onChange } = options;
 
@@ -912,7 +914,7 @@ export interface PasswordOptions {
   onSubmit?: (value: string) => void;
 }
 
-/** A `PasswordDescriptor` leaf -- the standalone sibling of {@link PasswordField}. */
+/** A `PasswordInput` leaf -- the standalone sibling of {@link PasswordField}. */
 function Password(value: string, options: PasswordOptions = {}): Node {
   const { id = null, cursor, hasFocus, maskChar, onChange, onSubmit } = options;
 
@@ -942,7 +944,7 @@ export interface TextAreaOptions {
   onChange?: (value: string) => void;
 }
 
-/** A `TextAreaDescriptor` leaf -- the standalone sibling of {@link TextAreaField}; see that field's own doc for why there is no `onSubmit`. */
+/** A `TextArea` leaf -- the standalone sibling of {@link TextAreaField}; see that field's own doc for why there is no `onSubmit`. */
 function TextArea(value: string, options: TextAreaOptions = {}): Node {
   const { id = null, placeholder, cursor, hasFocus, visibleRows, onChange } = options;
 
@@ -965,7 +967,7 @@ export interface StatusBarOptions {
   onSegmentClick?: (segmentId: WidgetId) => void;
 }
 
-/** A `StatusBarDescriptor`. `onSegmentClick` fires on `SegmentClicked`, with that segment's own `id`. */
+/** A `StatusBar`. `onSegmentClick` fires on `SegmentClicked`, with that segment's own `id`. */
 function StatusBar(
   leftSegments: StatusBarSegment[],
   rightSegments: StatusBarSegment[],
@@ -989,7 +991,7 @@ export interface TextDisplayOptions {
   id?: string;
 }
 
-/** A `TextDisplayDescriptor` leaf -- plain read-only text. */
+/** A `TextDisplay` leaf -- plain read-only text. */
 function TextDisplay(lines: TextDisplayLineDescriptor[], options: TextDisplayOptions = {}): Node {
   const { id = null } = options;
 
@@ -1013,7 +1015,7 @@ export interface ButtonOptions {
 }
 
 /**
- * A `ButtonDescriptor` leaf. `quadraui` hit-tests a press landing on the
+ * A `Button` leaf. `quadraui` hit-tests a press landing on the
  * leaf and replaces it outright with a `ButtonActivated` event naming the
  * button, for both a pointer click on its body and an `Enter`/`Space` while
  * it holds real keyboard focus. `onClick` is dispatched by `./runtime.ts`'s
@@ -1050,7 +1052,7 @@ export interface ToolbarOptions {
  * A raw `ToolbarDescriptor` -- not a `Node`: every place a toolbar can go
  * ({@link SidebarPanel}'s own `toolbar`, a `LayoutLeafNode`'s `"toolbar"`
  * key) wants the descriptor object directly, and the bindings don't yet
- * route toolbar button clicks to an event (see `ButtonDescriptor`'s own
+ * route toolbar button clicks to an event (see `Button`'s own
  * doc on why `onClick` lives on {@link Button}, not here).
  *
  * Because this result never passes through `Node`/`./runtime.ts`'s `walk`,

@@ -85,7 +85,7 @@ export interface WidgetSize {
 
 /**
  * `paint`'s own answer -- the same `ops`/`regions` shape
- * `../wire.ts`'s own `CanvasDescriptor` carries. Every coordinate is
+ * `../wire.ts`'s own `Canvas` carries. Every coordinate is
  * LOCAL to the `rect` `paint` was given, not the screen.
  */
 export interface WidgetPaint {

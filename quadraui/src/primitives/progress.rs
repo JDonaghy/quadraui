@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(fill.width, 50.0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProgressBar {
     pub id: WidgetId,
     /// Label rendered above or inline with the bar. Empty = bar only.

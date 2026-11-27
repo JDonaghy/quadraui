@@ -81,6 +81,7 @@ pub type CardId = WidgetId;
 /// `Warning` and `Blocked`, which don't map cleanly onto a CI pipeline's
 /// pass/fail/skip vocabulary but are common in review/approval workflows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum BadgeStatus {
     /// Not yet started — rendered dim (·).
     Pending,
@@ -125,6 +126,7 @@ pub fn badge_fg_color(status: BadgeStatus, theme: &Theme) -> Color {
 /// vocabulary are entirely host-defined; render as many or as few
 /// badges per card as the host's workflow needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CardBadge {
     /// Short display label rendered next to the status icon.
     pub label: String,
@@ -136,6 +138,7 @@ pub struct CardBadge {
 
 /// A single card displayed in a board column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoardCard {
     /// Unique identifier for this card (used for selection + actions).
     pub id: CardId,
@@ -158,6 +161,7 @@ pub struct BoardCard {
 
 /// A single kanban column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoardColumn {
     /// Unique identifier for this column (used in [`BoardHit::ColumnHeader`]).
     pub id: WidgetId,
@@ -209,6 +213,7 @@ pub struct BoardColumn {
 /// assert_eq!(layout.hit_test(1.0, 2.0), BoardHit::Card(WidgetId::new("card:1")));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BoardModel {
     /// Unique identifier for this board widget.
     pub id: WidgetId,
@@ -228,6 +233,7 @@ pub struct BoardModel {
 
 /// Semantic direction for keyboard navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MoveDir {
     Up,
     Down,
@@ -241,6 +247,7 @@ pub enum MoveDir {
 /// mutations. Example: `OpenIssue(id)` might open a detail panel; the
 /// board does not navigate itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum BoardAction {
     /// Selection cursor moved to this card (click or keyboard).
     SelectCard(CardId),

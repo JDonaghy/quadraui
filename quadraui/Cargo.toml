@@ -269,7 +269,7 @@ union_now_doc_hidden = "allow"
 union_pub_field_now_doc_hidden = "allow"
 
 [package.metadata.docs.rs]
-features = ["tui", "tui-images", "gtk", "win", "terminal", "macos", "layout", "a11y", "control"]
+features = ["tui", "tui-images", "gtk", "win", "terminal", "macos", "a11y", "control"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
@@ -456,24 +456,6 @@ macos = [
     "dep:objc2-user-notifications",
     "dep:block2",
 ]
-# Optional flex/grid layout module, `quadraui::flex`. Pulls in `taffy` —
-# unit-agnostic (plain `f32` in, plain `f32` out, same as `event::Rect`),
-# so it pairs with any backend feature or none at all; see
-# `src/flex.rs`'s module doc for the design.
-#
-# `ShellView`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
-# item packing each delegate their 1D position arithmetic through
-# `crate::flex::pack_1d` when this feature is enabled, and fall
-# back to the identical hand-rolled arithmetic when it is not — verified
-# byte-identical under both configurations by each primitive's own test
-# suite. Enable `layout` alongside `tui`/`gtk`/`win`/`macos` to route that
-# packing through the shared flex engine; leaving it off keeps those three
-# primitives working exactly as before, just without `taffy` in the
-# dependency graph. It is deliberately NOT bundled into any backend
-# feature above — see the `[features]` table's own "No `default` key"
-# comment for why no feature here pulls in another opt-in feature.
-layout = ["dep:taffy"]
-
 # Optional accessibility conversions: `From<A11yRole> for accesskit::Role`
 # and friends, in `src/a11y.rs`'s `accesskit_convert` submodule. Pulls in
 # `accesskit`. The `A11yRole`/`A11yInfo` data model itself is always
@@ -495,6 +477,11 @@ a11y = ["dep:accesskit"]
 # separately.
 control = []
 
+# Derives `schemars::JsonSchema` on every wire-facing descriptor, event and
+# style type, so `quadraui-binding-core`'s `export_wire_schema` binary can
+# emit the binding wire schema from the Rust types themselves.
+schema = ["dep:schemars"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 # Unconditional (not feature-gated): `Theme::from_vscode_json` (#775)
@@ -504,6 +491,8 @@ serde = { version = "1.0", features = ["derive"] }
 # `src/primitives/*`); this promotes it to a real dependency so the same
 # crate/version is available outside `#[cfg(test)]` too.
 serde_json = "1.0"
+# Optional — pulled in by the `schema` feature.
+schemars = { version = "1", optional = true }
 # Optional — pulled in by the `gtk` feature.
 gtk4 = { version = "0.11", features = ["v4_10"], optional = true }
 # Bumped alongside gtk4 (#796): pangocairo/pango/glib are one version
@@ -579,16 +568,6 @@ keyring = { version = "4", optional = true }
 # session" reasoning as `trash`'s and `keyring`'s own comments above,
 # which is why this pulls in on TUI too instead of degrading.
 directories = { version = "6", optional = true }
-# Optional — pulled in by the `layout` feature:
-# `quadraui::flex`'s flex/grid layout engine. `default-features = false`
-# drops taffy's own `serde`/`parse`/`profile`/`debug` extras this crate
-# never uses; `taffy_tree` is the owned-tree API `FlexLayout` wraps,
-# `flexbox`/`grid` are the two layout algorithms this module exposes,
-# `content_size` is needed for `Layout::scrollable_overflow_rect` to
-# exist at all (read internally by `taffy`'s own grid/flex code even
-# though `FlexLayout::compute` doesn't surface it), and `std` is this
-# crate's existing baseline (no `no_std` target in this workspace).
-taffy = { version = "0.14.0", default-features = false, features = ["taffy_tree", "flexbox", "grid", "std", "content_size"], optional = true }
 # Optional — pulled in by the `a11y` feature: typed
 # `From<A11yRole> for accesskit::Role` and friends in `src/a11y.rs`'s
 # `accesskit_convert` submodule. The data model itself (`A11yRole`,

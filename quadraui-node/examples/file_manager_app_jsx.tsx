@@ -32,16 +32,18 @@ import type { Renderable } from "../js/app/index";
 import type { QuiAppActions } from "../js/index";
 import type {
   Color,
-  ColumnDescriptor,
-  DataRowDescriptor,
+  Column,
+  DataRow,
   Icon,
   StatusBarSegment,
   StyledText,
-  ToolbarDescriptor,
-  TreePath,
-  TreeRowDescriptor,
+  Toolbar as ToolbarDescriptor,
+  TreeRow,
   TreeStyle,
 } from "../js/wire";
+
+/** A row path: the index at each tree depth. */
+type TreePath = number[];
 
 /** One filesystem entry in the lazily-scanned model. `children === null` means "not read yet" -- distinct from `[]` ("read, and empty"). */
 interface FsNode {
@@ -146,8 +148,8 @@ function styledText(text: string): StyledText {
 }
 
 /** Walk the expanded model into index-aligned `[rows, nodes]`, directories only -- recomputed every frame. */
-function folderRows(root: FsNode): [TreeRowDescriptor[], FsNode[]] {
-  const rows: TreeRowDescriptor[] = [];
+function folderRows(root: FsNode): [TreeRow[], FsNode[]] {
+  const rows: TreeRow[] = [];
   const nodes: FsNode[] = [];
 
   function walk(node: FsNode, nodePath: TreePath, indent: number): void {
@@ -183,7 +185,7 @@ function humanSize(n: number | null): string {
 }
 
 /** The `data_table` rows for one opened folder's contents, subfolders first (sorted by `compareNodes` already), a trailing "/" marking a navigable row. */
-function detailsRows(folder: FsNode): DataRowDescriptor[] {
+function detailsRows(folder: FsNode): DataRow[] {
   const children = folder.children ?? [];
   if (children.length === 0) {
     const note = folder.loadError ? "(unreadable)" : "(empty folder)";
@@ -197,7 +199,7 @@ function detailsRows(folder: FsNode): DataRowDescriptor[] {
   });
 }
 
-const DETAILS_COLUMNS: ColumnDescriptor[] = [
+const DETAILS_COLUMNS: Column[] = [
   { title: "Name", width: { Flex: 2.0 }, align: "Left" },
   { title: "Size", width: { Flex: 1.0 }, align: "Right" },
   { title: "Kind", width: { Flex: 1.0 }, align: "Left" },
@@ -253,7 +255,7 @@ class FileManager {
 
   // --- navigation helpers --------------------------------------------------
 
-  private _visible(): [TreeRowDescriptor[], FsNode[]] {
+  private _visible(): [TreeRow[], FsNode[]] {
     const [rows, nodes] = folderRows(this.root);
     if (!nodes.includes(this.cursor)) {
       let node: FsNode | null = this.cursor;

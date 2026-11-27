@@ -53,6 +53,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(2.0, 0.0), MenuBarHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MenuBar {
     pub id: WidgetId,
     pub items: Vec<MenuBarItem>,
@@ -68,6 +69,7 @@ pub struct MenuBar {
 
 /// One top-level menu entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MenuBarItem {
     pub id: WidgetId,
     /// Display label, e.g. `"&File"` (with the `&` marking the

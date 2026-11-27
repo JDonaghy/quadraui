@@ -88,6 +88,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(0.0, 0.0), TerminalHit::Cell { row: 0, col: 0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Terminal {
     pub id: WidgetId,
     pub cells: Vec<Vec<TerminalCell>>,
@@ -113,6 +114,7 @@ impl Default for Terminal {
 /// [`TerminalLayout::scrollbar`] reserved, and paints it with the
 /// scrollbar's own painter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TerminalScrollbar {
     pub total_lines: usize,
     pub visible_lines: usize,
@@ -168,6 +170,7 @@ impl TerminalScrollbar {
 /// (cursor / selection / find match) that the backend interprets
 /// visually.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TerminalCell {
     /// The cell's full grapheme cluster — a base character plus any
     /// combining marks (accents, etc.) vt100 appended to it, e.g. `"a"`,
@@ -240,6 +243,7 @@ pub struct TerminalCell {
 /// are unrelated primitives' concepts, so this crate keeps them as separate
 /// types rather than reusing one across `Terminal` and `Editor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TerminalCursorShape {
     /// Filled block — the default when the child never sends DECSCUSR.
     #[default]
@@ -599,6 +603,7 @@ pub enum TerminalSplitHit {
 /// engine's `handle_wheel`, which decides between forwarding the wheel to
 /// the child and scrolling local history).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TerminalEvent {
     /// A key was pressed with the terminal focused, for a host that
     /// reports keys per terminal rather than as plain

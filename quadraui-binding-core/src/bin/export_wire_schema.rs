@@ -1,14 +1,14 @@
-//! Dumps [`quadraui_binding_core::wire_schema::schema`] to stdout as JSON --
-//! `scripts/gen_wire_types.py` shells out to this binary instead of
-//! hand-transcribing the wire schema into Python, so the generated
-//! `wire.pyi`/`wire.d.ts` are produced from the Rust schema (and the
-//! [`quadraui_binding_core::wire_schema::coverage`] drift guards alongside
-//! it) rather than a copy of it.
+//! Prints [`quadraui_binding_core::wire::schema::wire_schema`] to stdout:
+//! one JSON Schema document with `$defs` for every wire type, a `kinds`
+//! map from each leaf widget kind to its descriptor and a `roots` map of
+//! the whole-message shapes. `scripts/gen_wire_types.py` reads it to
+//! generate `wire.pyi`, `wire.d.ts` and the reference section of
+//! `docs/bindings-wire-format.md`.
 //!
-//! Usage: `cargo run --quiet -p quadraui-binding-core --bin export_wire_schema`
+//! Usage: `cargo run --quiet -p quadraui-binding-core --features schema --bin export_wire_schema`
 
 fn main() {
-    let defs = quadraui_binding_core::wire_schema::schema();
-    let json = serde_json::to_string(&defs).expect("wire schema must serialize to JSON");
+    let doc = quadraui_binding_core::wire::schema::wire_schema();
+    let json = serde_json::to_string_pretty(&doc).expect("the wire schema serializes to JSON");
     println!("{json}");
 }

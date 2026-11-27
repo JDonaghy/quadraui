@@ -59,6 +59,7 @@ pub use layout::{EditorHit, EditorLayout, EditorPaintOptions};
 /// Values match the LSP wire format (1–4). Vimcode-side adapter at the
 /// rasteriser boundary maps `lsp::DiagnosticSeverity` ↔ this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiagnosticSeverity {
     Error = 1,
     Warning = 2,
@@ -70,6 +71,7 @@ pub enum DiagnosticSeverity {
 
 /// Per-line git diff status, mirrored from `vimcode::core::git::GitLineStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GitLineStatus {
     Added,
     Modified,
@@ -83,6 +85,7 @@ pub enum GitLineStatus {
 /// `vimcode::core::engine::DiffLine`. `None` on `EditorLine.diff_status`
 /// means diff mode is not active for the line's window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffLine {
     Same,
     Added,
@@ -95,6 +98,7 @@ pub enum DiffLine {
 
 /// Shape of the editor cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CursorShape {
     /// Filled block (Normal / Visual modes).
     Block,
@@ -108,6 +112,7 @@ pub enum CursorShape {
 
 /// Visual-selection mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SelectionKind {
     Char,
     Line,
@@ -118,6 +123,7 @@ pub enum SelectionKind {
 
 /// Cursor position within the visible window area (view-line + char column).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CursorPos {
     /// Index into `Editor.lines` (0 = topmost visible line).
     pub view_line: usize,
@@ -129,6 +135,7 @@ pub struct CursorPos {
 
 /// Primary cursor: position plus shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EditorCursor {
     pub pos: CursorPos,
     pub shape: CursorShape,
@@ -138,6 +145,7 @@ pub struct EditorCursor {
 
 /// A normalised visual-selection range (start ≤ end) in buffer coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EditorSelection {
     pub kind: SelectionKind,
     /// First selected buffer line.
@@ -257,6 +265,7 @@ impl EditorSelection {
 /// `font_scale` narrowed from `f64` → `f32` so derives of
 /// `PartialEq` / `Serialize` work without `Eq` blocking us.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Style {
     pub fg: Color,
     pub bg: Option<Color>,
@@ -284,6 +293,7 @@ pub struct Style {
 /// of `quadraui::types::StyledSpan`) would lose alignment with these
 /// upstream sources.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EditorStyledSpan {
     pub start_byte: usize,
     pub end_byte: usize,
@@ -296,6 +306,7 @@ pub struct EditorStyledSpan {
 /// painting plus tooltip-on-hover. `start_col` / `end_col` are character
 /// indices within the line's `raw_text`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiagnosticMark {
     pub start_col: usize,
     pub end_col: usize,
@@ -307,6 +318,7 @@ pub struct DiagnosticMark {
 
 /// Misspelled-word span on one line — drives spell-check underline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SpellMark {
     pub start_col: usize,
     pub end_col: usize,
@@ -320,6 +332,7 @@ pub struct SpellMark {
 /// (verbatim port). The vimcode-side adapter at the rasteriser
 /// boundary builds an `EditorLine` from a `RenderedLine` per frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EditorLine {
     /// Raw UTF-8 text (may include a trailing `\n`).
     pub raw_text: String,
@@ -450,6 +463,7 @@ pub struct EditorLine {
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Editor {
     pub id: WidgetId,
     /// Pixel-space rectangle (used by GTK / Win-GUI; TUI ignores).

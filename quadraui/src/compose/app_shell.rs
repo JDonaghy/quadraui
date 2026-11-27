@@ -128,6 +128,7 @@ pub enum ShellPosition {
 
 /// Semantic events emitted by [`ShellView::handle_event`].
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ShellEvent {
     PanelChanged {

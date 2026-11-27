@@ -26,7 +26,7 @@ from quadraui import QuiApp
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module -- see its own module docstring --
     # so this import only runs under a type checker.
-    from quadraui.wire import ListItemDescriptor
+    from quadraui.wire import ListItem
 
 WIDTH = 80
 HEIGHT = 24
@@ -34,7 +34,7 @@ ROW_COUNT = 10_000
 PAGE = 250
 
 
-def make_rows(count: int) -> "list[ListItemDescriptor]":
+def make_rows(count: int) -> "list[ListItem]":
     return [
         {"text": {"spans": [{"text": f"Row {i:05d}", "fg": None, "bg": None}]}}
         for i in range(count)
@@ -45,7 +45,7 @@ class AppShellDemo:
     """Owns the plain-Python `scroll_offset`/`selected_idx` state a `render`
     callback reads to rebuild the `list` layout leaf on every frame."""
 
-    def __init__(self, app: QuiApp, rows: "list[ListItemDescriptor]") -> None:
+    def __init__(self, app: QuiApp, rows: "list[ListItem]") -> None:
         self.app = app
         self.rows = rows
         self.selected_idx = 0

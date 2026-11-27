@@ -53,6 +53,7 @@ use crate::{
 /// the query, mode and highlight changes; the confirmations and the
 /// dismissal are the host's to act on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum DualModePaletteAction {
     /// In List mode: the user confirmed the highlighted item. `idx` is the

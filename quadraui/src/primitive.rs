@@ -1111,6 +1111,17 @@ pub trait Primitive: A11yPrimitive {
         None
     }
 
+    /// The selectable text `layout` shows, if any.
+    /// [`crate::DrawsPrimitives::draw_primitive`] and
+    /// [`crate::DrawsPrimitives::draw_dyn`] register a `Some` region via
+    /// [`crate::Backend::register_text_region`] after painting, so mouse
+    /// drag-select and copy work against it on every host. Default:
+    /// `None`, a primitive with no selectable text.
+    fn text_region(&self, layout: &Self::Layout) -> Option<crate::dispatch::TextRegion> {
+        let _ = layout;
+        None
+    }
+
     /// Present the primitive through the platform itself, without
     /// painting it, when `backend` presents it natively — the macOS menu
     /// bar installed as the system one. Returns whether it did; on
@@ -1233,6 +1244,11 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// one — see [`Primitive::paint_zone`]. `None` when `layout` isn't
     /// this widget's own layout type.
     fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect>;
+
+    /// The selectable text this widget painted for `layout` — see
+    /// [`Primitive::text_region`]. `None` when `layout` isn't this
+    /// widget's own layout type.
+    fn text_region(&self, layout: &dyn PrimitiveLayout) -> Option<crate::dispatch::TextRegion>;
 
     /// Present this widget through the platform, without painting it —
     /// see [`Primitive::native_presentation`].
@@ -1357,6 +1373,11 @@ where
     fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect> {
         let layout = layout.downcast_ref::<W::Layout>()?;
         Primitive::paint_zone(self, layout, units)
+    }
+
+    fn text_region(&self, layout: &dyn PrimitiveLayout) -> Option<crate::dispatch::TextRegion> {
+        let layout = layout.downcast_ref::<W::Layout>()?;
+        Primitive::text_region(self, layout)
     }
 
     fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool {
@@ -1541,6 +1562,10 @@ where
 
     fn paint_zone(&self, layout: &W::Layout, units: Units) -> Option<Rect> {
         self.widget.paint_zone(layout, units)
+    }
+
+    fn text_region(&self, layout: &W::Layout) -> Option<crate::dispatch::TextRegion> {
+        self.widget.text_region(layout)
     }
 
     fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool {

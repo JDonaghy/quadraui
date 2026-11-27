@@ -256,10 +256,7 @@ pub(crate) fn compute_layout(
     // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
     // decided by hand — they depend on clamping/min/max rules that are
     // ShellView's own policy, not a layout concern. Once the widths are
-    // known, turning them into left-to-right x-positions is exactly the
-    // one-dimensional packing `crate::flex::pack_1d` already does for
-    // `Toolbar` and `Form` (same shared engine, see those modules), so
-    // `row_x_positions` delegates to it under the `layout` feature.
+    // known, `row_x_positions` turns them into left-to-right x-positions.
 
     let ab_w = activity_bar_width_px.unwrap_or_else(|| {
         if is_cell_grid {
@@ -410,17 +407,6 @@ pub(crate) fn compute_layout(
 
 /// Turn a run of `sizes` into left-to-right x-positions starting at
 /// `origin`, each the previous slot's x plus its width.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine — the same one `Toolbar` and `Form` pack their rows
-/// through. Without it, the same arithmetic is done by hand.
-#[cfg(feature = "layout")]
-fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(crate::flex::FlexDirection::Row, origin, sizes, 0.0, 0.0)
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn row_x_positions(origin: f32, sizes: &[f32]) -> Vec<f32> {
     let mut x = origin;
     let mut xs = Vec::with_capacity(sizes.len());

@@ -177,6 +177,26 @@
 // updating this comment.
 #![allow(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
+/// Implements `schemars::JsonSchema` for a type whose serde impl is
+/// hand-written, by describing it with the schema of the type its wire
+/// form actually has.
+#[cfg(feature = "schema")]
+macro_rules! schema_as {
+    ($ty:ty, $name:literal, $wire:ty) => {
+        impl schemars::JsonSchema for $ty {
+            fn schema_name() -> ::std::borrow::Cow<'static, str> {
+                $name.into()
+            }
+
+            fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                <$wire as schemars::JsonSchema>::json_schema(generator)
+            }
+        }
+    };
+}
+#[cfg(feature = "schema")]
+pub(crate) use schema_as;
+
 // Not `pub mod`, and not under `primitives/`: `A11yInfo` is shared
 // accessibility groundwork, not a widget primitive — no `Layout`, no
 // `hit_test`, no `Backend::draw_*` method — so it doesn't belong in the
@@ -283,15 +303,6 @@ pub mod visibility;
 #[cfg(feature = "terminal")]
 #[cfg_attr(docsrs, doc(cfg(feature = "terminal")))]
 pub mod terminal_engine;
-
-// ── Optional flex/grid layout module ──────────────────────────────────────
-// Gated behind the `layout` feature so apps that hand-compute every `Rect`
-// today don't pull in `taffy`. Unit-agnostic (plain `f32` in, plain `f32`
-// out) and pairs with any backend feature, or none — see `flex`'s module
-// doc.
-#[cfg(feature = "layout")]
-#[cfg_attr(docsrs, doc(cfg(feature = "layout")))]
-pub mod flex;
 
 // Small LRU cache for decoded image rasterisations, shared by every
 // surface's `PaintSurface::surface_draw_image` (and TUI's graphics
@@ -933,7 +944,11 @@ pub use popup::{
 // own module doc. `widget_kinds!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here, the same convention as
 // `non_interactive!` above.
-pub use widget_kinds::{decode_widget, decode_widget_from, KindError};
+pub use widget_kinds::{
+    decode_widget, decode_widget_from, register_widget_kind, register_widget_kind_with_schema,
+    runtime_widget_kind_schema, unregister_widget_kind, visit_widget_kinds, widget_kind_names,
+    DecodeFn, KindError, KindSchema, KindVisitor, SchemaFn,
+};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods
@@ -952,6 +967,8 @@ pub use interaction::InteractionState;
 // these yet — each primitive converges onto them in its own PR behind a
 // `#[deprecated]` shim per `docs/PRIMITIVE_RULES.md` rule 8.
 pub use layout::{visible_range_walk, Anchor, Axis, NaturalSize, ResolvedSide, Side, VisibleItem};
+// The stack layout solver's public vocabulary.
+pub use layout::stack::{Align, EdgeInsets, Justify, Spacing};
 pub use shell::{ShellApp, ShellConfig, ShellContext};
 
 // Phase B.4 re-exports.

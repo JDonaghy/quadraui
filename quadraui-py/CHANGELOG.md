@@ -68,6 +68,82 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
+  pointer input through `quadraui.Completions`' own event handling: a click
+  on a row reports `{"List": (id, {"SelectionChanged": {"idx": n}})}` and
+  moves the highlight, and only a double-click reports
+  `{"CompletionItemActivated": (id, n)}` and closes the popup (a single
+  click used to activate). A press on the popup no longer moves focus to
+  it, so the editor underneath keeps receiving keys.
+- A wheel notch over an overflowing `"rich_text_popup"` overlay scrolls the
+  popup and reports `{"ScrollOffsetChanged": {"widget": id, "new_offset":
+  n}}` instead of reaching whatever is painted behind it.
+- `quadraui.wire` (#2979) is generated from a JSON Schema derived from the
+  Rust wire types themselves, so every descriptor `TypedDict` is now named
+  after its Rust type: the `Descriptor` suffix is gone (`ButtonDescriptor`
+  -> `Button`, `TreeViewDescriptor` -> `TreeView`, `ListViewDescriptor` ->
+  `ListView`, `ColumnDescriptor` -> `Column`, `ListItemDescriptor` ->
+  `ListItem`, `TreeRowDescriptor` -> `TreeRow`, `CanvasDescriptor` ->
+  `Canvas`, `PasswordDescriptor` -> `PasswordInput`, `FloatDescriptor` ->
+  `Float`, ...). `SplitTreeRecursiveNode` is `SplitTreeNode`,
+  `EditorDiffLine` is `DiffLine`, `MsvAxis` is `Axis` and
+  `DialogChromeDescriptor` is `DialogChromeWire`. `TreePath` is gone (a
+  path is a plain `List[int]`), as are `EditorStyle`, `IconGlyph` and
+  `IconCodicon` (`Icon` is still the union of both shapes). Optionality
+  now matches what the decoder accepts: an `Option<T>` field may be
+  omitted (`NotRequired[Optional[T]]`) rather than being a required
+  nullable key, and field types are the real Rust types (an integer field
+  is `int`, an enum field its literal set). A `list`/`tree`/`data_table`
+  leaf body is `ListView | ListViewLeaf` (the leaf variant adds
+  `scroll_px`/`items_window`), and `WidgetKind` names every leaf kind.
+  Docstrings are the Rust types' own first paragraph. New definitions
+  describe the leaf `a11y`/`draggable`/`drop_target` keys, every
+  `run_shell` config shape and the drag/tree-table/hit wire events.
+
+- `progress`, `spinner`, `scrollbar`, `command_line`, `message_list`,
+  `multi_section_view` and `find_replace` leaves decode through the
+  generic widget leaf (`quadraui::decode_widget`), like `button` or
+  `switch`. A click on one now carries `"widget": <id>` and
+  `"hit": {"kind": "widget_body"}` (previously `progress`/`spinner`/
+  `scrollbar`/`message_list`/`multi_section_view`/`command_line` attached
+  no hit and `find_replace` attached `{"kind": "extra_body"}`). A click on
+  `find_replace` is resolved by the panel itself: after the
+  `FocusChanged`, the handler receives `{"FindReplace": (id, event)}`
+  (e.g. `FieldEdited` placing the caret in the clicked field) instead of
+  the raw `MouseDown`. `message_list` drag-select and Ctrl-C copy are
+  unchanged.
+- `number_input`, `combo_box` and `date_picker` leaves decode through the
+  generic widget leaf too, so each widget's own `Interactive::handle`
+  produces its events. `number_input` reports a step, an arrow key or a
+  commit as `NumberChanged`/`NumberDraftChanged`/`NumberCommitted` with a numeric value, e.g.
+  `{"Form": (id, {"NumberChanged": {"id": id, "value": 43.0}})}` (previously re-shaped into a string-valued
+  `{"Form": (id, {"TextInputChanged": {"id": id, "value": "43"}})}`). `date_picker` reports
+  a click or arrow-key scrub as `{"Form": (id, {"DateFocusMoved": ...})}` (previously
+  dropped). `combo_box` reports the first filtered option as
+  `ComboBoxHighlightChanged` before each typed `ComboBoxTextChanged`, and
+  `Enter` on a closed box opens the list rather than committing.
+- `toolbar` decodes through the generic widget leaf (`quadraui::Toolbar`,
+  which carries `overflow`/`overflow_priorities` itself). A click on a
+  button now parks the bar's keyboard cursor there, so the handler
+  receives `{"FocusChanged": "<bar id>"}` before the `Toolbar` event. The bar's
+  keyboard cursor is the widget's own state: after Tab focuses the bar,
+  the arrow keys move it (the first press parks it on the first button)
+  and Enter/Space activate the button under it; the descriptor's
+  `focused_index` no longer chooses what Enter activates. The
+  `"extra_chrome"` hit kind is removed.
+- `tree_table` decodes through the generic widget leaf, so
+  `quadraui::TreeTable`'s own `Interactive::handle` resolves every click:
+  a click on a row body focuses the table and reports
+  `{"TreeTable": (id, {"RowSelected": {"idx": i, "path": [...]}})}` instead of reaching the
+  handler as a raw `MouseDown`. The `"tree_table_chevron"` hit kind is
+  removed; a chevron click still reports `ToggleExpanded`.
+- A `tree` row mid-rename edits through core's single-line text editor,
+  so the rename honours the same keys every text field does: Ctrl/Cmd+A
+  selects the whole name, Shift+arrows extend the selection and
+  Ctrl/Alt+arrows move by word, each reported as `RowRenameChanged`.
+- A tooltip opened with `show_tooltip` is sized by the tooltip's own
+  measure, so its box matches the one every other host paints (on a cell
+  grid, one column narrower than before).
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
   requires a `"buttons"` key: a content-bearing dialog may rely on its
   own subtree (a form's Cancel/Save row, a close icon) instead of the
@@ -123,6 +199,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
+- `QuiApp.list_char_width()` and `QuiApp.scrollbar_reserve()` (#2979,
+  0.12 rec 14), part of the 0.12 binding API cleanup. Budget row text
+  with `char_width()` or `measure_text()` instead.
+
 - `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
   `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
   `insert_image`/`insert_extra`/`clear_extra`/`slot_clear`, deprecated in
@@ -150,6 +230,25 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   | `dismiss_rich_text_popup()` | `dismiss_overlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
 ### Fixed
+
+- A layout-tree render resolves stored cursor, scroll, split-ratio and
+  active-tab state through binding-core's shared resolvers, the same ones
+  `quadraui-node` uses: a `"tree"`/`"list"`/`"data_table"`/`"tab_bar"`
+  leaf's state is keyed by the leaf's own `"id"` even when its descriptor
+  carries a different `"id"` (a tree leaf in that shape used to snap its
+  keyboard cursor back to the first row), and a leaf's first-frame scroll
+  is sized against the rect it is about to paint into. State owned by a
+  subtree that is not painted this frame -- an unselected `"tabs"` entry,
+  a `"scroll"` child outside the viewport -- is kept, so switching tabs
+  away and back restores a tree's cursor, a nested tab's active index and
+  a split's ratio.
+
+- `show_overlay` decodes through binding-core's `decode_overlay`, shared
+  with `quadraui-node`; kinds, descriptor shapes, anchors, returned ids and
+  `InvalidDescriptorError` for a malformed call are unchanged. The
+  `"context_menu"` and `"message_dialog"` descriptors are now typed in
+  `wire.pyi` (`ContextMenuOverlayDescriptor`,
+  `MessageDialogOverlayDescriptor`).
 
 - `QuiApp.show_overlay`/`dismiss_overlay`, called reentrantly from inside
   the registered event handler or render callback, now raise

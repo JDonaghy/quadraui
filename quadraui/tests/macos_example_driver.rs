@@ -946,12 +946,10 @@ fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
     );
 }
 
-// ─── flex-layout packing stays identical on macOS ──────────────────────────
+// ─── 1D packing on macOS ───────────────────────────────────────────────────
 //
-// `ShellView`, `Form` and `Toolbar` each route their 1D position arithmetic
-// through `crate::flex::pack_1d` when the `layout` feature is enabled, and
-// through the original hand-rolled arithmetic when it is not. The three
-// tests below are the macOS twins of `tests/tui_example_driver.rs`'s
+// `ShellView`, `Form` and `Toolbar` each pack their items along one axis.
+// The three tests below are the macOS twins of `tests/tui_example_driver.rs`'s
 // `toolbar_items_pack_left_to_right_in_one_row` /
 // `appshell_chrome_bands_carve_left_to_right` /
 // `form_fields_stack_and_group_items_pack` — same fixtures, same packing

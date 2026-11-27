@@ -99,7 +99,7 @@ def test_editing_notes_updates_state():
 
 def test_view_builds_with_no_raw_wire_dict():
     """`SettingsFormDemo.view()` returns a `Form` of field-builder `Node`s
-    only -- rendering it must produce a well-formed `FormDescriptor` with
+    only -- rendering it must produce a well-formed `Form` with
     every field kind represented, with nothing in `view()` itself ever
     spelling out a `{"form": ...}`/`{"kind": ...}` dict by hand."""
     settings_form_demo = _load_settings_form_demo()

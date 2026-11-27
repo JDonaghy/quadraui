@@ -837,6 +837,7 @@ fn tab_drag_threshold(units: Units) -> f32 {
 /// What a [`TabGroup`] reports, and what [`TabGroup::apply`] answers
 /// after applying it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TabGroupEvent {
     /// A tab in `pane_idx` was activated.
     TabActivated { pane_idx: usize, tab_id: String },

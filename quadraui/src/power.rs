@@ -103,6 +103,7 @@ impl BlockerId {
 /// [`ThermalState`] above) because it travels inside a `UiEvent`, and every
 /// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum PowerEventKind {
     /// The system is about to suspend/sleep.
     Suspend,

@@ -68,6 +68,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActivityBar {
     pub id: WidgetId,
     /// Top items rendered starting at the top edge, one row per item.
@@ -113,6 +114,7 @@ pub struct ActivityBar {
 
 /// One icon entry in an `ActivityBar`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActivityItem {
     /// Opaque widget id for click routing. The adapter picks a meaningful
     /// namespaced string (e.g. `"activity:explorer"`, `"activity:ext:foo"`).
@@ -368,6 +370,7 @@ impl ActivityBar {
 // style type in this crate (e.g. `TabChrome`) derives `Eq` either.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ActivityBarStyle {
     /// Background fill colour for the active item's row. `None` (the
     /// default) = no fill, i.e. today's behaviour. Independent of
@@ -665,6 +668,7 @@ impl ActivityBar {
 /// vimcode (click path dispatches by row arithmetic + engine-side
 /// `SidebarPanel` enum), but defined for plugin invariants §10.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ActivityBarEvent {
     /// An item was clicked (or activated via Enter while keyboard-focused).
     ItemClicked { id: WidgetId },

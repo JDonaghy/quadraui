@@ -107,6 +107,7 @@ use crate::Handled;
 /// assert_eq!(layout.hit_test(0.0, 0.0), ListViewHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ListView {
     pub id: WidgetId,
     /// Optional header row shown above the items. `None` = no header.
@@ -178,6 +179,7 @@ pub struct ListView {
 
 /// One row in a `ListView`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ListItem {
     /// Primary row text.
     pub text: StyledText,
@@ -3716,6 +3718,7 @@ mod interactive_tests {
 
 /// Events a `ListView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
     SelectionChanged { idx: usize },

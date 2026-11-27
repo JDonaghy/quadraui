@@ -15,9 +15,9 @@
 # on an unrelated PR; bump the pins deliberately instead.
 #
 # Needs a Rust toolchain on `PATH`: `gen_wire_types.py --check` shells out
-# to `cargo run -p quadraui-binding-core --bin export_wire_schema` to read
-# the wire schema straight off `quadraui-binding-core/src/wire_schema.rs`
-# (the Rust-side source of truth) rather than a Python transcription of it.
+# to `cargo run -p quadraui-binding-core --features schema --bin
+# export_wire_schema`, which prints the JSON Schema `schemars` derives from
+# the Rust wire types themselves, and regenerates every output from it.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

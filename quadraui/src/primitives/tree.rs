@@ -83,6 +83,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeView {
     pub id: WidgetId,
     /// Pre-flattened, pre-expanded rows in visual order.
@@ -112,6 +113,7 @@ pub struct TreeView {
 
 /// One visible row in a `TreeView`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeRow {
     pub path: TreePath,
     /// Visual indent level in `style.indent` units. Usually equals
@@ -137,6 +139,7 @@ pub struct TreeRow {
 /// Inline editing state for a tree row. When present on a `TreeRow`,
 /// backends render a text input in place of the normal row label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeRowEditState {
     pub text: String,
     /// Cursor position as a byte offset into `text`.
@@ -3188,6 +3191,7 @@ fn apply_rename_op(
 
 /// Events a `TreeView` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeEvent {
     /// Single-click (or Enter on the keyboard) on a row.
     RowClicked {

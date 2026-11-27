@@ -1,7 +1,7 @@
 """Black-box coverage for the `"wire_version"` key `quadraui_binding_core::
 wire::check_wire_version` accepts on a `set_render` callback's returned
 dict -- a versionless tree (every pre-existing render callback), a tree at
-the current `quadraui_binding_core::wire_schema::WIRE_VERSION`, and an
+the current `quadraui_binding_core::WIRE_VERSION`, and an
 older version are all accepted; a version newer than this host understands
 is a clear `InvalidDescriptorError`.
 

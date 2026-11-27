@@ -150,6 +150,7 @@ pub use contract::{MinimapEvent, MinimapState};
 /// assert_eq!(layout.hit_test(5.0, 0.0), MinimapHit::Seek { fraction: 0.0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Minimap {
     pub id: WidgetId,
     /// Pre-aggregated lines (app does the sampling, e.g. via [`sample_blocks`]).
@@ -178,6 +179,7 @@ pub struct Minimap {
 
 /// One sampled line in a [`Minimap`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MinimapLine {
     pub text: String,
     /// Original buffer line number this entry stands in for.
@@ -194,6 +196,7 @@ pub struct MinimapLine {
 /// matches directly against the row's `start_line_idx` with no reverse
 /// mapping back through [`MinimapLine::line_idx`] needed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MinimapSpan {
     pub line_idx: usize,
     pub start_col: usize,
@@ -308,6 +311,7 @@ pub const MAX_ROW_PITCH: f32 = 8.0;
 /// file-length-dependent pitch is the defect #667 (GTK) and #992 (TUI)
 /// both remove: every backend now sizes with [`Self::FixedPitch`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MinimapSizing {
     /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`].
     /// A file shorter than the strip at that cap top-aligns
@@ -1242,6 +1246,7 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
 /// [`Self::row_pitch_px`] into [`MinimapSizing::FixedPitch`], and the
 /// pixel painter steps each column by [`Self::cell_w_px`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MinimapScale {
     /// A 1 px wide × [`ROW_PITCH_PX`]-tall cell — the pre-#1143 default.
     /// [`ROW_PITCH_PX`] (2) sits below [`LEGIBILITY_FLOOR_PX`] (4), so

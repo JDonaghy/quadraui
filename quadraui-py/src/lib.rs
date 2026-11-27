@@ -154,14 +154,15 @@ use quadraui::MouseButton;
 #[cfg(test)]
 use quadraui::NamedKey;
 #[cfg(test)]
+use quadraui::Point;
+#[cfg(test)]
 use quadraui::Scrollbar;
 use quadraui::{
     A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, Backend, BackendCaps,
-    BottomPanelEvent, Completions, ContextMenu, ContextMenuItem, DialogButton, DialogSeverity,
-    FileDialogOptions, Float, FloatMeasure, GlobalShortcutId, ImageSource, LayoutCtx,
-    MessageDialogOptions, Notification, Point, PointerShape, Reaction, Rect, RgbaImage,
-    RichTextPopup, ServiceResult, ShellApp, ShellConfig, ShellContext, ShellEvent, ShellLayout,
-    Theme, Toast, ToastCorner, Tooltip, TreeTableNodeData, UiEvent, UserPayload, WidgetId,
+    BottomPanelEvent, ContextMenu, ContextMenuItem, FileDialogOptions, GlobalShortcutId,
+    ImageSource, LayoutCtx, Notification, PointerShape, Reaction, Rect, RgbaImage, ServiceResult,
+    ShellApp, ShellConfig, ShellContext, ShellEvent, ShellLayout, Theme, UiEvent, UserPayload,
+    WidgetId,
 };
 use quadraui::{CanvasRegion, DrawOp};
 
@@ -173,31 +174,27 @@ use quadraui::{CanvasRegion, DrawOp};
 use quadraui_binding_core::decode_style_overrides;
 #[cfg(test)]
 use quadraui_binding_core::tree_scroll_state;
+use quadraui_binding_core::validate_style_set_name;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
 use quadraui_binding_core::{
-    add_recent_document, apply_tab_activated, begin_drag_out, begin_power_save_block,
-    callback_reaction, caret_shape, clear_recent_documents, click_down_up_events,
-    collect_leaf_tooltips, color_depth_name, data_table_rows_and_viewport, dialog_severity,
-    drag::scroll_view_at, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
-    is_default_protocol_client, key_pressed_event, list_rows_and_viewport, login_item_enabled,
-    menu_for_surface, merge_overrides, message_dialog_options_from_buttons, paint_layout_windowed,
-    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
-    resolve_app_path, resolve_data_table_cursor, resolve_layout_tabs_active, resolve_list_cursor,
-    resolve_scroll_offset, resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor,
-    resolve_tree_cursor_windowed, resolve_tree_expansion, set_as_default_protocol_client,
+    add_recent_document, begin_drag_out, begin_power_save_block, callback_reaction, caret_shape,
+    clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
+    draw_bands, end_power_save_block, font_role, guarded as core_guarded,
+    is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
+    merge_overrides, paint_layout_windowed, pointer_shape, record_pending_error,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    resolve_layout_node_windowed, resolve_render_refs, set_as_default_protocol_client,
     set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    toast_corner, tree_rows_and_viewport, tree_table_controller_nodes_from_wire,
-    tree_total_rows_and_viewport, update_apply_on_quit, update_check_for_update,
+    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
     update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
     with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, ItemsWindow, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError,
-    PaintedHit, RenderFrame, RenderOutput, RowsRequestedEvent, ServiceError, StyleContext,
-    TreeTableControllerNode, TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, RenderOutput,
+    RowsRequestedEvent, ServiceError, StyleContext, TreeTableControllerNode,
+    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
 };
-use quadraui_binding_core::{decode_layout_dialog, decode_popover, DialogContentSize};
-use quadraui_binding_core::{validate_style_set_name, StyleOverride};
+use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{
     ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
     ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
@@ -482,147 +479,6 @@ create_exception!(
     `toQuadrauiError`/`wrapNativeErrors` (see that package's `js/index.ts`), \
     which translates the matching generic napi-rs rejection the same way."
 );
-
-/// One action a [`QuiAppActions`] method recorded, already decoded and
-/// validated, waiting for [`flush_deferred_actions`] to apply it. Each
-/// variant mirrors one of the `QuiApp` methods [`QuiAppActions`]'s own
-/// doc names (`show_overlay`, `dismiss_overlay`,
-/// `send_notification`, `open_path`,
-/// `reveal_in_file_manager`, `move_to_trash`, `restore_from_trash`,
-/// `set_title`, `set_document_edited`, `set_represented_filename`,
-/// `set_tray_icon`, `set_tray_tooltip`, `set_tray_menu`, `set_cursor`,
-/// `set_theme`, `define_style`) — carrying exactly the already-decoded arguments the
-/// matching `QuiApp` method passes to the same underlying
-/// `quadraui`/`quadraui_binding_core` call, so applying one is a direct call
-/// with no further decoding or validation left to do. `show_overlay`
-/// pushes one of [`Self::ContextMenu`]/[`Self::MessageDialog`]/
-/// [`Self::Toast`]/[`Self::Tooltip`]/[`Self::Completions`]/[`Self::Float`]/
-/// [`Self::RichTextPopup`]/[`Self::Popover`]/[`Self::LayoutDialog`]
-/// depending on its own `kind` argument — the same nine-way split
-/// `QuiApp::show_overlay`'s own match makes; `dismiss_overlay` always
-/// pushes [`Self::DismissOverlay`].
-///
-/// `Theme`'s overrides are one exception: unlike `QuiApp::set_theme`,
-/// [`QuiAppActions::set_theme`] has no live backend to merge onto at queue
-/// time (that's the whole problem this type exists to solve), so each
-/// override is decoded and validated against [`Theme::default`]'s field set
-/// only — [`flush_deferred_actions`] re-merges the stored `(field, value)`
-/// pairs onto the real live backend's current theme right before applying
-/// it.
-///
-/// [`DeferredAction::ActivateTab`] is a third exception: it mirrors no
-/// `QuiApp` method at all (there is no reentrancy-restricted
-/// `QuiApp::apply_tab_activated` it stands in for), since the engine's
-/// widget-state store had no write-side binding surface before
-/// [`QuiAppActions::apply_tab_activated`] added one. [`flush_deferred_actions`]
-/// applies it via the exact same
-/// [`quadraui_binding_core::apply_tab_activated`] call
-/// `InteractionEngine::handle` itself makes for a real `TabActivated`
-/// click, so a programmatic "make tab N active" persists in the store the
-/// identical way, with no round trip through the next render's descriptor
-/// needed.
-///
-/// The ten platform-services variants below (`ApplyUpdateOnQuit` through
-/// `SetJumpList`) are a second exception, for the same underlying reason:
-/// every one of them is applied via a `quadraui_binding_core::services`
-/// function that itself takes the `&dyn PlatformServices` this type has no
-/// access to until [`flush_deferred_actions`] runs. Rather than decode (or
-/// call) twice, each stores its plain/wire argument unchanged and
-/// [`flush_deferred_actions`] calls the exact same core function
-/// `QuiApp`'s own matching method calls — so, like `Theme`, validation
-/// happens at flush time, surfaced via `pending_error` the same way a
-/// failing `OpenPath`/`MoveToTrash` already is.
-///
-/// [`DeferredAction::SetTreeTableChildren`]/
-/// [`DeferredAction::SetTreeTableSortOverride`] mirror
-/// `QuiApp::set_tree_table_children`/`QuiApp::set_tree_table_sort_override`
-/// directly — unlike `ActivateTab`, those two restricted `QuiApp` methods
-/// already exist, so [`QuiAppActions::set_tree_table_children`]/
-/// [`QuiAppActions::set_tree_table_sort_override`] decode and convert the
-/// wire nodes eagerly (via [`tree_table_controller_nodes_from_wire`]) the
-/// same way the matching `QuiApp` method does, and
-/// [`flush_deferred_actions`] applies the already-converted
-/// `Vec<TreeTableNodeData>` via the exact same
-/// [`InteractionEngine::set_tree_table_children`]/
-/// [`InteractionEngine::set_tree_table_sort_override`] call those methods
-/// make directly. This is the only way a `"ChildrenRequested"`/
-/// `"SortChanged"` event the registered handler receives can ever be
-/// answered — both only ever arrive inside that handler's own dispatch,
-/// where `QuiApp::set_tree_table_children`/`set_tree_table_sort_override`
-/// would raise [`ReentrantCallError`].
-///
-/// [`DeferredAction::Popover`]/[`DeferredAction::LayoutDialog`] are a
-/// fourth exception, for the same reason `Theme`'s is: decoding either
-/// one's `"content"` subtree needs the live backend's current theme (for
-/// `"class"` style-token lookups) that only exists once
-/// [`flush_deferred_actions`] runs, so each stores its raw
-/// [`serde_json::Value`] descriptor unchanged and `flush_deferred_actions`
-/// decodes it via [`decode_popover`]/[`decode_layout_dialog`] itself,
-/// surfacing a decode failure through `pending_error` the same way a
-/// failing `OpenPath`/`MoveToTrash` already is.
-enum DeferredAction {
-    MessageDialog(MessageDialogOptions),
-    ContextMenu(Vec<ContextMenuItem>, Point),
-    Toast(Toast, ToastCorner),
-    Tooltip(Tooltip, Rect),
-    Completions(Completions, Point),
-    Float(Float, FloatMeasure),
-    RichTextPopup(RichTextPopup, Point),
-    /// `kind, descriptor, measure` for `QuiAppActions::show_overlay("popover", ...)`
-    /// -- unlike every other overlay kind, a popover's descriptor can only
-    /// be decoded once a live backend (for its current theme) and
-    /// `BindingHost::style_sets` are both in hand, so [`flush_deferred_actions`]
-    /// decodes `descriptor` via [`decode_popover`] itself rather than at
-    /// queue time -- see that function's own doc.
-    Popover(serde_json::Value, FloatMeasure),
-    /// `descriptor, size` for `QuiAppActions::show_overlay("layout_dialog", ...)`
-    /// -- [`Self::Popover`]'s own reason for deferring the decode applies
-    /// identically here.
-    LayoutDialog(serde_json::Value, DialogContentSize),
-    /// Queued by `QuiAppActions::dismiss_overlay` -- same `id` vocabulary
-    /// (the six `show_overlay` sentinels, or any other string read as a
-    /// toast id) as `QuiApp::dismiss_overlay`, applied via the identical
-    /// match [`flush_deferred_actions`] runs.
-    DismissOverlay(String),
-    Notification(Notification),
-    OpenPath(PathBuf),
-    RevealInFileManager(PathBuf),
-    MoveToTrash(PathBuf),
-    RestoreFromTrash(PathBuf),
-    Title(String),
-    DocumentEdited(bool),
-    RepresentedFilename(Option<PathBuf>),
-    TrayIcon(ImageSource),
-    TrayTooltip(String),
-    TrayMenu(Vec<ContextMenuItem>),
-    Cursor(PointerShape),
-    Theme(Vec<(String, serde_json::Value)>),
-    ApplyUpdateOnQuit(u64),
-    EndPowerSaveBlock(u64),
-    SetLoginItem {
-        enabled: bool,
-        open_hidden: bool,
-        args: Vec<String>,
-    },
-    SetAsDefaultProtocolClient(String),
-    RemoveAsDefaultProtocolClient(String),
-    BeginDragOut {
-        files: Vec<String>,
-        text: Option<String>,
-    },
-    AddRecentDocument(PathBuf),
-    ClearRecentDocuments,
-    SetDockMenu(serde_json::Value),
-    SetJumpList(serde_json::Value),
-    ActivateTab(WidgetId, usize),
-    // Boxed: `StyleOverride` covers every `Theme`/`Style` token, so
-    // storing it inline would make this variant dominate `DeferredAction`'s
-    // own size the same way it would `LayoutNode::Styled`'s (see
-    // `quadraui_binding_core::layout::LayoutStyled`'s own doc).
-    DefineStyle(String, Box<StyleOverride>),
-    SetTreeTableChildren(WidgetId, String, Vec<TreeTableNodeData>),
-    SetTreeTableSortOverride(WidgetId, Vec<TreeTableNodeData>),
-}
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
 /// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
@@ -1022,119 +878,32 @@ fn record_error(pending_error: &Rc<RefCell<Option<PyErr>>>, err: PyErr) {
     record_pending_error(&mut pending_error.borrow_mut(), err);
 }
 
-/// Decodes `QuiApp::show_overlay`'s `"message_dialog"` `severity` string
-/// into a [`DialogSeverity`] via [`quadraui_binding_core::dialog_severity`],
-/// mapping its `Err` into this binding's own `InvalidDescriptorError`
-/// (prefixed with `what`, the calling method's own name).
-fn parse_dialog_severity(what: &str, value: &str) -> PyResult<DialogSeverity> {
-    dialog_severity(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
-}
-
-/// Decodes `QuiApp::show_overlay`'s `"toast"` `corner` string into a
-/// [`ToastCorner`] via [`quadraui_binding_core::toast_corner`], the same
-/// [`parse_dialog_severity`] error-mapping shape.
-fn parse_toast_corner(what: &str, value: &str) -> PyResult<ToastCorner> {
-    toast_corner(value).map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
-}
-
 /// Decodes `QuiApp::set_cursor`'s `shape`/`edge` strings into a
-/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], the same
-/// [`parse_dialog_severity`] error-mapping shape.
+/// [`PointerShape`] via [`quadraui_binding_core::pointer_shape`], raising
+/// `InvalidDescriptorError` prefixed with `what`.
 fn parse_pointer_shape(what: &str, shape: &str, edge: Option<&str>) -> PyResult<PointerShape> {
     pointer_shape(shape, edge)
         .map_err(|err| InvalidDescriptorError::new_err(format!("{what}: {err}")))
 }
 
-/// Which of [`QuiApp::show_overlay`]'s nine in-canvas overlay kinds a
-/// `kind` string names; see that method's own doc (and
-/// [`QuiApp::dismiss_overlay`]'s) for the shared `descriptor`/`anchor` shape
-/// each variant below expects.
-#[derive(Clone, Copy)]
-enum OverlayKind {
-    ContextMenu,
-    MessageDialog,
-    Toast,
-    Tooltip,
-    Completions,
-    Float,
-    RichTextPopup,
-    /// A float with a layout subtree painted inside it, whose leaves take
-    /// focus and emit events exactly as in the main tree — see
-    /// [`quadraui_binding_core::InteractionEngine::show_popover_layout`].
-    Popover,
-    /// A modal dialog with a layout subtree painted in its body — see
-    /// [`quadraui_binding_core::InteractionEngine::open_layout_dialog`].
-    LayoutDialog,
-}
-
-impl OverlayKind {
-    /// Parses one of `show_overlay`'s seven recognized `kind` strings,
-    /// prefixing an unrecognized one's error with `what` (the calling
-    /// method's own name).
-    fn parse(what: &str, kind: &str) -> PyResult<Self> {
-        match kind {
-            "context_menu" => Ok(Self::ContextMenu),
-            "message_dialog" => Ok(Self::MessageDialog),
-            "toast" => Ok(Self::Toast),
-            "tooltip" => Ok(Self::Tooltip),
-            "completions" => Ok(Self::Completions),
-            "float" => Ok(Self::Float),
-            "rich_text_popup" => Ok(Self::RichTextPopup),
-            "popover" => Ok(Self::Popover),
-            "layout_dialog" => Ok(Self::LayoutDialog),
-            other => Err(InvalidDescriptorError::new_err(format!(
-                "{what}: unknown overlay kind {other:?}; expected one of \"context_menu\", \
-                 \"message_dialog\", \"toast\", \"tooltip\", \"completions\", \"float\", \
-                 \"rich_text_popup\", \"popover\", \"layout_dialog\""
-            ))),
-        }
-    }
-}
-
-/// Looks up `key` in `dict`, raising `InvalidDescriptorError` (prefixed
-/// with `what`) rather than panicking or silently defaulting if it's
-/// missing. `show_overlay`'s own per-kind `descriptor` fields that have no
-/// primitive-level default (`"items"`, `"title"`, `"body"`, `"buttons"`)
-/// all read through this.
-fn dict_item<'py>(what: &str, dict: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
-    dict.get_item(key)?
-        .ok_or_else(|| InvalidDescriptorError::new_err(format!("{what}: missing {key:?} key")))
-}
-
-/// Requires `anchor` to be `Some` for a `show_overlay` `kind` that needs
-/// one (every kind but `"message_dialog"`/`"toast"`), raising
-/// `InvalidDescriptorError` otherwise.
-fn require_anchor(
-    what: &str,
+/// Decodes one `show_overlay(kind, descriptor, anchor)` call through
+/// [`quadraui_binding_core::decode_overlay`] into the action that opens the
+/// overlay and the id it is dismissed by; a malformed call raises
+/// `InvalidDescriptorError`.
+fn decode_show_overlay(
     kind: &str,
+    descriptor: &Bound<'_, PyDict>,
     anchor: Option<(f32, f32, f32, f32)>,
-) -> PyResult<(f32, f32, f32, f32)> {
-    anchor.ok_or_else(|| {
-        InvalidDescriptorError::new_err(format!("{what}: {kind:?} overlay needs an anchor"))
-    })
-}
-
-/// Reads `value[chrome_key]["id"]` out of a `show_overlay` descriptor
-/// already converted to JSON, without running the rest of
-/// [`decode_popover`]/[`decode_layout_dialog`]'s own validation —
-/// [`QuiAppActions::show_overlay`]'s only way to return a `"popover"`/
-/// `"layout_dialog"` overlay's id synchronously, since the full decode
-/// needs a live backend's theme that only exists once
-/// [`flush_deferred_actions`] runs (see [`DeferredAction::Popover`]'s own
-/// doc).
-fn peek_overlay_content_id(
-    what: &str,
-    value: &serde_json::Value,
-    chrome_key: &str,
-) -> PyResult<String> {
-    value
-        .get(chrome_key)
-        .and_then(|chrome| chrome.get("id"))
-        .and_then(|id| id.as_str())
-        .map(|id| id.to_string())
-        .ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!("{what}: missing {chrome_key:?}.\"id\" string"))
-        })
+) -> PyResult<(DeferredAction, String)> {
+    let value = pyany_to_json(descriptor.as_any())
+        .map_err(|err| InvalidDescriptorError::new_err(format!("show_overlay: {err}")))?;
+    decode_overlay(
+        "show_overlay",
+        kind,
+        &value,
+        anchor.map(|(a, b, c, d)| [a, b, c, d]),
+    )
+    .map_err(InvalidDescriptorError::new_err)
 }
 
 /// Maps a [`ServiceResult`] failure to `InternalError`, prefixed with
@@ -1281,28 +1050,32 @@ impl AppLogic for PyAppLogic {
         // after, `draw_bands`/`paint_layout` resume using it directly.
         drop(ctx_scope);
         match render_result {
-            Some(RenderOutput::Flat(mut frame)) => {
+            Some(RenderOutput::Flat(frame)) => {
                 // Merges the engine's own stored cursor/scroll/active-tab
                 // into whatever the callback's `tree`/`list`/`data_table`/
                 // `tab_bar` slot left uncontrolled, so an arrow key or a
                 // click a prior `handle` call already applied to
                 // `InteractionEngine::widget_state` is what actually
-                // paints this frame -- see `resolve_render_frame_state`'s
-                // own doc.
-                resolve_render_frame_state(&self.engine, &mut frame);
-                draw_bands(backend, frame.as_refs(), &mut hits);
+                // paints this frame.
+                let resolved =
+                    resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
+                draw_bands(backend, resolved.as_refs(), &mut hits);
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
-                // The layout-tree counterpart of the `resolve_render_frame_state`
-                // call above.
                 // The same `items_window` side table `paint_layout_windowed`
                 // below honours: a windowed leaf's cursor/scroll resolve
                 // has to agree with the band that actually paints.
                 let windows = self.host.wire_diagnostics.items_windows();
-                resolve_layout_node_state(&self.engine, &mut node, &windows);
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                resolve_layout_node_windowed(
+                    self.engine.widget_state(),
+                    backend,
+                    area,
+                    &mut node,
+                    &windows,
+                );
                 // `_windowed`, not the plain `paint_layout`: a leaf whose
                 // render callback never sends an `"items_window"` key
                 // paints identically either way (see
@@ -2552,277 +2325,6 @@ impl ScriptWidget for PyScriptWidget {
     }
 }
 
-/// A leaf's own painted `(rows_or_items, viewport_rows)` from the most
-/// recent frame's hit map, via `viewport_rows_fn`
-/// (`tree_rows_and_viewport`/`list_rows_and_viewport`/
-/// `data_table_rows_and_viewport`) -- the same previous-frame geometry
-/// `InteractionEngine::handle`'s own `apply_tree_nav_key`/
-/// `apply_list_nav_key`/`apply_data_table_nav_key` calls already resolve a
-/// keyboard move against, reused here so a `resolve_tree_cursor`/
-/// `resolve_list_cursor`/`resolve_data_table_cursor` call agrees with
-/// whatever cursor move just landed in the store. Falls back to
-/// `fallback_rows` (the leaf's own row/item count this frame, floored at
-/// `1`) on the very first render -- before any frame has painted this id
-/// at all -- so an uncontrolled scroll offset starts at `0` rather than
-/// panicking or guessing a viewport size out of thin air.
-fn resolved_viewport_rows(
-    engine: &InteractionEngine,
-    id: WidgetId,
-    fallback_rows: usize,
-    viewport_rows_fn: impl FnOnce(&[PaintedHit], WidgetId) -> Option<(usize, usize)>,
-) -> usize {
-    viewport_rows_fn(&engine.hit_map(), id)
-        .map(|(_, viewport_rows)| viewport_rows)
-        .unwrap_or_else(|| fallback_rows.max(1))
-}
-
-/// Resolves a decoded [`RenderFrame`]'s `tree`/`list`/`data_table`/
-/// `tab_bar` slots against [`InteractionEngine::widget_state`] in place --
-/// the flat six-slot counterpart of [`resolve_layout_node_state`], called
-/// right before [`draw_bands`] paints `frame.as_refs()` so an uncontrolled
-/// cursor/scroll/active-tab/expanded-set a key press or click just moved in
-/// the store (via [`InteractionEngine::handle`]'s own `apply_*` calls) is
-/// what actually gets painted this frame, with no app code needed to track
-/// it. A slot the render callback left `None` is untouched; a slot whose
-/// descriptor pins an explicit value keeps winning outright, since every
-/// `resolve_*` call below returns a controlled value unchanged -- see each
-/// one's own "controlled / uncontrolled" doc.
-fn resolve_render_frame_state(engine: &InteractionEngine, frame: &mut RenderFrame) {
-    let widget_state = engine.widget_state();
-    if let Some(tree) = frame.tree.take() {
-        // Expansion first: a collapsed ancestor prunes its descendants from
-        // `rows`, so the cursor's own scroll-to-visible search below walks
-        // the same row list that actually gets painted, not the
-        // not-yet-collapsed one.
-        let tree = resolve_tree_expansion(widget_state, &tree);
-        let viewport_rows = resolved_viewport_rows(
-            engine,
-            tree.id,
-            tree.rows.len(),
-            tree_rows_and_viewport_for_resolve,
-        );
-        frame.tree = Some(resolve_tree_cursor(widget_state, &tree, viewport_rows));
-    }
-    if let Some(list) = frame.list.take() {
-        let viewport_rows = resolved_viewport_rows(
-            engine,
-            list.id,
-            list.items.len(),
-            list_rows_and_viewport_for_resolve,
-        );
-        frame.list = Some(resolve_list_cursor(widget_state, &list, viewport_rows));
-    }
-    if let Some(table) = frame.data_table.take() {
-        let viewport_rows = resolved_viewport_rows(
-            engine,
-            table.id,
-            table.rows.len(),
-            data_table_rows_and_viewport_for_resolve,
-        );
-        frame.data_table = Some(resolve_data_table_cursor(
-            widget_state,
-            &table,
-            viewport_rows,
-        ));
-    }
-    if let Some(tab_bar) = frame.tab_bar.take() {
-        frame.tab_bar = Some(resolve_tab_bar_active(widget_state, &tab_bar));
-    }
-}
-
-/// Resolves every `Tree`/`List`/`DataTable`/`Split`/`Tabs` encountered
-/// while walking a decoded layout tree, in place -- the layout-tree
-/// counterpart of [`resolve_render_frame_state`], called right before
-/// [`paint_layout`] paints `node`. See that function's own doc for why
-/// this never needs to special-case a controlled leaf.
-fn resolve_layout_node_state(
-    engine: &InteractionEngine,
-    node: &mut LayoutNode,
-    windows: &HashMap<String, ItemsWindow>,
-) {
-    match node {
-        LayoutNode::Row(container) | LayoutNode::Column(container) => {
-            for child in &mut container.children {
-                resolve_layout_node_state(engine, &mut child.node, windows);
-            }
-        }
-        LayoutNode::Grid(grid_node) => {
-            for child in &mut grid_node.children {
-                resolve_layout_node_state(engine, child, windows);
-            }
-        }
-        LayoutNode::Leaf(leaf) => resolve_layout_leaf_state(engine, leaf, windows),
-        LayoutNode::Split(split_node) => {
-            split_node.split = resolve_split_ratio(engine.widget_state(), &split_node.split);
-            resolve_layout_node_state(engine, &mut split_node.first, windows);
-            resolve_layout_node_state(engine, &mut split_node.second, windows);
-        }
-        LayoutNode::Tabs(tabs_node) => {
-            resolve_layout_tabs_active(engine.widget_state(), tabs_node);
-            for entry in &mut tabs_node.entries {
-                resolve_layout_node_state(engine, &mut entry.content, windows);
-            }
-        }
-        LayoutNode::SidebarPanel(sidebar_node) => {
-            resolve_layout_node_state(engine, &mut sidebar_node.content, windows);
-        }
-        LayoutNode::SplitTree(split_tree_node) => {
-            for leaf in &mut split_tree_node.leaves {
-                resolve_layout_node_state(engine, leaf, windows);
-            }
-        }
-        // Mirrors `resolved_viewport_rows`'s own "read the previous
-        // frame's painted geometry, not this frame's backend/area" shape
-        // (this walker takes neither) -- `scroll_view_at` rebuilds the
-        // exact `quadraui::ScrollView` `crate::render::paint_scroll`
-        // painted for this id last frame, straight off its own
-        // `PaintedHit::Scroll` fields, so `max_offset()` here is the same
-        // clamp paint already applied, not a re-derived one. Without this
-        // resolve, `InteractionEngine::handle`'s own wheel/key/scrollbar-
-        // drag `apply_scroll_offset` write would sit in `WidgetState`
-        // forever unread, since `scroll_node.offset` -- left `None`
-        // (uncontrolled) by every render callback that doesn't pin it
-        // itself -- would otherwise reach `paint_layout` still unresolved
-        // and paint from `0.0` every frame.
-        //
-        // `None` (no hit yet -- the very first render, or any render
-        // where this id fell out of the hit map, e.g. a `Tabs` entry
-        // that wasn't selected last frame) falls back to
-        // `f32::INFINITY` rather than `0.0`: `resolve_scroll_offset`
-        // clamps into `[0, max_offset]` before returning, so a `0.0`
-        // fallback here would clamp away a *controlled* offset
-        // (`scroll_node.offset` decoded as `Some(50.0)` this frame) back
-        // down to `0.0` on exactly the frame there's no prior paint to
-        // measure against. `paint_scroll` re-clamps against the real,
-        // freshly measured content/viewport regardless (its own
-        // `scroll_view.clamp_offset()` call), so deferring the clamp to
-        // it here is safe -- and for the uncontrolled case this fallback
-        // is never seen anyway, since a never-before-seen id's
-        // `WidgetState` entry is itself seeded at `0.0`.
-        LayoutNode::Scroll(scroll_node) => {
-            let id = WidgetId::new(scroll_node.id.as_str());
-            let max_offset = scroll_view_at(&engine.hit_map(), id)
-                .map(|view| view.max_offset())
-                .unwrap_or(f32::INFINITY);
-            let offset =
-                resolve_scroll_offset(engine.widget_state(), id, scroll_node.offset, max_offset);
-            scroll_node.offset = Some(offset);
-            resolve_layout_node_state(engine, &mut scroll_node.content, windows);
-        }
-        // A `"style"` wrapper carries no cursor/scroll/active-tab state of
-        // its own -- it's purely a paint-time overlay -- so this resolve
-        // pass is a straight passthrough to whatever it wraps.
-        LayoutNode::Styled(styled_node) => {
-            resolve_layout_node_state(engine, &mut styled_node.node, windows);
-        }
-    }
-}
-
-/// One [`LayoutLeaf`]'s own resolution -- the per-leaf step
-/// [`resolve_layout_node_state`]'s `LayoutNode::Leaf` arm defers to, mirroring
-/// [`resolve_render_frame_state`]'s per-slot handling for the four leaf
-/// kinds the widget-state store tracks. A `Button`/`TextDisplay`/`Extra`
-/// leaf is untouched -- none of those have cursor/scroll/active-tab/
-/// expanded-set state.
-fn resolve_layout_leaf_state(
-    engine: &InteractionEngine,
-    leaf: &mut LayoutLeaf,
-    windows: &HashMap<String, ItemsWindow>,
-) {
-    let window = windows.get(&leaf.id).copied();
-    match &mut leaf.descriptor {
-        LeafDescriptor::Tree(tree) => {
-            // Expansion first -- see `resolve_render_frame_state`'s own
-            // `tree` branch for why collapse has to run before scroll-into-
-            // view's row-position search.
-            let expanded = resolve_tree_expansion(engine.widget_state(), tree);
-            let id = WidgetId::new(leaf.id.as_str());
-            match window {
-                // A windowed tree's cursor is tracked by ABSOLUTE index
-                // (`InteractionEngine::handle` moves it with
-                // `apply_tree_nav_key_windowed`), because a not-yet-loaded
-                // row has no `TreePath` to track it by -- so it resolves
-                // through the windowed counterpart, keyed by the same
-                // tree-address id the hit map and the windows table use.
-                Some(window) => {
-                    let viewport_rows = resolved_viewport_rows(
-                        engine,
-                        id,
-                        expanded.rows.len(),
-                        tree_total_rows_and_viewport,
-                    );
-                    *tree = resolve_tree_cursor_windowed(
-                        engine.widget_state(),
-                        &expanded,
-                        window,
-                        viewport_rows,
-                    );
-                }
-                None => {
-                    let viewport_rows = resolved_viewport_rows(
-                        engine,
-                        expanded.id,
-                        expanded.rows.len(),
-                        tree_rows_and_viewport_for_resolve,
-                    );
-                    *tree = resolve_tree_cursor(engine.widget_state(), &expanded, viewport_rows);
-                }
-            }
-        }
-        LeafDescriptor::List(list) => {
-            let viewport_rows = resolved_viewport_rows(
-                engine,
-                list.id,
-                list.items.len(),
-                list_rows_and_viewport_for_resolve,
-            );
-            *list = resolve_list_cursor(engine.widget_state(), list, viewport_rows);
-        }
-        LeafDescriptor::DataTable(table) => {
-            let viewport_rows = resolved_viewport_rows(
-                engine,
-                table.id,
-                table.rows.len(),
-                data_table_rows_and_viewport_for_resolve,
-            );
-            *table = resolve_data_table_cursor(engine.widget_state(), table, viewport_rows);
-        }
-        LeafDescriptor::TabBar(tab_bar) => {
-            *tab_bar = resolve_tab_bar_active(engine.widget_state(), tab_bar);
-        }
-        LeafDescriptor::TextDisplay(_)
-        | LeafDescriptor::Extra(_)
-        | LeafDescriptor::Widget { .. } => {}
-    }
-}
-
-/// Thin by-value wrappers over `quadraui_binding_core::{tree,list,data_table}_rows_and_viewport`
-/// matching [`resolved_viewport_rows`]'s `impl FnOnce` parameter -- the
-/// core functions themselves take `id: WidgetId` positionally after the
-/// hit map, exactly the shape these wrappers already have, but naming them
-/// keeps each `resolved_viewport_rows` call site readable about which
-/// widget kind it's resolving.
-fn tree_rows_and_viewport_for_resolve(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(usize, usize)> {
-    tree_rows_and_viewport(hit_map, id).map(|(rows, viewport_rows)| (rows.len(), viewport_rows))
-}
-
-fn list_rows_and_viewport_for_resolve(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(usize, usize)> {
-    list_rows_and_viewport(hit_map, id)
-}
-
-fn data_table_rows_and_viewport_for_resolve(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(usize, usize)> {
-    data_table_rows_and_viewport(hit_map, id)
-}
-
 /// Wraps [`PyAppLogic`] for `run_native`'s native runner loop (`GtkRunner`
 /// on the `gtk` feature, `MacRunner` on the `macos` feature, `WinRunner` on
 /// the `win` feature) -- [`quadraui_binding_core::NativeExitPolicy`], whose
@@ -3150,134 +2652,9 @@ impl QuiAppActions {
         descriptor: &Bound<'_, PyDict>,
         anchor: Option<(f32, f32, f32, f32)>,
     ) -> PyResult<String> {
-        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
-        match overlay_kind {
-            OverlayKind::ContextMenu => {
-                let items: Vec<ContextMenuItem> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid items: {err}"
-                            ))
-                        })?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::ContextMenu(items, Point::new(x, y)));
-                Ok(kind.to_string())
-            }
-            OverlayKind::MessageDialog => {
-                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
-                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
-                let buttons: Vec<DialogButton> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid buttons: {err}"
-                            ))
-                        })?;
-                let severity: Option<String> = descriptor
-                    .get_item("severity")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let severity = severity
-                    .map(|s| parse_dialog_severity("show_overlay", &s))
-                    .transpose()?;
-                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
-                    .map_err(|err| {
-                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                    })?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::MessageDialog(opts));
-                Ok(kind.to_string())
-            }
-            OverlayKind::Toast => {
-                let toast: Toast = decode("show_overlay", descriptor)?;
-                let corner: Option<String> = descriptor
-                    .get_item("corner")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let corner = corner
-                    .map(|c| parse_toast_corner("show_overlay", &c))
-                    .transpose()?;
-                let id = toast.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Toast(toast, corner.unwrap_or_default()));
-                Ok(id)
-            }
-            OverlayKind::Tooltip => {
-                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
-                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
-                let id = tooltip.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Tooltip(tooltip, Rect::new(x, y, w, h)));
-                Ok(id)
-            }
-            OverlayKind::Completions => {
-                let completions: Completions = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = completions.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::Completions(completions, Point::new(x, y)));
-                Ok(id)
-            }
-            OverlayKind::Float => {
-                let float: Float = decode("show_overlay", descriptor)?;
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = float.id.to_string();
-                self.queue.borrow_mut().push_back(DeferredAction::Float(
-                    float,
-                    FloatMeasure::new(width, height),
-                ));
-                Ok(id)
-            }
-            OverlayKind::RichTextPopup => {
-                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = popup.id.to_string();
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::RichTextPopup(popup, Point::new(x, y)));
-                Ok(id)
-            }
-            OverlayKind::Popover => {
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
-                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                })?;
-                let id = peek_overlay_content_id("show_overlay", &value, "float")?;
-                self.queue.borrow_mut().push_back(DeferredAction::Popover(
-                    value,
-                    FloatMeasure::new(width, height),
-                ));
-                Ok(id)
-            }
-            OverlayKind::LayoutDialog => {
-                // Unlike every other anchored kind, the anchor is
-                // optional here: it sizes the dialog's content slot, and
-                // omitting it takes `DialogContentSize`'s own
-                // viewport-relative defaults.
-                let size = match anchor {
-                    Some((width, height, ..)) => DialogContentSize {
-                        width: Some(width),
-                        height: Some(height),
-                    },
-                    None => DialogContentSize::default(),
-                };
-                let value = pyany_to_json(descriptor.as_any()).map_err(|err| {
-                    InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                })?;
-                let id = peek_overlay_content_id("show_overlay", &value, "dialog")?;
-                self.queue
-                    .borrow_mut()
-                    .push_back(DeferredAction::LayoutDialog(value, size));
-                Ok(id)
-            }
-        }
+        let (action, id) = decode_show_overlay(kind, descriptor, anchor)?;
+        self.queue.borrow_mut().push_back(action);
+        Ok(id)
     }
 
     /// Queues a [`DeferredAction::DismissOverlay`] — same `id` vocabulary
@@ -3698,310 +3075,29 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app_logic: &mut PyAppLogic)
         let action = app_logic.deferred_actions.borrow_mut().pop_front();
         let Some(action) = action else { break };
         applied = true;
-        match action {
-            DeferredAction::MessageDialog(opts) => {
-                app_logic.engine.open_message_dialog(opts, backend);
-            }
-            DeferredAction::ContextMenu(items, position) => {
-                app_logic.engine.open_context_menu(items, position, backend);
-            }
-            DeferredAction::Toast(toast, corner) => {
-                app_logic.engine.show_toast(toast, corner);
-            }
-            DeferredAction::Tooltip(tooltip, anchor) => {
-                app_logic.engine.show_tooltip(tooltip, anchor);
-            }
-            DeferredAction::Completions(completions, cursor) => {
-                app_logic.engine.show_completions(completions, cursor);
-            }
-            DeferredAction::Float(float, measure) => {
-                app_logic.engine.show_float(float, measure, backend);
-            }
-            DeferredAction::RichTextPopup(popup, anchor) => {
-                app_logic.engine.show_rich_text_popup(popup, anchor);
-            }
-            DeferredAction::Popover(value, measure) => {
-                let decoded = {
-                    let theme = backend.theme();
-                    let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                    decode_popover(
-                        "show_overlay",
-                        &value,
-                        styles,
-                        &app_logic.host.wire_diagnostics,
-                    )
-                };
-                match decoded {
-                    Ok(decoded) => {
-                        app_logic.engine.show_popover_layout(
-                            decoded.chrome,
-                            measure,
-                            decoded.content,
-                            backend,
-                        );
-                    }
-                    Err(err) => record_error(&app_logic.pending_error, decode_error_to_py(err)),
-                }
-            }
-            DeferredAction::LayoutDialog(value, size) => {
-                let decoded = {
-                    let theme = backend.theme();
-                    let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                    decode_layout_dialog(
-                        "show_overlay",
-                        &value,
-                        styles,
-                        &app_logic.host.wire_diagnostics,
-                    )
-                };
-                match decoded {
-                    Ok(decoded) => {
-                        app_logic.engine.open_layout_dialog(
-                            decoded.chrome,
-                            decoded.content,
-                            size,
-                            backend,
-                        );
-                    }
-                    Err(err) => record_error(&app_logic.pending_error, decode_error_to_py(err)),
-                }
-            }
-            DeferredAction::DismissOverlay(id) => match id.as_str() {
-                "context_menu" => {
-                    app_logic.engine.dismiss_context_menu(backend);
-                }
-                "message_dialog" => {
-                    app_logic.engine.close_message_dialog(backend);
-                }
-                "tooltip" => {
-                    app_logic.engine.hide_tooltip();
-                }
-                "completions" => {
-                    app_logic.engine.dismiss_completions();
-                }
-                // A `"popover"` *is* a float (one this engine paints content
-                // into), so either sentinel closes it.
-                "float" | "popover" => {
-                    app_logic.engine.dismiss_float(backend);
-                }
-                "layout_dialog" => {
-                    app_logic.engine.close_layout_dialog(backend);
-                }
-                "rich_text_popup" => {
-                    app_logic.engine.dismiss_rich_text_popup();
-                }
-                toast_id => {
-                    app_logic.engine.dismiss_toast(WidgetId::new(toast_id));
-                }
-            },
-            DeferredAction::Notification(notification) => {
-                if let Err(err) = backend.services().send_notification(notification) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("send_notification: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::OpenPath(path) => {
-                if let Err(err) = backend.services().open_path(&path) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("open_path: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::RevealInFileManager(path) => {
-                if let Err(err) = backend.services().reveal_in_file_manager(&path) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("reveal_in_file_manager: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::MoveToTrash(path) => {
-                if let Err(err) = backend.services().move_to_trash(&path) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("move_to_trash: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::RestoreFromTrash(path) => {
-                if let Err(err) = backend.services().restore_from_trash(&path) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("restore_from_trash: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::Title(title) => {
-                if let Err(err) = with_window(backend, |w| w.set_title(&title)) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_title: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::DocumentEdited(edited) => {
-                if let Err(err) = with_window(backend, |w| w.set_document_edited(edited)) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_document_edited: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::RepresentedFilename(path) => {
-                if let Err(err) =
-                    with_window(backend, |w| w.set_represented_filename(path.as_deref()))
-                {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_represented_filename: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::TrayIcon(icon) => {
-                if let Err(err) = with_tray(backend, |t| t.set_icon(icon)) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_tray_icon: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::TrayTooltip(tooltip) => {
-                if let Err(err) = with_tray(backend, |t| t.set_tooltip(&tooltip)) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_tray_tooltip: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::TrayMenu(items) => {
-                if let Err(err) = with_tray(backend, |t| t.set_menu(&tray_menu(items))) {
-                    record_error(
-                        &app_logic.pending_error,
-                        InternalError::new_err(format!("set_tray_menu: {err:?}")),
-                    );
-                }
-            }
-            DeferredAction::Cursor(shape) => {
-                backend.set_cursor(shape);
-            }
-            DeferredAction::Theme(overrides) => {
-                let mut value = serde_json::to_value(backend.theme())
-                    .expect("Theme serializes to a JSON object");
-                let obj = value
-                    .as_object_mut()
-                    .expect("Theme serializes to a JSON object");
-                for (key, json) in overrides {
-                    obj.insert(key, json);
-                }
-                let theme: Theme = serde_json::from_value(value)
-                    .expect("fields were already validated by QuiAppActions::set_theme");
-                backend.set_theme(theme);
-            }
-            DeferredAction::ApplyUpdateOnQuit(handle) => {
-                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("apply_on_quit", err),
-                    );
-                }
-            }
-            DeferredAction::EndPowerSaveBlock(handle) => {
-                if let Err(err) = end_power_save_block(backend.services(), handle) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("end_power_save_block", err),
-                    );
-                }
-            }
-            DeferredAction::SetLoginItem {
-                enabled,
-                open_hidden,
-                args,
-            } => {
-                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("set_login_item", err),
-                    );
-                }
-            }
-            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
-                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("set_as_default_protocol_client", err),
-                    );
-                }
-            }
-            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
-                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("remove_as_default_protocol_client", err),
-                    );
-                }
-            }
-            DeferredAction::BeginDragOut { files, text } => {
-                if let Err(err) = begin_drag_out(backend.services(), files, text) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("begin_drag_out", err),
-                    );
-                }
-            }
-            DeferredAction::AddRecentDocument(path) => {
-                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("add_recent_document", err),
-                    );
-                }
-            }
-            DeferredAction::ClearRecentDocuments => {
-                if let Err(err) = clear_recent_documents(backend.services()) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("clear_recent_documents", err),
-                    );
-                }
-            }
-            DeferredAction::SetDockMenu(items) => {
-                if let Err(err) = set_dock_menu(backend.services(), items) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("set_dock_menu", err),
-                    );
-                }
-            }
-            DeferredAction::SetJumpList(items) => {
-                if let Err(err) = set_jump_list(backend.services(), items) {
-                    record_error(
-                        &app_logic.pending_error,
-                        service_error_to_py("set_jump_list", err),
-                    );
-                }
-            }
-            DeferredAction::ActivateTab(id, index) => {
-                apply_tab_activated(app_logic.engine.widget_state(), id, index);
-            }
-            DeferredAction::DefineStyle(name, overrides) => {
-                app_logic.host.style_sets.define(name, *overrides);
-                backend.request_frame_in(Duration::ZERO);
-            }
-            DeferredAction::SetTreeTableChildren(id, node_id, children) => {
-                app_logic
-                    .engine
-                    .set_tree_table_children(id, &node_id, children);
-            }
-            DeferredAction::SetTreeTableSortOverride(id, nodes) => {
-                app_logic.engine.set_tree_table_sort_override(id, nodes);
-            }
+        if let Err(err) = apply_deferred_action(
+            action,
+            backend,
+            &mut app_logic.engine,
+            &mut app_logic.host,
+            "show_overlay",
+        ) {
+            record_error(&app_logic.pending_error, deferred_error_to_py(err));
         }
     }
     applied
+}
+
+/// Maps a queued action's [`DeferredError`] onto this binding's exception
+/// taxonomy: a descriptor decode error as its `InvalidDescriptorError`
+/// subclass, a backend call as `InternalError`, a service helper through
+/// [`service_error_to_py`].
+fn deferred_error_to_py(err: DeferredError) -> PyErr {
+    match err {
+        DeferredError::Decode(err) => decode_error_to_py(err),
+        DeferredError::Backend { op, error } => InternalError::new_err(format!("{op}: {error:?}")),
+        DeferredError::Service { op, error } => service_error_to_py(op, error),
+    }
 }
 
 /// Wraps a value that is provably safe to move across [`Python::detach`]'s
@@ -5428,7 +4524,7 @@ impl QuiApp {
     /// under any of those shapes at all.
     ///
     /// Reads back what the render callback's own `render` resolves every
-    /// frame (see `resolve_render_frame_state`/`resolve_layout_node_state`)
+    /// frame (see `resolve_render_refs`/`resolve_layout_node_windowed`)
     /// merged with whatever a key press or click already applied via
     /// `InteractionEngine::handle` -- an app that leaves a tree's
     /// `selected_path`/`scroll_offset` uncontrolled calls this after an
@@ -5572,15 +4668,6 @@ impl QuiApp {
         self.guarded(|app| Ok(app.driver.backend().char_width()))
     }
 
-    /// The advance `draw_list` actually paints `ListView` row text with --
-    /// [`Backend::list_char_width`]. Not always the same as `char_width`
-    /// on a pixel backend, whose chrome font can differ from its editor
-    /// font; use this instead of `char_width` when budgeting text for a
-    /// list row.
-    fn list_char_width(&mut self) -> PyResult<f32> {
-        self.guarded(|app| Ok(app.driver.backend().list_char_width()))
-    }
-
     /// Line height of the chrome / UI font -- [`Backend::chrome_line_height`].
     /// Equal to `line_height` on the headless backend (one font for the
     /// whole cell grid); use this instead of `line_height` when sizing
@@ -5588,14 +4675,6 @@ impl QuiApp {
     /// a separate chrome font.
     fn chrome_line_height(&mut self) -> PyResult<f32> {
         self.guarded(|app| Ok(app.driver.backend().chrome_line_height()))
-    }
-
-    /// Width this backend reserves for its own native scrollbar overlay
-    /// alongside scrollable content -- [`Backend::scrollbar_reserve`].
-    /// Always `0.0` on the headless backend, which has no overlay
-    /// scrollbar chrome.
-    fn scrollbar_reserve(&mut self) -> PyResult<f32> {
-        self.guarded(|app| Ok(app.driver.backend().scrollbar_reserve()))
     }
 
     /// Whether this backend can render individual text rows at a larger
@@ -6935,31 +6014,11 @@ impl QuiApp {
         self.clipboard.get_or_insert_with(TuiBackend::new)
     }
 
-    /// Shared body of every [`Self::show_overlay_impl`] match arm: runs
-    /// `open` against this app's live `(Backend, PyAppLogic)` pair, then
-    /// re-renders so `screen()`/`screen_contains()` reflect the newly
-    /// opened overlay without a separate step.
-    fn open_overlay(
-        &mut self,
-        open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic),
-    ) -> PyResult<()> {
-        self.guarded(|app| {
-            let (backend, app_logic) = app.driver.parts_mut();
-            open(backend, app_logic);
-            app.driver.render();
-            take_pending_error(app.driver.app_mut())?;
-            Ok(())
-        })
-    }
-
-    /// [`Self::open_overlay`] for a kind whose descriptor can only be
-    /// decoded once the live `(Backend, PyAppLogic)` pair is in hand —
-    /// `"popover"`/`"layout_dialog"`, whose `"content"` subtree resolves
-    /// its `"class"` keys against the backend's current theme and this
-    /// app's own registered style sets. `open` reports a decode failure
-    /// as the same `InvalidDescriptorError` every other kind raises
-    /// before ever reaching the engine, and nothing is rendered when it
-    /// does.
+    /// Shared body of `show_overlay`: runs `open` against this app's live
+    /// `(Backend, PyAppLogic)` pair, then re-renders so the screen reflects the newly
+    /// opened overlay without a separate step. A failure `open` reports
+    /// (a popover or layout-dialog content subtree that does not decode)
+    /// raises, and nothing is rendered.
     fn open_overlay_try(
         &mut self,
         open: impl FnOnce(&mut dyn Backend, &mut PyAppLogic) -> PyResult<()>,
@@ -7004,176 +6063,18 @@ impl QuiApp {
         descriptor: &Bound<'_, PyDict>,
         anchor: Option<(f32, f32, f32, f32)>,
     ) -> PyResult<String> {
-        let overlay_kind = OverlayKind::parse("show_overlay", kind)?;
-        match overlay_kind {
-            OverlayKind::ContextMenu => {
-                let items: Vec<ContextMenuItem> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "items")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid items: {err}"
-                            ))
-                        })?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                self.open_overlay(|backend, app_logic| {
-                    app_logic
-                        .engine
-                        .open_context_menu(items, Point::new(x, y), backend);
-                })?;
-                Ok(kind.to_string())
-            }
-            OverlayKind::MessageDialog => {
-                let title: String = dict_item("show_overlay", descriptor, "title")?.extract()?;
-                let body: String = dict_item("show_overlay", descriptor, "body")?.extract()?;
-                let buttons: Vec<DialogButton> =
-                    pythonize::depythonize(&dict_item("show_overlay", descriptor, "buttons")?)
-                        .map_err(|err| {
-                            InvalidDescriptorError::new_err(format!(
-                                "show_overlay: invalid buttons: {err}"
-                            ))
-                        })?;
-                let severity: Option<String> = descriptor
-                    .get_item("severity")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let severity = severity
-                    .map(|s| parse_dialog_severity("show_overlay", &s))
-                    .transpose()?;
-                let opts = message_dialog_options_from_buttons(title, body, buttons, severity)
-                    .map_err(|err| {
-                        InvalidDescriptorError::new_err(format!("show_overlay: {err}"))
-                    })?;
-                self.open_overlay(|backend, app_logic| {
-                    app_logic.engine.open_message_dialog(opts, backend);
-                })?;
-                Ok(kind.to_string())
-            }
-            OverlayKind::Toast => {
-                let toast: Toast = decode("show_overlay", descriptor)?;
-                let corner: Option<String> = descriptor
-                    .get_item("corner")?
-                    .map(|v| v.extract())
-                    .transpose()?;
-                let corner = corner
-                    .map(|c| parse_toast_corner("show_overlay", &c))
-                    .transpose()?;
-                let id = toast.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_toast(toast, corner.unwrap_or_default());
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Tooltip => {
-                let tooltip: Tooltip = decode("show_overlay", descriptor)?;
-                let (x, y, w, h) = require_anchor("show_overlay", kind, anchor)?;
-                let id = tooltip.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_tooltip(tooltip, Rect::new(x, y, w, h));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Completions => {
-                let completions: Completions = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = completions.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_completions(completions, Point::new(x, y));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Float => {
-                let float: Float = decode("show_overlay", descriptor)?;
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let measure = FloatMeasure::new(width, height);
-                let id = float.id.to_string();
-                self.open_overlay(|backend, app_logic| {
-                    app_logic.engine.show_float(float, measure, backend);
-                })?;
-                Ok(id)
-            }
-            OverlayKind::RichTextPopup => {
-                let popup: RichTextPopup = decode("show_overlay", descriptor)?;
-                let (x, y, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let id = popup.id.to_string();
-                self.open_overlay(|_backend, app_logic| {
-                    app_logic
-                        .engine
-                        .show_rich_text_popup(popup, Point::new(x, y));
-                })?;
-                Ok(id)
-            }
-            OverlayKind::Popover => {
-                let (width, height, ..) = require_anchor("show_overlay", kind, anchor)?;
-                let measure = FloatMeasure::new(width, height);
-                let mut id = String::new();
-                self.open_overlay_try(|backend, app_logic| {
-                    let decoded = {
-                        let theme = backend.theme();
-                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_popover(
-                            "show_overlay",
-                            &mut de,
-                            styles,
-                            &app_logic.host.wire_diagnostics,
-                        )
-                        .map_err(decode_error_to_py)?
-                    };
-                    id = decoded.chrome.id.to_string();
-                    app_logic.engine.show_popover_layout(
-                        decoded.chrome,
-                        measure,
-                        decoded.content,
-                        backend,
-                    );
-                    Ok(())
-                })?;
-                Ok(id)
-            }
-            OverlayKind::LayoutDialog => {
-                // Unlike every other anchored kind, the anchor is
-                // optional here: it sizes the dialog's content slot, and
-                // omitting it takes `DialogContentSize`'s own
-                // viewport-relative defaults.
-                let size = match anchor {
-                    Some((width, height, ..)) => DialogContentSize {
-                        width: Some(width),
-                        height: Some(height),
-                    },
-                    None => DialogContentSize::default(),
-                };
-                let mut id = String::new();
-                self.open_overlay_try(|backend, app_logic| {
-                    let decoded = {
-                        let theme = backend.theme();
-                        let styles = StyleContext::new(&app_logic.host.style_sets, &theme);
-                        let mut de = pythonize::Depythonizer::from_object(descriptor.as_any());
-                        decode_layout_dialog(
-                            "show_overlay",
-                            &mut de,
-                            styles,
-                            &app_logic.host.wire_diagnostics,
-                        )
-                        .map_err(decode_error_to_py)?
-                    };
-                    id = decoded.chrome.id.to_string();
-                    app_logic.engine.open_layout_dialog(
-                        decoded.chrome,
-                        decoded.content,
-                        size,
-                        backend,
-                    );
-                    Ok(())
-                })?;
-                Ok(id)
-            }
-        }
+        let (action, id) = decode_show_overlay(kind, descriptor, anchor)?;
+        self.open_overlay_try(|backend, app_logic| {
+            apply_deferred_action(
+                action,
+                backend,
+                &mut app_logic.engine,
+                &mut app_logic.host,
+                "show_overlay",
+            )
+            .map_err(deferred_error_to_py)
+        })?;
+        Ok(id)
     }
 
     /// The whole body of [`QuiApp::dismiss_overlay`], on an ordinary `&mut
@@ -8979,12 +7880,10 @@ def handle(event):
 
     /// A wheel `Scroll` landing on an uncontrolled `{"scroll": {...}}`
     /// container's own body/scrollbar moves its stored offset in
-    /// `InteractionEngine::widget_state` — `resolve_layout_node_state`'s
-    /// own `LayoutNode::Scroll` arm must read that back (via
-    /// `scroll_view_at`'s rebuilt `ScrollView::max_offset`, the same
-    /// previous-frame-geometry source `resolved_viewport_rows` already
-    /// uses for `Tree`/`List`/`DataTable`) and resolve `scroll_node.offset`
-    /// to it before the next `paint_layout`, or an uncontrolled scroll
+    /// `InteractionEngine::widget_state` — `resolve_layout_node_windowed`'s
+    /// own `LayoutNode::Scroll` arm must read that back and resolve
+    /// `scroll_node.offset` to it before the next `paint_layout`, or an
+    /// uncontrolled scroll
     /// would stay pinned at its unresolved `None` -> `0.0` default forever,
     /// no matter how many wheel notches the engine already applied.
     #[test]
@@ -9067,7 +7966,7 @@ def handle(event):
     /// A **controlled** `Scroll` (`offset` set on every render) must
     /// paint pinned on the very first frame, before `scroll_view_at`
     /// has any previous `PaintedHit::Scroll` to measure a real
-    /// `max_offset` from. `resolve_layout_node_state`'s `Scroll` arm
+    /// `max_offset` from. `resolve_layout_node_windowed`'s `Scroll` arm
     /// falls back to `f32::INFINITY` (not `0.0`) for that no-hit case,
     /// deferring the clamp to `paint_scroll`'s own measured-this-frame
     /// clamp instead of pre-emptively clamping a controlled 15.0 down
@@ -10179,13 +9078,24 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                1,
-                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
-                 id (not the clicked button's) is a tab stop"
+                2,
+                "a click on the toolbar focuses the bar, then reports the toolbar event"
             );
-            let event_dict = received_list
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                focus_dict
+                    .get_item("FocusChanged")
+                    .expect("dict lookup")
+                    .is_some(),
+                "the click's first event is the bar taking focus"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let toolbar_payload = event_dict
@@ -10329,12 +9239,24 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                1,
-                "a group segment click carries no leading FocusChanged"
+                2,
+                "a click on the toolbar focuses the bar, then reports the toolbar event"
             );
-            let event_dict = received_list
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                focus_dict
+                    .get_item("FocusChanged")
+                    .expect("dict lookup")
+                    .is_some(),
+                "the click's first event is the bar taking focus"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let toolbar_payload = event_dict

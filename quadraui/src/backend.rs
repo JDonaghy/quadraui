@@ -2655,6 +2655,11 @@ pub trait DrawsPrimitives: Backend {
                 self.register_zone(*id, zone);
             }
         }
+        if painted_units.is_some() {
+            if let Some(region) = primitive.text_region(&layout) {
+                self.register_text_region(region);
+            }
+        }
         layout
     }
 
@@ -2821,6 +2826,11 @@ pub trait DrawsPrimitives: Backend {
             mark_modal_painted(self, id);
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
+            }
+            if painted_units.is_some() {
+                if let Some(region) = w.text_region(layout.as_ref()) {
+                    self.register_text_region(region);
+                }
             }
             // Named sub-parts become frame-inventory zones of their own,
             // `"<id>:<name>"`, so a composite that paints its children
@@ -4163,6 +4173,7 @@ pub struct Display {
 /// travels inside [`crate::UiEvent::SystemThemeChanged`], and every
 /// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SystemTheme {
     /// `true` when the OS is set to a dark appearance (Windows "Dark" app
     /// mode, macOS Dark Appearance, GTK's `prefer-dark-theme`, or — on TUI —

@@ -35,6 +35,7 @@ fn default_mask() -> char {
 /// assert_eq!(input.mask_char, '•');
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct PasswordInput {
     pub id: WidgetId,

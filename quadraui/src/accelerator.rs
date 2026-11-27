@@ -44,6 +44,7 @@ use crate::types::{Modifiers, WidgetId};
 /// Conventionally namespaced (`"editor.save"`, `"plugin:my-ext:send"`) so
 /// plugin accelerators don't collide with app accelerators.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AcceleratorId(pub String);
 
 impl AcceleratorId {
@@ -70,6 +71,7 @@ impl From<String> for AcceleratorId {
 
 /// When an [`Accelerator`] should fire relative to app state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum AcceleratorScope {
     /// Fires regardless of what's focused. E.g. "Ctrl+P" for the palette.
     Global,
@@ -88,6 +90,7 @@ pub enum AcceleratorScope {
 /// [`KeyBinding::Literal`] is for app-specific bindings that don't have a
 /// universal name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum KeyBinding {
     // ── Universal accelerators (render platform-appropriately) ─────────
     Save,
@@ -119,6 +122,7 @@ pub enum KeyBinding {
 /// A declared accelerator: its stable ID, the keys that trigger it, the
 /// scope in which it's active, and an optional display label for menus.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Accelerator {
     pub id: AcceleratorId,
     pub binding: KeyBinding,
@@ -462,6 +466,7 @@ fn display_key(k: &str) -> String {
 /// every `UiEvent` payload satisfies that bound, see `event.rs`'s module
 /// doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GlobalShortcutId(u64);
 
 impl GlobalShortcutId {

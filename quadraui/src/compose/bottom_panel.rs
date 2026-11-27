@@ -145,6 +145,7 @@ impl Default for BottomPanelConfig {
 ///
 /// The shell runner delivers these to [`crate::ShellApp::on_bottom_panel_event`].
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum BottomPanelEvent {
     /// User switched to a different tab. Payload is the new active tab `id`.
     ///

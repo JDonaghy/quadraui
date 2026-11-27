@@ -55,6 +55,7 @@ use serde::{Deserialize, Serialize};
 /// Day of the week. `index()` maps `Sunday` to `0`, matching the
 /// civil-calendar weekday formula used throughout this module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Weekday {
     Sunday,
     Monday,
@@ -95,6 +96,7 @@ impl Weekday {
 
 /// How a [`CalendarDate`] renders as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DateFormat {
     /// `YYYY-MM-DD`.
     Iso8601,
@@ -107,6 +109,7 @@ pub enum DateFormat {
 /// Locale rules a `DatePicker` renders and navigates by: which weekday
 /// starts a week, and how a date formats as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DateLocale {
     /// The weekday a week starts on (e.g. `Sunday` in the US, `Monday` in
     /// most of Europe); drives [`DatePicker::month_grid`]'s column order.
@@ -128,6 +131,7 @@ impl Default for DateLocale {
 /// clock. `month` is `1..=12`, `day` is `1..=31` (bounded by
 /// [`CalendarDate::days_in_month`] for the given `year`/`month`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CalendarDate {
     /// Proleptic Gregorian year; may be negative (there is no year 0).
     pub year: i32,
@@ -261,6 +265,7 @@ impl Default for CalendarDate {
 /// Optional time-of-day field shown alongside the date grid.
 /// `hour` is `0..=23`, `minute` is `0..=59`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TimeOfDay {
     /// `0..=23`.
     pub hour: u8,
@@ -298,6 +303,7 @@ impl Default for TimeOfDay {
 /// assert_eq!(picker.month_grid().len(), 42);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct DatePicker {
     pub id: WidgetId,

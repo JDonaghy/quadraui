@@ -15,6 +15,7 @@
 //! inherits this engine's behavior (including its bug fixes) for free.
 #![allow(rustdoc::private_intra_doc_links)]
 
+pub mod deferred;
 pub mod drag;
 pub mod engine;
 pub mod extra_paint;
@@ -26,10 +27,10 @@ pub mod scripted;
 pub mod semantic;
 pub mod services;
 pub mod text_input;
-pub mod tree_edit;
 pub mod widget_state;
 pub mod wire;
-pub mod wire_schema;
+
+pub use wire::WIRE_VERSION;
 
 /// A wire-decode failure from any decoder in [`wire`] or
 /// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
@@ -271,6 +272,11 @@ where
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))
 }
 
+pub use deferred::{apply_deferred_action, DeferredAction, DeferredError};
+pub use deferred::{
+    decode_overlay, overlay_anchor_from_value, ContextMenuOverlayDescriptor,
+    MessageDialogOverlayDescriptor, OVERLAY_KINDS,
+};
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
@@ -281,6 +287,7 @@ pub use extra_paint::{
     decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
     TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
 };
+pub use extra_paint::{register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds};
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
@@ -305,18 +312,16 @@ pub use host::{
     WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
     SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
-pub use layout::{grid_cell_rects, LayoutGrid};
-pub use layout::{validate_unique_leaf_ids, EdgeInsets, LayoutContainer, LayoutLeaf, LayoutNode};
+pub use layout::LayoutGrid;
+pub use layout::{validate_unique_leaf_ids, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{FontWeight, InteractionState, StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use layout::{LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
-pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing, LEAF_KIND_KEYS};
+pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS};
 pub use render::{
     collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
-    split_rects,
 };
 pub use render::{
-    data_table_viewport_rows, list_viewport_rows, split_rects_with_gap, tree_viewport_rows,
-    RenderFrame, RenderRefs,
+    data_table_viewport_rows, list_viewport_rows, tree_viewport_rows, RenderFrame, RenderRefs,
 };
 pub use render::{
     draw_tree_with_scrollbar_and_state_windowed, items_window_from_value, paint_layout_windowed,
@@ -339,7 +344,6 @@ pub use services::{
 };
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
-pub use tree_edit::tree_row_rename_key_event;
 pub use widget_state::WidgetState;
 pub use wire::{
     decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,

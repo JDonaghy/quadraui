@@ -44,16 +44,16 @@ use quadraui::{
 
 use crate::engine::InteractionEngine;
 use crate::hit::PaintedHit;
-use crate::layout::{
-    grid_cell_rects, quantise_horizontal, quantise_vertical, LayoutLeaf, LayoutNode, LayoutTabs,
-    LeafDescriptor, StyleSets,
-};
+use crate::layout::{LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor, StyleSets};
 use crate::render::{
-    apply_split_gap, data_table_viewport_rows, layout_container_rects, list_viewport_rows,
-    natural_main_length, scroll_content_slots, scroll_viewport_and_track, shrink_main_axis,
-    tree_viewport_rows, ItemsWindow, RenderFrame, RenderRefs, ScrollMetrics, ScrollSlots,
+    data_table_viewport_rows, layout_container_rects, list_viewport_rows, natural_main_length,
+    scroll_content_slots, scroll_viewport_and_track, tree_viewport_rows, ItemsWindow, RenderFrame,
+    RenderRefs, ScrollMetrics, ScrollSlots,
 };
 use crate::widget_state::WidgetState;
+use quadraui::layout::stack::{
+    apply_split_gap, quantise_horizontal, quantise_vertical, shrink_main_axis,
+};
 
 /// Slot id of the host's `Button` descriptor.
 pub const SLOT_BUTTON: i64 = 0;
@@ -826,7 +826,7 @@ struct TreeCursorStateWindowed {
 /// own `Scrollbar::vertical` call already uses for an unrelated per-tree
 /// id — keeps the two stores independent instead.
 fn windowed_tree_cursor_id(id: WidgetId) -> WidgetId {
-    WidgetId::new(format!("{}-windowed-cursor", id.as_str()))
+    WidgetId::new(format!("{}{WINDOWED_CURSOR_KEY_SUFFIX}", id.as_str()))
 }
 
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
@@ -1324,12 +1324,16 @@ struct SplitRatioState {
 /// so every OTHER index gets a distinct synthetic id — otherwise dragging
 /// divider 3 then divider 1 of the same tree would silently overwrite one
 /// shared entry keyed only by `tree`, each drag clobbering the last.
+const SPLIT_RATIO_KEY_PREFIX: &str = "quadraui-binding-core::split-ratio::";
+const TREE_EXPANDED_KEY_PREFIX: &str = "quadraui-binding-core::tree-expanded::";
+const WINDOWED_CURSOR_KEY_SUFFIX: &str = "-windowed-cursor";
+
 fn split_ratio_state_id(tree: WidgetId, split_index: usize) -> WidgetId {
     if split_index == 0 {
         tree
     } else {
         WidgetId::new(format!(
-            "quadraui-binding-core::split-ratio::{}::{split_index}",
+            "{SPLIT_RATIO_KEY_PREFIX}{}::{split_index}",
             tree.as_str()
         ))
     }
@@ -1613,10 +1617,7 @@ struct TreeExpandedState {
 /// two was written most recently, on every frame both are in use for the
 /// same tree. Deriving a distinct key sidesteps that collision entirely.
 fn expanded_state_id(id: WidgetId) -> WidgetId {
-    WidgetId::new(format!(
-        "quadraui-binding-core::tree-expanded::{}",
-        id.as_str()
-    ))
+    WidgetId::new(format!("{TREE_EXPANDED_KEY_PREFIX}{}", id.as_str()))
 }
 
 /// Flips `id`'s stored expand state for `path` — call when a
@@ -1931,7 +1932,7 @@ pub fn resolve_layout_node_windowed(
             }
         }
         LayoutNode::Grid(grid) => {
-            let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
+            let rects = grid.cell_rects(area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter_mut().zip(rects) {
                 resolve_layout_node_windowed(widget_state, backend, rect, child, windows);
             }
@@ -2061,21 +2062,22 @@ pub fn resolve_layout_node_windowed(
                 (inner.height - strip_height).max(0.0),
             );
             let selected = tabs.selected;
-            // Only the selected entry's content recurses -- an unselected
-            // tab's own `Tree`/`List`/`DataTable` leaf is never resolved
-            // this frame, so [`WidgetState::gc`] drops its stored cursor/
-            // scroll at the end of it. Switching away and back resets that
-            // leaf's cursor rather than preserving it, the same cost
-            // [`resolve_render_refs`]'s own doc calls out for its
-            // "ran out of vertical room" case.
-            if let Some(entry) = tabs.entries.get_mut(selected) {
-                resolve_layout_node_windowed(
-                    widget_state,
-                    backend,
-                    content_rect,
-                    &mut entry.content,
-                    windows,
-                );
+            // Only the selected entry's content has geometry this frame and
+            // resolves; every other entry's stored state is kept alive
+            // untouched, so switching away and back restores its cursor,
+            // scroll, ratios and active tabs.
+            for (index, entry) in tabs.entries.iter_mut().enumerate() {
+                if index == selected {
+                    resolve_layout_node_windowed(
+                        widget_state,
+                        backend,
+                        content_rect,
+                        &mut entry.content,
+                        windows,
+                    );
+                } else {
+                    keep_subtree_state_alive(widget_state, &entry.content);
+                }
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
@@ -2143,6 +2145,8 @@ pub fn resolve_layout_node_windowed(
                                     &mut child.node,
                                     windows,
                                 );
+                            } else {
+                                keep_subtree_state_alive(widget_state, &child.node);
                             }
                         }
                     }
@@ -2156,6 +2160,8 @@ pub fn resolve_layout_node_windowed(
                             &mut scroll_node.content,
                             windows,
                         );
+                    } else {
+                        keep_subtree_state_alive(widget_state, &scroll_node.content);
                     }
                 }
             }
@@ -2167,6 +2173,78 @@ pub fn resolve_layout_node_windowed(
             resolve_layout_node_windowed(widget_state, backend, area, &mut styled.node, windows);
         }
     }
+}
+
+/// Keeps every [`WidgetState`] entry owned by `node`'s subtree alive through
+/// this frame's [`WidgetState::gc`] without resolving it. A subtree with no
+/// geometry this frame (an unselected tab entry, a scroll child outside the
+/// viewport) still owns its cursor, scroll offset, split ratio, expansion
+/// and active tab; they come back unchanged when it is shown again.
+fn keep_subtree_state_alive(widget_state: &WidgetState, node: &LayoutNode) {
+    let mut owners = HashSet::new();
+    collect_state_owner_ids(node, &mut owners);
+    if owners.is_empty() {
+        return;
+    }
+    widget_state.keep_alive(|key| owners.contains(state_owner_id(key)));
+}
+
+/// Every id under `node` that [`WidgetState`] keys state on, directly or
+/// through a derived key [`state_owner_id`] maps back to it.
+fn collect_state_owner_ids(node: &LayoutNode, owners: &mut HashSet<String>) {
+    match node {
+        LayoutNode::Row(container) | LayoutNode::Column(container) => {
+            for child in &container.children {
+                collect_state_owner_ids(&child.node, owners);
+            }
+        }
+        LayoutNode::Grid(grid) => {
+            for child in &grid.children {
+                collect_state_owner_ids(child, owners);
+            }
+        }
+        LayoutNode::Leaf(leaf) => {
+            owners.insert(leaf.id.clone());
+        }
+        LayoutNode::Split(split) => {
+            owners.insert(split.split.id.as_str().to_string());
+            collect_state_owner_ids(&split.first, owners);
+            collect_state_owner_ids(&split.second, owners);
+        }
+        LayoutNode::Tabs(tabs) => {
+            owners.insert(tabs.tab_bar.id.as_str().to_string());
+            for entry in &tabs.entries {
+                collect_state_owner_ids(&entry.content, owners);
+            }
+        }
+        LayoutNode::SidebarPanel(sidebar_node) => {
+            collect_state_owner_ids(&sidebar_node.content, owners);
+        }
+        LayoutNode::SplitTree(split_tree) => {
+            owners.insert(split_tree.id.clone());
+            for leaf in &split_tree.leaves {
+                collect_state_owner_ids(leaf, owners);
+            }
+        }
+        LayoutNode::Scroll(scroll_node) => {
+            owners.insert(scroll_node.id.clone());
+            collect_state_owner_ids(&scroll_node.content, owners);
+        }
+        LayoutNode::Styled(styled) => collect_state_owner_ids(&styled.node, owners),
+    }
+}
+
+/// The owning widget id of a [`WidgetState`] key: the key itself, or the
+/// id a derived key ([`split_ratio_state_id`], [`expanded_state_id`],
+/// [`windowed_tree_cursor_id`]) was built from.
+fn state_owner_id(key: &str) -> &str {
+    if let Some(rest) = key.strip_prefix(SPLIT_RATIO_KEY_PREFIX) {
+        return rest.rsplit_once("::").map_or(rest, |(owner, _)| owner);
+    }
+    if let Some(owner) = key.strip_prefix(TREE_EXPANDED_KEY_PREFIX) {
+        return owner;
+    }
+    key.strip_suffix(WINDOWED_CURSOR_KEY_SUFFIX).unwrap_or(key)
 }
 
 /// A read-only merge of whatever [`WidgetState`] currently holds for one
@@ -2183,6 +2261,7 @@ pub fn resolve_layout_node_windowed(
 /// `expanded` from the derived one in the same snapshot, since both can
 /// be live for the same tree at once.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WidgetStateSnapshot {
     /// A `Tree`'s stored cursor row, if `id` is a tree being tracked by
     /// [`resolve_tree_cursor`].
@@ -3062,9 +3141,9 @@ mod tests {
     use crate::engine::EventSink;
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutSplit, LayoutTabEntry, LeafDescriptor,
-        Spacing,
     };
     use crate::render::{collect_leaf_tooltips, draw_bands, paint_layout};
+    use quadraui::Spacing;
 
     /// A [`BindingHost::widgets`] map holding just `button` under its
     /// `"button"` key — the test fixtures' own shorthand for the single
@@ -5539,6 +5618,56 @@ mod tests {
             spacing: Spacing::default(),
             focused_index: None,
         }
+    }
+
+    /// A `Tree` leaf in an unselected tab keeps its stored cursor through
+    /// the frames its tab is hidden: switching away and back restores it.
+    #[test]
+    fn resolve_layout_node_keeps_a_hidden_tab_entrys_tree_cursor_alive() {
+        let widget_state = WidgetState::new();
+        let mut backend = TuiBackend::new();
+        let area = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let tree_id = WidgetId::new("files-tree");
+        let layout = |selected: usize| {
+            let mut tabs = test_layout_tabs(vec![selected == 0, selected == 1]);
+            tabs.selected = selected;
+            *tabs.entries[0].content = LayoutNode::Leaf(LayoutLeaf {
+                id: tree_id.as_str().to_string(),
+                descriptor: LeafDescriptor::Tree(test_tree(30, None, 0)),
+                scroll_px: None,
+            });
+            LayoutNode::Tabs(tabs)
+        };
+
+        let mut node = layout(0);
+        resolve_layout_node(&widget_state, &mut backend, area, &mut node);
+        widget_state.gc();
+        let paths: Vec<TreePath> = (0..30u16).map(|i| vec![i]).collect();
+        for _ in 0..5 {
+            assert!(apply_tree_nav_key(
+                &widget_state,
+                tree_id,
+                &paths,
+                10,
+                &down_key()
+            ));
+        }
+        let before = widget_state_snapshot(&widget_state, tree_id)
+            .and_then(|snapshot| snapshot.selected_path)
+            .expect("the nav keys must have stored a cursor");
+
+        for selected in [1, 1, 0] {
+            let mut node = layout(selected);
+            resolve_layout_node(&widget_state, &mut backend, area, &mut node);
+            widget_state.gc();
+        }
+
+        assert_eq!(
+            widget_state_snapshot(&widget_state, tree_id)
+                .and_then(|snapshot| snapshot.selected_path),
+            Some(before),
+            "the hidden tab's tree cursor must survive switching away and back"
+        );
     }
 
     /// Clicking a tab inside a `LayoutTabs` tab group with no app state at

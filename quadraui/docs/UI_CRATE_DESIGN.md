@@ -274,7 +274,7 @@ ones that shape everything above:
   LSP) stays in the app; it is not part of quadraui.
 - **Native menu bars:** global on macOS, in-window elsewhere (§3.6).
 - **One crate, backends behind features:** `tui`, `gtk`, `macos`, `win`,
-  plus optional `terminal`, `layout`, `a11y` and `control`.
+  plus optional `terminal`, `a11y` and `control`.
 - **Rust 2021.** `rust-version` in `quadraui/Cargo.toml` is the real
   dependency floor, not a fixed offset from the latest stable; see that
   field's own comment and D-019 rule 7 in `DECISIONS.md`.

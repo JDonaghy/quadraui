@@ -66,9 +66,9 @@ if TYPE_CHECKING:
     # module docstring -- so this import only runs under a type checker.
     from quadraui.wire import (
         Color,
-        ColumnDescriptor,
-        DataRowDescriptor,
-        DataTableDescriptor,
+        Column,
+        DataRow,
+        DataTable as DataTableDescriptor,
         Icon,
         Key,
         LayoutNode,
@@ -78,12 +78,12 @@ if TYPE_CHECKING:
         StatusBarSegment,
         StyledText,
         TabBarEvent,
-        TextDisplayLineDescriptor,
-        ToolbarDescriptor,
+        TextDisplayLine,
+        Toolbar,
         TreeEvent,
-        TreeRowDescriptor,
+        TreeRow,
         TreeStyle,
-        TreeViewDescriptor,
+        TreeView,
         UiEvent,
     )
 
@@ -208,22 +208,22 @@ def _styled_text(text: str) -> "StyledText":
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def _display_line(text: str) -> "TextDisplayLineDescriptor":
-    """One `text_display` line with a single uncolored span -- `TextDisplayLineDescriptor`
+def _display_line(text: str) -> "TextDisplayLine":
+    """One `text_display` line with a single uncolored span -- `TextDisplayLine`
     adds `decoration`/`timestamp` on top of `StyledText`'s own `spans`, so it
     is its own helper rather than reusing `_styled_text`'s return."""
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
+def folder_rows(root: Node) -> tuple[list["TreeRow"], list[Node]]:
     """Walk the expanded model into index-aligned `(rows, nodes)`, directories
     only. Recomputed each frame, since expanding/collapsing changes which rows
     are visible."""
-    rows: list["TreeRowDescriptor"] = []
+    rows: list["TreeRow"] = []
     nodes: list[Node] = []
 
     def walk(node: Node, path: list[int], indent: int) -> None:
-        row: "TreeRowDescriptor" = {
+        row: "TreeRow" = {
             "path": path,
             "indent": indent,
             "icon": FOLDER_ICON,
@@ -241,7 +241,7 @@ def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
     return rows, nodes
 
 
-def tree_leaf(rows: list["TreeRowDescriptor"], *, selected_path: list[int]) -> "LayoutNode":
+def tree_leaf(rows: list["TreeRow"], *, selected_path: list[int]) -> "LayoutNode":
     """A layout-tree *leaf* wrapping the folders-only tree descriptor. A leaf is
     `{"id", "<kind>": <descriptor>}`; the id is unique across the whole tree.
     `has_focus` keeps arrow keys / Enter routed here on the real backends.
@@ -251,7 +251,7 @@ def tree_leaf(rows: list["TreeRowDescriptor"], *, selected_path: list[int]) -> "
     the engine's own widget-state store -- not this app -- derives and keeps
     the scroll position that holds `selected_path`'s row visible, and the
     backend derives the scrollbar thumb from that."""
-    tree: "TreeViewDescriptor" = {
+    tree: "TreeView" = {
         "id": "fm:tree",
         "rows": rows,
         "selection_mode": "Single",
@@ -292,14 +292,14 @@ def details_table(folder: Node, index: int) -> "DataTableDescriptor":
     content subtree of tab `index`. Row order matches `folder.children`, so a
     `RowDoubleClicked{idx}` maps straight back to a child node."""
     table_id = f"fm:grid:{index}"
-    columns: list["ColumnDescriptor"] = [
+    columns: list["Column"] = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
         {"title": "Size", "width": {"Flex": 1.0}, "align": "Right"},
         {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
     ]
 
     children = folder.children or []
-    rows: list["DataRowDescriptor"]
+    rows: list["DataRow"]
     if not children:
         note = "(unreadable)" if folder.load_error else "(empty folder)"
         rows = [{"cells": [_styled_text(note), _styled_text(""), _styled_text("")]}]
@@ -326,7 +326,7 @@ def details_table(folder: Node, index: int) -> "DataTableDescriptor":
 # everything. The status bar is a live bottom band, rebuilt from state each
 # frame.
 
-TOOLBAR: "ToolbarDescriptor" = {
+TOOLBAR: "Toolbar" = {
     "id": "fm:toolbar",
     "buttons": [
         {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
@@ -436,7 +436,7 @@ class FileManager:
 
     # --- navigation helpers --------------------------------------------------
 
-    def _visible(self) -> tuple[list["TreeRowDescriptor"], list[Node]]:
+    def _visible(self) -> tuple[list["TreeRow"], list[Node]]:
         """Current folder rows/nodes, with the cursor pulled back to its nearest
         still-visible ancestor if a collapse hid it."""
         rows, nodes = folder_rows(self.root)
@@ -758,12 +758,12 @@ def _dump(node: Node, indent: int = 0) -> None:
         print(f"{pad}  {node.name}{size}")
 
 
-def _dump_folder_rows(rows: list["TreeRowDescriptor"]) -> None:
+def _dump_folder_rows(rows: list["TreeRow"]) -> None:
     """Human-readable dump of the folders-only tree rows."""
     for row in rows:
         pad = "  " * row["indent"]
-        chevron = "▾ " if row["is_expanded"] else "▸ "
-        icon = row["icon"]
+        chevron = "▾ " if row.get("is_expanded") else "▸ "
+        icon = row.get("icon")
         glyph = "?"
         if icon is not None and "codicon" not in icon:
             glyph = icon["glyph"]

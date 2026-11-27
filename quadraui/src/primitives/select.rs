@@ -27,6 +27,7 @@ use crate::Handled;
 /// assert_eq!(select.selected_idx, 0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Select {
     pub id: WidgetId,

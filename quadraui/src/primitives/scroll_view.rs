@@ -77,6 +77,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!((start, end), (5.0, 15.0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ScrollView {
     pub id: WidgetId,
@@ -111,6 +112,7 @@ pub struct ScrollView {
 /// take `&self` and return this instead of mutating — the host applies
 /// `offset` back onto [`ScrollView::scroll_offset`] itself.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ScrollViewEvent {
     /// The resolved new offset, already clamped to `[0, max_offset()]`.
     Scrolled { offset: f32 },

@@ -70,6 +70,7 @@ pub use contract::{TreeTablePrimitiveLayout, TreeTableState, TreeTableSubPart};
 /// `#[non_exhaustive]` with [`TreeTableNode::new`] as the constructor, so
 /// a future field can land without breaking a downstream struct literal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct TreeTableNode {
     /// This row's path. Mirrors [`crate::TreeRow::path`].
@@ -212,6 +213,7 @@ impl NavRow for TreeTableNode {
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeTable {
     pub table: DataTable,
     /// Parallel to `table.rows`: `tree[i]` is `table.rows[i]`'s tree shape.
@@ -472,6 +474,7 @@ impl TreeTableLayout {
 /// Events a `TreeTable` emits back to the app. Row events carry the
 /// row's [`TreePath`] alongside its flat index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeTableEvent {
     /// A header click asked for a sort by `col`: ascending, unless the
     /// table is already sorted ascending by `col`. The app re-orders each

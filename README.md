@@ -293,9 +293,6 @@ Pick the backends you ship; `terminal` is independent of them.
 - `win` — Windows backend (`quadraui::win`), via Direct2D + DirectWrite
   (`windows-rs`). Compiles on every host; only the WinAPI calls are
   `cfg(target_os = "windows")`.
-- `layout` — optional flex/grid layout module (`quadraui::flex`), via
-  [Taffy](https://github.com/DioxusLabs/taffy). Unit-agnostic (plain
-  `f32` in, plain `f32` out); pairs with any backend above, or none.
 - `a11y` — optional accessibility conversions (`From<A11yRole> for
   accesskit::Role` and friends) in `quadraui::a11y`, via
   [AccessKit](https://github.com/AccessKit/accesskit). The `A11yRole`/
@@ -307,6 +304,11 @@ Pick the backends you ship; `terminal` is independent of them.
   actions/keys against a running app, whichever backend is driving it. No
   extra dependency (`std::sync::mpsc` plus the existing `Backend::waker`
   seam); pairs with any backend above, or none.
+- `schema` — derives [schemars](https://github.com/GREsau/schemars)
+  `JsonSchema` on every wire-facing descriptor and `UiEvent`, so a binding
+  can export a JSON Schema of its wire format (`quadraui-binding-core`'s
+  `export_wire_schema`). No runtime effect; pairs with any backend above,
+  or none.
 
 ## What's in the box
 

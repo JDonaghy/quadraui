@@ -48,15 +48,6 @@ impl QuiApp {
         self.guarded(env, |app| Ok(app.driver.backend().char_width() as f64))
     }
 
-    /// The advance `draw_list` actually paints `ListView` row text with --
-    /// [`Backend::list_char_width`]. Not always the same as `charWidth` on
-    /// a pixel backend, whose chrome font can differ from its editor font.
-    #[napi(js_name = "listCharWidth")]
-    pub fn list_char_width(&mut self, env: Env) -> Result<f64> {
-        self.check_not_live()?;
-        self.guarded(env, |app| Ok(app.driver.backend().list_char_width() as f64))
-    }
-
     /// Line height of the chrome / UI font --
     /// [`Backend::chrome_line_height`]. Equal to `lineHeight` on the
     /// headless backend; use this instead of `lineHeight` when sizing
@@ -66,17 +57,6 @@ impl QuiApp {
         self.check_not_live()?;
         self.guarded(env, |app| {
             Ok(app.driver.backend().chrome_line_height() as f64)
-        })
-    }
-
-    /// Width this backend reserves for its own native scrollbar overlay
-    /// alongside scrollable content -- [`Backend::scrollbar_reserve`].
-    /// Always `0.0` on the headless backend.
-    #[napi(js_name = "scrollbarReserve")]
-    pub fn scrollbar_reserve(&mut self, env: Env) -> Result<f64> {
-        self.check_not_live()?;
-        self.guarded(env, |app| {
-            Ok(app.driver.backend().scrollbar_reserve() as f64)
         })
     }
 

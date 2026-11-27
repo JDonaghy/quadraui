@@ -34,14 +34,14 @@ from quadraui.app import App, Node as AppNode, SidebarPanel, Split, StatusBar, T
 if TYPE_CHECKING:
     from quadraui.wire import (
         Color,
-        ColumnDescriptor,
-        DataRowDescriptor,
+        Column,
+        DataRow,
         Icon,
         Key,
         StatusBarSegment,
         StyledText,
-        ToolbarButtonDescriptor,
-        TreeRowDescriptor,
+        ToolbarButton,
+        TreeRow,
         TreeStyle,
         UiEvent,
     )
@@ -129,10 +129,10 @@ def _styled_text(text: str) -> "StyledText":
     return {"spans": [{"text": text, "fg": None, "bg": None}]}
 
 
-def folder_rows(root: Node) -> tuple[list["TreeRowDescriptor"], list[Node]]:
+def folder_rows(root: Node) -> tuple[list["TreeRow"], list[Node]]:
     """Walk the expanded model into index-aligned `(rows, nodes)`, directories
     only -- recomputed every frame."""
-    rows: list["TreeRowDescriptor"] = []
+    rows: list["TreeRow"] = []
     nodes: list[Node] = []
 
     def walk(node: Node, path: list[int], indent: int) -> None:
@@ -168,7 +168,7 @@ def _human_size(n: int | None) -> str:
     return f"{int(size)} {_SIZE_UNITS[i]}" if i == 0 else f"{size:.1f} {_SIZE_UNITS[i]}"
 
 
-def details_rows(folder: Node) -> list["DataRowDescriptor"]:
+def details_rows(folder: Node) -> list["DataRow"]:
     """The data_table rows for one opened folder's contents, subfolders
     first (sorted by `_sort_key` already), a trailing "/" marking a
     navigable row."""
@@ -176,7 +176,7 @@ def details_rows(folder: Node) -> list["DataRowDescriptor"]:
     if not children:
         note = "(unreadable)" if folder.load_error else "(empty folder)"
         return [{"cells": [_styled_text(note), _styled_text(""), _styled_text("")]}]
-    rows: list["DataRowDescriptor"] = []
+    rows: list["DataRow"] = []
     for child in children:
         name = f"{child.name}/" if child.is_dir else child.name
         kind = "folder" if child.is_dir else "file"
@@ -184,13 +184,13 @@ def details_rows(folder: Node) -> list["DataRowDescriptor"]:
         rows.append({"cells": [_styled_text(name), _styled_text(size), _styled_text(kind)]})
     return rows
 
-DETAILS_COLUMNS: "list[ColumnDescriptor]" = [
+DETAILS_COLUMNS: "list[Column]" = [
     {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
     {"title": "Size", "width": {"Flex": 1.0}, "align": "Right"},
     {"title": "Kind", "width": {"Flex": 1.0}, "align": "Left"},
 ]
 
-_TOOLBAR_BUTTONS: "list[ToolbarButtonDescriptor]" = [
+_TOOLBAR_BUTTONS: "list[ToolbarButton]" = [
     {"Action": {"id": "fm:k:move", "label": "↑↓ Move"}},
     {"Action": {"id": "fm:k:expand", "label": "→ Expand"}},
     {"Action": {"id": "fm:k:collapse", "label": "← Collapse"}},
@@ -224,7 +224,7 @@ class FileManager:
 
     # --- navigation helpers --------------------------------------------------
 
-    def _visible(self) -> tuple[list["TreeRowDescriptor"], list[Node]]:
+    def _visible(self) -> tuple[list["TreeRow"], list[Node]]:
         rows, nodes = folder_rows(self.root)
         if self.cursor not in nodes:
             node: Node | None = self.cursor

@@ -167,6 +167,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Form {
     pub id: WidgetId,
     pub fields: Vec<FormField>,
@@ -265,6 +266,7 @@ pub struct Form {
 /// [`ControlWidth::ContentEnd`], which places it against the row's right
 /// edge instead.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ControlWidth {
     /// Stretch the control to fill the row's remaining width after the
     /// label column — every field's control ends at the same right
@@ -327,6 +329,7 @@ impl ControlWidth {
 /// Ant Design's `Form` `layout` prop (`horizontal` / `vertical` /
 /// `inline`), with `Hidden` added for label-less rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LabelPosition {
     /// Label beside the input, on the same row. Ant's "horizontal"
     /// layout; quadraui's only behaviour before this field existed.
@@ -348,6 +351,7 @@ pub enum LabelPosition {
 /// [`Form::label_width`]/[`FormField::label_width`] or the backend's
 /// own widest-label measurement).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LabelAlign {
     #[default]
     Start,
@@ -369,6 +373,7 @@ pub enum LabelAlign {
 /// the shared positioning math in [`Form::layout`] changes, so no
 /// backend-specific code needs to change to pick this up.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FormSpacing {
     /// Uniform inset, applied on all four edges of the form's content
     /// area before any field is laid out. `0.0` (the default)
@@ -399,6 +404,7 @@ pub struct FormSpacing {
 /// [`FormSpacing::row_align`] as the form-wide default, or on
 /// [`FormField::row_align`] to override a single field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum RowAlign {
     /// Items pack left-to-right starting at `items_start_x`, leaving
     /// any slack at the row's right edge — today's only behavior.
@@ -418,6 +424,7 @@ pub enum RowAlign {
 
 /// Validation state rendered as a colored indicator + message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ValidationState {
     Error(String),
     Warning(String),
@@ -425,6 +432,7 @@ pub enum ValidationState {
 
 /// One row in a `Form`: a label + an input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FormField {
     pub id: WidgetId,
     /// Rendered to the left of the field. Omit (empty spans) for rows
@@ -490,6 +498,7 @@ pub struct FormField {
 
 /// The input variant carried by a `FormField`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FieldKind {
     /// A bold/sectioned header row. Not interactive; used to group
     /// related fields. The field's `label` carries the header text;
@@ -718,6 +727,7 @@ pub enum FieldKind {
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ToggleGroupItem {
     pub id: WidgetId,
     pub label: String,
@@ -726,6 +736,7 @@ pub struct ToggleGroupItem {
 
 /// One button in a [`FieldKind::ButtonRow`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ButtonRowItem {
     pub id: WidgetId,
     pub label: String,
@@ -1465,26 +1476,6 @@ impl Form {
 /// (unclipped) height, top-to-bottom, never shrinking — the vertical
 /// counterpart of `Toolbar`'s item packing. `viewport_width` is every
 /// row's fixed cross-axis size.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine, so `Form` composes with the same engine
-/// [`crate::primitives::Toolbar`] and [`crate::compose::ShellView`] use.
-/// Without it, the same arithmetic is done by hand. Both arms are
-/// covered by this module's exact-value tests to guarantee they agree
-/// bit-for-bit.
-#[cfg(feature = "layout")]
-fn row_y_positions(viewport_width: f32, heights: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Column,
-        0.0,
-        heights,
-        0.0,
-        viewport_width,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn row_y_positions(_viewport_width: f32, heights: &[f32]) -> Vec<f32> {
     let mut y = 0.0_f32;
     let mut ys = Vec::with_capacity(heights.len());
@@ -1498,22 +1489,6 @@ fn row_y_positions(_viewport_width: f32, heights: &[f32]) -> Vec<f32> {
 /// Compute each `ToggleGroup`/`ButtonRow` item's left edge, left-to-right
 /// starting at `origin_x` with `gap` between consecutive items, never
 /// shrinking. `row_height` is every item's fixed cross-axis size.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine. Without it, the same arithmetic is done by hand.
-#[cfg(feature = "layout")]
-fn item_x_positions(origin_x: f32, row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Row,
-        origin_x,
-        widths,
-        gap,
-        row_height,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
     let mut x = origin_x;
     let mut xs = Vec::with_capacity(widths.len());
@@ -5078,6 +5053,7 @@ pub(crate) use native_surface_paint::{
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum FormEvent {
     /// A `Toggle` field's value changed.

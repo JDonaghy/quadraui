@@ -12,7 +12,7 @@ does -- the two acceptance scenarios from the "generated .pyi / TypeScript
 types" issue. `build_grid` constructs a `"grid"` node with its own
 `GridTrack` column/row lists. `build_editor`/`draw_cursor_line`
 additionally construct an
-`EditorDescriptor` (whose stub references `Dict`) and a `DrawOp::Line`
+`Editor` (whose stub references `Dict`) and a `DrawOp::Line`
 (whose `from` field renders as a functional `TypedDict` instead of a
 class), so a regression in either generator path shows up here. This
 file must type-check with zero errors;
@@ -27,16 +27,16 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from quadraui.wire import (
-        ColumnDescriptor,
-        DataRowDescriptor,
-        DataTableDescriptor,
+        Column,
+        DataRow,
+        DataTable as DataTableDescriptor,
         DrawOp,
-        EditorDescriptor,
+        Editor,
         GridTrack,
         LayoutNode,
         StyledText,
-        TreeRowDescriptor,
-        TreeViewDescriptor,
+        TreeRow,
+        TreeView,
         UiEvent,
     )
 
@@ -46,7 +46,7 @@ def _styled_text(text: str) -> "StyledText":
 
 
 def build_tree() -> "LayoutNode":
-    row: "TreeRowDescriptor" = {
+    row: "TreeRow" = {
         "path": [0],
         "indent": 0,
         "icon": None,
@@ -54,7 +54,7 @@ def build_tree() -> "LayoutNode":
         "badge": None,
         "is_expanded": True,
     }
-    tree: "TreeViewDescriptor" = {
+    tree: "TreeView" = {
         "id": "demo:tree",
         "rows": [row],
         "selection_mode": "Single",
@@ -70,17 +70,17 @@ def build_tree() -> "LayoutNode":
 
 
 def build_table() -> "LayoutNode":
-    columns: list["ColumnDescriptor"] = [
+    columns: list["Column"] = [
         {"title": "Name", "width": {"Flex": 2.0}, "align": "Left"},
         {"title": "Size", "width": {"FixedCells": 10.0}},
     ]
-    rows: list["DataRowDescriptor"] = [{"cells": [_styled_text("main.rs"), _styled_text("4 KB")]}]
+    rows: list["DataRow"] = [{"cells": [_styled_text("main.rs"), _styled_text("4 KB")]}]
     table: "DataTableDescriptor" = {"id": "demo:table", "columns": columns, "rows": rows}
     return {"id": "demo:table", "data_table": table}
 
 
 def build_editor() -> "LayoutNode":
-    editor: "EditorDescriptor" = {
+    editor: "Editor" = {
         "id": "demo:editor",
         "rect": {"x": 0.0, "y": 0.0, "width": 80.0, "height": 24.0},
         "lines": [

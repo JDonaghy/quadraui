@@ -124,6 +124,7 @@ use serde::{Deserialize, Serialize};
 /// `#[non_exhaustive]`: a future overflow style is additive.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum CellOverflow {
     /// End the visible text in `…`, so the cut reads as deliberate.
@@ -153,6 +154,7 @@ pub enum CellOverflow {
 /// while `coord-tui` builds it with exhaustive literals — `Style`
 /// avoids that trap only because it is new.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Style {
     /// Stroke width, in surface-native pixels, of the focus ring
