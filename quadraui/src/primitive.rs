@@ -1265,6 +1265,9 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Interactive::HOVER_ON_SUB_REGIONS_ONLY`].
     fn hover_on_sub_regions_only(&self) -> bool;
 
+    /// [`Interactive::RECEIVES_HOVER_MOVES`].
+    fn receives_hover_moves(&self) -> bool;
+
     /// The frame-inventory name of sub-part `sub` — see
     /// [`Interactive::sub_region_name`].
     fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str>;
@@ -1391,6 +1394,10 @@ where
 
     fn hover_on_sub_regions_only(&self) -> bool {
         W::HOVER_ON_SUB_REGIONS_ONLY
+    }
+
+    fn receives_hover_moves(&self) -> bool {
+        W::RECEIVES_HOVER_MOVES
     }
 
     fn new_state(&self) -> Box<dyn std::any::Any> {
@@ -1559,6 +1566,7 @@ where
     type Action = W::Action;
 
     const HOVER_ON_SUB_REGIONS_ONLY: bool = W::HOVER_ON_SUB_REGIONS_ONLY;
+    const RECEIVES_HOVER_MOVES: bool = W::RECEIVES_HOVER_MOVES;
     const OPENS_POPUPS: bool = W::OPENS_POPUPS;
 
     fn focus(&self) -> FocusSpec {

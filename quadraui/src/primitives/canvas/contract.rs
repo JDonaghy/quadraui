@@ -102,6 +102,10 @@ impl crate::interactive::Interactive for Canvas {
     type State = CanvasState;
     type Action = CanvasEvent;
 
+    /// Every move inside the widget reaches [`Self::handle`], so
+    /// the hovered region follows the pointer.
+    const RECEIVES_HOVER_MOVES: bool = true;
+
     /// One tab stop when [`Canvas::focusable`] is set; otherwise none.
     fn focus(&self) -> crate::interactive::FocusSpec {
         if self.focusable {

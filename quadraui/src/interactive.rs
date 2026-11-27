@@ -434,6 +434,21 @@ pub trait Interactive: Primitive {
     /// not. Default: `false`, the whole rect.
     const HOVER_ON_SUB_REGIONS_ONLY: bool = false;
 
+    /// Whether this widget receives [`PointerKind::Move`] for every
+    /// pointer move inside it while it is hovered, not only
+    /// [`PointerKind::Enter`] when the pointer arrives and
+    /// [`PointerKind::Leave`] when it goes. For a widget whose hover
+    /// target is finer than its own rect but not a published sub-region —
+    /// a chart's nearest data point, a canvas's declared region — so its
+    /// hover follows the pointer across it.
+    ///
+    /// Without it a widget sees `Move` only while it holds the pointer
+    /// capture ([`EventHost::capture_pointer`]). A widget that sets it
+    /// still gets `Enter` (never a `Move`) for the move that brings the
+    /// pointer onto it, and `Leave` for the one that takes it off.
+    /// Default: `false`.
+    const RECEIVES_HOVER_MOVES: bool = false;
+
     /// Whether this widget can ever answer [`Self::popups`] with anything.
     /// The runtime asks [`Self::popups`] only of widgets that set this,
     /// so routing an event never lays out a widget that has no popups to
