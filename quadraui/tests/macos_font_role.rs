@@ -281,7 +281,7 @@ fn terminal_paints_in_editor_font() {
 /// stop lining up with the editor the diff was opened from.
 #[test]
 fn draw_diff_view_paints_in_editor_font() {
-    assert_paints_in_editor_font("draw_diff_view", |b, area| {
+    assert_paints_in_editor_font("DiffView", |b, area| {
         let view = DiffView {
             id: id("diff-view"),
             left: LABEL.to_string(),
@@ -303,14 +303,13 @@ fn draw_diff_view_paints_in_editor_font() {
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
-        let _ = b.draw_diff_view(area, &view);
+        let _ = b.draw_primitive(area, &view);
     });
 }
 
 #[test]
-#[allow(deprecated)]
 fn draw_data_table_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_data_table", |b, area| {
+    assert_paints_in_chrome_font("DataTable", |b, area| {
         let table = DataTable {
             id: id("data-table"),
             columns: vec![Column {
@@ -335,7 +334,7 @@ fn draw_data_table_paints_in_chrome_font() {
             striped: false,
             glyphs: None,
         };
-        let _ = b.draw_data_table(area, &table, None);
+        let _ = b.draw_primitive(area, &table);
     });
 }
 

@@ -6370,7 +6370,7 @@ mod tests {
     fn paint_chart_via_backend(
         chart: &ChartModel,
         hovered: Option<(usize, usize)>,
-    ) -> (BitmapSurface, ChartLayout) {
+    ) -> (BitmapSurface, crate::primitives::chart::ChartLayout) {
         let surface = BitmapSurface::new(CHART_W, CHART_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
@@ -6378,13 +6378,16 @@ mod tests {
         backend.begin_frame(Viewport::new(CHART_W as f32, CHART_H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_chart(
+            let chart = ChartModel {
+                hovered_point: hovered,
+                ..chart.clone()
+            };
+            let l = crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(0.0, 0.0, CHART_W as f32, CHART_H as f32),
-                chart,
-                hovered,
-                None,
+                &chart,
             );
-            *layout.borrow_mut() = Some(l);
+            *layout.borrow_mut() = Some(l.chart);
         });
         backend.end_frame();
         (surface, layout.into_inner().unwrap())
@@ -6564,11 +6567,14 @@ mod tests {
                 Rect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
                 sentinel,
             );
-            b.draw_chart(
+            let chart = ChartModel {
+                hovered_point: Some((0, 0)),
+                ..chart.clone()
+            };
+            crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(chart_x, chart_y, chart_w, chart_h),
                 &chart,
-                Some((0, 0)),
-                None,
             );
         });
         backend.end_frame();
@@ -6648,16 +6654,15 @@ mod tests {
         backend.begin_frame(Viewport::new(CW as f32, CH as f32, 1.0));
         let layout_cell = std::cell::RefCell::new(None);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_chart(
+            let l = crate::backend::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(0.0, 0.0, CW as f32, CH as f32),
                 &chart,
-                None,
-                None,
             );
-            *layout_cell.borrow_mut() = Some(l);
+            *layout_cell.borrow_mut() = Some(l.chart);
         });
         backend.end_frame();
-        let layout = layout_cell.into_inner().expect("draw_chart ran");
+        let layout = layout_cell.into_inner().expect("the chart painted");
         let runs = backend.text_runs();
         let run_for = |label: &str| {
             runs.iter()

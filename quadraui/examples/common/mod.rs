@@ -113,6 +113,12 @@ pub mod codicon_tree_demo;
 pub mod command_line_selection_demo;
 pub mod context_menu_style_demo;
 pub mod controls;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod data_table_app;
 pub mod demo;
 pub mod dialog_table_demo;
@@ -220,6 +226,12 @@ pub use codicon_tree_demo::CodiconTreeDemo;
 pub use command_line_selection_demo::CommandLineSelectionDemo;
 pub use context_menu_style_demo::ContextMenuStyleDemo;
 pub use controls::ControlsApp;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use data_table_app::DataTableApp;
 pub use demo::AppState;
 pub use dialog_table_demo::DialogTableDemo;

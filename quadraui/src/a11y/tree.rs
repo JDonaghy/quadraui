@@ -2343,22 +2343,53 @@ mod tests {
     use crate::layout::{Anchor, Side};
     use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
     use crate::primitives::canvas::Canvas;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::chart::{Chart, ChartKind, Series};
     use crate::primitives::completions::{CompletionItem, CompletionKind};
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
     use crate::primitives::float::{Float, FloatMeasure};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::form::Form;
     use crate::primitives::list::ListItem;
     use crate::primitives::message_list::MessageRow;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::multi_section_view::{
         Axis, EmptyBody, ScrollMode, Section, SectionBody, SectionHeader, SectionSize,
     };
     use crate::primitives::palette::{PaletteItem, PaletteMode};
     use crate::primitives::pipeline_view::{PipelineStage, StageStatus};
     use crate::primitives::scrollbar::Scrollbar;
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::terminal::{Terminal, TerminalCell};
     use crate::primitives::toolbar::ToolbarButton;
-    use crate::types::{Color, Decoration, SelectionMode, TreeStyle, WidgetId};
+    use crate::types::{Color, Decoration, WidgetId};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    use crate::types::{SelectionMode, TreeStyle};
 
     fn list(id: &str, title: Option<&str>, items: &[&str], selected: usize) -> ListView {
         ListView {
@@ -3154,6 +3185,12 @@ mod tests {
         assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn data_table_maps_rows_cells_and_a_footer_with_no_position() {
         let table = DataTable {
@@ -3220,6 +3257,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn data_table_virtualisation_reports_true_set_size_under_a_100k_row_window() {
         let total = 100_000usize;
@@ -3371,6 +3414,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn multi_section_view_maps_sections_as_groups_with_expanded_and_active_state() {
         let view = MultiSectionView {
@@ -3437,6 +3486,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn multi_section_view_body_delegates_container_role_label_and_children_for_every_variant() {
         let view = MultiSectionView {

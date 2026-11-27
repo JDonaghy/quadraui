@@ -23,6 +23,12 @@ use super::runner::{DriverFactory, DynDriver};
 /// would otherwise only surface as a mysterious "unknown fixture" row in
 /// the matrix.
 pub const FIXTURES: &[&str] = &[
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     "data_table_app",
     "dialog_table_demo",
     "file_dialog_demo",
@@ -51,6 +57,12 @@ pub fn build<F: DriverFactory>(
     viewport: LogicalViewport,
 ) -> Option<Box<dyn DynDriver>> {
     Some(match fixture {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "tui",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
         "data_table_app" => F::make(common::data_table_app::DataTableApp::new(), viewport),
         "dialog_table_demo" => F::make(common::dialog_table_demo::DialogTableDemo::new(), viewport),
         "file_dialog_demo" => F::make(common::file_dialog_demo::FileDialogDemo::new(), viewport),

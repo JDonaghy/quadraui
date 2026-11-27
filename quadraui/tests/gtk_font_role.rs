@@ -275,7 +275,7 @@ fn terminal_paints_in_editor_font() {
 /// stop lining up with the editor the diff was opened from.
 #[test]
 fn draw_diff_view_paints_in_editor_font() {
-    assert_paints_in_editor_font("draw_diff_view", |b, area| {
+    assert_paints_in_editor_font("DiffView", |b, area| {
         let view = DiffView {
             id: id("diff-view"),
             left: LABEL.to_string(),
