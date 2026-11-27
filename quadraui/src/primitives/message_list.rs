@@ -43,6 +43,7 @@ pub(crate) mod paint_cells;
 /// the rasteriser applies per-span fg/bold/italic and the per-row `scale`
 /// multiplier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MessageRow {
     pub text: String,
     pub fg: Color,
@@ -119,6 +120,7 @@ impl MessageRow {
 /// assert_eq!(hit, MessageListHit::Row(1));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MessageList {
     pub id: WidgetId,
     pub rows: Vec<MessageRow>,
@@ -291,6 +293,7 @@ const MESSAGE_LIST_WHEEL_ROWS_PER_NOTCH: f32 = 3.0;
 /// What a [`MessageList`] reports. `scroll_top` is the app's: it writes
 /// it back onto the descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MessageListEvent {
     /// A wheel notch scrolled the list to `scroll_top`, clamped so the
     /// last row stays on screen. `at_bottom` says whether that is the
@@ -336,6 +339,29 @@ impl crate::primitive::Primitive for MessageList {
             _ => ctx.editor_line_height(),
         };
         self.layout(rect, MessageListMeasure::new(line_height))
+    }
+
+    /// The transcript as selectable text: the whole rows painted into
+    /// `layout.bounds`, so row `i` of the region lines up with `lines[i]`.
+    /// Each row is already one display row (the caller wraps).
+    fn text_region(&self, layout: &MessageListLayout) -> Option<crate::dispatch::TextRegion> {
+        let whole_rows = if layout.line_height > 0.0 {
+            (layout.bounds.height / layout.line_height).floor() as usize
+        } else {
+            0
+        };
+        let lines = self
+            .rows
+            .iter()
+            .skip(layout.resolved_scroll_offset)
+            .take(whole_rows)
+            .map(|row| row.text.clone())
+            .collect();
+        Some(crate::dispatch::TextRegion {
+            id: self.id,
+            bounds: layout.bounds,
+            lines,
+        })
     }
 
     fn paint(
@@ -751,6 +777,24 @@ pub(crate) mod native_surface_paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_region_lists_the_whole_rows_painted_from_the_scroll_offset() {
+        let list = MessageList {
+            id: WidgetId::new("ml"),
+            rows: (0..6)
+                .map(|i| MessageRow::new(format!("row {i}"), Color::rgb(9, 9, 9), 0.0))
+                .collect(),
+            scroll_top: 2,
+        };
+        let ctx = crate::primitive::LayoutCtx::new(10.0, 8.0, false);
+        let layout =
+            crate::primitive::Primitive::layout(&list, &ctx, Rect::new(0.0, 0.0, 80.0, 25.0));
+        let region = crate::primitive::Primitive::text_region(&list, &layout).expect("a region");
+        assert_eq!(region.id, WidgetId::new("ml"));
+        assert_eq!(region.bounds, layout.bounds);
+        assert_eq!(region.lines, vec!["row 2".to_string(), "row 3".to_string()]);
+    }
 
     #[test]
     fn new_has_empty_spans_and_unit_scale() {

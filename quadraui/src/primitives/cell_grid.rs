@@ -86,6 +86,7 @@ fn default_true() -> bool {
 /// external exhaustive `match` — see `CLAUDE.md`'s *Downstream consumers*
 /// section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CellAlign {
     Left,
@@ -149,6 +150,7 @@ fn looks_numeric(text: &str) -> bool {
 /// Optional visual overrides for one [`Cell`]. Every field defaults to
 /// "inherit the theme/column default" when `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CellStyle {
     #[serde(default)]
     pub bold: Option<bool>,
@@ -177,6 +179,7 @@ impl CellStyle {
 
 /// One cell's already-formatted display text plus its optional style.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Cell {
     pub text: String,
     #[serde(default)]
@@ -240,6 +243,7 @@ pub fn column_letters(index: usize) -> String {
 /// a caller still sets them directly afterward, the same way
 /// [`crate::TextInput::new`] works.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct CellGrid {
     pub id: WidgetId,
@@ -371,6 +375,7 @@ pub struct CellGrid {
 /// cell at a time, always [`CellGrid::cursor`], so there is nothing to
 /// disambiguate).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CellEditState {
     pub text: String,
     /// Byte offset into `text`.
@@ -847,6 +852,7 @@ impl CellGridLayout {
 /// Not [`Copy`] — [`Self::CellEditStarted`]/[`Self::CellEditChanged`]
 /// carry a [`CellEditState`], which owns a `String`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CellGridEvent {
     /// The active cell moved to a new absolute `(row, col)`.

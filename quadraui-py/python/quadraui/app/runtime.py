@@ -44,7 +44,7 @@ from .nodes import Node
 __all__ = ["App", "WIRE_VERSION", "key_name"]
 
 
-# Mirrors `quadraui_binding_core::wire_schema::WIRE_VERSION` -- every tree
+# Mirrors `quadraui_binding_core::WIRE_VERSION` -- every tree
 # this layer renders carries it as a `"wire_version"` sibling key (see
 # `_render_once`), so the host's own version gate
 # (`quadraui_binding_core::wire::check_wire_version`) applies to a typed-layer

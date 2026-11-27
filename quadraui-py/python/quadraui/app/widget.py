@@ -3,7 +3,7 @@
 composing existing nodes (reach for `Component` first; see `AGENTS.md`'s
 "shape of an app" section). Builds directly on the `Canvas`
 `DrawOp`/`CanvasRegion` display-list vocabulary every other `quadraui`
-primitive paints through (`quadraui.wire.CanvasDescriptor`) -- `paint`
+primitive paints through (`quadraui.wire.Canvas`) -- `paint`
 returns the same `{"ops": [...], "regions": [...]}` shape, so a script
 widget degrades to TUI exactly the way a hand-written `Canvas` descriptor
 already does.
@@ -100,7 +100,7 @@ class Widget(Node):
         """Builds this frame's display list. `rect` is this widget's own
         resolved area (`x`/`y`/`width`/`height`), in `ctx`'s units.
         Returns `{"ops": [...], "regions": [...]}` -- the same shape
-        `quadraui.wire.CanvasDescriptor` documents. Every op/region
+        `quadraui.wire.Canvas` documents. Every op/region
         coordinate is LOCAL to `rect` ((0, 0) is this widget's own
         top-left corner), not the screen -- the same convention a `Canvas`
         node's own `ops`/`regions` already use."""

@@ -109,6 +109,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(Point::new(15.0, 12.0)), FloatHit::Body);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Float {
     pub id: WidgetId,

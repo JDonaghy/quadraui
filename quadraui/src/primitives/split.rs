@@ -66,6 +66,7 @@ pub struct Split {
 
 /// Orientation of a `Split`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SplitDirection {
     /// Divider runs vertically; panes are side-by-side (first = left,
     /// second = right).

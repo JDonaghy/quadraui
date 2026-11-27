@@ -26,6 +26,7 @@ fn hex_byte(s: &str, i: usize) -> Option<u8> {
 /// Matches the shape of `vimcode::Color` conceptually. Adapter code in apps
 /// (e.g. vimcode) maps app-specific colour types to this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Color {
     pub r: u8,
     pub g: u8,
@@ -161,6 +162,7 @@ impl Color {
 
 /// A contiguous run of text sharing a single style.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StyledSpan {
     pub text: String,
     pub fg: Option<Color>,
@@ -199,6 +201,7 @@ impl StyledSpan {
 
 /// A sequence of styled spans rendered inline on one line.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StyledText {
     pub spans: Vec<StyledSpan>,
 }
@@ -340,6 +343,30 @@ impl Icon {
     }
 }
 
+/// [`Icon`]'s two accepted wire shapes. `serde` tries an
+/// `#[serde(untagged)]` enum's variants in declaration order, so `Codicon`
+/// (the only shape with a `codicon` field) is listed first.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+enum IconWire {
+    Codicon {
+        codicon: String,
+        fallback: String,
+        #[serde(default)]
+        color: Option<Color>,
+    },
+    Glyph {
+        glyph: String,
+        fallback: String,
+        #[serde(default)]
+        color: Option<Color>,
+    },
+}
+
+#[cfg(feature = "schema")]
+crate::schema_as!(Icon, "Icon", IconWire);
+
 /// Accepts both of [`Icon`]'s wire shapes — see that type's doc. `serde`
 /// tries an `#[serde(untagged)]` enum's variants in declaration order and
 /// commits to the first one whose required fields are all present, so
@@ -351,25 +378,8 @@ impl<'de> Deserialize<'de> for Icon {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Codicon {
-                codicon: String,
-                fallback: String,
-                #[serde(default)]
-                color: Option<Color>,
-            },
-            Glyph {
-                glyph: String,
-                fallback: String,
-                #[serde(default)]
-                color: Option<Color>,
-            },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Glyph {
+        match IconWire::deserialize(deserializer)? {
+            IconWire::Glyph {
                 glyph,
                 fallback,
                 color,
@@ -378,7 +388,7 @@ impl<'de> Deserialize<'de> for Icon {
                 fallback,
                 color,
             }),
-            Wire::Codicon {
+            IconWire::Codicon {
                 codicon,
                 fallback,
                 color,
@@ -526,6 +536,9 @@ impl Serialize for WidgetId {
     }
 }
 
+#[cfg(feature = "schema")]
+crate::schema_as!(WidgetId, "WidgetId", String);
+
 impl<'de> Deserialize<'de> for WidgetId {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -555,6 +568,7 @@ impl From<&String> for WidgetId {
 
 /// Keyboard modifier state carried alongside input events.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Modifiers {
     #[serde(default)]
     pub shift: bool,
@@ -576,6 +590,7 @@ pub type TreePath = Vec<u16>;
 /// Selection behaviour for row-oriented widgets (`TreeView`, `ListView`,
 /// `DataTable`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SelectionMode {
     /// Rows cannot be selected.
     None,
@@ -725,6 +740,7 @@ impl SelectionCore {
 /// `Warning` override the foreground with theme error/warning colours;
 /// `Modified` implies italic but otherwise normal colouring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Decoration {
     /// Rendered with default foreground and background.
     #[default]
@@ -749,6 +765,7 @@ pub enum Decoration {
 /// foreground/background colouring. Used by `TreeView` / `ListView` /
 /// `DataTable` for git-status letters, item counts, conflict markers, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Badge {
     pub text: String,
     pub fg: Option<Color>,
@@ -775,6 +792,7 @@ impl Badge {
 
 /// Visual style configuration for a `TreeView`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeStyle {
     /// Cells / pixels per visual indent level.
     pub indent: u16,

@@ -94,7 +94,7 @@ def test_click_on_the_chevron_emits_toggle_expanded():
     ), received
 
 
-def test_click_on_the_table_body_reaches_the_handler_as_a_raw_mouse_down():
+def test_click_on_a_row_body_focuses_the_table_and_selects_the_row():
     app = QuiApp(40, 10)
     app.set_render(lambda: {"tree_table": _tree_table_dict()})
     app.screen()
@@ -102,11 +102,13 @@ def test_click_on_the_table_body_reaches_the_handler_as_a_raw_mouse_down():
     received = []
     app.set_handler(lambda event: received.append(event))
     # Past the chevron and label, still on "src"'s row (viewport y == 1.0):
-    # no more specific hit resolution, so it reaches the handler raw.
+    # the table's own `Interactive::handle` selects the row.
     app.push_event(
         {"MouseDown": {"button": "Left", "position": {"x": 2.0, "y": 1.0}, "modifiers": {}}}
     )
     app.run(1)
 
-    assert any("MouseDown" in event for event in received), received
-    assert not any("TreeTable" in event for event in received), received
+    assert received == [
+        {"FocusChanged": "files"},
+        {"TreeTable": ("files", {"RowSelected": {"idx": 0, "path": [0]}})},
+    ], received

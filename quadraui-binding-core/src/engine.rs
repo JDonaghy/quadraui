@@ -25,13 +25,13 @@ use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
-    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsHit,
-    CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
-    EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent,
+    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsLayout,
+    ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx,
+    EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent, ListViewEvent,
     MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
-    PointerShape, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RoutedEvent,
-    ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner,
-    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    PointerShape, Rect, RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis,
+    ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
+    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
     TreeTableNodeData, UiEvent, WidgetId,
 };
 
@@ -54,8 +54,8 @@ use crate::host::{
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
 use crate::semantic::{
-    focus_scoped_key_event, number_input_click_event, scripted_key_press, scripted_region_click,
-    semantic_event_for_hit, DragGestureWireEvent,
+    focus_scoped_key_event, scripted_key_press, scripted_region_click, semantic_event_for_hit,
+    DragGestureWireEvent,
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -622,6 +622,56 @@ fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> b
     })
 }
 
+/// Whether `event` is a bare Escape press: the host's dismiss key for an
+/// imperative overlay, which the overlay widgets themselves leave unclaimed.
+fn is_escape(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            ..
+        }
+    )
+}
+
+/// The [`RoutedEvent`] an imperative overlay painted at `bounds` receives
+/// for `event`: a press, a double-click or a wheel notch landing inside
+/// it, in its own local space. `None` for anything else, which the
+/// overlay does not see.
+fn overlay_pointer_event(event: &UiEvent, bounds: Rect) -> Option<RoutedEvent> {
+    let local = |position: &Point| Point::new(position.x - bounds.x, position.y - bounds.y);
+    match event {
+        UiEvent::MouseDown {
+            button,
+            position,
+            modifiers,
+            ..
+        } if bounds.contains(*position) => Some(RoutedEvent::Pointer {
+            kind: PointerKind::Down(*button),
+            sub: None,
+            local: local(position),
+            mods: *modifiers,
+        }),
+        UiEvent::DoubleClick { position, .. } if bounds.contains(*position) => {
+            Some(RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                sub: None,
+                local: local(position),
+                mods: Modifiers::default(),
+            })
+        }
+        UiEvent::Scroll {
+            delta, position, ..
+        } if bounds.contains(*position) => Some(RoutedEvent::Wheel {
+            dx: delta.x,
+            dy: delta.y,
+            local: local(position),
+            mods: Modifiers::default(),
+        }),
+        _ => None,
+    }
+}
+
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
 /// itself: handing a resolved [`UiEvent`] (and, for a pointer event that
 /// landed on a specific sub-area, its [`HitDetail`]) to the binding's own
@@ -717,6 +767,7 @@ pub trait EventSink {
 /// `Reaction` instead (see that method's own `TreeTableController` routing
 /// blocks).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeTableControllerWireEvent {
     /// Row selected — click or keyboard navigation. `id` is the selected
     /// node's own [`quadraui::compose::NodeId`] (a plain `String`).
@@ -1571,6 +1622,13 @@ impl InteractionEngine {
         self.overlays.insert(at, overlay);
     }
 
+    /// Applies `f` to every open overlay: how the host writes a change an
+    /// imperative overlay's widget reported (a moved highlight, a scrolled
+    /// body) back onto the descriptor it owns.
+    fn update_overlay(&mut self, f: impl FnMut(&mut Overlay)) {
+        self.overlays.iter_mut().for_each(f);
+    }
+
     /// Removes the first entry matching `pred` (there is at most one,
     /// except for [`Overlay::Toast`], where a caller's own predicate
     /// narrows to a single id), returning it. Backs every `dismiss_*`/
@@ -1889,20 +1947,28 @@ impl InteractionEngine {
             .any(|o| matches!(o, Overlay::Tooltip(..)))
     }
 
+    /// Places `tooltip` against `anchor`, sized by the tooltip's own
+    /// [`quadraui::primitive::Primitive::measure`].
     fn tooltip_layout(
         &self,
         backend: &dyn Backend,
         tooltip: &Tooltip,
         anchor: Rect,
     ) -> TooltipLayout {
-        let m = backend.measure();
-        let n_lines = tooltip.text.lines().count().max(1);
-        let longest = tooltip.text.lines().map(str::len).max().unwrap_or(0);
-        let measure = TooltipMeasure::new(
-            m.char_width * (longest as f32 + 4.0),
-            m.line_height * (n_lines as f32 + 2.0),
+        let line_height = backend.line_height();
+        let ctx = quadraui::primitive::LayoutCtx::new(
+            line_height,
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
         );
-        tooltip.layout(anchor, viewport_rect(backend), measure, m.line_height)
+        let natural = quadraui::primitive::Primitive::measure(
+            tooltip,
+            &ctx,
+            quadraui::primitive::Size::new(0.0, 0.0),
+        );
+        let measure =
+            TooltipMeasure::new(natural.width.unwrap_or(0.0), natural.height.unwrap_or(0.0));
+        tooltip.layout(anchor, viewport_rect(backend), measure, line_height)
     }
 
     // ── Completions ──────────────────────────────────────────────────
@@ -3116,68 +3182,92 @@ impl InteractionEngine {
         }
 
         if let Some((completions, cursor)) = self.find_completions() {
-            match event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_completions();
-                    return Some(Reaction::Redraw);
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.completions_layout(backend, &completions, cursor);
-                    match layout.hit_test(position.x, position.y) {
-                        CompletionsHit::Item(idx) => {
-                            self.dismiss_completions();
-                            return Some(Reaction::Redraw.merge(sink.dispatch(
-                                &UiEvent::CompletionItemActivated(completions.id, idx),
-                                None,
-                            )));
+            if is_escape(event) {
+                self.dismiss_completions();
+                return Some(Reaction::Redraw);
+            }
+            let bounds = self
+                .completions_layout(backend, &completions, cursor)
+                .bounds;
+            if let Some(routed) = overlay_pointer_event(event, bounds) {
+                let id = completions.id;
+                let widget: Rc<dyn DynWidget> = Rc::new(completions);
+                let outcome =
+                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
+                let mut reaction = outcome.reaction;
+                match outcome.event {
+                    Some(event @ UiEvent::CompletionItemActivated(..)) => {
+                        self.dismiss_completions();
+                        reaction = reaction
+                            .merge(Reaction::Redraw)
+                            .merge(sink.dispatch(&event, None));
+                    }
+                    Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. })) => {
+                        self.dismiss_completions();
+                        reaction = reaction.merge(Reaction::Redraw);
+                    }
+                    Some(event) => {
+                        if let UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) = &event {
+                            self.update_overlay(|o| {
+                                if let Overlay::Completions(c, _) = o {
+                                    c.selected_idx = *idx;
+                                }
+                            });
+                            reaction = reaction.merge(Reaction::Redraw);
                         }
-                        CompletionsHit::Inert => return Some(Reaction::Continue),
-                        CompletionsHit::Empty => {
+                        reaction = reaction.merge(sink.dispatch(&event, None));
+                    }
+                    None if outcome.consumed => {}
+                    None => {
+                        if matches!(event, UiEvent::MouseDown { .. }) {
                             self.dismiss_completions();
-                            return Some(Reaction::Redraw);
+                            reaction = reaction.merge(Reaction::Redraw);
+                        } else {
+                            return None;
                         }
                     }
                 }
-                _ => {}
+                return Some(reaction);
+            }
+            if let UiEvent::MouseDown { .. } = event {
+                self.dismiss_completions();
+                return Some(Reaction::Redraw);
             }
         }
 
         if let Some((popup, anchor)) = self.find_rich_text_popup() {
-            match event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_rich_text_popup();
-                    return Some(Reaction::Redraw);
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.rich_text_popup_layout(backend, &popup, anchor);
-                    match layout.hit_test(position.x, position.y) {
-                        RichTextPopupHit::Link(idx) => {
-                            let url = popup
-                                .links
-                                .get(idx)
-                                .map(|l| l.url.clone())
-                                .unwrap_or_default();
-                            return Some(Reaction::Redraw.merge(
-                                sink.dispatch(&UiEvent::RichTextLinkClicked(popup.id, url), None),
-                            ));
+            if is_escape(event) {
+                self.dismiss_rich_text_popup();
+                return Some(Reaction::Redraw);
+            }
+            let bounds = self.rich_text_popup_layout(backend, &popup, anchor).bounds;
+            if let Some(routed) = overlay_pointer_event(event, bounds) {
+                let id = popup.id;
+                let widget: Rc<dyn DynWidget> = Rc::new(popup);
+                let outcome =
+                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
+                let mut reaction = outcome.reaction;
+                match outcome.event {
+                    Some(event) => {
+                        if let UiEvent::ScrollOffsetChanged { new_offset, .. } = &event {
+                            self.update_overlay(|o| {
+                                if let Overlay::RichTextPopup(p, _) = o {
+                                    p.scroll_top = *new_offset;
+                                }
+                            });
+                            reaction = reaction.merge(Reaction::Redraw);
                         }
-                        RichTextPopupHit::Outside => {
-                            self.dismiss_rich_text_popup();
-                            return Some(Reaction::Redraw);
-                        }
-                        RichTextPopupHit::Char(..)
-                        | RichTextPopupHit::ScrollbarTrack
-                        | RichTextPopupHit::ScrollbarThumb
-                        | RichTextPopupHit::Body => return Some(Reaction::Continue),
+                        reaction = reaction.merge(sink.dispatch(&event, None));
                     }
+                    None if outcome.consumed => {}
+                    None if matches!(event, UiEvent::MouseDown { .. }) => {}
+                    None => return None,
                 }
-                _ => {}
+                return Some(reaction);
+            }
+            if let UiEvent::MouseDown { .. } = event {
+                self.dismiss_rich_text_popup();
+                return Some(Reaction::Redraw);
             }
         }
 
@@ -3662,6 +3752,36 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
+        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, true)
+    }
+
+    /// [`Self::dyn_widget_dispatch`] for a widget that is not part of the
+    /// focus tree: an imperative overlay (completions, a rich-text popup)
+    /// floats over the focused editor and must not take focus from it, so
+    /// its `request_focus` intent is dropped.
+    fn overlay_widget_dispatch(
+        &self,
+        id: WidgetId,
+        widget: &Rc<dyn DynWidget>,
+        area: Rect,
+        routed: RoutedEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dyn_widget_dispatch_with_focus(
+        &self,
+        id: WidgetId,
+        widget: &Rc<dyn DynWidget>,
+        area: Rect,
+        routed: RoutedEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+        take_focus: bool,
+    ) -> DynWidgetClickOutcome {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
         // measurer, its style and the paint state the widget painted
@@ -3703,7 +3823,7 @@ impl InteractionEngine {
         };
 
         let mut outcome = DynWidgetClickOutcome::default();
-        if let Some((focus_id, sub)) = intents.focus_request {
+        if let Some((focus_id, sub)) = intents.focus_request.filter(|_| take_focus) {
             *self.dyn_widget_focus_sub.borrow_mut() = Some((focus_id, sub));
             if backend.set_focus(Some(focus_id)) {
                 let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
@@ -5037,26 +5157,12 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
-                // A non-double click landing on ANY extra's body — not just
-                // `TextInput`/`NumberInput` — gets `HitDetail::ExtraBody`
-                // (`hit_test_painted`'s own `Extra` arm doesn't distinguish
-                // by kind), so this is the first arm of the same `if`/
-                // `else if` chain the other `detail` variants use below,
-                // with its own `semantic_event_for_hit` fallback folded in
-                // rather than left to the chain's final arm — a `Checkbox`
-                // body click (which `text_input_click_event`/
-                // `number_input_click_event` both no-op on, since neither
-                // finds the kind it looks for) still resolves through
-                // `semantic_event_for_hit`'s own `ExtraBody` arm this way.
-                // Folding every `ExtraBody` outcome into one arm up front
-                // makes it structurally impossible for two of them to fire
-                // for the same click as a future kind is wired in here.
-                // Must run before `semantic_event_for_hit` is reached,
-                // since `TextInput`'s caret placement is a side effect on
-                // `text_editors` only (a `SetCursor` never changes the
-                // buffer, so there is no event to swap in; see
-                // `text_input_click_event`'s own doc) and `NumberInput`'s
-                // stepper click DOES swap `event` outright.
+                // A non-double click on any extra's body places a text
+                // caret first (a side effect on `text_editors` only, with
+                // no event to swap in; see `text_input_click_event`), then
+                // resolves through `semantic_event_for_hit`'s `ExtraBody`
+                // arm. Keeping every `ExtraBody` outcome in this one arm
+                // means two of them can never fire for the same click.
                 if !double_click && matches!(detail, HitDetail::ExtraBody) {
                     if let Some(position) = event_position(&event) {
                         text_input_click_event(
@@ -5066,12 +5172,7 @@ impl InteractionEngine {
                             quadraui::TextInputMeasure::from_metrics(&backend.measure()),
                             &self.text_editors,
                         );
-                        if let Some(number_input_event) =
-                            number_input_click_event(&self.hit_map.borrow(), *id, position)
-                        {
-                            event = number_input_event;
-                            attach_hit = false;
-                        } else if let Some(semantic) = semantic_event_for_hit(
+                        if let Some(semantic) = semantic_event_for_hit(
                             *id,
                             detail,
                             button,
@@ -5498,12 +5599,13 @@ mod tests {
     };
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutSplit, LayoutSplitTree,
-        LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing,
+        LayoutTabEntry, LayoutTabs, LeafDescriptor,
     };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
     };
     use crate::semantic::DragGestureWireEvent;
+    use quadraui::Spacing;
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.
@@ -9829,6 +9931,147 @@ mod tests {
         );
     }
 
+    fn overlay_driver() -> TuiDriver<MinimalLogic> {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 40, 20)
+    }
+
+    fn overlay_events(driver: &TuiDriver<MinimalLogic>) -> Vec<UiEvent> {
+        driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect()
+    }
+
+    fn two_completions() -> quadraui::Completions {
+        serde_json::from_value(serde_json::json!({
+            "id": "completions",
+            "selected_idx": 0,
+            "items": [
+                {"label": {"spans": [{"text": "map", "fg": null, "bg": null}]}},
+                {"label": {"spans": [{"text": "filter", "fg": null, "bg": null}]}},
+            ],
+        }))
+        .expect("completions decode")
+    }
+
+    /// A press on a completion row goes through `Completions`' own
+    /// `Interactive::handle`: it moves the highlight (written back onto
+    /// the overlay the host owns) without taking focus from whatever the
+    /// popup floats over, and only a double-click accepts.
+    #[test]
+    fn a_completions_overlay_routes_presses_through_its_own_handle() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_completions(two_completions(), Point::new(2.0, 2.0));
+        driver.render();
+
+        let (x, y) = driver.find("filter").expect("the second item paints");
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        });
+        let id = WidgetId::new("completions");
+        assert_eq!(
+            overlay_events(&driver),
+            vec![UiEvent::List(
+                id,
+                quadraui::ListViewEvent::SelectionChanged { idx: 1 }
+            )]
+        );
+        assert_eq!(
+            driver
+                .app()
+                .engine
+                .find_completions()
+                .map(|(c, _)| c.selected_idx),
+            Some(1)
+        );
+
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        });
+        assert_eq!(
+            overlay_events(&driver).last(),
+            Some(&UiEvent::CompletionItemActivated(id, 1))
+        );
+        assert!(driver.app().engine.find_completions().is_none());
+    }
+
+    /// A wheel notch over an overflowing rich-text popup scrolls the popup
+    /// through its own `Interactive::handle` (reported as
+    /// `ScrollOffsetChanged` and written back onto the overlay) instead of
+    /// falling through to whatever is painted behind it.
+    #[test]
+    fn a_wheel_over_a_rich_text_popup_scrolls_the_popup() {
+        let lines: Vec<quadraui::StyledText> = (0..12)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "spans": [{"text": format!("line {i}"), "fg": null, "bg": null}]
+                }))
+                .expect("line decodes")
+            })
+            .collect();
+        let popup = quadraui::RichTextPopup {
+            id: WidgetId::new("popup"),
+            line_text: (0..12).map(|i| format!("line {i}")).collect(),
+            lines,
+            line_scales: vec![],
+            scroll_top: 0,
+            max_visible_rows: 3,
+            has_focus: false,
+            selection: None,
+            links: vec![],
+            focused_link: None,
+            placement: Default::default(),
+            padding: 1.0,
+            fg: None,
+            bg: None,
+            font_role: Default::default(),
+        };
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_rich_text_popup(popup, Point::new(2.0, 2.0));
+        driver.render();
+
+        let (x, y) = driver.find("line 1").expect("the popup body paints");
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+        let scrolled: Vec<UiEvent> = overlay_events(&driver)
+            .into_iter()
+            .filter(|e| matches!(e, UiEvent::ScrollOffsetChanged { .. }))
+            .collect();
+        assert_eq!(scrolled.len(), 1, "{:?}", overlay_events(&driver));
+        let UiEvent::ScrollOffsetChanged { widget, new_offset } = scrolled[0] else {
+            unreachable!()
+        };
+        assert_eq!(widget, WidgetId::new("popup"));
+        assert!(new_offset > 0);
+        assert_eq!(
+            driver
+                .app()
+                .engine
+                .find_rich_text_popup()
+                .map(|(p, _)| p.scroll_top),
+            Some(new_offset)
+        );
+    }
+
     /// Dismissing one overlay by id, through the shared stack, leaves
     /// every other entry untouched — another toast with a different id,
     /// and a different overlay kind (`Dialog`) entirely.
@@ -12152,9 +12395,8 @@ mod tests {
         );
     }
 
-    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` extra —
-    /// the leaf/standalone shape ([`crate::hit::HitDetail::ExtraChrome`]),
-    /// distinct from the `SidebarPanel`-embedded shape the test above
+    /// Mirrors [`FormLogic`], but paints one standalone `"toolbar"` widget
+    /// slot, distinct from the `SidebarPanel`-embedded shape the test above
     /// covers — so a test can drive its click and Enter/Space keyboard
     /// activation with no host-language FFI type in scope.
     struct ToolbarLogic {
@@ -12168,12 +12410,10 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
-                HashMap::new();
-            extra.insert(
+            let mut widgets: HashMap<String, std::rc::Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert(
                 "toolbar".to_string(),
-                std::rc::Rc::new(self.toolbar.clone())
-                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
+                std::rc::Rc::new(self.toolbar.clone()) as std::rc::Rc<dyn DynWidget>,
             );
             draw_bands(
                 backend,
@@ -12183,8 +12423,8 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
-                    widgets: crate::render::no_widgets(),
+                    extra: crate::render::no_extras(),
+                    widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -12254,20 +12494,21 @@ mod tests {
         });
 
         let dispatched = &driver.app().sink.borrow().dispatched;
-        // No leading `FocusChanged`, unlike a tab-stoppable fixed-slot
-        // primitive's own click (e.g. `click_on_a_button_focuses_it_then_
-        // dispatches_the_click` above): the *clicked button's* id (not the
-        // bar's) is what resolves against the hit map, and only the bar's
-        // id is a tab stop, so click-to-focus never fires here.
+        // The click parks the bar's keyboard cursor on the button, so the
+        // bar takes focus first.
         assert_eq!(
             dispatched.len(),
-            1,
-            "expected exactly the Toolbar click, no FocusChanged: {:?}",
+            2,
+            "expected FocusChanged then the Toolbar click: {:?}",
             dispatched
         );
         assert!(
+            matches!(&dispatched[0].0, UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("toolbar:main")),
+            "{dispatched:?}"
+        );
+        assert!(
             matches!(
-                &dispatched[0].0,
+                &dispatched[1].0,
                 UiEvent::Toolbar(
                     bar,
                     ToolbarEvent::ButtonClicked { id, is_active: true },
@@ -12280,7 +12521,7 @@ mod tests {
 
     /// The binding-host leg of the menu widgets' three-way event parity:
     /// a click on the first enabled button of a standalone `"toolbar"`
-    /// extra dispatches exactly the event the widget contract's own
+    /// leaf dispatches exactly the toolbar event the widget contract's own
     /// TuiDriver leg (`quadraui/tests/widget_contract_menus_event_parity.rs`)
     /// and its `a11y::route_widget_action` leg resolve the same bar to.
     #[test]
@@ -12318,6 +12559,7 @@ mod tests {
             .dispatched
             .iter()
             .map(|(event, _)| event.clone())
+            .filter(|event| matches!(event, UiEvent::Toolbar(..)))
             .collect();
         assert_eq!(
             dispatched,
@@ -12329,6 +12571,25 @@ mod tests {
                 },
             )]
         );
+    }
+
+    /// The tooltip overlay is sized by `Tooltip`'s own measure: on a cell
+    /// grid, the widest row plus border and padding columns, and the rows
+    /// plus a top and bottom border.
+    #[test]
+    fn a_tooltip_overlay_is_sized_by_the_tooltips_own_measure() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        let (backend, app) = driver.parts_mut();
+        let tooltip = quadraui::Tooltip::new(WidgetId::new("tip"), "abc");
+        let layout = app
+            .engine
+            .tooltip_layout(backend, &tooltip, Rect::new(5.0, 5.0, 1.0, 1.0));
+        assert_eq!((layout.bounds.width, layout.bounds.height), (6.0, 3.0));
     }
 
     /// The binding-host leg of the context menu's event parity: a click
@@ -12377,22 +12638,15 @@ mod tests {
         );
     }
 
-    /// Tab must land focus on a standalone toolbar (it now opts into
-    /// [`crate::extra_paint::ExtraPaint::tab_stop`] whenever it has at least
-    /// one enabled `Action`), and Enter on the focused toolbar must activate
-    /// whichever button [`quadraui::Toolbar::focused_index`] names — the
-    /// same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click produces.
+    /// Tab must land focus on a standalone toolbar (a focus stop whenever
+    /// it has at least one enabled `Action`), the arrow keys move the
+    /// bar's own keyboard cursor, and Enter activates the button under it
+    /// — the same `UiEvent::Toolbar(ButtonClicked)` shape a mouse click
+    /// produces.
     #[test]
     fn tab_focuses_a_toolbar_and_enter_activates_its_focused_button() {
-        // `focused_index: Some(1)` simulates the host having already
-        // responded to the prior `FocusChanged` by marking "Reset" (the
-        // second button) as the keyboard-focused one — the same
-        // host-driven convention `Switch::focused` documents.
-        let mut toolbar = two_action_toolbar();
-        toolbar.focused_index = Some(1);
-
         let logic = ToolbarLogic {
-            toolbar,
+            toolbar: two_action_toolbar(),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -12416,11 +12670,15 @@ mod tests {
             );
         }
 
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Enter),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        // The first arrow press parks the cursor on the first button, the
+        // second moves it to "Reset".
+        for key in [NamedKey::Right, NamedKey::Right, NamedKey::Enter] {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(key),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+        }
 
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
@@ -13816,7 +14074,13 @@ mod tests {
             };
             let mut node = LayoutNode::Column(LayoutContainer::new(
                 vec![
-                    leaf("combo", LeafDescriptor::Extra(Rc::new(combo))),
+                    leaf(
+                        "combo",
+                        LeafDescriptor::Widget {
+                            kind: "combo_box",
+                            widget: Rc::new(combo),
+                        },
+                    ),
                     leaf(
                         "under",
                         LeafDescriptor::Widget {

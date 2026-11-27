@@ -54,6 +54,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Switch {
     pub id: WidgetId,

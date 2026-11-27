@@ -197,7 +197,10 @@ def test_find_replace_leaf_renders_query():
     assert app.screen_contains("needle")
 
 
-def test_clicking_find_replace_focuses_it_and_routes_the_hit():
+def test_clicking_find_replace_focuses_it_and_routes_the_click_to_the_widget():
+    # The click focuses the panel, then `FindReplacePanel`'s own
+    # `Interactive::handle` resolves it against `hit_regions`: a click on
+    # the find input places the caret there and reports the field edit.
     app = QuiApp(40, 20)
     app.set_render(lambda: {"find_replace": _find_replace_descriptor()})
     app.screen()
@@ -206,5 +209,7 @@ def test_clicking_find_replace_focuses_it_and_routes_the_hit():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "find_replace"
-    assert received[1]["MouseDown"]["widget"] == "find_replace"
-    assert received[1]["hit"] == {"kind": "extra_body"}
+    widget, event = received[1]["FindReplace"]
+    assert widget == "find_replace"
+    assert event["FieldEdited"]["field"] == "Find"
+    assert event["FieldEdited"]["text"] == "needle"

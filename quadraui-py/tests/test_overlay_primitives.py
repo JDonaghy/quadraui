@@ -172,7 +172,7 @@ def _completion_items():
     ]
 
 
-def test_show_overlay_completions_then_clicking_an_item_activates_it():
+def test_show_overlay_completions_click_selects_and_double_click_activates():
     app = QuiApp(40, 20)
     received = []
     app.set_handler(lambda event: received.append(event))
@@ -188,7 +188,15 @@ def test_show_overlay_completions_then_clicking_an_item_activates_it():
     row, col = _locate(app, "filter")
     _click(app, row, col)
 
-    assert received == [{"CompletionItemActivated": ("completions:editor", 1)}]
+    assert received == [
+        {"List": ("completions:editor", {"SelectionChanged": {"idx": 1}})}
+    ]
+    assert app.screen_contains("filter")
+
+    app.push_event({"DoubleClick": {"position": {"x": float(col), "y": float(row)}}})
+    app.run(1)
+
+    assert received[-1] == {"CompletionItemActivated": ("completions:editor", 1)}
     assert not app.screen_contains("filter")
 
 

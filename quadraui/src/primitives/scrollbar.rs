@@ -80,6 +80,7 @@ pub fn idle_fade_opacity(last_interaction: Instant, now: Instant) -> f32 {
 
 /// Orientation of a scrollbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ScrollAxis {
     Vertical,
     Horizontal,
@@ -113,6 +114,7 @@ pub enum ScrollAxis {
 /// field addition. [`Default`] is implemented regardless — it is
 /// additive and doesn't require the exhaustiveness trade-off.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Scrollbar {
     pub id: WidgetId,
     pub axis: ScrollAxis,

@@ -56,7 +56,7 @@ function autoId(path: ReadonlyArray<string | number>): string {
 }
 
 /**
- * Mirrors `quadraui_binding_core::wire_schema::WIRE_VERSION` -- every tree
+ * Mirrors `quadraui_binding_core::WIRE_VERSION` -- every tree
  * this layer renders carries it as a `"wire_version"` sibling key (see
  * `_renderOnce`), so the host's own version gate
  * (`quadraui_binding_core::wire::check_wire_version`) applies to a
@@ -293,7 +293,7 @@ const FORM_FIELD_EVENT_MAP: Record<string, [string, (payload: Record<string, unk
  * One button `App.confirm`/`App.alert` offers -- the same shape
  * `showOverlay`'s own `"message_dialog"` `buttons` field takes. Kept local rather
  * than imported from `../wire`: that generated module has no standalone
- * name for this shape, only `DialogButtonDescriptor`'s `tint`/`spec`
+ * name for this shape, only `DialogButton`'s `tint`/`spec`
  * extras this layer's own two helpers don't expose.
  */
 export interface DialogButton {

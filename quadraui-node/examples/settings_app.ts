@@ -33,7 +33,7 @@ const {
 } = require("../js/app/index.ts");
 
 import type { Renderable } from "../js/app/index";
-import type { Color, ListItemDescriptor, StatusBarSegment, StyledText } from "../js/wire";
+import type { Color, ListItem, StatusBarSegment, StyledText } from "../js/wire";
 
 interface Setting {
   label: string;
@@ -117,7 +117,7 @@ class SettingsApp {
   // --- view --------------------------------------------------------------
 
   private _listLeaf(): Renderable {
-    const items: ListItemDescriptor[] = CATEGORIES.map((name) => ({ text: styledText(name) }));
+    const items: ListItem[] = CATEGORIES.map((name) => ({ text: styledText(name) }));
     return List(items, {
       id: "settings:list",
       selected: this.selectedIdx,

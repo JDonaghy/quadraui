@@ -367,7 +367,7 @@ const INLINE_LEAF_CASES: Array<{
     events: [{ MouseDown: { button: "Left", position: { x: 38.0, y: 0.0 }, modifiers: {} } }],
     expected: [
       { FocusChanged: "ni:1" },
-      ["ni:1", { TextInputChanged: { id: "ni:1", value: "43" } }],
+      ["ni:1", { NumberChanged: { id: "ni:1", value: 43 } }],
     ],
   },
   {
@@ -428,7 +428,12 @@ const INLINE_LEAF_CASES: Array<{
     ],
     expected: [
       { FocusChanged: "dp:1" },
-      null,
+      // The click lands on the grid's first visible cell, so the picker
+      // reports the focus move before Enter confirms a day.
+      [
+        "dp:1",
+        { DateFocusMoved: { id: "dp:1", value: { year: 2024, month: 2, day: 25 } } },
+      ],
       [
         "dp:1",
         { DateChanged: { id: "dp:1", value: { year: 2024, month: 3, day: 15 } } },
@@ -458,6 +463,9 @@ const INLINE_LEAF_CASES: Array<{
     expected: [
       { FocusChanged: "cb:1" },
       null,
+      // Typing filters the options, so the box highlights the first match
+      // before reporting the new text.
+      ["cb:1", { ComboBoxHighlightChanged: { id: "cb:1", index: 0 } }],
       ["cb:1", { ComboBoxTextChanged: { id: "cb:1", value: "a" } }],
     ],
   },
@@ -658,8 +666,9 @@ test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
   });
   app.run(1);
 
-  assert.equal(received.length, 1, JSON.stringify(received));
-  const [barId, toolbarEvent] = received[0].Toolbar;
+  assert.equal(received.length, 2, JSON.stringify(received));
+  assert.deepStrictEqual(received[0], { FocusChanged: "toolbar:main" });
+  const [barId, toolbarEvent] = received[1].Toolbar;
   assert.equal(barId, "toolbar:main");
   assert.deepStrictEqual(toolbarEvent, {
     ButtonClicked: { id: "toolbar:refresh", is_active: true },

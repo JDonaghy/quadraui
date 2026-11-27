@@ -87,6 +87,7 @@ pub(crate) fn spinner_text(spinner: &Spinner) -> String {
 /// assert_eq!(layout.hit_test(5.0, 0.0, &spinner.id), SpinnerHit::Body(spinner.id.clone()));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Spinner {
     pub id: WidgetId,
     /// Label shown next to the spinner, e.g. "Indexing…". Empty =

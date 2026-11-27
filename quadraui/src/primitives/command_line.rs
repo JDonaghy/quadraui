@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(100.0), cmd.text.len());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandLine {
     pub id: WidgetId,
     /// Full display text (includes prompt character if any, e.g. `:wq`).

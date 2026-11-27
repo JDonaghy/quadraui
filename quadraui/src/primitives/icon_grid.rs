@@ -78,6 +78,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(5.0, 5.0), IconGridHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IconGrid {
     pub id: WidgetId,
     pub items: Vec<IconGridItem>,
@@ -107,6 +108,7 @@ pub struct IconGrid {
 
 /// One tile in an `IconGrid`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IconGridItem {
     pub id: WidgetId,
     pub icon: Icon,

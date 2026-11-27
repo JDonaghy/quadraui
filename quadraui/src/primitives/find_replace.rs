@@ -43,6 +43,7 @@ mod paint_cells;
 /// [`crate::interactive::Interactive::handle`] turns it into a
 /// [`FindReplaceEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FindReplaceClickTarget {
     /// Toggle replace row visibility (the ▶/▼ chevron).
     Chevron,
@@ -66,6 +67,7 @@ pub enum FindReplaceClickTarget {
 /// character-cell units relative to the panel's top-left **content**
 /// corner (inside borders).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FrHitRegion {
     /// Column offset from panel content-left edge.
     pub col: u16,
@@ -260,6 +262,7 @@ pub fn compute_hit_regions(
 /// assert_eq!(hit, FindReplaceHit::Target(FindReplaceClickTarget::Chevron));
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FindReplacePanel {
     /// This overlay's id — the one its [`FindReplaceEvent`]s are reported
     /// under. Defaults to `"find_replace"`: one overlay is live per editor
@@ -347,6 +350,7 @@ pub enum FindReplaceHit {
 
 /// One of the panel's two text fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FindReplaceField {
     /// The find (query) field — [`FindReplacePanel::query`], `focus == 0`.
     Find,
@@ -366,6 +370,7 @@ impl FindReplaceField {
 
 /// One of the panel's on/off switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FindReplaceToggle {
     /// The chevron: [`FindReplacePanel::show_replace`].
     ShowReplace,
@@ -385,6 +390,7 @@ pub enum FindReplaceToggle {
 /// field is the host's, and [`FindReplacePanel::apply_event`] writes one
 /// of these back onto it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FindReplaceEvent {
     /// A field's text, caret or selection changed, or focus moved to it
     /// (a click in it, Tab). `cursor` and `sel_anchor` are char offsets

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 /// what strip to leave free beside the text. [`crate::Primitive::layout`]
 /// reads them, so the layout a host hit-tests is the one paint used.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct EditorPaintOptions {
     /// Suppress this editor's own vertical scrollbar even though the
@@ -47,6 +48,7 @@ pub struct EditorPaintOptions {
 
 /// Classification of a hit-test result within an editor viewport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum EditorHit {
     /// Click landed on a text position. `line` is the buffer line index
     /// (always accurate — row height is uniform on every backend).

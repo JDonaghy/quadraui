@@ -35,6 +35,7 @@ fn default_rows() -> usize {
 /// assert_eq!(area.visible_rows, 3);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct TextArea {
     pub id: WidgetId,

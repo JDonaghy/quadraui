@@ -8,7 +8,7 @@ children, so `quadraui.app.runtime._walk` only has to resolve children and
 an id before calling it.
 
 A constructor that produces a `TypedDict` your type checker already knows
-(`ButtonDescriptor`, `TreeViewDescriptor`, ...) is deliberately *not*
+(`Button`, `TreeView`, ...) is deliberately *not*
 re-validated here -- passing a malformed `rows`/`columns`/`style` fails the
 same way it always has, at the native extension's own decode step.
 """
@@ -33,22 +33,22 @@ if TYPE_CHECKING:
     # module docstring -- so this import only runs under a type checker.
     from quadraui.wire import (
         Color,
-        ColumnDescriptor,
+        Column as ColumnDescriptor,
         ControlWidth,
-        DataRowDescriptor,
+        DataRow as DataRowDescriptor,
         FormSpacing,
         Icon,
         LabelAlign,
         LabelPosition,
-        ListItemDescriptor,
+        ListItem as ListItemDescriptor,
         RowAlign,
         StatusBarSegment,
         StyledText,
-        TabBarSegmentDescriptor,
-        TextDisplayLineDescriptor,
-        ToolbarButtonDescriptor,
-        ToolbarDescriptor,
-        TreeRowDescriptor,
+        TabBarSegment as TabBarSegmentDescriptor,
+        TextDisplayLine as TextDisplayLineDescriptor,
+        ToolbarButton as ToolbarButtonDescriptor,
+        Toolbar as ToolbarDescriptor,
+        TreeRow as TreeRowDescriptor,
         TreeStyle,
         ValidationState,
     )
@@ -90,7 +90,7 @@ __all__ = [
 # a list of any of those (a repeated child slot, e.g. `Tabs`' own `tabs`).
 Renderable = Any
 
-# `TreeViewDescriptor.style` is a required field on the wire (unlike every
+# `TreeView.style` is a required field on the wire (unlike every
 # other layout knob this layer leaves optional) -- used whenever `Tree(...)`
 # doesn't pass its own `style=`.
 _DEFAULT_TREE_STYLE = {
@@ -354,7 +354,7 @@ def Form(
     min_control_width: Optional[float] = None,
     spacing: Optional["FormSpacing"] = None,
 ) -> Node:
-    """A `FormDescriptor`: a vertical stack of labeled field rows. `fields`
+    """A `Form`: a vertical stack of labeled field rows. `fields`
     is a list of this module's own field-builder `Node`s --
     `ToggleField`/`TextInputField`/`SliderField`/`PasswordField`/
     `TextAreaField`/`SelectField` -- each already carrying its own
@@ -421,7 +421,7 @@ def _form_field(
     min_control_width: Optional[float],
     row_align: Any,
 ) -> Dict[str, Any]:
-    """Shared `FormFieldDescriptor` assembly for every field builder below
+    """Shared `FormField` assembly for every field builder below
     -- the knobs every `FieldKind` row has regardless of its own `kind`
     payload (already built by the caller)."""
     payload: Dict[str, Any] = {"id": node_id, "label": _as_styled_text(label), "kind": kind}
@@ -788,7 +788,7 @@ def Table(
     on_select: Optional[Callable[[int], None]] = None,
     on_header_click: Optional[Callable[[int], None]] = None,
 ) -> Node:
-    """A `DataTableDescriptor`. `on_activate` fires on either
+    """A `DataTable`. `on_activate` fires on either
     `RowDoubleClicked` or `RowActivated` (a mouse double-click and an
     Enter-to-activate both mean "open this row"); `on_select` on
     `RowSelected`; `on_header_click` on `HeaderClicked`."""
@@ -818,7 +818,7 @@ def List(
     on_select: Optional[Callable[[int], None]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
 ) -> Node:
-    """A `ListViewDescriptor`. `on_select` fires on `SelectionChanged` (a
+    """A `ListView`. `on_select` fires on `SelectionChanged` (a
     plain click, or `j`/`k` moving the keyboard selection); `on_activate`
     fires on either `ItemDoubleClicked` (a mouse double-click) or
     `ItemActivated` (Enter while a row holds the selection) -- the same
@@ -857,7 +857,7 @@ def StatusBar(
     id: Optional[str] = None,
     on_segment_click: Optional[Callable[[str], None]] = None,
 ) -> Node:
-    """A `StatusBarDescriptor`. `on_segment_click` fires on `SegmentClicked`,
+    """A `StatusBar`. `on_segment_click` fires on `SegmentClicked`,
     with that segment's own `id`."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
@@ -875,7 +875,7 @@ def StatusBar(
 
 
 def TextDisplay(lines: list["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
-    """A `TextDisplayDescriptor` leaf -- plain read-only text."""
+    """A `TextDisplay` leaf -- plain read-only text."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         return {"id": node_id, "text_display": {"id": node_id, "lines": lines}}
@@ -894,7 +894,7 @@ def Button(
     focused: Optional[bool] = None,
     disabled: Optional[bool] = None,
 ) -> Node:
-    """A `ButtonDescriptor` leaf. `quadraui` hit-tests a press landing on
+    """A `Button` leaf. `quadraui` hit-tests a press landing on
     the leaf and replaces it outright with a `ButtonActivated` event naming
     the button, for both a pointer click on its body and an `Enter`/`Space`
     while it holds real keyboard focus. `on_click` is dispatched by
@@ -927,7 +927,7 @@ def Toolbar(buttons: list["ToolbarButtonDescriptor"], *, id: Optional[str] = Non
     """A raw `ToolbarDescriptor` -- not a `Node`: every place a toolbar can
     go (`SidebarPanel`'s own `toolbar=`, a `LayoutLeafNode`'s `"toolbar"`
     key) wants the descriptor dict directly, and the bindings don't yet
-    route toolbar button clicks to an event (see `ButtonDescriptor`'s own
+    route toolbar button clicks to an event (see `Button`'s own
     doc on why `on_click` lives on `Button`, not here).
 
     Because this result never passes through `Node`/`_walk`, omitting
@@ -963,7 +963,7 @@ def Checkbox(
     focused: Optional[bool] = None,
     on_change: Optional[Callable[[bool], None]] = None,
 ) -> Node:
-    """A standalone `CheckboxDescriptor` leaf -- the `"checkbox"` extra
+    """A standalone `Checkbox` leaf -- the `"checkbox"` extra
     kind, `FieldKind::Toggle`'s bare-leaf sibling with no `Form` chrome.
     Space/Enter while focused, or a click, flips `value` (engine-owned);
     `on_change(new_value)` fires on the resulting `FormEvent::
@@ -993,7 +993,7 @@ def Slider(
     focused: Optional[bool] = None,
     on_change: Optional[Callable[[float], None]] = None,
 ) -> Node:
-    """A standalone `SliderDescriptor` leaf, bounded by `min..=max` with
+    """A standalone `Slider` leaf, bounded by `min..=max` with
     increment `step` -- `FieldKind::Slider`'s bare-leaf sibling with no
     `Form` chrome. Click-and-drag on the track, arrow keys, or Home/End
     move `value` (engine-owned); `on_change(new_value)` fires on every
@@ -1023,10 +1023,10 @@ def Select(
     focused: Optional[bool] = None,
     on_change: Optional[Callable[[int], None]] = None,
 ) -> Node:
-    """A standalone `SelectDescriptor` leaf -- `FieldKind::Dropdown`'s
+    """A standalone `Select` leaf -- `FieldKind::Dropdown`'s
     bare-leaf sibling with no `Form` chrome; unlike `SelectField`,
     `options` is a plain string list (no `StyledText` wrapping, matching
-    `SelectDescriptor.options`'s own wire shape). Up/Down move the
+    `Select.options`'s own wire shape). Up/Down move the
     selection and commit it immediately (engine-owned);
     `on_change(new_selected_idx)` fires on every move (`FormEvent::
     DropdownChanged`). For a labeled row inside a `Form`, use
@@ -1056,7 +1056,7 @@ def Password(
     on_change: Optional[Callable[[str], None]] = None,
     on_submit: Optional[Callable[[str], None]] = None,
 ) -> Node:
-    """A standalone `PasswordDescriptor` leaf -- `FieldKind::
+    """A standalone `PasswordInput` leaf -- `FieldKind::
     PasswordInput`'s bare-leaf sibling with no `Form` chrome, masked on
     screen only; `value` and every callback stay plaintext. `on_change`
     fires per keystroke (`FormEvent::TextInputChanged`), `on_submit` once
@@ -1086,7 +1086,7 @@ def TextArea(
     visible_rows: Optional[int] = None,
     on_change: Optional[Callable[[str], None]] = None,
 ) -> Node:
-    """A standalone `TextAreaDescriptor` leaf -- `FieldKind::TextArea`'s
+    """A standalone `TextArea` leaf -- `FieldKind::TextArea`'s
     bare-leaf sibling with no `Form` chrome; `value` may embed `'\\n'`.
     `on_change(new_value)` fires on every keystroke that modifies it
     (`FormEvent::TextInputChanged`). Enter inserts a newline here rather

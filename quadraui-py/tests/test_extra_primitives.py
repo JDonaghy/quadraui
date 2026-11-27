@@ -222,7 +222,7 @@ _INLINE_LEAF_CASES = [
         [{"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}],
         [
             {"FocusChanged": "ni:1"},
-            ("ni:1", {"TextInputChanged": {"id": "ni:1", "value": "43"}}),
+            ("ni:1", {"NumberChanged": {"id": "ni:1", "value": 43.0}}),
         ],
         id="number_input",
     ),
@@ -283,7 +283,12 @@ _INLINE_LEAF_CASES = [
         ],
         [
             {"FocusChanged": "dp:1"},
-            None,
+            # The click lands on the grid's first visible cell, so the
+            # picker reports the focus move before Enter confirms a day.
+            (
+                "dp:1",
+                {"DateFocusMoved": {"id": "dp:1", "value": {"year": 2024, "month": 2, "day": 25}}},
+            ),
             (
                 "dp:1",
                 {"DateChanged": {"id": "dp:1", "value": {"year": 2024, "month": 3, "day": 15}}},
@@ -313,6 +318,9 @@ _INLINE_LEAF_CASES = [
         [
             {"FocusChanged": "cb:1"},
             None,
+            # Typing filters the options, so the box highlights the first
+            # match before reporting the new text.
+            ("cb:1", {"ComboBoxHighlightChanged": {"id": "cb:1", "index": 0}}),
             ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
         ],
         id="combo_box",
@@ -594,13 +602,9 @@ def test_icon_grid_leaf_renders_item_label():
 
 
 def test_number_input_stepper_click_increments_and_decrements_the_value():
-    # `NumberInput::layout` needs no backend metrics (its stepper column
-    # is a fixed width), so -- unlike `RadioGroup`/`ComboBox`/`DatePicker`
-    # below, which only get coarse click-to-focus -- a click precisely
-    # resolving to the increment/decrement half of the stepper column
-    # replaces the raw click outright with the `ValueChanged` it stands
-    # for, translated into `FormEvent::TextInputChanged` (`NumberInput`
-    # has no `FormEvent` slot of its own).
+    # A click on the increment/decrement half of the stepper column is
+    # resolved by `NumberInput`'s own `Interactive::handle`, which reports
+    # the stepped value as `FormEvent::NumberChanged`.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {"number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}
@@ -618,7 +622,7 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
     assert received[0]["FocusChanged"] == "ni:1"
     widget_id, form_event = received[1]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 43.0}}
 
     received.clear()
     app.push_event(
@@ -628,7 +632,7 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
     assert len(received) == 1, "already focused -- no second FocusChanged"
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "41"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 41.0}}
 
 
 def test_number_input_up_key_increments_the_focused_value():
@@ -658,7 +662,7 @@ def test_number_input_up_key_increments_the_focused_value():
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 43.0}}
 
 
 def test_radio_group_arrow_key_changes_the_selection():
@@ -694,15 +698,15 @@ def test_radio_group_arrow_key_changes_the_selection():
 
 
 def test_combo_box_typing_filters_then_enter_commits():
-    # Every `ComboBoxEvent` shape has a dedicated `FormEvent` variant
-    # already (`Form`'s own `FieldKind::ComboBox` embeds the same
-    # primitive), so typing and `Enter` carry straight through. A render
+    # `ComboBox`'s own `Interactive::handle` reports typing and `Enter` as
+    # the matching `FormEvent` variants; typing also highlights the first
+    # filtered option. A render
     # callback echoes `ComboBoxTextChanged`'s `value` back as `text` --
     # same echo-loop contract `_focused_text_input_app` exercises for
     # `text_input` -- so `Enter`'s own `ComboBoxEvent::commit` reads the
     # just-typed text rather than the field's initial, empty one.
     app = QuiApp(40, 20)
-    state = {"text": ""}
+    state = {"text": "", "open": False}
 
     def render():
         return {
@@ -710,6 +714,7 @@ def test_combo_box_typing_filters_then_enter_commits():
                 "id": "cb:1",
                 "options": ["alpha", "beta"],
                 "text": state["text"],
+                "open": state["open"],
                 "focused": True,
             }
         }
@@ -727,17 +732,20 @@ def test_combo_box_typing_filters_then_enter_commits():
             return
         _, form_event = event["Form"]
         if "ComboBoxTextChanged" in form_event:
+            # A text edit opens the list, per `ComboBoxEvent::TextChanged`'s
+            # apply contract.
             state["text"] = form_event["ComboBoxTextChanged"]["value"]
+            state["open"] = True
 
     app.set_handler(handler)
     app.push_event(
         {"KeyPressed": {"key": {"Char": "a"}, "modifiers": {}, "repeat": False}}
     )
     app.run(1)
-    assert len(received) == 1
-    widget_id, form_event = received[0]["Form"]
-    assert widget_id == "cb:1"
-    assert form_event == {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}
+    assert [event["Form"] for event in received] == [
+        ("cb:1", {"ComboBoxHighlightChanged": {"id": "cb:1", "index": 0}}),
+        ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
+    ]
 
     received.clear()
     app.push_event(
@@ -1617,7 +1625,7 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # registration order (`form` < `number_input` < `combo_box` <
     # `date_picker`), must focus it -- plus one extra `Tab` for `form`
     # itself: a render callback's `frame` is resynced against the engine's
-    # own tracked state every frame (`resolve_render_frame_state`), so once
+    # own tracked state every frame (`resolve_render_refs`), so once
     # `settings` has engine focus, the next `Tab` moves `FormController`'s
     # own cursor onto its first field before a further `Tab` yields back to
     # the engine's cycle. A sixth `Tab` then wraps the whole lap back to
@@ -1963,10 +1971,8 @@ def test_status_bar_renders_segment_text():
 def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
     # A click on a toolbar `Action` button reaches the handler as a typed
     # `Toolbar` event: `(bar_id, {"ButtonClicked": {"id", "is_active"}})`,
-    # where `is_active` is the button's flipped state. The clicked button's
-    # id (not the bar's) is what resolves against the hit map, and only the
-    # bar is a tab stop, so no `FocusChanged` precedes it and `_click`
-    # (which asserts exactly one event) applies directly.
+    # where `is_active` is the button's flipped state. The click parks the
+    # bar's keyboard cursor on the button, so the bar takes focus first.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -1980,8 +1986,9 @@ def test_clicking_a_toolbar_button_emits_toolbar_button_clicked():
     )
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     assert "MouseDown" not in event, event
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
@@ -2002,23 +2009,24 @@ def test_clicking_an_active_toolbar_button_reports_it_toggled_off():
     )
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
     assert payload == {"ButtonClicked": {"id": "toolbar:wrap", "is_active": False}}
 
 
 def test_enter_on_a_focused_toolbar_activates_its_focused_button():
-    # Tab focuses the toolbar (its only tab stop); Enter then activates the
-    # button `focused_index` names, emitting the same `Toolbar` event shape
-    # a mouse click does.
+    # Tab focuses the toolbar (its only tab stop); the arrow keys move the
+    # bar's own keyboard cursor (the first press parks it on the first
+    # button) and Enter activates the button under it, emitting the same
+    # `Toolbar` event shape a mouse click does.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
             "toolbar": {
                 "id": "toolbar:main",
-                "focused_index": 1,
                 "buttons": [
                     {"Action": {"id": "toolbar:filter", "label": "Filter"}},
                     {"Action": {"id": "toolbar:reset", "label": "Reset"}},
@@ -2030,7 +2038,7 @@ def test_enter_on_a_focused_toolbar_activates_its_focused_button():
 
     received = []
     app.set_handler(lambda event: received.append(event))
-    for key in ("Tab", "Enter"):
+    for key in ("Tab", "Right", "Right", "Enter"):
         app.push_event(
             {"KeyPressed": {"key": {"Named": key}, "modifiers": {}, "repeat": False}}
         )
@@ -2134,8 +2142,9 @@ def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
     app.set_render(render)
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    focus, event = _click_events(app, 1.0, 0.0)
 
+    assert focus == {"FocusChanged": "toolbar:main"}
     assert "MouseDown" not in event, event
     bar, payload = event["Toolbar"]
     assert bar == "toolbar:main"
@@ -3383,11 +3392,11 @@ def test_switch_enter_toggles_once_the_engines_focus_tree_names_it_focused():
     assert received[0]["SwitchToggled"] == {"widget": "sw:1", "value": True}
 
 
-def test_clicking_a_display_only_extra_attaches_no_hit():
-    # `progress` paints but never overrides `ExtraPaint::hit_test` or
-    # `tab_stop`, so a click lands nowhere and focuses nothing: no
-    # `FocusChanged`, no `widget`, no `hit` -- the "no behavior change for
-    # display-only extras" half of the interaction seam.
+def test_clicking_a_display_only_widget_attaches_its_body_hit_and_focuses_nothing():
+    # `progress` is a generic-leaf widget with no focus stop, so a click
+    # focuses nothing (no `FocusChanged`) and its `Interactive::handle`
+    # consumes nothing: the raw `MouseDown` reaches Python addressed to the
+    # widget, with the whole-body hit attached.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -3398,8 +3407,8 @@ def test_clicking_a_display_only_extra_attaches_no_hit():
 
     event = _click(app, 1.0, 1.0)
 
-    assert event["MouseDown"]["widget"] is None
-    assert "hit" not in event
+    assert event["MouseDown"]["widget"] == "progress:download"
+    assert event["hit"] == {"kind": "widget_body"}
 
 
 def _locate(app, needle):

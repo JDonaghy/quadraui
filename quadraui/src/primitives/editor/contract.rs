@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// A gesture on an [`Editor`], resolved against its layout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum EditorEvent {
     /// A pointer press, double-click, release, or a move while a drag is

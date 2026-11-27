@@ -13,7 +13,7 @@ exercises the renderer directly against small throwaway schemas instead:
 `_ts_wrap` parenthesization, the `flat()`-built discriminated union's
 `TypedDict` (Python) vs. per-variant-union (TypeScript) divergence
 (including a `common` field folded into every TypeScript member),
-`_ty_from_json`/`_def_from_json`'s JSON decode, and `main`'s `--check` exit
+`defs_from_schema`'s JSON Schema decode, and `main`'s `--check` exit
 codes. Every test monkeypatches `gwt.DEFS` directly (or never calls
 `main`/`get_defs` at all) rather than exercising `load_defs_from_rust`'s own
 `cargo run` -- that round-trip, and the schema's actual content, is
@@ -112,73 +112,150 @@ class KeywordCollidingFieldTests(unittest.TestCase):
         self.assertNotIn("_Sample4 = TypedDict(", text)
 
 
-class DefJsonDecodeTests(unittest.TestCase):
-    """[`gwt._ty_from_json`]/[`gwt._def_from_json`] -- the decode half of
+class SchemaDecodeTests(unittest.TestCase):
+    """[`gwt.defs_from_schema`] -- the decode half of
     [`gwt.load_defs_from_rust`], exercised directly against hand-built JSON
-    rather than a real `cargo run` (that round-trip is
-    `scripts/check_wire_types.sh`'s job, not this renderer-only suite's)."""
+    Schema documents in the shapes `schemars` emits, rather than a real
+    `cargo run` (that round-trip is `scripts/check_wire_types.sh`'s job)."""
 
-    def test_ty_from_json_round_trips_every_shape(self) -> None:
-        self.assertEqual(gwt._ty_from_json({"kind": "prim", "name": "STR"}), gwt.STR)
-        self.assertEqual(gwt._ty_from_json({"kind": "ref", "name": "Foo"}), gwt.REF("Foo"))
+    @staticmethod
+    def _defs(defs: dict, kinds: dict | None = None) -> dict:
+        out = gwt.defs_from_schema({"$defs": defs, "kinds": kinds or {}})
+        return {d.name: d for d in out}
+
+    def test_scalar_and_container_types(self) -> None:
+        conv = gwt._SchemaConverter({"$defs": {}})
+        self.assertEqual(conv.ty({"type": "string"}, "_X"), gwt.STR)
+        self.assertEqual(conv.ty({"type": "integer", "format": "uint32"}, "_X"), gwt.INT)
+        self.assertEqual(conv.ty({"type": "number"}, "_X"), gwt.FLOAT)
+        self.assertEqual(conv.ty({"type": "boolean"}, "_X"), gwt.BOOL)
+        self.assertEqual(conv.ty(True, "_X"), gwt.ANY)
+        self.assertEqual(conv.ty({"$ref": "#/$defs/Foo"}, "_X"), gwt.REF("Foo"))
+        self.assertEqual(conv.ty({"type": ["string", "null"]}, "_X"), gwt.NULLABLE(gwt.STR))
         self.assertEqual(
-            gwt._ty_from_json({"kind": "nullable", "inner": {"kind": "prim", "name": "INT"}}),
-            gwt.NULLABLE(gwt.INT),
+            conv.ty({"anyOf": [{"$ref": "#/$defs/Foo"}, {"type": "null"}]}, "_X"),
+            gwt.NULLABLE(gwt.REF("Foo")),
         )
+        self.assertEqual(conv.ty({"type": "array", "items": {"type": "boolean"}}, "_X"), gwt.LIST(gwt.BOOL))
         self.assertEqual(
-            gwt._ty_from_json({"kind": "list", "inner": {"kind": "prim", "name": "BOOL"}}),
-            gwt.LIST(gwt.BOOL),
-        )
-        self.assertEqual(
-            gwt._ty_from_json(
-                {
-                    "kind": "dict",
-                    "key": {"kind": "prim", "name": "STR"},
-                    "value": {"kind": "prim", "name": "ANY"},
-                }
-            ),
-            gwt.DICTT(gwt.STR, gwt.ANY),
-        )
-        self.assertEqual(
-            gwt._ty_from_json(
-                {"kind": "tuple", "items": [{"kind": "prim", "name": "STR"}, {"kind": "prim", "name": "INT"}]}
-            ),
+            conv.ty({"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]}, "_X"),
             gwt.TUP(gwt.STR, gwt.INT),
         )
-        self.assertEqual(gwt._ty_from_json({"kind": "lit", "values": ["A", "B"]}), gwt.LIT("A", "B"))
         self.assertEqual(
-            gwt._ty_from_json(
-                {"kind": "union", "items": [{"kind": "prim", "name": "STR"}, {"kind": "prim", "name": "INT"}]}
-            ),
-            gwt.UNIONT(gwt.STR, gwt.INT),
+            conv.ty({"type": "object", "additionalProperties": {"type": "number"}}, "_X"),
+            gwt.DICTT(gwt.STR, gwt.FLOAT),
         )
+        self.assertEqual(conv.ty({"type": "string", "enum": ["A", "B"]}, "_X"), gwt.LIT("A", "B"))
 
-    def test_def_from_json_decodes_obj_and_alias(self) -> None:
-        obj = gwt._def_from_json(
+    def test_struct_marks_unrequired_fields_optional(self) -> None:
+        defs = self._defs(
             {
-                "kind": "obj",
-                "name": "Foo",
-                "fields": [{"name": "x", "ty": {"kind": "prim", "name": "INT"}, "optional": True, "doc": "d"}],
-                "doc": "Foo's own doc.",
-                "discriminated": False,
-                "common": [],
+                "Foo": {
+                    "description": "Foo's own doc.\n\nMore detail that is dropped.",
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer", "description": "The x. Second sentence."},
+                        "y": {"type": ["string", "null"]},
+                    },
+                    "required": ["x"],
+                }
             }
         )
-        assert isinstance(obj, gwt.ObjDef)
-        self.assertEqual(obj.name, "Foo")
-        self.assertEqual(obj.fields, [gwt.Field("x", gwt.INT, optional=True, doc="d")])
-        self.assertEqual(obj.doc, "Foo's own doc.")
-
-        alias = gwt._def_from_json(
-            {"kind": "alias", "name": "Bar", "ty": {"kind": "prim", "name": "STR"}, "doc": ""}
+        foo = defs["Foo"]
+        assert isinstance(foo, gwt.ObjDef)
+        self.assertEqual(foo.doc, "Foo's own doc.")
+        self.assertEqual(
+            foo.fields,
+            [
+                gwt.Field("x", gwt.INT, optional=False, doc="The x."),
+                gwt.Field("y", gwt.NULLABLE(gwt.STR), optional=True, doc=""),
+            ],
         )
-        assert isinstance(alias, gwt.AliasDef)
-        self.assertEqual(alias.name, "Bar")
-        self.assertEqual(alias.ty, gwt.STR)
 
-    def test_def_from_json_rejects_unknown_kind(self) -> None:
-        with self.assertRaises(ValueError):
-            gwt._def_from_json({"kind": "bogus", "name": "Foo"})
+    def test_externally_tagged_enum_with_unit_variants(self) -> None:
+        defs = self._defs(
+            {
+                "Ev": {
+                    "oneOf": [
+                        {"type": "string", "enum": ["Close"]},
+                        {
+                            "type": "object",
+                            "properties": {
+                                "Moved": {
+                                    "type": "object",
+                                    "properties": {"x": {"type": "number"}},
+                                    "required": ["x"],
+                                }
+                            },
+                            "required": ["Moved"],
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "properties": {"Typed": {"type": "string"}},
+                            "required": ["Typed"],
+                            "additionalProperties": False,
+                        },
+                    ]
+                }
+            }
+        )
+        ev = defs["Ev"]
+        assert isinstance(ev, gwt.AliasDef)
+        self.assertEqual(ev.ty, gwt.UNIONT(gwt.LIT("Close"), gwt.REF("_EvDict")))
+        flat = defs["_EvDict"]
+        assert isinstance(flat, gwt.ObjDef)
+        self.assertTrue(flat.discriminated)
+        self.assertEqual([f.name for f in flat.fields], ["Moved", "Typed"])
+        self.assertEqual(flat.fields[0].ty, gwt.REF("_EvMoved"))
+        self.assertIn("_EvMoved", defs)
+
+    def test_internally_tagged_enum_becomes_a_union_of_variants(self) -> None:
+        defs = self._defs(
+            {
+                "Hit": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {"kind": {"const": "tree_row"}, "row": {"type": "integer"}},
+                            "required": ["kind", "row"],
+                        },
+                        {
+                            "type": "object",
+                            "properties": {"kind": {"const": "body"}},
+                            "required": ["kind"],
+                        },
+                    ]
+                }
+            }
+        )
+        self.assertEqual(defs["Hit"].ty, gwt.UNIONT(gwt.REF("_HitTreeRow"), gwt.REF("_HitBody")))
+        row = defs["_HitTreeRow"]
+        assert isinstance(row, gwt.ObjDef)
+        self.assertEqual(row.fields[0], gwt.Field("kind", gwt.LIT("tree_row")))
+
+    def test_all_of_folds_into_one_object(self) -> None:
+        defs = self._defs(
+            {
+                "Base": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+                "Leaf": {
+                    "allOf": [
+                        {"$ref": "#/$defs/Base"},
+                        {"type": "object", "properties": {"scroll_px": {"type": "number"}}},
+                    ]
+                },
+            }
+        )
+        leaf = defs["Leaf"]
+        assert isinstance(leaf, gwt.ObjDef)
+        self.assertEqual(
+            leaf.fields,
+            [gwt.Field("id", gwt.STR), gwt.Field("scroll_px", gwt.FLOAT, optional=True)],
+        )
+
+    def test_kinds_map_becomes_a_widget_kind_literal(self) -> None:
+        defs = self._defs({}, kinds={"list": {}, "button": {}})
+        self.assertEqual(defs["WidgetKind"].ty, gwt.LIT("button", "list"))
 
 
 class CheckExitCodeTests(unittest.TestCase):

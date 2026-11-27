@@ -139,6 +139,7 @@ fn default_true() -> bool {
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Toolbar {
     pub id: WidgetId,
     pub buttons: Vec<ToolbarButton>,
@@ -202,6 +203,7 @@ pub struct Toolbar {
 /// `text_row`/`ty` resolution (`cell_layout::tui_text_row`,
 /// [`native_surface_paint::paint`]) for the exact per-backend formula.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarVAlign {
     /// (default) Text on the top row of the slot. Padding below.
     #[default]
@@ -325,6 +327,7 @@ impl ToolbarRailStyle {
 /// paint a true vertical button column once a per-backend issue wires this
 /// through their own rasteriser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarOrientation {
     /// (default) Items flow left-to-right.
     #[default]
@@ -338,6 +341,7 @@ pub enum ToolbarOrientation {
 /// [`Toolbar::layout_with_overflow`] (`layout`/`layout_with_options` keep
 /// ignoring this field — see that method's own doc for why).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarOverflow {
     /// (default) Today's behaviour: an item that doesn't fit clips against
     /// the bar's trailing edge (or the `Spacer` collision rule when one is
@@ -457,6 +461,7 @@ impl ToolbarLayoutOptions {
 /// variant, so adding one doesn't force a second migration.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarButton {
     /// A clickable action button.
     Action {
@@ -612,6 +617,7 @@ pub enum ToolbarButton {
 /// additive.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarItemWidth {
     /// Always this wide: cells for TUI, device px/DIPs for GTK / macOS /
     /// Win — the same dual-unit convention [`crate::primitives::form::ControlWidth::Fixed`]
@@ -707,6 +713,7 @@ impl ToolbarButton {
 /// downstream migration — same rationale as [`ToolbarButton`]'s own doc.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ToolbarEvent {
     /// An [`ToolbarButton::Action`] button was activated. `is_active`
     /// carries the button's *new* active state (its pre-click `is_active`
@@ -978,10 +985,18 @@ pub struct ToolbarOverflowPriorities {
 /// `(WidgetId, i32)` pair storage, and this is only the serde shape it
 /// maps each pair through.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct ToolbarOverflowPriorityEntry {
     id: WidgetId,
     priority: i32,
 }
+
+#[cfg(feature = "schema")]
+crate::schema_as!(
+    ToolbarOverflowPriorities,
+    "ToolbarOverflowPriorities",
+    Vec<ToolbarOverflowPriorityEntry>
+);
 
 impl Serialize for ToolbarOverflowPriorities {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -2494,27 +2509,6 @@ where
 /// shrinking — items past the available width still get a cursor position
 /// (the full cumulative sum), so overflow is clipped by the caller
 /// afterwards rather than by squeezing items to fit.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine (a `Row` of fixed-width, `flex_shrink: 0.0` leaves) so
-/// `Toolbar` composes with the same engine [`crate::primitives::Form`] and
-/// [`crate::compose::ShellView`] use. Without it, the same arithmetic is
-/// done by hand. Both arms are covered by this module's exact-value tests
-/// (`layout_places_buttons_left_to_right`, `layout_clips_to_bar_width`,
-/// `origin_offset_propagates`) to guarantee they agree bit-for-bit.
-#[cfg(feature = "layout")]
-fn item_cursor_positions(origin_x: f32, bar_height: f32, widths: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Row,
-        origin_x,
-        widths,
-        0.0,
-        bar_height,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn item_cursor_positions(origin_x: f32, _bar_height: f32, widths: &[f32]) -> Vec<f32> {
     let mut cursor = origin_x;
     let mut cursors = Vec::with_capacity(widths.len());

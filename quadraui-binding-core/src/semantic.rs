@@ -5,17 +5,14 @@
 //! payload itself.
 
 use quadraui::{
-    CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker, DatePickerEvent, EditOp,
-    FormEvent, Key, ListViewEvent, Modifiers, MouseButton, NamedKey, NumberInput, NumberInputEvent,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, TreeTable, TreeTableLayout,
-    UiEvent, WidgetId,
+    CanvasEvent, DataTableEvent, EditOp, Key, ListViewEvent, Modifiers, MouseButton, NamedKey,
+    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, extra_as_toolbar, PasswordInput, TextArea};
+use crate::extra_paint::{extra_as, PasswordInput, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
-use crate::tree_edit::tree_row_rename_key_event;
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
@@ -101,146 +98,6 @@ fn tab_bar_key_event(
     tab_count: usize,
 ) -> Option<UiEvent> {
     TabBar::handle_focus_key(focused_index, tab_count, key).map(|ev| UiEvent::TabBar(id, ev))
-}
-
-/// `NumberInput`'s own value as `FormEvent`'s payload would show it:
-/// `NumberInput::precision` decimal places, matching
-/// `native_surface_paint::display_text`'s own formatting so a standalone
-/// `NumberInput`'s routed events render identically to what its own
-/// rasteriser paints.
-fn format_number_input_value(value: f64, precision: u32) -> String {
-    format!("{value:.*}", precision as usize)
-}
-
-/// Translates one [`NumberInputEvent`] into the [`FormEvent`] it should
-/// produce — shared by [`number_input_key_event`] (keyboard) and
-/// [`crate::engine::InteractionEngine::handle`]'s own stepper-click
-/// routing (pointer), so both paths describe the same mapping once.
-/// `NumberInput` has no `FormEvent` slot of its own (unlike
-/// `ComboBox`/`DatePicker` below) — its own typed events are translated
-/// into the closest matching `TextInputChanged`/`TextInputCommitted`
-/// shape, the same String-payload reuse `Switch`/`TextInput`'s own
-/// standalone routing above already relies on (a `FormEvent` variant
-/// whose name nominally describes a `Form`-embedded field, reused
-/// verbatim for the matching standalone extra).
-pub(crate) fn number_input_form_event(
-    id: WidgetId,
-    number_input: &NumberInput,
-    event: NumberInputEvent,
-) -> FormEvent {
-    match event {
-        NumberInputEvent::ValueChanged { value, .. } => FormEvent::TextInputChanged {
-            id,
-            value: format_number_input_value(value, number_input.precision),
-        },
-        NumberInputEvent::DraftChanged { draft, .. } => {
-            FormEvent::TextInputChanged { id, value: draft }
-        }
-        NumberInputEvent::Committed { value, .. } => FormEvent::TextInputCommitted {
-            id,
-            value: format_number_input_value(value, number_input.precision),
-        },
-        NumberInputEvent::Cancelled { .. } => FormEvent::TextInputChanged {
-            id,
-            value: format_number_input_value(number_input.value, number_input.precision),
-        },
-    }
-}
-
-/// Resolves a key focused on a standalone [`NumberInput`] extra into the
-/// [`FormEvent`] it should produce, via [`number_input_form_event`].
-/// Returns `None` for every key [`NumberInput::handle_key`] doesn't
-/// recognize — the caller then falls through to the raw `KeyPressed`
-/// fallback.
-fn number_input_key_event(
-    id: WidgetId,
-    number_input: &NumberInput,
-    key: &Key,
-    modifiers: &Modifiers,
-) -> Option<UiEvent> {
-    let event = number_input.handle_key(key, modifiers)?;
-    Some(UiEvent::Form(
-        id,
-        number_input_form_event(id, number_input, event),
-    ))
-}
-
-/// Resolves a `MouseDown`/`DoubleClick` landing on a standalone
-/// [`NumberInput`] extra's [`crate::hit::HitDetail::ExtraBody`] into the
-/// stepper click it stands for — unlike `ComboBox`/`DatePicker` below,
-/// [`NumberInput::layout`] needs no backend metrics (its stepper
-/// column is a fixed width), so the increment/decrement regions are
-/// precisely resolvable here from `point` alone, the same way
-/// [`crate::text_input::text_input_click_event`] resolves a `TextInput`
-/// click. Returns `None` when `point` landed on the text area or outside
-/// the control (`NumberInput::click`'s own contract), or when `id` isn't
-/// painted as a `NumberInput` extra this frame.
-pub(crate) fn number_input_click_event(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-    point: quadraui::Point,
-) -> Option<UiEvent> {
-    let (area, number_input) = hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Extra {
-            id: hit_id,
-            area,
-            extra,
-            ..
-        } if *hit_id == id => extra_as::<NumberInput>(extra).map(|ni| (*area, ni)),
-        _ => None,
-    })?;
-    let hit = number_input.layout(area).hit_test(point);
-    let event = number_input.click(hit)?;
-    Some(UiEvent::Form(
-        id,
-        number_input_form_event(id, number_input, event),
-    ))
-}
-
-/// Resolves a key focused on a standalone [`ComboBox`] extra into the
-/// [`FormEvent`] it should produce. Unlike `NumberInput` above,
-/// `FormEvent` already has a dedicated variant for every
-/// [`ComboBoxEvent`] shape (`Form`'s own `FieldKind::ComboBox` embeds the
-/// same primitive), so each one carries over field-for-field. Returns
-/// `None` for every key [`ComboBox::handle_key`] doesn't recognize — the
-/// caller then falls through to the raw `KeyPressed` fallback.
-fn combo_box_key_event(
-    id: WidgetId,
-    combo_box: &ComboBox,
-    key: &Key,
-    modifiers: &Modifiers,
-) -> Option<UiEvent> {
-    let form_event = match combo_box.handle_key(key, modifiers)? {
-        ComboBoxEvent::TextChanged { text, .. } => {
-            FormEvent::ComboBoxTextChanged { id, value: text }
-        }
-        ComboBoxEvent::HighlightChanged { index, .. } => {
-            FormEvent::ComboBoxHighlightChanged { id, index }
-        }
-        ComboBoxEvent::Committed { value, .. } => FormEvent::ComboBoxCommitted { id, value },
-        ComboBoxEvent::Cancelled { .. } => FormEvent::ComboBoxCancelled { id },
-    };
-    Some(UiEvent::Form(id, form_event))
-}
-
-/// Resolves a focus-scoped key (already stringified by
-/// [`key_to_focus_string`]) against a standalone [`DatePicker`] extra via
-/// its own [`DatePicker::navigate`] — only [`DatePickerEvent::DateSelected`]
-/// (Enter confirming the focused day) has a matching `FormEvent` slot
-/// (`DateChanged`, which already carries the same `CalendarDate` type);
-/// [`DatePickerEvent::FocusMoved`] (arrow-key/page scrubbing before a day is
-/// confirmed) has no `FormEvent` counterpart, so it resolves to `None` and
-/// falls through to the raw `KeyPressed` fallback — a standalone
-/// `DatePicker`'s scrub position does not yet survive across keystrokes
-/// the way a `Form`-embedded one does via `FormController`'s own
-/// `DateEditState` cache.
-fn date_picker_key_event(id: WidgetId, picker: &DatePicker, key: &str) -> Option<UiEvent> {
-    match picker.navigate(key)? {
-        DatePickerEvent::DateSelected(value) => {
-            Some(UiEvent::Form(id, FormEvent::DateChanged { id, value }))
-        }
-        DatePickerEvent::FocusMoved(_) | DatePickerEvent::OpenChanged(_) => None,
-    }
 }
 
 /// Resolves a key focused on a standalone [`PasswordInput`] leaf by
@@ -353,21 +210,6 @@ pub fn semantic_event_for_hit(
             let path = tree_row_path(hit_map, id, *row)?;
             Some(UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }))
         }
-        // `TreeTable` is an `Extra`, so the matched `PaintedHit::Extra`
-        // under `id` is looked up directly here rather than through a
-        // `tree_row_path`-style helper -- `extra` and `idx` both already
-        // live in the same hit-map entry [`crate::hit::hit_test_painted`]
-        // resolved this `HitDetail` from.
-        HitDetail::TreeTableChevron { idx } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id, extra, ..
-            } if *hit_id == id => {
-                let tree_table = extra_as::<TreeTable>(extra)?;
-                let event = TreeTableLayout::chevron_toggle(*idx, &tree_table.tree)?;
-                Some(UiEvent::TreeTable(id, event))
-            }
-            _ => None,
-        }),
         HitDetail::ListItem { index } => {
             if double_click {
                 Some(UiEvent::List(
@@ -452,15 +294,6 @@ pub fn semantic_event_for_hit(
             }
             _ => None,
         }),
-        HitDetail::ExtraChrome { bar } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id, extra, ..
-            } if *hit_id == *bar => {
-                let toolbar = extra_as_toolbar(extra)?;
-                Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
-            }
-            _ => None,
-        }),
         _ => None,
     }
 }
@@ -477,6 +310,7 @@ pub fn semantic_event_for_hit(
 /// drag-specific hit description — has no `Deserialize` of its own either,
 /// since neither type has a reverse (host -> engine) decode path.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DragGestureWireEvent {
     /// A `MouseDown` landed on a leaf
@@ -515,6 +349,36 @@ pub enum DragGestureWireEvent {
         target: WidgetId,
         target_detail: HitDetail,
     },
+}
+
+/// Resolves a key focused on a `TreeView` row that is mid-rename through
+/// core's single-line rename editor ([`quadraui::primitives::tree::tree_rename_key`]):
+/// Enter commits, Escape cancels, and an edit or caret move reports the
+/// new session as `RowRenameChanged`. `None` for a key the editor leaves
+/// alone, so the caller falls through to the tree's raw `KeyPressed`.
+pub(crate) fn tree_rename_event(
+    id: WidgetId,
+    path: &quadraui::TreePath,
+    edit: &quadraui::TreeRowEditState,
+    key: &Key,
+    modifiers: Modifiers,
+) -> Option<UiEvent> {
+    use quadraui::primitives::tree::{tree_rename_key, TreeRenameKey};
+    let event = match tree_rename_key(edit, key, modifiers) {
+        TreeRenameKey::Commit => TreeEvent::RowRenameCommitted {
+            path: path.clone(),
+            text: edit.text.clone(),
+        },
+        TreeRenameKey::Cancel => TreeEvent::RowRenameCancelled { path: path.clone() },
+        TreeRenameKey::Edited(next) | TreeRenameKey::Moved(next) => TreeEvent::RowRenameChanged {
+            path: path.clone(),
+            text: next.text,
+            cursor: next.cursor,
+            selection_anchor: next.selection_anchor,
+        },
+        TreeRenameKey::Unhandled => return None,
+    };
+    Some(UiEvent::Tree(id, event))
 }
 
 /// Stringifies a raw key the same way every quadraui backend does, so a
@@ -564,9 +428,7 @@ pub fn focus_scoped_key_event(
         .find_map(|hit| match hit {
             PaintedHit::Tree { id, editing, .. } if *id == focused => {
                 if let Some((path, edit)) = editing {
-                    if let Some(ev) =
-                        tree_row_rename_key_event(*id, path, edit, raw_key, &modifiers)
-                    {
+                    if let Some(ev) = tree_rename_event(*id, path, edit, raw_key, modifiers) {
                         return Some(ev);
                     }
                 }
@@ -624,27 +486,6 @@ pub fn focus_scoped_key_event(
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
                     return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
-                }
-                if let Some(number_input) = extra_as::<NumberInput>(extra) {
-                    return number_input_key_event(*id, number_input, raw_key, &modifiers);
-                }
-                if let Some(combo_box) = extra_as::<ComboBox>(extra) {
-                    return combo_box_key_event(*id, combo_box, raw_key, &modifiers);
-                }
-                if let Some(date_picker) = extra_as::<DatePicker>(extra) {
-                    return date_picker_key_event(*id, date_picker, &key);
-                }
-                if let Some(toolbar) = extra_as_toolbar(extra) {
-                    // Enter/Space activates whichever button
-                    // `Toolbar::focused_index` names (set by the host, same
-                    // convention `TabChrome::focused_index` documents);
-                    // every other key is left to the raw fallback since
-                    // `Toolbar` has no `KeyPressed` variant of its own to
-                    // wrap it in.
-                    if matches!(raw_key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
-                        return Some(UiEvent::Toolbar(*id, toolbar.activate_focused()?));
-                    }
-                    return None;
                 }
                 if let Some(password) = extra_as::<PasswordInput>(extra) {
                     return password_key_event(*id, password, raw_key, modifiers, text_editors);
@@ -733,6 +574,101 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+
+    fn rename_session(text: &str, cursor: usize) -> quadraui::TreeRowEditState {
+        quadraui::TreeRowEditState {
+            text: text.to_string(),
+            cursor,
+            selection_anchor: None,
+            placeholder: None,
+        }
+    }
+
+    #[test]
+    fn rename_typing_inserts_at_the_caret() {
+        let path = vec![0u16];
+        let event = tree_rename_event(
+            WidgetId::new("t"),
+            &path,
+            &rename_session("ac", 1),
+            &Key::Char('b'),
+            Modifiers::default(),
+        );
+        assert_eq!(
+            event,
+            Some(UiEvent::Tree(
+                WidgetId::new("t"),
+                TreeEvent::RowRenameChanged {
+                    path,
+                    text: "abc".to_string(),
+                    cursor: 2,
+                    selection_anchor: None,
+                }
+            ))
+        );
+    }
+
+    /// Ctrl+A selects the whole name, the same chord every other text
+    /// field honours.
+    #[test]
+    fn rename_ctrl_a_selects_the_whole_name() {
+        let path = vec![0u16];
+        let event = tree_rename_event(
+            WidgetId::new("t"),
+            &path,
+            &rename_session("abc", 1),
+            &Key::Char('a'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(
+            event,
+            Some(UiEvent::Tree(
+                WidgetId::new("t"),
+                TreeEvent::RowRenameChanged {
+                    path,
+                    text: "abc".to_string(),
+                    cursor: 3,
+                    selection_anchor: Some(0),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn rename_enter_commits_and_escape_cancels() {
+        let path = vec![0u16];
+        let session = rename_session("abc", 1);
+        let id = WidgetId::new("t");
+        assert_eq!(
+            tree_rename_event(
+                id,
+                &path,
+                &session,
+                &Key::Named(NamedKey::Enter),
+                Modifiers::default()
+            ),
+            Some(UiEvent::Tree(
+                id,
+                TreeEvent::RowRenameCommitted {
+                    path: path.clone(),
+                    text: "abc".to_string()
+                }
+            ))
+        );
+        assert_eq!(
+            tree_rename_event(
+                id,
+                &path,
+                &session,
+                &Key::Named(NamedKey::Escape),
+                Modifiers::default()
+            ),
+            Some(UiEvent::Tree(id, TreeEvent::RowRenameCancelled { path }))
+        );
+    }
     use quadraui::{Rect, TabBarLayout};
 
     /// `key_to_focus_string` defers to the shared `NamedKey::name` table,
@@ -914,8 +850,6 @@ mod tests {
             id,
             area,
             extra: Rc::new(primitive) as Rc<dyn crate::extra_paint::ExtraPaint>,
-            chrome_hits: Vec::new(),
-            tree_table_hit: None,
         }
     }
 

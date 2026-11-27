@@ -81,7 +81,8 @@ pub fn decode_layout_dialog<'de, D: Deserializer<'de>>(
 /// the subtree nor a cancel/default button claims; closing then comes
 /// from the content itself or the overlay being dismissed by id.
 #[derive(serde::Deserialize)]
-struct DialogChromeWire {
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct DialogChromeWire {
     id: String,
     #[serde(default)]
     title: String,

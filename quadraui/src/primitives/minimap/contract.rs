@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 /// A gesture on a [`Minimap`], resolved against its layout.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum MinimapEvent {
     /// Scroll the editor to `fraction` (`0.0` top, `1.0` bottom) of the

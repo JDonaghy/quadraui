@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from quadraui.wire import LayoutNode, TreeViewDescriptor
+    from quadraui.wire import LayoutNode, TreeView
 
 
 def bad_misspelled_layout_key() -> "LayoutNode":
@@ -29,12 +29,12 @@ def bad_misspelled_grid_track_variant() -> "LayoutNode":
     }
 
 
-def bad_misspelled_descriptor_field() -> "TreeViewDescriptor":
+def bad_misspelled_descriptor_field() -> "TreeView":
     return {
         "id": "demo:tree",
         "rows": [],
         "selection_mode": "Single",
-        "selected_pathh": [0],  # typo: not a `TreeViewDescriptor` key
+        "selected_pathh": [0],  # typo: not a `TreeView` key
         "style": {
             "indent": 2,
             "show_chevrons": True,

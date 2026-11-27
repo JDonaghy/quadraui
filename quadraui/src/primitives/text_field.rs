@@ -69,6 +69,7 @@ use crate::Handled;
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextField {
     pub id: WidgetId,
     /// Current text. Typing mutates it via [`Self::apply_edit_op`].

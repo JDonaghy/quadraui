@@ -17,15 +17,15 @@
 
 const { QuiApp } = require("../js/index.ts");
 
-import type { ListItemDescriptor, ListViewDescriptor } from "../js/wire";
+import type { ListItem, ListView as ListViewDescriptor } from "../js/wire";
 
 const WIDTH = 80;
 const HEIGHT = 24;
 const ROW_COUNT = 10_000;
 const PAGE = 250;
 
-function makeRows(count: number): ListItemDescriptor[] {
-  const rows: ListItemDescriptor[] = [];
+function makeRows(count: number): ListItem[] {
+  const rows: ListItem[] = [];
   for (let i = 0; i < count; i++) {
     rows.push({ text: { spans: [{ text: `Row ${String(i).padStart(5, "0")}`, fg: null, bg: null }] } });
   }
@@ -38,11 +38,11 @@ function makeRows(count: number): ListItemDescriptor[] {
  */
 class AppShellDemo {
   app: InstanceType<typeof QuiApp>;
-  rows: ListItemDescriptor[];
+  rows: ListItem[];
   selectedIdx: number;
   scrollOffset: number;
 
-  constructor(app: InstanceType<typeof QuiApp>, rows: ListItemDescriptor[]) {
+  constructor(app: InstanceType<typeof QuiApp>, rows: ListItem[]) {
     this.app = app;
     this.rows = rows;
     this.selectedIdx = 0;

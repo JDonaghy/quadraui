@@ -56,8 +56,7 @@ keys (``"app_version"``, ``"upload_endpoint"``, ``"metadata"``,
 ``"log_dir"``) are all optional.
 
 ``QuiApp.viewport()``, ``line_height()``, ``char_width()``,
-``list_char_width()``, ``chrome_line_height()``, ``scrollbar_reserve()``,
-``scales_text_rows()``, ``snap_height(h)``, ``measure_text(text, role)``,
+``chrome_line_height()``, ``scales_text_rows()``, ``snap_height(h)``, ``measure_text(text, role)``,
 and ``backend_caps()`` expose the headless backend's own layout metrics and
 declared capabilities, so an app can size and scroll content against real
 measurements instead of a hardcoded guess.

@@ -32,6 +32,10 @@ descriptor decode and a callback boundary around this engine.\
 gtk = ["quadraui/gtk"]
 macos = ["quadraui/macos"]
 win = ["quadraui/win"]
+# Derives `schemars::JsonSchema` on the wire types this crate owns and
+# turns on `quadraui`'s own `schema` feature, so `wire::schema::wire_schema`
+# and the `export_wire_schema` binary can emit the binding wire schema.
+schema = ["quadraui/schema", "dep:schemars"]
 
 [dependencies]
 # `tui` is unconditional for the same reason `quadraui-py` pulls it in
@@ -56,3 +60,13 @@ serde = { version = "1.0", features = ["derive"] }
 # alone can't do a partial merge; it only converts a whole value in one
 # direction at a time.
 serde_json = "1.0"
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+# Validates sample wire payloads against the exported schema
+# (`wire::schema`'s tests). No network or file `$ref` resolution is needed.
+jsonschema = { version = "0.63", default-features = false }
+
+[[bin]]
+name = "export_wire_schema"
+required-features = ["schema"]

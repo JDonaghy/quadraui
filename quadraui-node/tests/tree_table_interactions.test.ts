@@ -99,7 +99,7 @@ test("a click on the chevron emits ToggleExpanded", () => {
   );
 });
 
-test("a click on the table body reaches the handler as a raw MouseDown", () => {
+test("a click on a row body focuses the table and selects the row", () => {
   const app = new QuiApp(40, 10);
   app.setRender(() => ({ tree_table: treeTableDict() }));
   app.screen();
@@ -107,18 +107,14 @@ test("a click on the table body reaches the handler as a raw MouseDown", () => {
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
   // Past the chevron and label, still on "src"'s row (viewport y == 1.0):
-  // no more specific hit resolution, so it reaches the handler raw.
+  // the table's own `Interactive::handle` selects the row.
   app.pushEvent({
     MouseDown: { button: "Left", position: { x: 2.0, y: 1.0 }, modifiers: {} },
   });
   app.run(1);
 
-  assert.ok(
-    received.some((event) => "MouseDown" in event),
-    `expected a raw MouseDown to reach the handler, got: ${JSON.stringify(received)}`,
-  );
-  assert.ok(
-    !received.some((event) => typeof event === "object" && event !== null && "TreeTable" in event),
-    `expected no TreeTable event, got: ${JSON.stringify(received)}`,
-  );
+  assert.deepStrictEqual(received, [
+    { FocusChanged: "files" },
+    { TreeTable: ["files", { RowSelected: { idx: 0, path: [0] } }] },
+  ]);
 });

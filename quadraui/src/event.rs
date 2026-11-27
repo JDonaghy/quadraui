@@ -140,6 +140,7 @@ use crate::{
 /// single-variant destructuring (`if let Key::Char(c) = key`) are
 /// unaffected — only an exhaustive match with no catch-all breaks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum Key {
     /// Printable character (after keyboard layout resolution).
@@ -150,6 +151,7 @@ pub enum Key {
 
 /// Non-printable keyboard keys that have a stable cross-platform name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum NamedKey {
     Escape,
     Tab,
@@ -226,6 +228,7 @@ impl NamedKey {
 /// closes off a future button identity (e.g. a sixth mouse button) from
 /// being a breaking change on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum MouseButton {
     #[default]
@@ -241,6 +244,7 @@ pub enum MouseButton {
 
 /// Bitmask of mouse buttons currently held down during a `MouseMoved` event.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ButtonMask {
     #[serde(default)]
     pub left: bool,
@@ -261,6 +265,7 @@ pub struct ButtonMask {
 /// units" means precisely and why [`Viewport::scale`] does **not** help
 /// convert a `Point` from one backend's unit to another's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -276,6 +281,7 @@ impl Point {
 /// Backends that report scroll in lines/cells/pixels normalise to their
 /// native unit before emitting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScrollDelta {
     pub x: f32,
     pub y: f32,
@@ -294,6 +300,7 @@ impl ScrollDelta {
 /// section. A `Rect` produced by one backend is not meaningful passed
 /// to another; there is no implicit conversion.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -327,6 +334,7 @@ impl Rect {
 /// from one backend's unit into another's" — see this module's "Unit
 /// contract" doc section.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Viewport {
     pub width: f32,
     pub height: f32,
@@ -362,6 +370,7 @@ impl Default for Viewport {
 /// ignore this variant by default; only special-case it when a specific
 /// platform feature is required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BackendNativeEvent {
     /// Backend identifier — matches [`Backend::platform_name`][crate::PlatformServices::platform_name].
     pub backend: String,
@@ -470,6 +479,11 @@ impl PartialEq for UserPayload {
     }
 }
 
+// A binding delivers a `User` event's payload as whatever value its own
+// waker posted, so the wire schema leaves it unconstrained.
+#[cfg(feature = "schema")]
+crate::schema_as!(UserPayload, "UserPayload", serde_json::Value);
+
 impl Serialize for UserPayload {
     fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -509,6 +523,7 @@ impl<'de> Deserialize<'de> for UserPayload {
 /// "Coordinate frame"), not the backend's absolute frame a `MouseDown`'s own
 /// `position` carries.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CanvasEvent {
     /// A declared region was clicked (any mouse button — see `button`).
     RegionClicked {
@@ -557,6 +572,7 @@ pub enum CanvasEvent {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum UiEvent {
     // ── Input ───────────────────────────────────────────────────────────

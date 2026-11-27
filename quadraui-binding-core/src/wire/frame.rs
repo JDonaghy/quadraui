@@ -11,8 +11,8 @@ use serde_json::Value;
 use quadraui::primitive::DynWidget;
 
 use crate::extra_paint::{
-    decode_extra_primitive_checked, decode_widget_leaf, ExtraPaint, EXTRA_PRIMITIVE_KINDS,
-    WIDGET_KINDS,
+    decode_extra_primitive_checked, decode_widget_leaf, widget_leaf_kinds, ExtraPaint,
+    EXTRA_PRIMITIVE_KINDS,
 };
 use crate::layout::{LayoutNode, LEAF_KIND_KEYS};
 use crate::render::RenderFrame;
@@ -62,14 +62,14 @@ pub(super) fn is_layout_tree(value: &Value) -> bool {
 /// kind on: every [`LAYOUT_NODE_KEYS`] container, every fixed
 /// [`crate::layout::LEAF_KIND_KEYS`] leaf, every additive
 /// [`EXTRA_PRIMITIVE_KINDS`] leaf, and every generic
-/// [`crate::extra_paint::WIDGET_KINDS`] leaf.
+/// [`crate::extra_paint::widget_leaf_kinds`] leaf.
 pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
     LAYOUT_NODE_KEYS
         .iter()
         .chain(LEAF_KIND_KEYS.iter())
         .chain(EXTRA_PRIMITIVE_KINDS.iter())
-        .chain(WIDGET_KINDS.iter())
         .copied()
+        .chain(widget_leaf_kinds())
         .collect()
 }
 
@@ -85,11 +85,12 @@ pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
 /// becoming an [`DecodeError::UnknownVariant`] here).
 pub(super) fn unknown_node_kind_key(value: &Value) -> Option<&str> {
     let obj = value.as_object()?;
+    let widget_kinds = widget_leaf_kinds();
     let has_recognized_kind = obj.keys().any(|k| {
         LAYOUT_NODE_KEYS.contains(&k.as_str())
             || LEAF_KIND_KEYS.contains(&k.as_str())
             || EXTRA_PRIMITIVE_KINDS.contains(&k.as_str())
-            || WIDGET_KINDS.contains(&k.as_str())
+            || widget_kinds.contains(&k.as_str())
     });
     if has_recognized_kind {
         return None;
@@ -100,7 +101,7 @@ pub(super) fn unknown_node_kind_key(value: &Value) -> Option<&str> {
 }
 
 /// Checks a render callback's returned value's optional top-level
-/// `"wire_version"` key against [`crate::wire_schema::WIRE_VERSION`] — see
+/// `"wire_version"` key against [`crate::WIRE_VERSION`] — see
 /// that constant's own doc for the full mismatch policy (absent accepted
 /// as version 1, older-or-equal accepted, newer rejected). Called once, by
 /// [`decode_render_output`], before the flat-vs-tree dispatch — the
@@ -118,7 +119,7 @@ pub(super) fn check_wire_version(what: &str, value: &Value) -> Result<(), Decode
             format!("a non-negative integer, got {v}"),
         )
     })?;
-    let current = u64::from(crate::wire_schema::WIRE_VERSION);
+    let current = u64::from(crate::WIRE_VERSION);
     if version > current {
         return Err(DecodeError::version_mismatch(what, version, current));
     }
@@ -187,12 +188,12 @@ fn extra_slot_entry(
 }
 
 /// Reads and decodes one optional generic-widget slot entry, keyed by
-/// `kind` (one of [`crate::extra_paint::WIDGET_KINDS`]), from a render
+/// `kind` (one of [`crate::extra_paint::widget_leaf_kinds`]), from a render
 /// callback's returned `dict`. Mirrors [`extra_slot_entry`]'s missing/
 /// `null`/dict-or-error shape, dispatching the decode through
 /// [`decode_widget_leaf`] instead of [`decode_extra_primitive_checked`] —
 /// the flat-frame counterpart of [`crate::wire::leaf::layout_leaf_from_value`]'s
-/// own `WIDGET_KINDS` loop.
+/// own `widget_leaf_kinds()` loop.
 fn widget_slot_entry(
     diagnostics: &DecodeDiagnostics,
     what: &str,
@@ -218,6 +219,7 @@ pub(crate) fn render_frame_from_value(
     value: &Value,
     diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderFrame, DecodeError> {
+    let widget_kinds = widget_leaf_kinds();
     let known_keys: Vec<&str> = [
         "text_display",
         "list",
@@ -228,7 +230,7 @@ pub(crate) fn render_frame_from_value(
     ]
     .into_iter()
     .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
-    .chain(WIDGET_KINDS.iter().copied())
+    .chain(widget_kinds.iter().copied())
     .collect();
     check_unknown_keys(diagnostics, what, "render output", value, &known_keys)?;
     let mut extra = HashMap::new();
@@ -238,7 +240,7 @@ pub(crate) fn render_frame_from_value(
         }
     }
     let mut widgets = HashMap::new();
-    for kind in WIDGET_KINDS {
+    for kind in widget_kinds {
         if let Some(v) = widget_slot_entry(diagnostics, what, value, kind)? {
             widgets.insert(kind.to_string(), v);
         }
@@ -364,7 +366,7 @@ mod tests {
 
     /// A render callback's returned value with no `"wire_version"` key at
     /// all decodes exactly like before this key existed -- the versionless
-    /// policy [`crate::wire_schema::WIRE_VERSION`]'s own doc describes.
+    /// policy [`crate::WIRE_VERSION`]'s own doc describes.
     #[test]
     fn decode_render_output_accepts_a_versionless_tree() {
         let value = json!({
@@ -374,26 +376,26 @@ mod tests {
         assert!(matches!(output, RenderOutput::Tree(_)));
     }
 
-    /// A `"wire_version"` equal to the current [`crate::wire_schema::WIRE_VERSION`] is accepted
+    /// A `"wire_version"` equal to the current [`crate::WIRE_VERSION`] is accepted
     /// on both the tree and flat shapes.
     #[test]
     fn decode_render_output_accepts_the_current_wire_version() {
         let tree = json!({
-            "wire_version": crate::wire_schema::WIRE_VERSION,
+            "wire_version": crate::WIRE_VERSION,
             "row": [{"id": "a", "button": {"id": "a", "label": "A"}}],
         });
         let output = decode_render_output("render", &tree).expect("current version accepted");
         assert!(matches!(output, RenderOutput::Tree(_)));
 
         let flat = json!({
-            "wire_version": crate::wire_schema::WIRE_VERSION,
+            "wire_version": crate::WIRE_VERSION,
             "button": {"id": "b1", "label": "Go"},
         });
         let output = decode_render_output("render", &flat).expect("current version accepted");
         assert!(matches!(output, RenderOutput::Flat(_)));
     }
 
-    /// A `"wire_version"` older than the current [`crate::wire_schema::WIRE_VERSION`] is
+    /// A `"wire_version"` older than the current [`crate::WIRE_VERSION`] is
     /// accepted -- the accept-older half of the mismatch policy.
     #[test]
     fn decode_render_output_accepts_an_older_wire_version() {
@@ -405,13 +407,13 @@ mod tests {
         assert!(matches!(output, RenderOutput::Flat(_)));
     }
 
-    /// A `"wire_version"` newer than the current [`crate::wire_schema::WIRE_VERSION`] is a
+    /// A `"wire_version"` newer than the current [`crate::WIRE_VERSION`] is a
     /// clear decode error naming both versions -- the reject-newer half of
     /// the mismatch policy.
     #[test]
     fn decode_render_output_rejects_a_newer_wire_version() {
         let value = json!({
-            "wire_version": crate::wire_schema::WIRE_VERSION + 1,
+            "wire_version": crate::WIRE_VERSION + 1,
             "button": {"id": "b1", "label": "Go"},
         });
         let decode_err = err(decode_render_output("render", &value));

@@ -162,6 +162,19 @@ impl WidgetState {
         );
     }
 
+    /// Marks every stored entry whose id `keep` accepts as seen this frame,
+    /// without reading, resolving or reseeding it — for state owned by a
+    /// subtree that has no geometry this frame (an unselected tab, a
+    /// scroll child outside the viewport) but must survive [`Self::gc`]
+    /// until it is shown again.
+    pub fn keep_alive(&self, keep: impl Fn(&str) -> bool) {
+        for (id, entry) in self.entries.borrow_mut().iter_mut() {
+            if keep(id.as_str()) {
+                entry.seen_this_frame = true;
+            }
+        }
+    }
+
     /// Sweeps every entry not marked seen since the last `gc` call, then
     /// clears the mark on every entry that survives. Call once per frame,
     /// after the paint pass that calls [`Self::resolve`]/[`Self::set`] for

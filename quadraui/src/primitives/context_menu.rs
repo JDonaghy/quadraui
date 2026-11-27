@@ -74,6 +74,7 @@ pub type MenuItem = ContextMenuItem;
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ContextMenu {
     pub id: WidgetId,
     pub items: Vec<ContextMenuItem>,
@@ -136,6 +137,7 @@ pub struct ContextMenu {
 /// carries, so the empty case costs two pointers rather than two whole
 /// [`Icon`]s.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ContextMenuGlyphs {
     #[serde(default)]
@@ -194,6 +196,7 @@ impl ContextMenuGlyphs {
 /// preferred direction would overflow the viewport — same behaviour as
 /// [`super::tooltip::TooltipPlacement`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ContextMenuPlacement {
     /// Right-click default: anchor is the cursor position. No flipping.
     #[default]
@@ -230,6 +233,7 @@ pub enum ResolvedContextMenuPlacement {
 /// (`detail`, `key_equivalent`, `checked`, `icon`, `submenu`) default to
 /// `None`, `disabled` to `false`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ContextMenuItem {
     /// `None` = separator (non-interactive); `Some(id)` = action.
     #[serde(default)]

@@ -62,6 +62,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.resolved_scroll_offset, 0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextDisplay {
     pub id: WidgetId,
     pub lines: Vec<TextDisplayLine>,
@@ -307,6 +308,7 @@ pub(crate) use wrap::{
 /// an optional left-aligned timestamp string the backend renders in a
 /// dim colour.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextDisplayLine {
     pub spans: Vec<StyledSpan>,
     #[serde(default)]
@@ -575,6 +577,7 @@ impl TextDisplay {
 
 /// Events a `TextDisplay` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TextDisplayEvent {
     /// User scrolled the view (mouse wheel, PageUp/Down, etc.).
     /// `new_offset` is the post-scroll `scroll_offset`. Apps update

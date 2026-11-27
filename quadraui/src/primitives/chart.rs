@@ -68,6 +68,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(!layout.data_point_positions.is_empty());
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Chart {
     pub id: WidgetId,
     pub kind: ChartKind,
@@ -111,6 +112,7 @@ pub struct Chart {
 
 /// Chart visualisation kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ChartKind {
     /// Single-row inline chart (no axes, no labels).
@@ -167,6 +169,7 @@ impl ChartKind {
 
 /// One data series in a chart.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Series {
     pub label: String,
     /// Y-values, evenly spaced along the x-axis.
@@ -184,6 +187,7 @@ pub struct Series {
 
 /// Events a `Chart` emits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ChartEvent {
     /// The data point under the pointer changed, including to no point
     /// at all (`point: None`) — the pointer left every point's snap

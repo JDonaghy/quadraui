@@ -127,6 +127,7 @@ fn next_handle(counter: &'static AtomicU64) -> u64 {
 /// `Serialize`/`Deserialize` of its own (no consumer needed it before this
 /// module), so [`update_check_for_update`] hands a binding this instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct UpdateInfoWire {
     pub version: String,
     pub notes: String,

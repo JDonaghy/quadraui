@@ -195,6 +195,7 @@ pub struct Sidebar {
 /// index in [`Sidebar::sections`]. The rest are controlled-state
 /// write-backs for the app to store ([`Sidebar::apply`] stores them all).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum SidebarAction {
     /// A header was clicked, or the empty space of a section body: the

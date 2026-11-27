@@ -27,6 +27,7 @@ pub struct DropGroupRect {
 
 /// Cardinal direction for a split drop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DropEdge {
     Left,
     Right,

@@ -14,17 +14,17 @@ from quadraui.app import App, Button, Column, Component, StatusBar, TextDisplay,
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module -- see its own module docstring --
     # so this import only runs under a type checker.
-    from quadraui.wire import Color, StatusBarSegment, StyledText, TextDisplayLineDescriptor, TreeRowDescriptor
+    from quadraui.wire import Color, StatusBarSegment, StyledText, TextDisplayLine, TreeRow
 
 
 def line(text: str) -> "StyledText":
     return {"spans": [{"text": text, "fg": None, "bg": None, "bold": False, "italic": False, "underline": False}]}
 
 
-def _display_line(text: str) -> "TextDisplayLineDescriptor":
+def _display_line(text: str) -> "TextDisplayLine":
     """One `text_display` line with the same single uncolored span `line()`
     builds; its own helper rather than reusing `line()`'s return, since
-    `TextDisplayLineDescriptor` adds `decoration`/`timestamp` on top of
+    `TextDisplayLine` adds `decoration`/`timestamp` on top of
     `StyledText`'s own `spans`."""
     return {"spans": [{"text": text, "fg": None, "bg": None, "bold": False, "italic": False, "underline": False}]}
 
@@ -37,7 +37,7 @@ def _segment(text: str) -> "StatusBarSegment":
     return {"text": text, "fg": _FG, "bg": _BG, "bold": False}
 
 
-def _row(i: int, text: str) -> "TreeRowDescriptor":
+def _row(i: int, text: str) -> "TreeRow":
     return {"path": [i], "indent": 0, "icon": None, "text": line(text), "badge": None, "is_expanded": False}
 
 

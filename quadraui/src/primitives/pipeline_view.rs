@@ -39,6 +39,7 @@ pub(crate) mod paint_cells;
 
 /// Status of a single pipeline stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum StageStatus {
     /// Waiting to run — rendered dim.
     Pending,
@@ -89,6 +90,7 @@ pub fn status_color(status: &StageStatus, theme: &Theme) -> Color {
 
 /// A single stage in a [`PipelineView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PipelineStage {
     /// Display label for this stage (e.g. "Build", "Test", "Deploy").
     pub label: String,
@@ -129,6 +131,7 @@ pub struct PipelineStage {
 /// assert_eq!(layout.hit_test(1.0, 1.0), PipelineHit::Body(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PipelineView {
     pub id: WidgetId,
     /// Ordered list of stages rendered left-to-right.
@@ -140,6 +143,7 @@ pub struct PipelineView {
 
 /// Events emitted by a [`PipelineView`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum PipelineEvent {
     /// User clicked (or pressed Enter on) the action button of a stage.
     StageAction { index: usize },

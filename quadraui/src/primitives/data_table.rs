@@ -94,6 +94,7 @@ use serde::{Deserialize, Serialize};
 
 /// Column definition for a `DataTable`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Column {
     pub title: String,
     /// Sizing strategy for this column.
@@ -110,6 +111,7 @@ pub struct Column {
 /// without breaking an external exhaustive `match` — see
 /// `CLAUDE.md`'s *Downstream consumers* section.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ColumnWidth {
     /// Fixed width in the backend's **native unit**: exactly `n` cells on
@@ -147,6 +149,7 @@ impl Default for ColumnWidth {
 
 /// Horizontal text alignment within a column cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ColumnAlign {
     #[default]
     Left,
@@ -158,6 +161,7 @@ pub enum ColumnAlign {
 /// table's `columns`. Missing cells are treated as empty; extra cells
 /// are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DataRow {
     pub cells: Vec<StyledText>,
     #[serde(default)]
@@ -166,6 +170,7 @@ pub struct DataRow {
 
 /// Sort direction indicator for column headers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SortDirection {
     Ascending,
     Descending,
@@ -193,6 +198,7 @@ pub enum SortDirection {
 /// TUI either way: the header always uses the theme's header
 /// foreground colour.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct DataTableGlyphs {
     #[serde(default)]
@@ -274,6 +280,7 @@ impl DataTableGlyphs {
 /// assert_eq!(layout.hit_test(0.0, 1.0, 0, table.rows.len()), DataTableHit::Row { idx: 0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DataTable {
     pub id: WidgetId,
     pub columns: Vec<Column>,
@@ -355,6 +362,7 @@ pub struct DataTable {
 
 /// Events a `DataTable` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DataTableEvent {
     /// User clicked a column header — app should toggle sort.
     HeaderClicked { col: usize },

@@ -106,6 +106,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StatusBar {
     pub id: WidgetId,
     /// Left-aligned segments, **most-important first**: a narrow bar
@@ -122,6 +123,7 @@ pub struct StatusBar {
 /// not interpret it beyond echoing it back in `StatusBarEvent`. Apps
 /// typically namespace (e.g. `"status:goto_line"`) per plugin invariant #4.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StatusBarSegment {
     pub text: String,
     pub fg: Color,
@@ -146,6 +148,7 @@ pub struct StatusBarHitRegion {
 
 /// Events a `StatusBar` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum StatusBarEvent {
     /// A clickable segment was activated (mouse click, or future enter-on-focus).
     SegmentClicked { id: WidgetId },

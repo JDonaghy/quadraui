@@ -28,6 +28,7 @@ use crate::Handled;
 /// assert!(!checkbox.value);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Checkbox {
     pub id: WidgetId,

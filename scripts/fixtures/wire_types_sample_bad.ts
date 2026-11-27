@@ -2,7 +2,7 @@
 // shapes, each with one key misspelled. `scripts/check_wire_types.sh`
 // asserts `tsc --strict` reports an error against this file.
 
-import type { LayoutNode, TreeViewDescriptor } from "../../quadraui-node/js/wire";
+import type { LayoutNode, TreeView } from "../../quadraui-node/js/wire";
 
 export function badMisspelledLayoutKey(): LayoutNode {
   // `colum` is not a `LayoutNode` union member's key.
@@ -20,12 +20,12 @@ export function badMisspelledGridTrackVariant(): LayoutNode {
   };
 }
 
-export function badMisspelledDescriptorField(): TreeViewDescriptor {
+export function badMisspelledDescriptorField(): TreeView {
   return {
     id: "demo:tree",
     rows: [],
     selection_mode: "Single",
-    selected_pathh: [0], // typo: not a `TreeViewDescriptor` key
+    selected_pathh: [0], // typo: not a `TreeView` key
     style: {
       indent: 2,
       show_chevrons: true,

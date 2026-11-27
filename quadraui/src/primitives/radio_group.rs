@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 /// the same convention [`RadioGroup`] and [`crate::Switch`] already use,
 /// so a future field addition here stays additive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct RadioOption {
     pub id: WidgetId,
@@ -95,6 +96,7 @@ impl RadioOption {
 /// assert_eq!(event, Some(RadioGroupEvent::SelectionChanged { index: 0 }));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct RadioGroup {
     pub id: WidgetId,
