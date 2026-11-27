@@ -3399,6 +3399,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -5246,6 +5247,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: Some(80),
             show_v_scrollbar: true,
+            striped: false,
         };
         let rect = QRect::new(2.0, 1.0, 24.0, 6.0);
 
@@ -6359,6 +6361,7 @@ mod tests {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 },
             });
             layout.draw(backend);

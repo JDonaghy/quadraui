@@ -4516,6 +4516,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -4669,6 +4670,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: Some(40),
                 show_v_scrollbar: false,
+                striped: false,
             }
         };
 
@@ -4711,6 +4713,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -7277,6 +7280,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let diff = chrome_font_diff_pixel_count(
             200,

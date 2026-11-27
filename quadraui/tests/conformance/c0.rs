@@ -88,6 +88,7 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             };
             #[allow(deprecated)]
             b.draw_list(area, &list);
@@ -117,6 +118,7 @@ pub const CASES: &[Case] = &[
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             };
             b.draw_list_with_state(
                 area,

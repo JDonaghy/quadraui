@@ -2757,7 +2757,12 @@ pub trait DrawsPrimitives: Backend {
             // `self`, scoped so its shared borrow ends before the
             // `&mut self` paint calls below.
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
-            w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
+            w.layout(
+                &ctx.with_measurer(&measurer)
+                    .with_style(&style)
+                    .with_paint_state(state),
+                rect,
+            )
         };
         let theme = self.theme();
         let sub_regions: Vec<_> = match w.id() {
@@ -2836,7 +2841,12 @@ pub trait DrawsPrimitives: Backend {
                 }
             }
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
-            let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
+            let recorded = w.layout(
+                &ctx.with_measurer(&measurer)
+                    .with_style(&style)
+                    .with_paint_state(state),
+                rect,
+            );
             let hover_targets = w.hover_on_sub_regions_only().then(|| {
                 sub_regions
                     .iter()
@@ -2850,6 +2860,7 @@ pub trait DrawsPrimitives: Backend {
                 layout: recorded,
                 sub_regions,
                 hover_targets,
+                paint_state: crate::primitive::PaintStateSnapshot::of(state),
             });
         }
         layout
@@ -2930,9 +2941,10 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}
 
-/// Lay `widget` out at `rect` with the same ctx, measurer and style
-/// [`DrawsPrimitives::draw_dyn`] paints with, so routing and popup
-/// placement resolve against the painted geometry.
+/// Lay `widget` out at `rect` with the same ctx, measurer, style and
+/// paint state [`DrawsPrimitives::draw_dyn`] painted it with this frame
+/// ([`crate::primitive::painted_state`]), so routing and popup placement
+/// resolve against the painted geometry.
 pub(crate) fn layout_like_paint<B: Backend + ?Sized>(
     backend: &B,
     widget: &dyn DynWidget,
@@ -2941,7 +2953,16 @@ pub(crate) fn layout_like_paint<B: Backend + ?Sized>(
     let ctx = primitive_layout_ctx(backend);
     let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
     let style = backend.style();
-    widget.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
+    let painted = widget
+        .id()
+        .map(crate::primitive::painted_state)
+        .unwrap_or_default();
+    widget.layout(
+        &ctx.with_measurer(&measurer)
+            .with_style(&style)
+            .with_paint_state(&painted),
+        rect,
+    )
 }
 
 /// Record that the widget `id` painted this frame on `backend`'s modal

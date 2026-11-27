@@ -212,6 +212,7 @@ class ListViewDescriptor(TypedDict):
     h_scroll: NotRequired[int]
     max_content_width: NotRequired[Optional[int]]
     show_v_scrollbar: NotRequired[bool]
+    striped: NotRequired[bool]
     scroll_px: NotRequired[float]  # binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
     items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 

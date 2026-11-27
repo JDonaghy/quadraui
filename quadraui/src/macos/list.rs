@@ -315,6 +315,7 @@ mod tests {
             // Field was added to `ListView` after this fixture was written.
             // `false` preserves the fixture's behaviour.
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -799,6 +800,7 @@ mod multi_select_driver_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

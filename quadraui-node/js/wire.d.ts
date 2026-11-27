@@ -228,6 +228,7 @@ export interface ListViewDescriptor {
   h_scroll?: number;
   max_content_width?: number | null;
   show_v_scrollbar?: boolean;
+  striped?: boolean;
   scroll_px?: number; // binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field.
   items_window?: ItemsWindow | null; // binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 }

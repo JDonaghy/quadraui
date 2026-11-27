@@ -3556,9 +3556,11 @@ impl InteractionEngine {
     ) -> DynWidgetClickOutcome {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
-        // measurer and its style), so a click resolves against the
-        // geometry that was actually painted on pixel backends.
+        // measurer, its style and the paint state the widget painted
+        // with), so a click resolves against the geometry that was
+        // actually painted.
         let style = backend.style();
+        let painted = quadraui::primitive::painted_state(&id);
         let (units, layout) = {
             let backend_ref: &dyn Backend = backend;
             let measurer =
@@ -3572,7 +3574,10 @@ impl InteractionEngine {
                 backend_ref.nerd_fonts_enabled(),
             )
             .with_editor_line_height(backend_ref.line_height());
-            let ctx = ctx.with_measurer(&measurer).with_style(&style);
+            let ctx = ctx
+                .with_measurer(&measurer)
+                .with_style(&style)
+                .with_paint_state(&painted);
             (ctx.units(), widget.layout(&ctx, area))
         };
 
@@ -8737,6 +8742,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let content = LayoutNode::Leaf(LayoutLeaf {
             id: "recent".to_string(),
@@ -10265,6 +10271,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListCursorLogic {
             list,
@@ -10675,6 +10682,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListLogic {
             list,

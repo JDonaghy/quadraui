@@ -275,6 +275,9 @@ impl TreeTable {
     /// widened to the floor rather than left truncated, overflowing the
     /// viewport instead of clipping the tree cell. Pass `0.0` to disable
     /// the rule entirely (never drop, never widen).
+    ///
+    /// Rows start at [`DataTable::scroll_offset`]; [`Self::layout_scrolled`]
+    /// lays them out from a pixel-precise scroll position instead.
     #[allow(clippy::too_many_arguments)]
     pub fn layout<F, G>(
         &self,
@@ -286,6 +289,42 @@ impl TreeTable {
         measure_col: F,
         measure_chevron: G,
         min_tree_col_width: f32,
+    ) -> TreeTableLayout
+    where
+        F: Fn(&Column) -> ColumnMeasure,
+        G: Fn(&TreeTableNode) -> Option<(f32, f32)>,
+    {
+        self.layout_scrolled(
+            viewport_width,
+            viewport_height,
+            row_height,
+            header_height,
+            scrollbar_width,
+            measure_col,
+            measure_chevron,
+            min_tree_col_width,
+            None,
+        )
+    }
+
+    /// [`Self::layout`] with the rows scrolled to `scroll_px` — resolved
+    /// through [`DataTable::effective_scroll_offset`] and
+    /// [`DataTable::scroll_sub_row_px`] against `row_height`, the
+    /// resolution the painters apply — so each chevron sits on the row
+    /// painted at that scroll and [`DataTableLayout::scroll_sub_px`]
+    /// carries the sub-row shift. `None` is [`Self::layout`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_scrolled<F, G>(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+        row_height: f32,
+        header_height: f32,
+        scrollbar_width: f32,
+        measure_col: F,
+        measure_chevron: G,
+        min_tree_col_width: f32,
+        scroll_px: Option<f32>,
     ) -> TreeTableLayout
     where
         F: Fn(&Column) -> ColumnMeasure,
@@ -321,10 +360,17 @@ impl TreeTable {
                 table.content_width = table.content_width.max(col0.x + col0.width);
             }
         }
-        let scroll_offset = self.table.scroll_offset.min(self.table.rows.len());
+        let scroll_offset = self
+            .table
+            .effective_scroll_offset(row_height, scroll_px)
+            .min(self.table.rows.len());
+        table.scroll_sub_px = self.table.scroll_sub_row_px(row_height, scroll_px);
+        let sub_px = table.scroll_sub_px;
+        let body_top = table.inset_y + table.header_height;
+        let body_bottom = body_top + table.visible_rows as f32 * table.row_height;
         let mut chevrons = Vec::new();
         if let Some(col0) = table.columns.first() {
-            for i in 0..table.visible_rows {
+            for i in 0..table.visible_rows + usize::from(sub_px > 0.0) {
                 let abs = scroll_offset + i;
                 let Some(node) = self.tree.get(abs) else {
                     break;
@@ -336,8 +382,11 @@ impl TreeTable {
                     continue;
                 }
                 let width = width.min(col0.width - start);
-                let y = table.inset_y + table.header_height + i as f32 * table.row_height;
-                chevrons.push((abs, Rect::new(col0.x + start, y, width, table.row_height)));
+                let y = body_top + i as f32 * table.row_height - sub_px;
+                let (top, bottom) = (y.max(body_top), (y + table.row_height).min(body_bottom));
+                if bottom > top {
+                    chevrons.push((abs, Rect::new(col0.x + start, top, width, bottom - top)));
+                }
             }
         }
         TreeTableLayout { table, chevrons }
@@ -528,7 +577,7 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         measure: &dyn TextMeasure,
     ) -> TreeTableLayout {
-        super::layout::pixel_layout(table, w, h, line_height, measure)
+        super::layout::pixel_layout(table, w, h, line_height, measure, None)
     }
 
     /// Paint a [`TreeTable`] into `rect` on `surface` and return the

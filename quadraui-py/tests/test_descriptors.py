@@ -159,6 +159,36 @@ def test_list_leaf_renders():
     assert app.screen_contains("Row 1")
 
 
+
+def _striped_list_bgs(striped):
+    app = QuiApp(24, 8)
+    app.set_render(
+        lambda: {
+            "list": {
+                "id": "list:striped",
+                "items": [
+                    {"text": {"spans": [{"text": name, "fg": None, "bg": None}]}}
+                    for name in ("Alice", "Bob", "Cleo")
+                ],
+                "selected_idx": 0,
+                "striped": striped,
+            }
+        }
+    )
+    app.screen()
+    return [app.cell_colors(4, y)[1] for y in (0, 1, 2)]
+
+
+def test_striped_list_tints_every_other_item():
+    first, second, third = _striped_list_bgs(True)
+    assert first == third
+    assert second != first
+
+
+def test_unstriped_list_items_share_one_background():
+    first, second, third = _striped_list_bgs(False)
+    assert first == second == third
+
 def test_tree_leaf_renders():
     app = QuiApp(40, 20)
     app.set_render(

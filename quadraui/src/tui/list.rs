@@ -293,7 +293,7 @@ fn draw_list_inner(
         // position, so a given row's shading survives scrolling, the
         // same convention Finder/Explorer use. Selection takes priority
         // over the stripe; a header-decorated row is never striped.
-        let is_striped_row = striped
+        let is_striped_row = (striped || list.striped)
             && !is_selected
             && !matches!(item.decoration, Decoration::Header)
             && visible_item.item_idx % 2 == 1;
@@ -613,6 +613,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -682,6 +683,26 @@ mod tests {
         assert_eq!(striped_buf[(0, 3)].bg, alt_bg);
     }
 
+    /// The descriptor's own `striped` tints the same rows as a paint
+    /// state's, with no paint state at all.
+    #[test]
+    fn descriptor_striped_tints_alternate_rows_without_a_paint_state() {
+        let mut list = make_list(1);
+        list.items.push(item("delta", Decoration::Normal));
+        list.striped = true;
+        let area = Rect::new(0, 0, 20, 5);
+        let theme = Theme::default();
+
+        let mut buf = Buffer::empty(area);
+        draw_list(&mut buf, area, &list, &theme, false);
+
+        assert_eq!(buf[(0, 2)].bg, ratatui_color(theme.background));
+        assert_eq!(
+            buf[(0, 3)].bg,
+            ratatui_color(theme.row_alt_bg(theme.background))
+        );
+    }
+
     #[test]
     fn no_selection_marker_when_unfocused() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
@@ -736,6 +757,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let theme = Theme {
             error_fg: Color::rgb(255, 0, 0),
@@ -785,6 +807,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let area = Rect::new(0, 0, 20, 5);
 
@@ -1001,6 +1024,7 @@ mod tests {
             h_scroll: 8,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1235,6 +1259,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1281,6 +1306,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1332,6 +1358,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1368,6 +1395,7 @@ mod tests {
             h_scroll: 5,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1436,6 +1464,7 @@ mod multi_select_driver_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

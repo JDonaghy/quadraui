@@ -2380,6 +2380,9 @@ impl crate::primitive::Primitive for TreeView {
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let border = if self.style.bordered { 2.0 } else { 0.0 };
+        // The paint state's `scroll_px` shifts the rows and the thumb
+        // exactly as the painters shift them.
+        let scroll_px = ctx.paint_state().scroll_px();
         // `ctx.units()` separates TUI's whole-cell `line_height`
         // convention from a real pixel font metric, even when both
         // features are compiled into the same binary.
@@ -2394,13 +2397,17 @@ impl crate::primitive::Primitive for TreeView {
                 {
                     (
                         Rect::new(rect.x, rect.y, rect.width - 1.0, rect.height),
-                        self.vscrollbar_with_track_width(rect, 1.0, 1.0),
+                        // A cell grid scrolls by whole rows.
+                        self.vscrollbar_with_scroll_px(rect, 1.0, 1.0, scroll_px.map(f32::floor)),
                     )
                 } else {
                     (rect, None)
                 };
-            let layout =
-                crate::tui::tui_tree_layout(self, crate::tui::backend::q_rect_to_ratatui(area));
+            let layout = crate::tui::tui_tree_layout_with_scroll_px(
+                self,
+                crate::tui::backend::q_rect_to_ratatui(area),
+                scroll_px,
+            );
             let vscrollbar_layout = vscrollbar
                 .as_ref()
                 .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
@@ -2421,11 +2428,12 @@ impl crate::primitive::Primitive for TreeView {
         // `crate::primitives::layout_metrics::pixel_tree_layout`'s own doc says
         // to pass "when no live `Style` is reachable".
         let default_style = crate::style::Style::default();
-        let layout = crate::primitives::layout_metrics::pixel_tree_layout(
+        let layout = crate::primitives::layout_metrics::pixel_tree_layout_with_scroll_px(
             self,
             rect,
             ctx.line_height as f64,
             default_style.row_padding_x,
+            scroll_px,
         );
         let row_pitch =
             crate::primitives::layout_metrics::tree_row_pitch(self, ctx.line_height as f64) as f32;
@@ -2436,8 +2444,12 @@ impl crate::primitive::Primitive for TreeView {
         };
         // A pixel surface overlays the scrollbar on the rows (the shared
         // pixel painter draws it), so no width is reserved for it here.
-        let vscrollbar =
-            self.vscrollbar_with_track_width(rect, row_pitch, default_style.scrollbar_width);
+        let vscrollbar = self.vscrollbar_with_scroll_px(
+            rect,
+            row_pitch,
+            default_style.scrollbar_width,
+            scroll_px,
+        );
         let vscrollbar_layout = vscrollbar
             .as_ref()
             .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
@@ -2468,23 +2480,10 @@ impl crate::primitive::Primitive for TreeView {
         ))]
         {
             let pointer = TreePointer::from_env(self, env);
-            // A pixel-precise scroll position from the paint state wins
-            // over the whole-row `scroll_offset` the layout resolved, so
-            // the rows are laid out again against it.
-            let scroll_px = env.state.scroll_px();
-            let scrolled_layout = scroll_px.map(|px| {
-                crate::primitives::layout_metrics::pixel_tree_layout_with_scroll_px(
-                    self,
-                    layout.area,
-                    layout.line_height as f64,
-                    style.row_padding_x,
-                    Some(px),
-                )
-            });
             native_surface_paint::paint_with_scroll_px(
                 self,
                 layout.area,
-                scrolled_layout.as_ref().unwrap_or(&layout.layout),
+                &layout.layout,
                 layout.line_height,
                 layout.nerd_fonts_enabled,
                 surface,
@@ -2493,7 +2492,7 @@ impl crate::primitive::Primitive for TreeView {
                 pointer.hovered_row,
                 pointer.pressed_row,
                 env.state.focus_ring_visible(),
-                scroll_px,
+                env.state.scroll_px(),
             );
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all —

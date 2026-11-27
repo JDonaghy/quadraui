@@ -18,7 +18,7 @@ use crate::types::TreeStyle;
 /// hit-test agrees with what was painted.
 #[cfg(test)]
 pub(crate) fn cell_tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
-    super::layout::cell_layout(table, area.width as f32, area.height as f32)
+    super::layout::cell_layout(table, area.width as f32, area.height as f32, None)
 }
 
 /// Draw a `TreeTable` into `area` with `hovered_idx` tinted, returning

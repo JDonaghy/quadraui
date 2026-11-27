@@ -520,9 +520,11 @@ pub struct DataTableLayout {
     /// How far the first visible row is shifted up past the header, in
     /// the same units as [`Self::row_height`] — the sub-row remainder of a
     /// pixel-precise scroll ([`DataTable::scroll_sub_row_px`]). `0.0` from
-    /// [`DataTable::layout`]; a painter that scrolls by a fraction of a
-    /// row sets it on the layout it returns, so [`Self::hit_test`]
-    /// resolves rows at the offset they were painted at.
+    /// [`DataTable::layout`]; the widget's `Primitive::layout` sets it
+    /// from its paint state's `scroll_px`, as does a painter that scrolls
+    /// by a fraction of a row on the layout it returns, so
+    /// [`Self::hit_test`] resolves rows at the offset they were painted
+    /// at.
     pub scroll_sub_px: f32,
 }
 
@@ -2407,7 +2409,8 @@ pub struct DataTablePrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The table-local layout itself.
     pub layout: DataTableLayout,
-    /// [`DataTable::scroll_offset`] at the time [`Primitive::layout`]
+    /// The first painted row: [`DataTable::effective_scroll_offset`] for
+    /// the paint state's `scroll_px` at the time [`Primitive::layout`]
     /// was called — [`Self::hit_test`] needs this to resolve a `y` into
     /// an absolute row index, since [`DataTableLayout`] itself carries
     /// no row count or scroll position.
@@ -2544,6 +2547,11 @@ impl crate::primitive::Primitive for DataTable {
         // `ctx.units()` separates TUI's whole-cell `line_height`
         // convention from a real pixel font metric, even when both
         // features are compiled into the same binary.
+        // The paint state's `scroll_px` resolves the starting row and its
+        // sub-row shift exactly as the painters resolve them, so a point
+        // hit-tests the row painted under it.
+        let scroll_px = ctx.paint_state().scroll_px();
+        let scroll_offset = self.effective_scroll_offset(ctx.line_height, scroll_px);
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
@@ -2552,7 +2560,7 @@ impl crate::primitive::Primitive for DataTable {
                 area: rect,
                 line_height: ctx.line_height,
                 nerd_fonts_enabled: ctx.nerd_fonts_enabled,
-                scroll_offset: self.scroll_offset,
+                scroll_offset,
                 total_rows: self.rows.len(),
                 layout,
             };
@@ -2564,18 +2572,19 @@ impl crate::primitive::Primitive for DataTable {
             ctx,
             role: crate::FontRole::Chrome,
         };
-        let layout = layout_metrics::pixel_data_table_layout(
+        let mut layout = layout_metrics::pixel_data_table_layout(
             self,
             rect.width,
             rect.height,
             ctx.line_height,
             &measure,
         );
+        layout.scroll_sub_px = self.scroll_sub_row_px(ctx.line_height, scroll_px);
         DataTablePrimitiveLayout {
             area: rect,
             line_height: ctx.line_height,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
-            scroll_offset: self.scroll_offset,
+            scroll_offset,
             total_rows: self.rows.len(),
             layout,
         }
@@ -2986,11 +2995,11 @@ impl crate::interactive::Interactive for DataTable {
             }
         }
         let body_y = l.inset_y + l.header_height;
-        let visible = l
-            .visible_rows
-            .min(self.rows.len().saturating_sub(self.scroll_offset));
+        let body_bottom = body_y + l.visible_rows as f32 * l.row_height;
+        let visible = (l.visible_rows + usize::from(l.scroll_sub_px > 0.0))
+            .min(self.rows.len().saturating_sub(layout.scroll_offset));
         for r in crate::primitives::row_stack::stack_rows_from(
-            self.scroll_offset,
+            layout.scroll_offset,
             l.scroll_sub_px,
             visible,
             x0,
@@ -2999,7 +3008,7 @@ impl crate::interactive::Interactive for DataTable {
             |_| (l.row_height, ()),
         ) {
             let top = r.bounds.y.max(body_y);
-            let h = r.bounds.y + r.bounds.height - top;
+            let h = (r.bounds.y + r.bounds.height).min(body_bottom) - top;
             if h > 0.0 {
                 out.push((
                     Rect::new(r.bounds.x, top, r.bounds.width, h),
@@ -3029,7 +3038,7 @@ impl crate::interactive::Interactive for DataTable {
         let hit = |local: &crate::event::Point| {
             layout
                 .layout
-                .hit_test(local.x, local.y, self.scroll_offset, total)
+                .hit_test(local.x, local.y, layout.scroll_offset, total)
         };
         match event {
             RoutedEvent::Pointer {
