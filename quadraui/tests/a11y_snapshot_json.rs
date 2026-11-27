@@ -1,3 +1,11 @@
+// The fixture paints a `TreeView` through `Surface::Widget`, which needs
+// a backend feature for `TreeView` to be a widget at all.
+#![cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 //! Golden test for [`quadraui::A11yTree`]'s JSON form — the `snapshot`
 //! MCP tool's wire shape documented in `src/a11y/tree.rs`'s "Stable JSON
 //! form" module-doc section.

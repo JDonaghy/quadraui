@@ -1697,7 +1697,6 @@ impl WinBackend {
             let _ = rects;
         }
     }
-
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries

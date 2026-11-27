@@ -3273,6 +3273,12 @@ mod tests {
         assert_eq!(last.info.set_size, Some(100_000));
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn tree_view_maps_rows_flat_with_level_token_and_grouped_sibling_position() {
         let tree_view = TreeView {

@@ -4701,9 +4701,9 @@ fn help_layer_demo_palette_query_matches_description_not_label() {
 }
 
 /// A panel with no registered help still lets `?` open a visible cheatsheet
-/// and `Escape` still closes it. `HelpOverlayController::render` draws nothing
-/// when the active view has no `ViewHelp`, but `handle()` still accepts input
-/// to dismiss the modal — without this, an unregistered panel would appear frozen.
+/// and `Escape` still closes it. An open `HelpOverlay` with no `ViewHelp`
+/// still paints a card and still accepts input to dismiss the modal —
+/// without this, an unregistered panel would appear frozen.
 #[test]
 fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
     let config = HelpLayerDemo::config();

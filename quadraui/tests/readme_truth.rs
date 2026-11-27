@@ -812,7 +812,7 @@ fn readme_compose_section() -> String {
 /// `PascalCase(stem) + "Controller"` (`workspace` -> `WorkspaceController`,
 /// `tab_group` -> `TabGroupController`). A handful of modules don't fit
 /// either shape — because they expose more than one primary type
-/// (`help_layer` -> `HelpRegistry` + `HelpOverlayController`), or because
+/// (`help_layer` -> `HelpRegistry` + `HelpOverlay`), or because
 /// they're a utility rather than a stateful controller (`markdown`,
 /// `notification`) — and are listed here explicitly instead of guessed at.
 /// Adding a *conventionally-named* module needs no change here: the
@@ -831,10 +831,7 @@ fn expected_compose_type_names(stem: &str) -> Vec<String> {
     }
 
     match stem {
-        "help_layer" => vec![
-            "HelpRegistry".to_string(),
-            "HelpOverlayController".to_string(),
-        ],
+        "help_layer" => vec!["HelpRegistry".to_string(), "HelpOverlay".to_string()],
         // Utility modules, not stateful controllers — the README's prose
         // after the table names them without wrapping a type name in
         // backticks, so these two are matched as plain substrings by

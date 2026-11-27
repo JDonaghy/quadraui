@@ -974,16 +974,16 @@ pub use compose::{
     ContextMenuController, ContextMenuOutcome, DualModePaletteAction, DualModePaletteController,
     Edge, FilePickerController, FilePickerMode, FolderPickerController, FormController,
     FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
-    HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef,
-    MenuEvent, MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
-    PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion,
-    ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
-    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent,
-    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
-    TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
-    WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
+    HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
+    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
+    PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion, ShellView,
+    ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody, SidebarPanelBody,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection, SidebarSectionDef,
+    StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent, TabGroupLayout,
+    TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart,
+    TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace,
+    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
+    WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
@@ -1001,14 +1001,13 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
-// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`, `HelpOverlayEvent`,
+// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
 // `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
 // `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>`, `HelpOverlayController::handle_event`'s
-// `Handled<HelpOverlayAction>`, `DualModePaletteController::handle_event`'s
+// `Handled<ToastStackAction>`, `DualModePaletteController::handle_event`'s
 // `Handled<DualModePaletteAction>`, `FilePickerController`/
 // `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
 // `FormController::handle_event`/`handle_cached_event`'s
@@ -1019,8 +1018,7 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 #[allow(deprecated)]
 pub use compose::{
     ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
-    FormControllerEvent, FormDialogEvent, HelpOverlayEvent, MessageDialogEvent, StatusBarAction,
-    ToastStackEvent,
+    FormControllerEvent, FormDialogEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

@@ -4,7 +4,7 @@
 //! own [`quadraui::HelpRegistry`] entry — different notes, different
 //! actions. Demonstrates context-sensitive help:
 //!
-//! - `?` opens a cheatsheet overlay ([`quadraui::HelpOverlayController`])
+//! - `?` opens a cheatsheet overlay ([`quadraui::HelpOverlay`])
 //!   showing the **active panel's** registered notes + actions — switch
 //!   panels, reopen `?`, and the content changes.
 //! - `p` opens a command palette ([`quadraui::DualModePaletteController`])
@@ -13,7 +13,7 @@
 //!   **and** description via [`quadraui::filter_help_actions`].
 //!
 //! A third panel ("Settings") intentionally has **no** registered help.
-//! [`quadraui::HelpOverlayController::render`] shows a visible
+//! An open [`quadraui::HelpOverlay`] with no help shows a visible
 //! "no help available" cheatsheet rather than silently rendering nothing.
 //!
 //! Controls:
@@ -27,9 +27,9 @@ use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     filter_help_actions, help_actions_to_palette_items, Backend, Color, DualModePaletteController,
-    HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, Key, NamedKey,
-    Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent,
-    ViewHelp, WidgetId,
+    HelpAction, HelpNote, HelpOverlay, HelpOverlayAction, HelpRegistry, Key, NamedKey, Reaction,
+    Rect, ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, ViewHelp,
+    WidgetId,
 };
 
 const EXPLORER_PANEL: &str = "panel:explorer";
@@ -38,7 +38,7 @@ const SETTINGS_PANEL: &str = "panel:settings";
 
 pub struct HelpLayerDemo {
     registry: HelpRegistry,
-    help_overlay: HelpOverlayController,
+    help_overlay: HelpOverlay,
     palette: Option<DualModePaletteController>,
     active_panel: WidgetId,
     last_message: String,
@@ -86,7 +86,7 @@ impl HelpLayerDemo {
 
         Self {
             registry,
-            help_overlay: HelpOverlayController::new(),
+            help_overlay: HelpOverlay::new(WidgetId::new("help-cheatsheet")),
             palette: None,
             active_panel: WidgetId::new(EXPLORER_PANEL),
             last_message: "?=help  p=commands  Tab=focus bar  q=quit".into(),
@@ -180,9 +180,12 @@ impl ShellApp for HelpLayerDemo {
         } else {
             // `active_view_help()` is `None` for the Settings panel — the
             // overlay's own fallback (a visible "no help available"
-            // panel) handles that; see `HelpOverlayController::render`.
-            self.help_overlay
-                .render(layout.window_bounds, backend, self.active_view_help());
+            // panel) handles that.
+            let overlay = HelpOverlay {
+                help: self.active_view_help().cloned(),
+                ..self.help_overlay.clone()
+            };
+            let _ = backend.draw_dyn(layout.window_bounds, &overlay, &());
         }
     }
 
@@ -240,7 +243,11 @@ impl ShellApp for HelpLayerDemo {
 
         // Help overlay: `?` opens/closes when relevant, swallows keys
         // while open, `Ignored` when closed and the key isn't `?`.
-        match self.help_overlay.handle_event(&event) {
+        let handled = self.help_overlay.handle_event(&event);
+        if let Handled::Event(action) = handled {
+            self.help_overlay.apply(action);
+        }
+        match handled {
             Handled::Event(HelpOverlayAction::Opened) => {
                 self.last_message = format!("Help — {}", self.active_panel.as_str());
                 return Reaction::Redraw;

@@ -28,7 +28,7 @@
 //! - [`TabGroup`] / [`TabGroupController`] — editor-group-style tabbed
 //!   split panes: a `TabBar` per pane, `SplitTree` dividers and a
 //!   `DropOverlay` for tab drags.
-//! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
+//! - [`HelpRegistry`] / [`HelpOverlay`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
 //! - [`WorkspaceController`] — open-N-view-one document set (ordered
@@ -165,14 +165,8 @@ pub use form_dialog::FormDialogEvent;
 pub use handled::Handled;
 pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlay,
-    HelpOverlayAction, HelpOverlayController, HelpOverlayLayout, HelpOverlayState, HelpRegistry,
-    ViewHelp,
+    HelpOverlayAction, HelpOverlayLayout, HelpOverlayState, HelpRegistry, ViewHelp,
 };
-// `HelpOverlayEvent` is `#[deprecated]` (use `HelpOverlayController::handle_event`'s
-// `Handled<HelpOverlayAction>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use help_layer::HelpOverlayEvent;
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
 pub use menu_system::{

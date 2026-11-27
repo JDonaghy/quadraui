@@ -526,9 +526,22 @@ mod tests {
     use crate::primitives::list::{ListItem, ListView};
     use crate::primitives::progress::ProgressBar;
     use crate::primitives::split::{Split, SplitDirection};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::testing::a11y::A11yScenario;
-    use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
+    use crate::types::{Decoration, StyledText};
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    use crate::types::{SelectionMode, TreeStyle};
     use crate::Rect;
 
     fn list_surface(id: &str, items: &[&str], selected: usize) -> Surface {
@@ -557,6 +570,12 @@ mod tests {
         }
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     fn tree_surface(id: &str, rows: Vec<TreeRow>) -> Surface {
         Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
@@ -572,6 +591,12 @@ mod tests {
         }
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     fn row(label: &str, path: &[u16]) -> TreeRow {
         TreeRow {
             path: path.to_vec(),
@@ -653,6 +678,12 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     #[test]
     fn click_and_expand_on_tree_row_round_trip_the_path() {
         let snapshot = A11yScenario::new()
