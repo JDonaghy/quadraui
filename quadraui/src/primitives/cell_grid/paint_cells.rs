@@ -19,7 +19,7 @@
 //! that row's already-painted glyphs instead of overwriting them.
 
 use super::{CellGrid, CellGridLayout, ResolvedSpan};
-use crate::cell_surface::{CellStyle, CellSurface};
+use crate::cell_surface::{CellModifier, CellStyle, CellSurface};
 use crate::event::Rect;
 use crate::primitives::data_table::ColumnAlign;
 use crate::theme::Theme;
@@ -364,22 +364,13 @@ pub(crate) fn paint(
         }
     }
     // Row axis: there is no spare row to reserve, so the boundary is an
-    // underline over the row's already-painted glyphs rather than a
-    // glyph that would replace them. No `CellSurface` verb adds a
-    // modifier to a painted cell in place (re-writing a double-width
-    // glyph's continuation cell would split it), so this reaches the
-    // backing buffer.
+    // underline added in place over the row's already-painted glyphs
+    // rather than a glyph that would replace them.
     if layout.frozen_rows > 0 && layout.frozen_rows < layout.rows.len() {
         if let Some((ry, rh)) = span_bounds(ah, ay, &layout.rows[layout.frozen_rows - 1]) {
             let div_y = ry + rh.saturating_sub(1);
-            // CSR: ratatui_buffer escape hatch
-            if let Some(buf) = cells.ratatui_buffer() {
-                let b = buf.area;
-                if div_y >= b.y && div_y < b.y + b.height {
-                    for x in ax.max(b.x)..ax.saturating_add(aw).min(b.x + b.width) {
-                        buf[(x, div_y)].modifier |= ratatui::style::Modifier::UNDERLINED;
-                    }
-                }
+            for x in ax..ax.saturating_add(aw) {
+                cells.add_modifier(x, div_y, CellModifier::Underline { color: None });
             }
         }
     }
@@ -1139,9 +1130,8 @@ mod tests {
         plain.column_separators = true;
         plain.striped = true;
         let paint = |g: &CellGrid, area: Rect, w, h| {
-            oracle::paint(w, h, |s| {
-                let _ = draw_cell_grid(s, area, g, &theme);
-            })
+            let layout = tui_cell_grid_layout(area, g);
+            oracle::paint(w, h, |s| paint(g, quad(area), &layout, s, &theme))
         };
         oracle::assert_golden(
             "cell_grid",

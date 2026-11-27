@@ -7,15 +7,14 @@
 //! this rasteriser computes it inline because TUI list rows are
 //! always uniform 1 cell tall.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
 
-use super::{draw_styled_text, ratatui_color, set_cell, set_cell_wide};
+use super::{draw_styled_text, styled_text_continuation_at};
+use crate::cell_surface::{solid_style, CellStyle, CellSurface};
 use crate::primitives::list::{ListView, ListViewLayout};
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
-use crate::types::{Decoration, StyledText};
+use crate::types::{Color, Decoration, StyledText};
 use crate::CellOverflow;
 
 /// Compute the TUI cell-unit layout for a [`ListView`] without painting —
@@ -51,7 +50,7 @@ pub fn tui_list_layout_with_scroll_px(
     )
 }
 
-/// Draw a [`ListView`] into `area` on `buf`. Honours
+/// Draw a [`ListView`] into `area` on `surface`. Honours
 /// [`ListView::bordered`] (rounded box border + title overlay) and
 /// [`ListView::has_focus`] (the selected row only highlights when the
 /// list has focus).
@@ -77,13 +76,13 @@ pub fn tui_list_layout_with_scroll_px(
 /// recently given to [`crate::Backend::set_nerd_fonts`], or `false` to
 /// always use ASCII fallbacks.
 pub fn draw_list(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
-    draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None)
+    draw_list_with_scroll_px(surface, area, list, theme, nerd_fonts_enabled, None)
 }
 
 /// Like [`draw_list`], but with an explicit pixel-precise scroll
@@ -98,7 +97,7 @@ pub fn draw_list(
 /// [`draw_list`] passes) resolves to exactly the pre-existing whole-row
 /// behaviour.
 pub fn draw_list_with_scroll_px(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
@@ -106,7 +105,7 @@ pub fn draw_list_with_scroll_px(
     scroll_px: Option<f32>,
 ) {
     draw_list_inner(
-        buf,
+        surface,
         area,
         list,
         theme,
@@ -122,7 +121,7 @@ pub fn draw_list_with_scroll_px(
 /// ("zebra striping"). `striped: false` (what [`draw_list_with_scroll_px`]
 /// passes) paints pixel-identically to it.
 pub fn draw_list_with_state(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
@@ -130,7 +129,7 @@ pub fn draw_list_with_state(
     state: &crate::primitives::list::ListPaintState,
 ) {
     draw_list_with_overflow(
-        buf,
+        surface,
         area,
         list,
         theme,
@@ -144,7 +143,7 @@ pub fn draw_list_with_state(
 /// `overflow`: an `…` in the last cell ([`CellOverflow::Ellipsis`]) or
 /// nothing at all ([`CellOverflow::Clip`]).
 pub(crate) fn draw_list_with_overflow(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
@@ -153,7 +152,7 @@ pub(crate) fn draw_list_with_overflow(
     overflow: CellOverflow,
 ) {
     draw_list_inner(
-        buf,
+        surface,
         area,
         list,
         theme,
@@ -166,7 +165,7 @@ pub(crate) fn draw_list_with_overflow(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_list_inner(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     list: &ListView,
     theme: &Theme,
@@ -183,31 +182,31 @@ fn draw_list_inner(
         return;
     }
 
-    let hdr_fg = ratatui_color(theme.header_fg);
-    let hdr_bg = ratatui_color(theme.header_bg);
-    let fg = ratatui_color(theme.surface_fg);
-    let sel_bg = ratatui_color(theme.selected_bg);
+    let hdr_fg = theme.header_fg;
+    let hdr_bg = theme.header_bg;
+    let fg = theme.surface_fg;
+    let sel_bg = theme.selected_bg;
     let row_bg = if list.bordered {
-        ratatui_color(theme.surface_bg)
+        theme.surface_bg
     } else {
-        ratatui_color(theme.background)
+        theme.background
     };
-    let dim_fg = ratatui_color(theme.muted_fg);
-    let error_fg = ratatui_color(theme.error_fg);
-    let warn_fg = ratatui_color(theme.warning_fg);
-    let border_fg = ratatui_color(theme.border_fg);
-    let title_fg = ratatui_color(theme.title_fg);
+    let dim_fg = theme.muted_fg;
+    let error_fg = theme.error_fg;
+    let warn_fg = theme.warning_fg;
+    let border_fg = theme.border_fg;
+    let title_fg = theme.title_fg;
     let h_scroll = list.h_scroll;
     // Zebra stripe fill, computed once — see the row loop below for how
     // it's applied. A terminal quantised to `ColorDepth::Ansi16` rounds
     // this back to `row_bg`'s own nearest ANSI colour (see
     // `tui::color::quantize`), which is how a low-colour terminal drops
     // the stripe for free.
-    let alt_bg = ratatui_color(theme.row_alt_bg(if list.bordered {
+    let alt_bg = theme.row_alt_bg(if list.bordered {
         theme.surface_bg
     } else {
         theme.background
-    }));
+    });
 
     // Reserve the bottom row for a horizontal scrollbar and/or the
     // rightmost column for a vertical scrollbar when content overflows.
@@ -252,7 +251,7 @@ fn draw_list_inner(
             } else {
                 '─'
             };
-            set_cell(buf, cx, top_y, ch, border_fg, row_bg);
+            surface.put_char(cx, top_y, ch, solid_style(border_fg, row_bg));
         }
         if let Some(ref title) = list.title {
             let title_text: String = title.spans.iter().map(|s| s.text.as_str()).collect();
@@ -265,9 +264,9 @@ fn draw_list_inner(
                     break;
                 }
                 if w == 2 {
-                    set_cell_wide(buf, cx, top_y, ch, title_fg, row_bg);
+                    surface.put_wide(cx, top_y, ch, solid_style(title_fg, row_bg));
                 } else {
-                    set_cell(buf, cx, top_y, ch, title_fg, row_bg);
+                    surface.put_char(cx, top_y, ch, solid_style(title_fg, row_bg));
                 }
                 vcol += w;
             }
@@ -283,24 +282,29 @@ fn draw_list_inner(
                 } else {
                     '─'
                 };
-                set_cell(buf, cx, bot_y, ch, border_fg, row_bg);
+                surface.put_char(cx, bot_y, ch, solid_style(border_fg, row_bg));
             }
         }
         for row in (area.y + 1)..(area.y + area.height - 1) {
-            set_cell(buf, area.x, row, '│', border_fg, row_bg);
-            set_cell(buf, area.x + area.width - 1, row, '│', border_fg, row_bg);
+            surface.put_char(area.x, row, '│', solid_style(border_fg, row_bg));
+            surface.put_char(
+                area.x + area.width - 1,
+                row,
+                '│',
+                solid_style(border_fg, row_bg),
+            );
             for col in 1..(area.width - 1) {
-                set_cell(buf, area.x + col, row, ' ', fg, row_bg);
+                surface.put_char(area.x + col, row, ' ', solid_style(fg, row_bg));
             }
         }
     } else if let Some(title_bounds) = layout.title_bounds {
         if let Some(ref title) = list.title {
             let y = area.y + title_bounds.y.round() as u16;
             for x in area.x..area.x + area.width {
-                set_cell(buf, x, y, ' ', hdr_fg, hdr_bg);
+                surface.put_char(x, y, ' ', solid_style(hdr_fg, hdr_bg));
             }
             draw_styled_text(
-                buf,
+                surface,
                 area,
                 y,
                 1,
@@ -349,21 +353,21 @@ fn draw_list_inner(
 
         // Fill the entire visible row with the background colour first.
         for x in item_x..item_x + item_w {
-            set_cell(buf, x, y, ' ', decoration_fg, bg);
+            surface.put_char(x, y, ' ', solid_style(decoration_fg, bg));
         }
 
         // `vcol` is the virtual display-cell offset within the full item
         // content (prefix + icon + text) — a CJK/emoji glyph advances it
         // by 2, matching `char_cell_width`, not 1 per `char`. Content
         // whose full width sits before `h_scroll` is skipped; the rest
-        // maps to buf col (vcol - h_scroll). See `put_char_scrolled`.
+        // maps to surface col (vcol - h_scroll). See `put_char_scrolled`.
         let mut vcol: usize = 0;
 
         // Selection prefix "▶ " (selected) or "  " (not selected).
         let prefix = if is_selected { "▶ " } else { "  " };
         for ch in prefix.chars() {
             vcol = put_char_scrolled(
-                buf,
+                surface,
                 vcol,
                 h_scroll,
                 item_x,
@@ -384,7 +388,7 @@ fn draw_list_inner(
             };
             for ch in glyph.chars() {
                 vcol = put_char_scrolled(
-                    buf,
+                    surface,
                     vcol,
                     h_scroll,
                     item_x,
@@ -396,7 +400,7 @@ fn draw_list_inner(
                 );
             }
             vcol = put_char_scrolled(
-                buf,
+                surface,
                 vcol,
                 h_scroll,
                 item_x,
@@ -411,7 +415,7 @@ fn draw_list_inner(
         // Main item text — rendered with h_scroll awareness.
         let text_start_vcol = vcol;
         let vcol_after_text = render_spans_scrolled(
-            buf,
+            surface,
             vcol,
             h_scroll,
             item_x,
@@ -442,22 +446,30 @@ fn draw_list_inner(
             // ellipsis. Detect that case (empty symbol) and back up to
             // overwrite the glyph's own cell instead, clearing its
             // now-stale continuation.
-            let last_is_continuation = buf
-                .cell((last_col, y))
-                .map(|c| c.symbol().is_empty())
-                .unwrap_or(false);
+            let last_is_continuation = surface.get(last_col, y).is_some()
+                && styled_text_continuation_at(
+                    &item.text,
+                    text_start_vcol,
+                    h_scroll,
+                    item_w as usize,
+                    item_w as usize - 1,
+                );
             let ellipsis_x = if last_is_continuation && last_col > item_x {
                 last_col - 1
             } else {
                 last_col
             };
-            let (ellipsis_fg, ellipsis_bg) = buf
-                .cell((ellipsis_x, y))
-                .map(|existing| (existing.fg, existing.bg))
-                .unwrap_or((decoration_fg, bg));
-            set_cell(buf, ellipsis_x, y, '…', ellipsis_fg, ellipsis_bg);
+            let ellipsis_style = surface
+                .get(ellipsis_x, y)
+                .map(|(_, existing)| CellStyle {
+                    fg: existing.fg,
+                    bg: existing.bg,
+                    ..CellStyle::default()
+                })
+                .unwrap_or(solid_style(decoration_fg, bg));
+            surface.put_char(ellipsis_x, y, '…', ellipsis_style);
             if ellipsis_x != last_col {
-                set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
+                surface.put_char(last_col, y, ' ', ellipsis_style);
             }
         }
 
@@ -476,7 +488,7 @@ fn draw_list_inner(
             let start = (item_w as usize).saturating_sub(detail_w + 1);
             if start > text_buf_col_end + 1 {
                 draw_styled_text(
-                    buf,
+                    surface,
                     item_area,
                     y,
                     start,
@@ -501,7 +513,7 @@ fn draw_list_inner(
         } else {
             theme.background
         };
-        super::draw_scrollbar(buf, hsb, theme, hsb_bg);
+        super::draw_scrollbar(surface, hsb, theme, hsb_bg);
     }
 
     // ── Vertical scrollbar ────────────────────────────────────────────────
@@ -515,7 +527,7 @@ fn draw_list_inner(
         } else {
             theme.background
         };
-        super::draw_scrollbar(buf, vsb, theme, vsb_bg);
+        super::draw_scrollbar(surface, vsb, theme, vsb_bg);
     }
 }
 
@@ -530,21 +542,22 @@ fn draw_list_inner(
 ///
 /// A double-width glyph straddling either edge — `h_scroll`'s left edge
 /// or the item's right edge — is never half-painted: the visible half is
-/// blanked instead, matching [`set_cell_wide`]'s all-or-nothing contract.
+/// blanked instead, matching [`CellSurface::put_wide`]'s all-or-nothing
+/// contract.
 ///
 /// Returns `vcol + char_cell_width(ch)` so callers can do
 /// `vcol = put_char_scrolled(...)`.
 #[allow(clippy::too_many_arguments)]
 fn put_char_scrolled(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     vcol: usize,
     h_scroll: usize,
     item_x: u16,
     item_w: u16,
     y: u16,
     ch: char,
-    fg: RatatuiColor,
-    bg: RatatuiColor,
+    fg: Color,
+    bg: Color,
 ) -> usize {
     let w = char_cell_width(ch) as usize;
     if vcol + w <= h_scroll {
@@ -556,7 +569,7 @@ fn put_char_scrolled(
         // half would land at buffer column 0. Blank it rather than
         // paint half a glyph.
         if item_w > 0 {
-            set_cell(buf, item_x, y, ' ', fg, bg);
+            surface.put_char(item_x, y, ' ', solid_style(fg, bg));
         }
         return vcol + w;
     }
@@ -567,14 +580,14 @@ fn put_char_scrolled(
     }
     if w == 2 {
         if buf_col + 1 < item_w {
-            set_cell_wide(buf, item_x + buf_col, y, ch, fg, bg);
+            surface.put_wide(item_x + buf_col, y, ch, solid_style(fg, bg));
         } else {
             // Straddles the item's right edge: only the glyph's leading
             // half fits. Blank it rather than paint half a glyph.
-            set_cell(buf, item_x + buf_col, y, ' ', fg, bg);
+            surface.put_char(item_x + buf_col, y, ' ', solid_style(fg, bg));
         }
     } else {
-        set_cell(buf, item_x + buf_col, y, ch, fg, bg);
+        surface.put_char(item_x + buf_col, y, ch, solid_style(fg, bg));
     }
     vcol + w
 }
@@ -588,30 +601,32 @@ fn put_char_scrolled(
 /// [`super::draw_styled_text`].
 #[allow(clippy::too_many_arguments)]
 fn render_spans_scrolled(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     vcol_start: usize,
     h_scroll: usize,
     item_x: u16,
     item_w: u16,
     y: u16,
     text: &StyledText,
-    default_fg: RatatuiColor,
-    bg: RatatuiColor,
+    default_fg: Color,
+    bg: Color,
     decoration: Decoration,
-    dim_fg: RatatuiColor,
+    dim_fg: Color,
 ) -> usize {
     let mut vcol = vcol_start;
     for span in &text.spans {
         let span_fg = if let Some(c) = span.fg {
-            ratatui_color(c)
+            c
         } else if matches!(decoration, Decoration::Muted) {
             dim_fg
         } else {
             default_fg
         };
-        let span_bg = span.bg.map(ratatui_color).unwrap_or(bg);
+        let span_bg = span.bg.unwrap_or(bg);
         for ch in span.text.chars() {
-            vcol = put_char_scrolled(buf, vcol, h_scroll, item_x, item_w, y, ch, span_fg, span_bg);
+            vcol = put_char_scrolled(
+                surface, vcol, h_scroll, item_x, item_w, y, ch, span_fg, span_bg,
+            );
         }
     }
     vcol
@@ -621,7 +636,9 @@ fn render_spans_scrolled(
 mod tests {
     use super::*;
     use crate::primitives::list::{ListItem, ListView};
+    use crate::tui::ratatui_color;
     use crate::types::{Color, StyledSpan, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
 
     fn item(text: &str, dec: Decoration) -> ListItem {
         ListItem {
@@ -663,7 +680,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
         let list = make_list(1);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 5),
             &list,
             &Theme::default(),
@@ -689,11 +706,24 @@ mod tests {
         let theme = Theme::default();
 
         let mut unstriped = Buffer::empty(area);
-        draw_list(&mut unstriped, area, &list, &theme, false);
+        draw_list(
+            &mut crate::tui::BufferCellSurface::new(&mut unstriped),
+            area,
+            &list,
+            &theme,
+            false,
+        );
 
         let mut striped_buf = Buffer::empty(area);
         let state = crate::primitives::list::ListPaintState::default().with_striped(true);
-        draw_list_with_state(&mut striped_buf, area, &list, &theme, false, &state);
+        draw_list_with_state(
+            &mut crate::tui::BufferCellSurface::new(&mut striped_buf),
+            area,
+            &list,
+            &theme,
+            false,
+            &state,
+        );
 
         let plain_bg = ratatui_color(theme.background);
         let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
@@ -731,7 +761,13 @@ mod tests {
         let theme = Theme::default();
 
         let mut buf = Buffer::empty(area);
-        draw_list(&mut buf, area, &list, &theme, false);
+        draw_list(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &list,
+            &theme,
+            false,
+        );
 
         assert_eq!(buf[(0, 2)].bg, ratatui_color(theme.background));
         assert_eq!(
@@ -746,7 +782,7 @@ mod tests {
         let mut list = make_list(1);
         list.has_focus = false;
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 5),
             &list,
             &Theme::default(),
@@ -767,7 +803,7 @@ mod tests {
             spans: vec![StyledSpan::plain("Picker")],
         });
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -800,7 +836,13 @@ mod tests {
             error_fg: Color::rgb(255, 0, 0),
             ..Theme::default()
         };
-        draw_list(&mut buf, Rect::new(0, 0, 20, 3), &list, &theme, false);
+        draw_list(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 20, 3),
+            &list,
+            &theme,
+            false,
+        );
         // The 'o' of "oops" should be drawn in error_fg.
         // Selection marker is ' ' (no focus); icon prefix runs cols 0..2;
         // text starts at col 2.
@@ -814,7 +856,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_list(0);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 0, 5),
             &list,
             &Theme::default(),
@@ -849,7 +891,14 @@ mod tests {
         let area = Rect::new(0, 0, 20, 5);
 
         let mut buf = Buffer::empty(area);
-        draw_list_with_scroll_px(&mut buf, area, &list, &Theme::default(), false, Some(10.7));
+        draw_list_with_scroll_px(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &list,
+            &Theme::default(),
+            false,
+            Some(10.7),
+        );
         let first_row: String = (0..9).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             first_row.contains("row-10"),
@@ -862,7 +911,13 @@ mod tests {
         let mut via_offset = list.clone();
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        draw_list(&mut buf2, area, &via_offset, &Theme::default(), false);
+        draw_list(
+            &mut crate::tui::BufferCellSurface::new(&mut buf2),
+            area,
+            &via_offset,
+            &Theme::default(),
+            false,
+        );
         let first_row_via_offset: String = (0..9).map(|x| cell_char(&buf2, x, 0)).collect();
         assert_eq!(first_row, first_row_via_offset);
     }
@@ -884,14 +939,14 @@ mod tests {
         };
 
         draw_list(
-            &mut buf_ref,
+            &mut crate::tui::BufferCellSurface::new(&mut buf_ref),
             Rect::new(0, 0, 20, 3),
             &list_ref,
             &Theme::default(),
             false,
         );
         draw_list(
-            &mut buf_new,
+            &mut crate::tui::BufferCellSurface::new(&mut buf_new),
             Rect::new(0, 0, 20, 3),
             &list_new,
             &Theme::default(),
@@ -913,7 +968,7 @@ mod tests {
         let mut list = make_list(1); // item 0 is NOT selected, no focus marker
         list.h_scroll = 2;
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 3),
             &list,
             &Theme::default(),
@@ -942,7 +997,7 @@ mod tests {
         let mut list = make_list(1); // row 0 not selected
         list.h_scroll = 1;
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 3),
             &list,
             &Theme::default(),
@@ -962,7 +1017,7 @@ mod tests {
         let mut list = make_list(0);
         list.max_content_width = Some(20);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -986,7 +1041,7 @@ mod tests {
         let mut list = make_list(0);
         list.max_content_width = Some(5);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 5),
             &list,
             &Theme::default(),
@@ -1008,7 +1063,7 @@ mod tests {
         list.bordered = true;
         list.max_content_width = Some(30);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 6),
             &list,
             &Theme::default(),
@@ -1064,7 +1119,7 @@ mod tests {
             striped: false,
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 1),
             &list,
             &Theme::default(),
@@ -1100,7 +1155,7 @@ mod tests {
         // Item "alpha" (5 chars + 2 prefix = 7) would overflow the 5-wide area,
         // but without max_content_width set the rasteriser can't know that.
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 5, 3),
             &list,
             &Theme::default(),
@@ -1130,7 +1185,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_vlist(20, 0);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -1157,7 +1212,7 @@ mod tests {
         let mut list = make_vlist(20, 0);
         list.show_v_scrollbar = false;
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -1181,7 +1236,7 @@ mod tests {
             ..make_list(0)
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -1204,7 +1259,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_vlist(3, 0);
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 10, 5),
             &list,
             &Theme::default(),
@@ -1225,14 +1280,14 @@ mod tests {
         let mut buf_top = Buffer::empty(area);
         let mut buf_bot = Buffer::empty(area);
         draw_list(
-            &mut buf_top,
+            &mut crate::tui::BufferCellSurface::new(&mut buf_top),
             area,
             &make_vlist(30, 0),
             &Theme::default(),
             false,
         );
         draw_list(
-            &mut buf_bot,
+            &mut crate::tui::BufferCellSurface::new(&mut buf_bot),
             area,
             &make_vlist(30, 20),
             &Theme::default(),
@@ -1259,7 +1314,7 @@ mod tests {
         let mut list = make_list(0);
         list.items = vec![item(&"x".repeat(50), Decoration::Normal)];
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 1),
             &list,
             &Theme::default(),
@@ -1299,7 +1354,7 @@ mod tests {
             striped: false,
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 6, 1),
             &list,
             &Theme::default(),
@@ -1346,7 +1401,7 @@ mod tests {
             striped: false,
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 7, 1),
             &list,
             &Theme::default(),
@@ -1398,7 +1453,7 @@ mod tests {
             striped: false,
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 1),
             &list,
             &Theme::default(),
@@ -1435,7 +1490,7 @@ mod tests {
             striped: false,
         };
         draw_list(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 20, 1),
             &list,
             &Theme::default(),
@@ -1490,7 +1545,8 @@ mod tests {
         list.items.push(item("warn", Decoration::Warning));
         list.items.push(item("mod", Decoration::Modified));
         for i in 0..6 {
-            list.items.push(item(&format!("filler {i}"), Decoration::Normal));
+            list.items
+                .push(item(&format!("filler {i}"), Decoration::Normal));
         }
         let plain_state = ListPaintState::default();
         let striped = ListPaintState::default().with_striped(true);
@@ -1518,27 +1574,75 @@ mod tests {
             &[
                 (
                     "plain",
-                    &paint(&list, Rect::new(0, 0, 24, 10), true, &plain_state, CellOverflow::Ellipsis, 24, 10),
+                    &paint(
+                        &list,
+                        Rect::new(0, 0, 24, 10),
+                        true,
+                        &plain_state,
+                        CellOverflow::Ellipsis,
+                        24,
+                        10,
+                    ),
                 ),
                 (
                     "clip_fallback",
-                    &paint(&list, Rect::new(1, 1, 24, 10), false, &plain_state, CellOverflow::Clip, 26, 12),
+                    &paint(
+                        &list,
+                        Rect::new(1, 1, 24, 10),
+                        false,
+                        &plain_state,
+                        CellOverflow::Clip,
+                        26,
+                        12,
+                    ),
                 ),
                 (
                     "bordered_striped",
-                    &paint(&bordered, Rect::new(0, 0, 22, 9), true, &striped, CellOverflow::Ellipsis, 22, 9),
+                    &paint(
+                        &bordered,
+                        Rect::new(0, 0, 22, 9),
+                        true,
+                        &striped,
+                        CellOverflow::Ellipsis,
+                        22,
+                        9,
+                    ),
                 ),
                 (
                     "hscrolled",
-                    &paint(&hscrolled, Rect::new(0, 0, 18, 8), true, &plain_state, CellOverflow::Ellipsis, 18, 8),
+                    &paint(
+                        &hscrolled,
+                        Rect::new(0, 0, 18, 8),
+                        true,
+                        &plain_state,
+                        CellOverflow::Ellipsis,
+                        18,
+                        8,
+                    ),
                 ),
                 (
                     "offset_scroll_px",
-                    &paint(&offset, Rect::new(0, 0, 20, 6), false, &scrolled, CellOverflow::Ellipsis, 20, 6),
+                    &paint(
+                        &offset,
+                        Rect::new(0, 0, 20, 6),
+                        false,
+                        &scrolled,
+                        CellOverflow::Ellipsis,
+                        20,
+                        6,
+                    ),
                 ),
                 (
                     "narrow",
-                    &paint(&list, Rect::new(0, 0, 3, 4), true, &plain_state, CellOverflow::Ellipsis, 3, 4),
+                    &paint(
+                        &list,
+                        Rect::new(0, 0, 3, 4),
+                        true,
+                        &plain_state,
+                        CellOverflow::Ellipsis,
+                        3,
+                        4,
+                    ),
                 ),
             ],
         );
@@ -1728,5 +1832,4 @@ mod multi_select_driver_tests {
             })
         );
     }
-
 }

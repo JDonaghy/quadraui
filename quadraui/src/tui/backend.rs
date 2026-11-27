@@ -1076,8 +1076,7 @@ impl TuiBackend {
         rect: QRect,
     ) {
         let theme = self.current_theme;
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::draw_focus_ring(buf, area, &theme);
+        crate::tui::draw_focus_ring(&mut crate::tui::BufferCellSurface::new(buf), rect, &theme);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2603,7 +2602,6 @@ impl Backend for TuiBackend {
 
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
-        let area = q_rect_to_ratatui(rect);
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2611,7 +2609,11 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
+        crate::tui::draw_focus_ring(
+            &mut crate::tui::BufferCellSurface::new(frame.buffer_mut()),
+            rect,
+            &theme,
+        );
         // A chrome-only paint (no text of its own) is only "observable" via a
         // registered zone.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
@@ -2735,9 +2737,8 @@ impl Backend for TuiBackend {
     /// Reached through `&mut dyn Backend` from
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
     /// body, this is TUI's half of the `Primitive` paint seam:
-    /// [`crate::primitive::Primitive::paint_cells`] runs against
-    /// whatever `CellSurface::ratatui_buffer` recovers from this, the
-    /// same way [`Self::paint_surface`] (always `None` here —
+    /// [`crate::primitive::Primitive::paint_cells`] paints through the
+    /// surface this returns, the same way [`Self::paint_surface`] (always `None` here —
     /// `PaintSurface`'s module doc, "Why TUI stays out") feeds
     /// [`crate::primitive::Primitive::paint`] on a pixel backend.
     fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {
@@ -2884,7 +2885,13 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_list(frame.buffer_mut(), area, list, &theme, nerd_fonts);
+        crate::tui::draw_list(
+            &mut crate::tui::BufferCellSurface::new(frame.buffer_mut()),
+            area,
+            list,
+            &theme,
+            nerd_fonts,
+        );
     }
 
     /// Honours `state.scroll_px` via `crate::tui::draw_list_with_scroll_px`
@@ -2910,7 +2917,14 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_list_with_state(frame.buffer_mut(), area, list, &theme, nerd_fonts, state);
+        crate::tui::draw_list_with_state(
+            &mut crate::tui::BufferCellSurface::new(frame.buffer_mut()),
+            area,
+            list,
+            &theme,
+            nerd_fonts,
+            state,
+        );
     }
 
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
@@ -3003,7 +3017,12 @@ impl Backend for TuiBackend {
         // The standalone TUI scrollbar primitive paints from its own
         // `track` bounds; `rect` is unused (the primitive owns layout).
         // Forward-compat parameter for backends that need a clip rect.
-        crate::tui::draw_scrollbar(frame.buffer_mut(), scrollbar, &theme, cell_bg);
+        crate::tui::draw_scrollbar(
+            &mut crate::tui::BufferCellSurface::new(frame.buffer_mut()),
+            scrollbar,
+            &theme,
+            cell_bg,
+        );
         // A scrollbar paints only glyphs (thumb/track), so on a
         // pixel backend it would otherwise be indistinguishable from the
         // no-op default. Register the primitive's own id at its own
@@ -5164,7 +5183,13 @@ mod tests {
         // calls. Paint into a real buffer (proving it doesn't panic on
         // the shared geometry) and assert the helper output directly.
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_list(&mut buf, area, &list, &backend.current_theme, false);
+        crate::tui::draw_list(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &list,
+            &backend.current_theme,
+            false,
+        );
         let via_paint_helper = crate::tui::tui_list_layout(area, &list);
 
         assert_eq!(

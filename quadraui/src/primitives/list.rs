@@ -2710,10 +2710,6 @@ impl crate::primitive::Primitive for ListView {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let pointer = self.row_pointer(env);
         let paint_state = ListPaintState::default()
@@ -2722,7 +2718,7 @@ impl crate::primitive::Primitive for ListView {
             .with_scroll_px(env.state.scroll_px())
             .with_striped(env.state.striped());
         crate::tui::draw_list_with_overflow(
-            buf,
+            cells,
             area,
             self,
             theme,
@@ -3240,7 +3236,12 @@ mod interactive_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
         let mut alone = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_scrollbar(&mut alone, &sb, &theme, theme.background);
+        crate::tui::draw_scrollbar(
+            &mut crate::tui::BufferCellSurface::new(&mut alone),
+            &sb,
+            &theme,
+            theme.background,
+        );
         for y in 1..11u16 {
             assert_eq!(
                 painted[(21, y)].symbol(),

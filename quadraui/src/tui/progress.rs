@@ -48,7 +48,7 @@ pub fn draw_progress(
 /// `layout` must be the same [`ProgressBarLayout`] the host hit-tests
 /// against (typically [`tui_progress_layout`]'s return value) so paint
 /// and click-routing can never disagree.
-pub(crate) fn draw_progress_layout(
+fn draw_progress_layout(
     buf: &mut Buffer,
     bar: &ProgressBar,
     layout: &ProgressBarLayout,

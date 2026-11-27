@@ -16,43 +16,36 @@
 //! instead — decorating the row's existing content rather than
 //! overwriting it with border glyphs.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect as RRect;
-use ratatui::style::{Color as RatatuiColor, Modifier};
-
-use super::{ratatui_color, set_cell};
+use crate::cell_surface::{CellModifier, CellStyle, CellSurface};
 use crate::theme::Theme;
+use crate::Rect;
 
 /// Paint the focus ring around `rect`. No-op if `rect` is degenerate
 /// (zero width or height). A one-row-tall `rect` gets an underline
 /// instead of a box — see this module's doc.
-pub fn draw_focus_ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
-    let fg = ratatui_color(theme.accent_fg);
-    let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
+pub fn draw_focus_ring(surface: &mut dyn CellSurface, rect: Rect, theme: &Theme) {
+    let fg = theme.accent_fg;
+    let area = super::backend::q_rect_to_ratatui(rect);
+    let (x, y, w, h) = (area.x, area.y, area.width, area.height);
     if w == 0 || h == 0 {
         return;
     }
 
     if h == 1 {
-        let area = buf.area;
         for col in 0..w {
-            let cx = x + col;
-            if cx >= area.x && y >= area.y && cx < area.x + area.width && y < area.y + area.height {
-                let cell = &mut buf[(cx, y)];
-                cell.modifier |= Modifier::UNDERLINED;
-                cell.underline_color = fg;
-            }
+            surface.add_modifier(x + col, y, CellModifier::Underline { color: Some(fg) });
         }
         return;
     }
 
-    let bg_at = |buf: &Buffer, cx: u16, cy: u16| -> RatatuiColor {
-        let area = buf.area;
-        if cx >= area.x && cy >= area.y && cx < area.x + area.width && cy < area.y + area.height {
-            buf[(cx, cy)].bg
-        } else {
-            RatatuiColor::Reset
-        }
+    // Each ring cell keeps the background already under it.
+    let ring = |surface: &mut dyn CellSurface, cx: u16, cy: u16, ch: char| {
+        let style = CellStyle {
+            fg: Some(fg),
+            bg: surface.get(cx, cy).and_then(|(_, under)| under.bg),
+            ..CellStyle::default()
+        };
+        surface.put_char(cx, cy, ch, style);
     };
 
     // Top border.
@@ -64,7 +57,7 @@ pub fn draw_focus_ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
         } else {
             '─'
         };
-        set_cell(buf, x + col, y, ch, fg, bg_at(buf, x + col, y));
+        ring(surface, x + col, y, ch);
     }
     // Bottom border (distinct row only when h > 1 — otherwise this would
     // repaint the same row the top border just wrote).
@@ -77,27 +70,33 @@ pub fn draw_focus_ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
             } else {
                 '─'
             };
-            set_cell(
-                buf,
-                x + col,
-                y + h - 1,
-                ch,
-                fg,
-                bg_at(buf, x + col, y + h - 1),
-            );
+            ring(surface, x + col, y + h - 1, ch);
         }
     }
     // Left/right borders for interior rows.
     for row in (y + 1)..(y + h.saturating_sub(1)) {
-        set_cell(buf, x, row, '│', fg, bg_at(buf, x, row));
-        set_cell(buf, x + w - 1, row, '│', fg, bg_at(buf, x + w - 1, row));
+        ring(surface, x, row, '│');
+        ring(surface, x + w - 1, row, '│');
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::buffer::Cell;
+    use crate::tui::{ratatui_color, BufferCellSurface};
+    use ratatui::buffer::{Buffer, Cell};
+    use ratatui::layout::Rect as RRect;
+    use ratatui::style::{Color as RatatuiColor, Modifier};
+
+    fn ring(buf: &mut Buffer, rect: RRect, theme: &Theme) {
+        let rect = Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        );
+        draw_focus_ring(&mut BufferCellSurface::new(buf), rect, theme);
+    }
 
     fn filled_buffer(w: u16, h: u16, bg: RatatuiColor) -> Buffer {
         let mut buf = Buffer::empty(RRect::new(0, 0, w, h));
@@ -115,7 +114,7 @@ mod tests {
     fn draws_corners_and_edges() {
         let theme = Theme::default();
         let mut buf = filled_buffer(10, 5, RatatuiColor::Black);
-        draw_focus_ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
+        ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
 
         assert_eq!(buf[(1, 1)].symbol(), "╭");
         assert_eq!(buf[(5, 1)].symbol(), "╮");
@@ -130,7 +129,7 @@ mod tests {
         let theme = Theme::default();
         let bg = RatatuiColor::Rgb(10, 20, 30);
         let mut buf = filled_buffer(10, 5, bg);
-        draw_focus_ring(&mut buf, RRect::new(1, 1, 5, 1), &theme);
+        ring(&mut buf, RRect::new(1, 1, 5, 1), &theme);
 
         // The row's existing glyph/background survive — only the
         // modifier/underline colour change, unlike the boxed case where
@@ -151,7 +150,7 @@ mod tests {
         let theme = Theme::default();
         let bg = RatatuiColor::Rgb(10, 20, 30);
         let mut buf = filled_buffer(10, 5, bg);
-        draw_focus_ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
+        ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
 
         assert_eq!(buf[(1, 1)].bg, bg, "ring cells must keep the existing bg");
         // Interior (non-border) cells are untouched entirely.
@@ -163,7 +162,7 @@ mod tests {
     fn zero_size_rect_is_a_noop() {
         let theme = Theme::default();
         let mut buf = filled_buffer(10, 5, RatatuiColor::Black);
-        draw_focus_ring(&mut buf, RRect::new(1, 1, 0, 3), &theme);
+        ring(&mut buf, RRect::new(1, 1, 0, 3), &theme);
         // Every cell keeps its pre-existing content — nothing was painted.
         for y in 0..5u16 {
             for x in 0..10u16 {
@@ -180,31 +179,29 @@ mod tests {
         use crate::tui::cell_surface::oracle;
 
         let theme = Theme::default();
-        let prefill = |buf: &mut Buffer| {
-            for y in 0..buf.area.height {
-                for x in 0..buf.area.width {
-                    super::set_cell(
-                        buf,
-                        x,
-                        y,
-                        'x',
-                        RatatuiColor::Rgb(200, 200, 200),
-                        RatatuiColor::Rgb(10, 20 + x as u8, 30 + y as u8),
+        let prefill = |s: &mut dyn CellSurface| {
+            let (w, h) = s.size();
+            for y in 0..h {
+                for x in 0..w {
+                    let style = crate::cell_surface::solid_style(
+                        crate::Color::rgb(200, 200, 200),
+                        crate::Color::rgb(10, 20 + x as u8, 30 + y as u8),
                     );
+                    s.put_char(x, y, 'x', style);
                 }
             }
         };
-        let boxed = oracle::paint(10, 6, |buf| {
-            prefill(buf);
-            draw_focus_ring(buf, RRect::new(1, 1, 5, 4), &theme);
+        let boxed = oracle::paint(10, 6, |s| {
+            prefill(s);
+            draw_focus_ring(s, Rect::new(1.0, 1.0, 5.0, 4.0), &theme);
         });
-        let row = oracle::paint(10, 3, |buf| {
-            prefill(buf);
-            draw_focus_ring(buf, RRect::new(2, 1, 6, 1), &theme);
+        let row = oracle::paint(10, 3, |s| {
+            prefill(s);
+            draw_focus_ring(s, Rect::new(2.0, 1.0, 6.0, 1.0), &theme);
         });
-        let clipped = oracle::paint(6, 4, |buf| {
-            prefill(buf);
-            draw_focus_ring(buf, RRect::new(3, 2, 6, 4), &theme);
+        let clipped = oracle::paint(6, 4, |s| {
+            prefill(s);
+            draw_focus_ring(s, Rect::new(3.0, 2.0, 6.0, 4.0), &theme);
         });
         oracle::assert_golden(
             "focus_ring",

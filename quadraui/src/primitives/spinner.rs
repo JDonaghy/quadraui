@@ -283,9 +283,7 @@ impl crate::primitive::Primitive for Spinner {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_spinner_layout`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `cells`.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -293,12 +291,7 @@ impl crate::primitive::Primitive for Spinner {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_spinner_layout(buf, self, layout, theme);
+        cell_paint::paint(self, layout, cells, env.theme());
     }
 }
 

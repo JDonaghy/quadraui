@@ -2524,21 +2524,14 @@ impl crate::primitive::Primitive for TreeView {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        {
-            // CSR: ratatui_buffer escape hatch
-            let buf = cells
-                .ratatui_buffer()
-                .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-            let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-            paint_cells::paint_tree_rows_with_scroll_px(
-                buf,
-                area,
-                self,
-                theme,
-                layout.nerd_fonts_enabled,
-                env.state.scroll_px(),
-            );
-        }
+        paint_cells::paint_tree_rows_with_scroll_px(
+            cells,
+            crate::tui::backend::q_rect_to_ratatui(layout.area),
+            self,
+            theme,
+            layout.nerd_fonts_enabled,
+            env.state.scroll_px(),
+        );
         if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
             crate::primitive::Primitive::paint_cells(sb, sb_layout, cells, env);
         }

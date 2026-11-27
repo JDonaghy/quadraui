@@ -224,8 +224,7 @@ impl Primitive for TreeTable {
         }
     }
 
-    /// Paints through `DataTable`'s cell rasteriser, which writes a
-    /// ratatui buffer directly.
+    /// Paints through `DataTable`'s cell rasteriser.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -234,12 +233,8 @@ impl Primitive for TreeTable {
         env: &PaintEnv,
     ) {
         let state = self.row_paint_state(env);
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         super::paint_cells::paint_laid_out(
-            buf,
+            cells,
             crate::tui::backend::q_rect_to_ratatui(layout.area),
             self,
             env.theme(),

@@ -45,12 +45,7 @@ pub fn draw_spinner(
 /// `layout` must be the same [`SpinnerLayout`] the host hit-tests
 /// against (typically [`tui_spinner_layout`]'s return value) so paint
 /// and hit-testing can never disagree.
-pub(crate) fn draw_spinner_layout(
-    buf: &mut Buffer,
-    spinner: &Spinner,
-    layout: &SpinnerLayout,
-    theme: &Theme,
-) {
+fn draw_spinner_layout(buf: &mut Buffer, spinner: &Spinner, layout: &SpinnerLayout, theme: &Theme) {
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
     let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);

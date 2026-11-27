@@ -719,15 +719,7 @@ impl Primitive for FormDialog {
         if let (Some(form), Some(form_layout)) = (&live, &layout.form) {
             Primitive::paint_cells(form, form_layout, cells, env);
             if let Some(ring) = self.item_focus_ring(form, state.unwrap_or(&default), form_layout) {
-                // CSR: ratatui_buffer escape hatch
-                let buf = cells
-                    .ratatui_buffer()
-                    .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-                crate::tui::draw_focus_ring(
-                    buf,
-                    crate::tui::backend::q_rect_to_ratatui(ring),
-                    env.theme(),
-                );
+                crate::tui::draw_focus_ring(cells, ring, env.theme());
             }
             if let Some((scrollbar, sb_layout)) = self.scrollbar(form, layout) {
                 Primitive::paint_cells(&scrollbar, &sb_layout, cells, env);

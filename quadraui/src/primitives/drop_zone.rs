@@ -449,10 +449,9 @@ crate::non_interactive!(DropOverlay);
 /// `theme.background`.
 ///
 /// The background-only re-tint goes through
-/// [`crate::CellSurface::ratatui_buffer`]: every glyph-writing verb
-/// replaces the cell's symbol, and a read-back-then-rewrite through
-/// [`crate::CellSurface::get`] loses multi-codepoint symbols and the
-/// trailing half of a double-width glyph.
+/// [`crate::CellSurface::set_bg`]: every glyph-writing verb replaces the
+/// cell's symbol, which would split a double-width glyph from its
+/// trailing half.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::DropOverlayLayout;
@@ -478,20 +477,10 @@ pub(crate) mod cell_paint {
             let y0 = h.y.round() as u16;
             let x1 = (h.x + h.width).round() as u16;
             let y1 = (h.y + h.height).round() as u16;
-            let tint_bg = crate::tui::ratatui_color(highlight_tint(theme));
-            // CSR: ratatui_buffer escape hatch
-            if let Some(buf) = surface.ratatui_buffer() {
-                let area = buf.area;
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        if x >= area.x
-                            && y >= area.y
-                            && x < area.x + area.width
-                            && y < area.y + area.height
-                        {
-                            buf[(x, y)].set_bg(tint_bg);
-                        }
-                    }
+            let tint_bg = highlight_tint(theme);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    surface.set_bg(x, y, tint_bg);
                 }
             }
         }
@@ -601,7 +590,6 @@ pub(crate) mod cell_paint {
         #[test]
         fn cell_paint_matches_the_golden() {
             use crate::tui::cell_surface::oracle;
-            use crate::tui::{ratatui_color, set_cell, set_cell_wide};
 
             let theme = Theme::default();
             let overlay = DropOverlay {
@@ -609,16 +597,16 @@ pub(crate) mod cell_paint {
                 insertion_bar: Some(Rect::new(8.0, 0.0, 1.0, 3.0)),
                 ghost_position: None,
             };
-            let painted = oracle::paint(12, 4, |buf| {
-                let (fg, bg) = (
-                    ratatui_color(crate::Color::rgb(200, 200, 200)),
-                    ratatui_color(crate::Color::rgb(20, 20, 20)),
+            let painted = oracle::paint(12, 4, |s| {
+                let style = solid_style(
+                    crate::Color::rgb(200, 200, 200),
+                    crate::Color::rgb(20, 20, 20),
                 );
                 for x in 0..12 {
-                    set_cell(buf, x, 1, 'a', fg, bg);
+                    s.put_char(x, 1, 'a', style);
                 }
-                set_cell_wide(buf, 3, 1, '\u{4e2d}', fg, bg);
-                paint_into(&overlay, buf, &theme);
+                s.put_wide(3, 1, '\u{4e2d}', style);
+                paint(&overlay.resolved_layout(), s, &theme);
             });
             oracle::assert_golden("drop_zone", &[("overlay", &painted)]);
         }

@@ -1537,9 +1537,8 @@ mod tests {
     }
 
     /// Calls `Backend::cell_surface()` then `CellSurface::set_cursor`
-    /// directly — the one seam verb `DrawsPrimitives::draw_primitive`'s
-    /// default body never drives (it only reaches `CellSurface::ratatui_buffer`),
-    /// so this is the only exerciser of the raw-pointer round trip
+    /// directly — a seam verb `DrawsPrimitives::draw_primitive`'s default
+    /// body never drives itself, so this is the only exerciser of the raw-pointer round trip
     /// `TuiBackend::cell_surface` sets up: the pointer surviving a
     /// `&mut self` reborrow and the per-frame scratch-field rebuild.
     struct CellSurfaceCursorApp {

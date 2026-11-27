@@ -747,14 +747,6 @@ pub struct PaintEnv<'a> {
     pub widget_state: Option<&'a dyn std::any::Any>,
 }
 
-/// The panic message for a cell painter that delegates to a `ratatui`
-/// rasteriser when its [`CellSurface`] has no `ratatui` buffer behind it.
-#[cfg(feature = "tui")]
-#[doc(hidden)]
-pub const CELL_BUFFER_REQUIRED: &str =
-    "this cell painter needs a ratatui-backed CellSurface (TuiBackend inside \
-     enter_frame_scope, or quadraui::tui::BufferCellSurface)";
-
 /// The empty interaction [`PaintEnv::new`] starts from.
 static NO_INTERACTION: InteractionState = InteractionState::new();
 
@@ -1172,11 +1164,9 @@ pub trait Primitive: A11yPrimitive {
     /// Takes the backend-neutral [`CellSurface`], so a widget reaches the
     /// cursor ([`CellSurface::set_cursor`]) and inline graphics
     /// ([`CellSurface::emit_graphics`]) verbs, and no `ratatui` type
-    /// appears in this trait. A painter that still delegates to a
-    /// `crate::tui` rasteriser over a `ratatui` buffer reaches it through
-    /// [`CellSurface::ratatui_buffer`], marked `// CSR:` at the call. A
-    /// caller with a bare buffer and no backend wraps it in
-    /// `quadraui::tui::BufferCellSurface`.
+    /// appears in this trait: every cell painter writes through
+    /// [`CellSurface`] verbs alone. A caller with a bare buffer and no
+    /// backend wraps it in `quadraui::tui::BufferCellSurface`.
     ///
     /// `#[cfg(feature = "tui")]`: unlike [`Self::paint`], which exists
     /// unconditionally because every pixel backend needs it, only a

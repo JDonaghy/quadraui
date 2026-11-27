@@ -207,7 +207,7 @@ fn list_paint_cells_matches_draw_list_then_diverges_under_scroll_px() {
 
     let mut direct_default = Buffer::empty(cell_area());
     quadraui::tui::draw_list(
-        &mut direct_default,
+        &mut quadraui::tui::BufferCellSurface::new(&mut direct_default),
         cell_area(),
         &list,
         &theme,
@@ -227,7 +227,7 @@ fn list_paint_cells_matches_draw_list_then_diverges_under_scroll_px() {
     let state = ListPaintState::default().with_scroll_px(Some(1.0));
     let mut direct_scrolled = Buffer::empty(cell_area());
     quadraui::tui::draw_list_with_state(
-        &mut direct_scrolled,
+        &mut quadraui::tui::BufferCellSurface::new(&mut direct_scrolled),
         cell_area(),
         &list,
         &theme,

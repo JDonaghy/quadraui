@@ -825,9 +825,7 @@ impl crate::primitive::Primitive for Scrollbar {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_scrollbar_layout`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `cells`.
     ///
     /// Paints against [`crate::Theme::background`] — the cell background
     /// a vertical bar in a reserved gutter sits on. A host that needs
@@ -841,11 +839,7 @@ impl crate::primitive::Primitive for Scrollbar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_scrollbar_layout(buf, layout, theme, theme.background);
+        cell_paint::paint(layout, cells, theme, theme.background);
     }
 }
 

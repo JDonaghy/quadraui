@@ -922,7 +922,9 @@ pub use paint_surface::{AlphaSheet, PaintSurface, PathVerb, TextRunStyle};
 // `CursorShape`/`CursorPos` are above (`EditorCursorShape`,
 // `EditorCursorPos`): `primitives::cell_grid` already has an unrelated,
 // unaliased `CellStyle` (spreadsheet-cell formatting) at this crate root.
-pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
+pub use cell_surface::{
+    BorderSet, CellModifier, CellStyle as CellSurfaceStyle, CellSurface, CursorShape,
+};
 // The `Primitive` trait — see that module's doc.
 pub use primitive::{LayoutCtx, PaintEnv, Placed, Primitive};
 // The behaviour half of the widget contract — see `interactive`'s module
