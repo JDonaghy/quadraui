@@ -470,7 +470,7 @@ pub struct StackStyle {
 /// own `min`/`max`; [`Justify`] distributes leftover main-axis space and
 /// [`Align`] sizes and positions each child on the cross axis.
 /// `char_width`/`line_height` are the painting backend's native-unit
-/// metrics, used to quantise `gap`, a `Fixed` size and `min`/`max`.
+/// metrics; `gap`, a `Fixed` size and `min`/`max` are quantised against them.
 ///
 /// `natural(i)` measures child `i`'s intrinsic size. It is consulted only
 /// where a natural size matters — a `Content` child's main axis, a
@@ -903,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_all_equal_share_divides_evenly() {
+    fn main_axis_sizes_all_equal_share_divides_evenly() {
         let specs = vec![
             spec(SectionSize::EqualShare),
             spec(SectionSize::EqualShare),
@@ -913,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_fixed_plus_weight_mix() {
+    fn main_axis_sizes_fixed_plus_weight_mix() {
         // Fixed(20) first, the 80 that's left split 2:1 between the two
         // Weight children -- 53.333.. and 26.666...
         let specs = vec![
@@ -928,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_percent_is_against_the_original_container() {
+    fn main_axis_sizes_percent_is_against_the_original_container() {
         let specs = vec![
             spec(SectionSize::Percent(0.25)),
             spec(SectionSize::EqualShare),
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_percent_overflow_scales_down_proportionally() {
+    fn main_axis_sizes_percent_overflow_scales_down_proportionally() {
         // Two 70% children overflow the 100-wide container; both scale
         // down by the same factor so they still sum to the full width.
         let specs = vec![
@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_content_uses_the_supplied_content_size() {
+    fn main_axis_sizes_content_uses_the_supplied_content_size() {
         let specs = vec![
             MainAxisSpec {
                 content: 15.0,
@@ -963,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_min_floors_a_fixed_child() {
+    fn main_axis_sizes_min_floors_a_fixed_child() {
         let specs = vec![MainAxisSpec {
             min: Some(20.0),
             ..spec(SectionSize::Fixed(5))
@@ -972,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_max_caps_an_equal_share_child() {
+    fn main_axis_sizes_max_caps_an_equal_share_child() {
         let specs = vec![
             MainAxisSpec {
                 max: Some(10.0),
@@ -988,13 +988,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_main_axis_sizes_with_no_flex_child_leaves_the_remainder_unused() {
+    fn main_axis_sizes_with_no_flex_child_leaves_the_remainder_unused() {
         let specs = vec![spec(SectionSize::Fixed(30))];
         assert_eq!(resolve_main_axis_sizes(&specs, 100.0, 100.0), vec![30.0]);
     }
 
     #[test]
-    fn resolve_main_axis_sizes_raises_a_flex_share_to_its_floor() {
+    fn main_axis_sizes_raises_a_flex_share_to_its_floor() {
         // Three equal shares of 9 would each get 3; the first's floor of
         // 5 lifts it, the others keep their 3.
         let specs = vec![
