@@ -248,6 +248,7 @@ mod ms11_492_c0_paint_smoke {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 };
                 b.draw_list(area, &list);
             },

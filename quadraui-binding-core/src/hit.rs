@@ -1317,6 +1317,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let area = Rect::new(0.0, -320.0, 200.0, 1600.0);
         let layout = list.layout(area.width, area.height, 0.0, |_| ListItemMeasure::new(16.0));

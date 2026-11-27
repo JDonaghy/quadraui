@@ -290,7 +290,20 @@ pub fn tree_layout(
     line_height: f64,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, None, row_padding_x)
+    tree_layout_with_scroll_px(tree, area, line_height, row_padding_x, None)
+}
+
+/// [`tree_layout`] with the rows resolved against a pixel-precise scroll
+/// position, as [`TreeView::layout_with_scroll_px`] resolves them; `None`
+/// is [`tree_layout`].
+pub fn tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    tree_layout_inner(tree, area, line_height, None, row_padding_x, scroll_px)
 }
 
 /// Like [`tree_layout`], but measures the chevron glyph actually
@@ -307,7 +320,7 @@ pub fn tree_layout_measured(
     measure: &dyn TextMeasure,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x)
+    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x, None)
 }
 
 fn tree_layout_inner(
@@ -316,13 +329,14 @@ fn tree_layout_inner(
     line_height: f64,
     measure: Option<&dyn TextMeasure>,
     row_padding_x: f32,
+    scroll_px: Option<f32>,
 ) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
     use crate::primitives::tree::tree_cell;
     let indent_px = tree_cell::tree_indent_px(line_height as f32);
     let show_chevrons = tree.style.show_chevrons;
-    tree.layout(area.width, area.height, |i| {
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
         let row = &tree.rows[i];
         let is_header = matches!(row.decoration, Decoration::Header);
         let row_h = if is_header {
@@ -1596,6 +1610,7 @@ mod tests {
             h_scroll: 0,
             max_content_width,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

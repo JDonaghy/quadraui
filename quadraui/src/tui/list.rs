@@ -293,7 +293,7 @@ fn draw_list_inner(
         // position, so a given row's shading survives scrolling, the
         // same convention Finder/Explorer use. Selection takes priority
         // over the stripe; a header-decorated row is never striped.
-        let is_striped_row = striped
+        let is_striped_row = (striped || list.striped)
             && !is_selected
             && !matches!(item.decoration, Decoration::Header)
             && visible_item.item_idx % 2 == 1;
@@ -613,6 +613,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -736,6 +737,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let theme = Theme {
             error_fg: Color::rgb(255, 0, 0),
@@ -785,6 +787,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let area = Rect::new(0, 0, 20, 5);
 
@@ -1001,6 +1004,7 @@ mod tests {
             h_scroll: 8,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1235,6 +1239,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1281,6 +1286,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1332,6 +1338,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1368,6 +1375,7 @@ mod tests {
             h_scroll: 5,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         draw_list(
             &mut buf,
@@ -1436,6 +1444,7 @@ mod multi_select_driver_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

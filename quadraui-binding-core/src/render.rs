@@ -4945,6 +4945,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             };
             let node = LayoutNode::Scroll(LayoutScroll {
                 id: "scroll".to_string(),
@@ -5263,6 +5264,7 @@ mod tests {
                         h_scroll: 0,
                         max_content_width: None,
                         show_v_scrollbar: false,
+                        striped: false,
                     }),
                     scroll_px: None,
                 }),

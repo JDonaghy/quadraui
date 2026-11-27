@@ -245,3 +245,34 @@ test("an unstriped data table paints every row on one background", () => {
   assert.equal(first, second);
   assert.equal(second, third);
 });
+
+function stripedListBackgrounds(striped: boolean): string[] {
+  const app = new QuiApp(24, 8);
+  app.setRender(() => ({
+    list: {
+      id: "list:striped",
+      items: ["Alice", "Bob", "Cleo"].map((name) => ({
+        text: { spans: [{ text: name, fg: null, bg: null }] },
+      })),
+      selected_idx: 0,
+      striped,
+    },
+  }));
+  app.screen();
+  return [0, 1, 2].map((y) => {
+    const [, bg] = app.cellColors(4, y) as [number[], number[]];
+    return JSON.stringify(bg);
+  });
+}
+
+test("a striped list tints every other item", () => {
+  const [first, second, third] = stripedListBackgrounds(true);
+  assert.equal(first, third);
+  assert.notEqual(second, first);
+});
+
+test("an unstriped list paints every item on one background", () => {
+  const [first, second, third] = stripedListBackgrounds(false);
+  assert.equal(first, second);
+  assert.equal(second, third);
+});

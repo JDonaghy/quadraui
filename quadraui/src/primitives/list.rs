@@ -100,6 +100,7 @@ use crate::Handled;
 ///     h_scroll: 0,
 ///     max_content_width: None,
 ///     show_v_scrollbar: false,
+///     striped: false,
 /// };
 ///
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
@@ -166,6 +167,13 @@ pub struct ListView {
     /// both scrollbars can be active simultaneously.
     #[serde(default)]
     pub show_v_scrollbar: bool,
+    /// Tint every other non-selected, non-header item with
+    /// [`crate::theme::Theme::row_alt_bg`] ("zebra striping"), keyed on
+    /// the absolute item index so an item keeps its shade while
+    /// scrolling. A caller's [`crate::primitive::PaintState::striped`]
+    /// also turns it on; `false` (the default) paints no stripe.
+    #[serde(default)]
+    pub striped: bool,
 }
 
 /// One row in a `ListView`.
@@ -762,6 +770,7 @@ mod hscrollbar_tests {
             h_scroll,
             max_content_width: max.then_some(content_width),
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -894,6 +903,7 @@ mod vscrollbar_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         }
     }
 
@@ -1354,7 +1364,7 @@ pub(crate) mod native_surface_paint {
             // scrolling, the same convention Finder/Explorer use — a
             // header row is never striped, and selection takes priority
             // over the stripe.
-            let is_striped_row = striped
+            let is_striped_row = (striped || list.striped)
                 && !is_selected
                 && !matches!(item.decoration, Decoration::Header)
                 && vis_item.item_idx % 2 == 1;
@@ -1614,6 +1624,7 @@ pub(crate) mod native_surface_paint {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: true,
+                striped: false,
             }
         }
 
@@ -2443,17 +2454,23 @@ impl crate::primitive::Primitive for ListView {
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let size = (rect.width, rect.height);
+        // The paint state's `scroll_px` shifts the rows and the thumb
+        // exactly as the painters shift them.
+        let scroll_px = ctx.paint_state().scroll_px();
         let (layout, vscrollbar) = if ctx.units() == crate::primitive::Units::Cells {
             // The vertical scrollbar takes the column the resolver kept
             // from the rows, above the horizontal scrollbar's row.
-            let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, None);
+            let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, scroll_px);
             let hsb_h = if self.hscrollbar(rect, 1.0).is_some() {
                 1.0
             } else {
                 0.0
             };
             let v_area = Rect::new(rect.x, rect.y, rect.width, (rect.height - hsb_h).max(0.0));
-            (layout, self.vscrollbar(v_area, 1.0))
+            // A cell grid scrolls by whole rows.
+            let vscrollbar =
+                self.vscrollbar_with_scroll_px(v_area, 1.0, 1.0, scroll_px.map(f32::floor));
+            (layout, vscrollbar)
         } else {
             // The shared pixel painter strokes no frame of its own, so no
             // border is reserved here; each backend's wrapper strokes its
@@ -2464,12 +2481,13 @@ impl crate::primitive::Primitive for ListView {
                 ctx.line_height,
                 ctx.char_width,
                 0.0,
-                None,
+                scroll_px,
             );
-            let vscrollbar = self.vscrollbar_with_track_width(
+            let vscrollbar = self.vscrollbar_with_scroll_px(
                 rect,
                 ctx.line_height,
                 ctx.style().scrollbar_width,
+                scroll_px,
             );
             (layout, vscrollbar)
         };
@@ -3013,6 +3031,7 @@ mod interactive_tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -3617,6 +3636,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let json = serde_json::to_string(&list).unwrap();
         let back: ListView = serde_json::from_str(&json).unwrap();
@@ -3651,6 +3671,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 
@@ -3885,6 +3906,7 @@ mod primitive_parity_tests {
             h_scroll: 0,
             max_content_width: Some(60),
             show_v_scrollbar: false,
+            striped: false,
         }
     }
 

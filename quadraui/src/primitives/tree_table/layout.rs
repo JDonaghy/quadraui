@@ -22,10 +22,15 @@ fn floor(table: &TreeTable, style: &TreeStyle, units: TreeCellUnits) -> f32 {
 /// `table`'s layout on a cell grid `width` × `height` cells: one-cell
 /// rows, header and scrollbar, column titles measured by character
 /// count, and `h_scroll` rounded to the whole cell the cells paint at.
-pub(crate) fn cell_layout(table: &TreeTable, width: f32, height: f32) -> TreeTableLayout {
+pub(crate) fn cell_layout(
+    table: &TreeTable,
+    width: f32,
+    height: f32,
+    scroll_px: Option<f32>,
+) -> TreeTableLayout {
     let style = TreeStyle::default();
     let units = TreeCellUnits::Cells;
-    let mut layout = table.layout(
+    let mut layout = table.layout_scrolled(
         width,
         height,
         1.0,
@@ -34,6 +39,8 @@ pub(crate) fn cell_layout(table: &TreeTable, width: f32, height: f32) -> TreeTab
         |col| ColumnMeasure::new(col.title.chars().count() as f32),
         |node| tree_cell::chevron_extent(&style, node.indent, node.is_expanded, units),
         floor(table, &style, units),
+        // A cell grid scrolls by whole rows, as its painter does.
+        scroll_px.map(f32::floor),
     );
     // Hit-testing does no rounding of its own, so the layout carries the
     // exact offset the cells paint at.
@@ -49,13 +56,14 @@ pub(crate) fn pixel_layout(
     h: f32,
     line_height: f32,
     measure: &dyn TextMeasure,
+    scroll_px: Option<f32>,
 ) -> TreeTableLayout {
     let style = TreeStyle::default();
     let units = TreeCellUnits::Pixels {
         line_height,
         measure,
     };
-    table.layout(
+    table.layout_scrolled(
         w,
         h,
         line_height,
@@ -64,6 +72,7 @@ pub(crate) fn pixel_layout(
         |col| ColumnMeasure::new(measure.width_of(&col.title)),
         |node| tree_cell::chevron_extent(&style, node.indent, node.is_expanded, units),
         floor(table, &style, units),
+        scroll_px,
     )
 }
 
@@ -124,7 +133,7 @@ mod tests {
     #[test]
     fn the_pixel_floor_fits_the_deepest_chevron() {
         let tt = deep_table(ColumnWidth::Native(10.0));
-        let layout = pixel_layout(&tt, 400.0, 100.0, 16.0, &CharMeasure);
+        let layout = pixel_layout(&tt, 400.0, 100.0, 16.0, &CharMeasure, None);
         let col0 = layout.table.columns[0].width;
         let deep = layout.chevrons.iter().find(|(i, _)| *i == 1).unwrap().1;
         // Indent 6 at 14 px per level.
@@ -136,7 +145,7 @@ mod tests {
     fn the_cell_floor_is_the_deepest_indent_plus_chevron_and_one_char() {
         let tt = deep_table(ColumnWidth::Flex(1.0));
         // Indent 6 × 2 cells + a one-character chevron + one label char.
-        let layout = cell_layout(&tt, 4.0, 10.0);
+        let layout = cell_layout(&tt, 4.0, 10.0, None);
         assert_eq!(layout.table.columns[0].width, 14.0);
     }
 
@@ -145,6 +154,6 @@ mod tests {
         let mut tt = deep_table(ColumnWidth::Flex(1.0));
         tt.table.min_total_width = Some(60.0);
         tt.table.h_scroll = 2.6;
-        assert_eq!(cell_layout(&tt, 20.0, 10.0).table.h_scroll, 3.0);
+        assert_eq!(cell_layout(&tt, 20.0, 10.0, None).table.h_scroll, 3.0);
     }
 }

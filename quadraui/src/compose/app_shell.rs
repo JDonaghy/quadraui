@@ -1431,6 +1431,7 @@ fn record_children(layout: &ShellViewLayout) {
             .map(|(r, sub)| (translate(r, layout.activity.area), sub))
             .collect(),
         hover_targets: None,
+        paint_state: Default::default(),
     });
     if let Some((header, header_layout)) = &layout.sidebar_header {
         crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
@@ -1442,6 +1443,7 @@ fn record_children(layout: &ShellViewLayout) {
                 .map(|(r, sub)| (translate(r, header_layout.area), sub))
                 .collect(),
             hover_targets: None,
+            paint_state: Default::default(),
         });
     }
 }

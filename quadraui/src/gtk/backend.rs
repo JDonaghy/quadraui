@@ -4457,6 +4457,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: Some(40),
                 show_v_scrollbar: false,
+                striped: false,
             }
         };
 
@@ -4499,6 +4500,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -7316,6 +7318,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: true,
+            striped: false,
         };
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
@@ -7364,6 +7367,7 @@ mod tests {
                 h_scroll: 0,
                 max_content_width: None,
                 show_v_scrollbar: false,
+                striped: false,
             };
             let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
@@ -7460,6 +7464,7 @@ mod tests {
                     h_scroll: 0,
                     max_content_width: None,
                     show_v_scrollbar: false,
+                    striped: false,
                 };
                 let rect = QRect::new(0.0, 0.0, vp.width, vp.height);
                 backend.draw_list(rect, &list);
@@ -8105,6 +8110,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let backend = GtkBackend::new();
 
@@ -8163,6 +8169,7 @@ mod tests {
             // char width, so this reliably forces the scrollbar.
             max_content_width: Some(1000),
             show_v_scrollbar: false,
+            striped: false,
         };
         let backend = GtkBackend::new();
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);

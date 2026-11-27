@@ -8737,6 +8737,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let content = LayoutNode::Leaf(LayoutLeaf {
             id: "recent".to_string(),
@@ -10265,6 +10266,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListCursorLogic {
             list,
@@ -10674,6 +10676,7 @@ mod tests {
             h_scroll: 0,
             max_content_width: None,
             show_v_scrollbar: false,
+            striped: false,
         };
         let logic = ListLogic {
             list,

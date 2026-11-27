@@ -154,8 +154,11 @@ impl Primitive for TreeTable {
     }
 
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        // The paint state's `scroll_px` places rows and chevrons where
+        // the painters draw them.
+        let scroll_px = ctx.paint_state().scroll_px();
         let layout = if ctx.units() == Units::Cells {
-            super::layout::cell_layout(self, rect.width, rect.height)
+            super::layout::cell_layout(self, rect.width, rect.height, scroll_px)
         } else {
             // Titles and chevrons measure through the backend's own text
             // measurer, the metric the painter positions text with.
@@ -163,14 +166,23 @@ impl Primitive for TreeTable {
                 ctx,
                 role: crate::FontRole::Chrome,
             };
-            super::layout::pixel_layout(self, rect.width, rect.height, ctx.line_height, &measure)
+            super::layout::pixel_layout(
+                self,
+                rect.width,
+                rect.height,
+                ctx.line_height,
+                &measure,
+                scroll_px,
+            )
         };
         TreeTablePrimitiveLayout {
             area: rect,
             line_height: ctx.line_height,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
-            scroll_offset: self.table.scroll_offset,
+            scroll_offset: self
+                .table
+                .effective_scroll_offset(ctx.line_height, scroll_px),
             total_rows: self.table.rows.len(),
         }
     }
