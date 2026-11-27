@@ -1889,20 +1889,28 @@ impl InteractionEngine {
             .any(|o| matches!(o, Overlay::Tooltip(..)))
     }
 
+    /// Places `tooltip` against `anchor`, sized by the tooltip's own
+    /// [`quadraui::primitive::Primitive::measure`].
     fn tooltip_layout(
         &self,
         backend: &dyn Backend,
         tooltip: &Tooltip,
         anchor: Rect,
     ) -> TooltipLayout {
-        let m = backend.measure();
-        let n_lines = tooltip.text.lines().count().max(1);
-        let longest = tooltip.text.lines().map(str::len).max().unwrap_or(0);
-        let measure = TooltipMeasure::new(
-            m.char_width * (longest as f32 + 4.0),
-            m.line_height * (n_lines as f32 + 2.0),
+        let line_height = backend.line_height();
+        let ctx = quadraui::primitive::LayoutCtx::new(
+            line_height,
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
         );
-        tooltip.layout(anchor, viewport_rect(backend), measure, m.line_height)
+        let natural = quadraui::primitive::Primitive::measure(
+            tooltip,
+            &ctx,
+            quadraui::primitive::Size::new(0.0, 0.0),
+        );
+        let measure =
+            TooltipMeasure::new(natural.width.unwrap_or(0.0), natural.height.unwrap_or(0.0));
+        tooltip.layout(anchor, viewport_rect(backend), measure, line_height)
     }
 
     // ── Completions ──────────────────────────────────────────────────
@@ -12309,6 +12317,25 @@ mod tests {
                 },
             )]
         );
+    }
+
+    /// The tooltip overlay is sized by `Tooltip`'s own measure: on a cell
+    /// grid, the widest row plus border and padding columns, and the rows
+    /// plus a top and bottom border.
+    #[test]
+    fn a_tooltip_overlay_is_sized_by_the_tooltips_own_measure() {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        let (backend, app) = driver.parts_mut();
+        let tooltip = quadraui::Tooltip::new(WidgetId::new("tip"), "abc");
+        let layout = app
+            .engine
+            .tooltip_layout(backend, &tooltip, Rect::new(5.0, 5.0, 1.0, 1.0));
+        assert_eq!((layout.bounds.width, layout.bounds.height), (6.0, 3.0));
     }
 
     /// The binding-host leg of the context menu's event parity: a click

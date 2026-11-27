@@ -109,6 +109,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   so the rename honours the same keys every text field does: Ctrl/Cmd+A
   selects the whole name, Shift+arrows extend the selection and
   Ctrl/Alt+arrows move by word, each reported as `RowRenameChanged`.
+- A tooltip opened with `show_tooltip` is sized by the tooltip's own
+  measure, so its box matches the one every other host paints (on a cell
+  grid, one column narrower than before).
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
   requires a `"buttons"` key: a content-bearing dialog may rely on its
   own subtree (a form's Cancel/Save row, a close icon) instead of the
