@@ -1216,6 +1216,10 @@ pub enum UiEvent {
     /// A [`crate::MessageList`] scrolled — see
     /// [`crate::MessageListEvent`].
     MessageList(WidgetId, crate::primitives::message_list::MessageListEvent),
+    /// A [`crate::FindReplacePanel`] field was edited, a switch flipped, or
+    /// a match/replace/close action requested — see
+    /// [`crate::FindReplaceEvent`].
+    FindReplace(WidgetId, crate::primitives::find_replace::FindReplaceEvent),
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),

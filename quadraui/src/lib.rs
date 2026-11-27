@@ -671,7 +671,8 @@ pub use primitives::editor::{
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
-    FindReplaceHit, FindReplaceMetrics, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
+    FindReplaceEvent, FindReplaceField, FindReplaceHit, FindReplaceLayout, FindReplaceMetrics,
+    FindReplacePanel, FindReplaceToggle, FrHitRegion, FR_PANEL_WIDTH,
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{

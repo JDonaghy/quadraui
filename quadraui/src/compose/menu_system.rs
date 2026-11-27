@@ -1570,12 +1570,6 @@ mod tests {
                 crate::primitives::list::ListItemMeasure::new(1.0)
             })
         }
-        fn draw_find_replace(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
         fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
             unimplemented!()

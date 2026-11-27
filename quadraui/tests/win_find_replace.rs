@@ -8,21 +8,21 @@
 //! seeds a codicon-only `nerd_font_fallback` before the first frame
 //! paints (see `src/win/backend.rs`'s
 //! `new_self_registers_codicon_and_seeds_a_fallback` test), so this
-//! exercises the exact bug class #1432's px-space hit-region model
-//! exists to fix: a TUI-style `char_width == 1.0` assumption would
-//! silently mis-hit-test every click here, because the real DirectWrite
-//! glyph pitch is not an integer number of device px per cell.
+//! exercises the px-space hit-region model's failure mode: a TUI-style
+//! `char_width == 1.0` assumption would silently mis-hit-test every click
+//! here, because the real DirectWrite glyph pitch is not an integer
+//! number of device px per cell.
 //!
-//! This drives the real `event -> handle -> render` path
-//! (`WinBackend::draw_find_replace` for paint, `FindReplacePanel::hit_test`
-//! fed with `FindReplaceMetrics::resolve`'s `content_origin`/`row_height`,
-//! plus `Backend::char_width()`, for click) the same way a production
-//! click router would, and reads the glyph back off the painted screen
+//! The panel paints through its widget contract and every click runs
+//! through the shared routing engine into the panel's own
+//! `Interactive::handle`; glyphs are read back off the painted screen
 //! rather than off internal paint-call recordings.
 
+use std::cell::Cell;
+
 use quadraui::{
-    AppLogic, Backend, FindReplaceClickTarget, FindReplaceHit, FindReplaceMetrics,
-    FindReplacePanel, Modifiers, MouseButton, Point, Reaction, Rect, Style, UiEvent,
+    AppLogic, Backend, FindReplacePanel, FrameTree, Modifiers, MouseButton, Point, Reaction, Rect,
+    ScreenLayout, Surface, UiEvent, WidgetId,
 };
 
 use quadraui::win::testing::WinDriver;
@@ -41,15 +41,15 @@ const WHOLE_WORD_GLYPH: char = '\u{eb7e}';
 const REGEX_GLYPH: char = '\u{eb38}';
 const PRESERVE_CASE_GLYPH: char = '\u{eb2e}';
 
-/// Minimal `AppLogic` wrapping a `FindReplacePanel` with the replace row
-/// visible (so all four toggles, including `TogglePreserveCase`, have a
-/// hit region) and routing clicks through [`FindReplaceMetrics::resolve`]
-/// -- the same seam `WinBackend::draw_find_replace` ->
-/// `native_surface_paint::paint` resolves its geometry through -- fed with
-/// the backend's real (proportional) `char_width()` / `line_height()` --
-/// never a hardcoded `1.0, 1.0` TUI-style scale.
+/// A `FindReplacePanel` with the replace row visible (so all four
+/// toggles, including preserve case, have a hit region), painted as a
+/// `Surface::Widget` in the box `FindReplacePanel::anchored_rect` places
+/// and routed through the app's frame tree into the panel's own
+/// `Interactive::handle`; every reported event is written back with
+/// `FindReplacePanel::apply_event`.
 struct FindReplaceDriverApp {
     panel: FindReplacePanel,
+    rect: Cell<Rect>,
 }
 
 impl FindReplaceDriverApp {
@@ -57,6 +57,7 @@ impl FindReplaceDriverApp {
         let (hit_regions, _input_width) =
             quadraui::compute_find_replace_hit_regions(50, true, "1 of 3", 2, 2);
         let panel = FindReplacePanel {
+            id: WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: true,
@@ -75,14 +76,10 @@ impl FindReplaceDriverApp {
             replace_all_glyph: "R*".into(),
             hit_regions,
         };
-        Self { panel }
-    }
-
-    /// Resolve this panel's pixel geometry via [`FindReplaceMetrics::resolve`]
-    /// -- the same call `native_surface_paint::paint` makes -- so the
-    /// painted boxes and the click bands below can never drift apart.
-    fn metrics(&self, cw: f32, lh: f32) -> FindReplaceMetrics {
-        FindReplaceMetrics::resolve(&self.panel, &Style::default(), cw, lh)
+        Self {
+            panel,
+            rect: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+        }
     }
 }
 
@@ -90,36 +87,26 @@ impl AppLogic for FindReplaceDriverApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_find_replace(self.panel.group_bounds, &self.panel);
+        let rect = self.panel.anchored_rect(backend, self.panel.group_bounds);
+        self.rect.set(rect);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(self.panel.clone()),
+        });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.panel.id, self.rect.get(), Box::new(self.panel.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::MouseDown { position, .. } => {
-                let cw = backend.char_width().max(1.0);
-                let lh = backend.line_height().max(1.0);
-                let metrics = self.metrics(cw, lh);
-                match self.panel.hit_test(
-                    position.x,
-                    position.y,
-                    metrics.content_origin,
-                    cw,
-                    metrics.row_height,
-                ) {
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleCase) => {
-                        self.panel.case_sensitive = !self.panel.case_sensitive;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleWholeWord) => {
-                        self.panel.whole_word = !self.panel.whole_word;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleRegex) => {
-                        self.panel.use_regex = !self.panel.use_regex;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::TogglePreserveCase) => {
-                        self.panel.preserve_case = !self.panel.preserve_case;
-                    }
-                    _ => {}
-                }
+            UiEvent::FindReplace(id, event) if id == self.panel.id => {
+                self.panel.apply_event(&event);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,

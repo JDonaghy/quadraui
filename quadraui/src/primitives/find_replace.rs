@@ -1,41 +1,47 @@
 //! `FindReplace` overlay primitive — the inline find/replace panel
 //! that anchors at the top-right of the active editor group.
 //!
-//! This primitive owns the data shape, hit-region layout, and click-
-//! target enum, plus (as of #809, `PaintSurface` Phase 2b) the shared
-//! [`native_surface_paint::paint`] rasteriser every pixel backend
-//! (GTK/macOS/Win) calls through `Backend::draw_find_replace`. TUI
-//! stays a separate rasteriser, `crate::tui::draw_find_replace`
-//! (`#[doc(hidden)]`, so not linked here) —
-//! see `paint_surface.rs`'s module doc for why TUI never implements
-//! `PaintSurface` (a cell grid has no sub-cell `Rect`).
+//! The panel is a contract widget: [`crate::primitive::Primitive`] lays it
+//! out filling the rect it is painted in (the popup box, border included)
+//! and paints it through the shared [`native_surface_paint::paint`] on a
+//! pixel surface or the `paint_cells` painter on a cell grid;
+//! [`crate::interactive::Interactive`] turns clicks and keys into
+//! [`FindReplaceEvent`]s in controlled mode — the host owns every field
+//! and writes each event back with [`FindReplacePanel::apply_event`].
+//! [`FindReplacePanel::anchored_rect`] places the box at the top-right of
+//! [`FindReplacePanel::group_bounds`] for the host to paint it in.
 //!
 //! # Why a primitive (and not just a `StatusBar` variant)
 //!
 //! The find/replace overlay has multi-row content (find row + optional
 //! replace row), input-field cursor + selection, toggle-button states
 //! (match-case / whole-word / regex / preserve-case / in-selection —
-//! TUI paints these as plain-text glyph pairs `Aa` / `ab` / `.*` / `AB`,
-//! GUI backends paint codicon glyphs, see [`native_surface_paint`]),
-//! and clickable nav + action buttons all packed inside a 50-cell-wide
-//! bordered box.
+//! the cell painter paints these as plain-text glyph pairs `Aa` / `ab` /
+//! `.*` / `AB`, pixel surfaces paint codicon glyphs, see
+//! [`native_surface_paint`]), and clickable nav + action buttons all
+//! packed inside a 50-cell-wide bordered box.
 //! That doesn't fit any of the simpler primitives — so it gets its
 //! own `FindReplacePanel` shape.
 //!
 //! # Hit-region cell-coordinate contract
 //!
 //! Hit regions are in **character-cell units** relative to the panel
-//! content corner (inside the 1-cell borders). Backends translate to
-//! native units when dispatching clicks. This keeps the layout
-//! algorithm cell-based and identical across TUI and GTK — backends
-//! supply their own pixel-per-cell measurer (`char_width`).
+//! content corner (inside the borders). [`FindReplaceLayout`] projects
+//! them to the surface's native units with its own char width and row
+//! pitch, so paint and hit-test read the same geometry on a cell grid and
+//! a pixel surface alike.
 
 use crate::event::Rect;
+use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
-/// Click target within the find/replace overlay. Backends resolve
-/// native coordinates → `FindReplaceClickTarget`, then call the
-/// engine's shared `handle_find_replace_click` dispatcher.
+#[cfg(feature = "tui")]
+mod paint_cells;
+
+/// Click target within the find/replace overlay. [`FindReplacePanel::hit_test`]
+/// resolves a native point to one of these, and the panel's own
+/// [`crate::interactive::Interactive::handle`] turns it into a
+/// [`FindReplaceEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FindReplaceClickTarget {
     /// Toggle replace row visibility (the ▶/▼ chevron).
@@ -76,8 +82,8 @@ pub const FR_PANEL_WIDTH: u16 = 50;
 /// Compute hit regions for the find/replace overlay.
 ///
 /// Layout (cell widths — glyph names are shorthand for the toggle
-/// slot, not a claim about what's painted there; TUI paints the named
-/// text pair, GUI backends paint a same-width codicon glyph):
+/// slot, not a claim about what's painted there; the cell painter paints
+/// the named text pair, pixel surfaces paint a same-width codicon glyph):
 /// `[chevron(2)] [input(variable)] [Aa(2+1)][ab(2+1)][.*(2+1)] [count(max(len,5)+1)] [↑(2)][↓(2)][≡(2)][×(2)]`
 ///
 /// Returns `(regions, input_width)` — the input field's width (in
@@ -129,8 +135,9 @@ pub fn compute_hit_regions(
     ));
 
     // Toggle buttons: [Aa(2)gap(1)] [ab(2)gap(1)] [.*(2)gap(1)] — cell
-    // widths only; glyph names are shorthand (TUI paints these text
-    // pairs literally, GUI backends paint same-width codicon glyphs).
+    // widths only; glyph names are shorthand (the cell painter paints
+    // these text pairs literally, pixel surfaces paint same-width
+    // codicon glyphs).
     let mut tx = input_start + input_w + 1;
     for target in [ToggleCase, ToggleWholeWord, ToggleRegex] {
         regions.push((
@@ -208,8 +215,8 @@ pub fn compute_hit_regions(
 /// The inline find/replace overlay displayed at the top-right of the
 /// active editor group.
 ///
-/// Backends consume this by walking `hit_regions` (paint per region
-/// + click hit-test against the same list).
+/// Paint and hit-test both walk `hit_regions`, so a painted button and
+/// its clickable band can never disagree.
 ///
 /// Glyph fields (`replace_one_glyph` / `replace_all_glyph`) are
 /// app-supplied strings — apps with Nerd Font glyphs pass single-char
@@ -220,7 +227,7 @@ pub fn compute_hit_regions(
 /// ```
 /// use quadraui::{
 ///     compute_find_replace_hit_regions, FindReplaceClickTarget, FindReplaceHit, FindReplacePanel,
-///     Rect,
+///     Rect, WidgetId,
 /// };
 ///
 /// let panel_width = 50;
@@ -228,6 +235,7 @@ pub fn compute_hit_regions(
 ///     compute_find_replace_hit_regions(panel_width, false, "1 of 3", 1, 1);
 ///
 /// let panel = FindReplacePanel {
+///     id: WidgetId::new("find_replace"),
 ///     query: "foo".to_string(),
 ///     replacement: String::new(),
 ///     show_replace: false,
@@ -253,6 +261,11 @@ pub fn compute_hit_regions(
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindReplacePanel {
+    /// This overlay's id — the one its [`FindReplaceEvent`]s are reported
+    /// under. Defaults to `"find_replace"`: one overlay is live per editor
+    /// window.
+    #[serde(default = "default_find_replace_id")]
+    pub id: WidgetId,
     /// Current query text in the find field.
     pub query: String,
     /// Current replacement text (only shown when `show_replace` is true).
@@ -286,11 +299,12 @@ pub struct FindReplacePanel {
     /// Find in selection mode.
     #[serde(default)]
     pub in_selection: bool,
-    /// Bounding rect of the active editor group. The overlay positions
-    /// itself at the top-right of this rect. Apps with f64 native
-    /// rect types convert via `as f32` at construction.
+    /// Bounding rect of the active editor group, in the surface's own
+    /// units. [`Self::anchored_rect`] places the overlay at its top-right.
+    /// Apps with f64 native rect types convert via `as f32` at
+    /// construction.
     pub group_bounds: Rect,
-    /// Panel width in char cells (used by backends for positioning).
+    /// Panel width in char cells, borders included.
     #[serde(default = "default_panel_width")]
     pub panel_width: u16,
     /// App-supplied glyph string for the "replace current" button.
@@ -301,8 +315,9 @@ pub struct FindReplacePanel {
     #[serde(default)]
     pub replace_all_glyph: String,
     /// Hit regions for click handling, in char-cell units relative to
-    /// the panel content corner (inside borders). Computed once via
-    /// [`compute_hit_regions`] at panel construction.
+    /// the panel content corner (inside borders). Computed via
+    /// [`compute_hit_regions`] (or [`Self::rebuild_hit_regions`]) whenever
+    /// `show_replace`, `match_info` or a glyph changes.
     #[serde(default)]
     pub hit_regions: Vec<(FrHitRegion, FindReplaceClickTarget)>,
 }
@@ -315,6 +330,11 @@ fn default_panel_width() -> u16 {
     FR_PANEL_WIDTH
 }
 
+/// `#[serde(default)]` helper for [`FindReplacePanel::id`].
+fn default_find_replace_id() -> WidgetId {
+    WidgetId::new("find_replace")
+}
+
 /// Hit-test classification for a click against a [`FindReplacePanel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FindReplaceHit {
@@ -325,44 +345,99 @@ pub enum FindReplaceHit {
     Empty,
 }
 
+/// One of the panel's two text fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FindReplaceField {
+    /// The find (query) field — [`FindReplacePanel::query`], `focus == 0`.
+    Find,
+    /// The replace field — [`FindReplacePanel::replacement`], `focus == 1`.
+    Replace,
+}
+
+impl FindReplaceField {
+    /// The [`FindReplacePanel::focus`] value naming this field.
+    pub fn focus_index(self) -> u8 {
+        match self {
+            FindReplaceField::Find => 0,
+            FindReplaceField::Replace => 1,
+        }
+    }
+}
+
+/// One of the panel's on/off switches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FindReplaceToggle {
+    /// The chevron: [`FindReplacePanel::show_replace`].
+    ShowReplace,
+    /// [`FindReplacePanel::case_sensitive`].
+    CaseSensitive,
+    /// [`FindReplacePanel::whole_word`].
+    WholeWord,
+    /// [`FindReplacePanel::use_regex`].
+    Regex,
+    /// [`FindReplacePanel::preserve_case`].
+    PreserveCase,
+    /// [`FindReplacePanel::in_selection`].
+    InSelection,
+}
+
+/// What a [`FindReplacePanel`] reports. The panel is controlled: every
+/// field is the host's, and [`FindReplacePanel::apply_event`] writes one
+/// of these back onto it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FindReplaceEvent {
+    /// A field's text, caret or selection changed, or focus moved to it
+    /// (a click in it, Tab). `cursor` and `sel_anchor` are char offsets
+    /// into `text`; the host sets `focus` to `field`.
+    FieldEdited {
+        field: FindReplaceField,
+        text: String,
+        cursor: usize,
+        sel_anchor: Option<usize>,
+    },
+    /// A switch was flipped; `on` is its new value.
+    Toggled { toggle: FindReplaceToggle, on: bool },
+    /// Go to the previous match (↑, Shift+Enter in the find field).
+    PrevMatch,
+    /// Go to the next match (↓, Enter in the find field).
+    NextMatch,
+    /// Replace the current match (its button, Enter in the replace field).
+    ReplaceCurrent,
+    /// Replace every match (its button, Ctrl/Cmd+Enter in the replace
+    /// field).
+    ReplaceAll,
+    /// Dismiss the overlay (×, Escape).
+    Close,
+}
+
+impl crate::interactive::WidgetAction for FindReplaceEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::FindReplace(id, self)
+    }
+}
+
 impl FindReplacePanel {
     /// Hit-test a click at surface-native `(x, y)` against
     /// [`Self::hit_regions`].
     ///
     /// `content_origin` is the absolute position of the panel's content
     /// corner — inside the popup's own border and padding. `char_width`
-    /// is the backend's per-cell width. `line_height` is this call's row
+    /// is the surface's per-cell width. `line_height` is this call's row
     /// *pitch* — the vertical distance from one row's top edge to the
     /// next — **not** necessarily the backend's raw text line height.
-    ///
-    /// On a pixel backend (GTK/macOS/Win), [`native_surface_paint::paint`]
-    /// lays rows out at [`Style::control_height`], not the backend's raw
-    /// chrome line height, and insets the content corner by
-    /// [`Style::padding`] rather than one char cell/line — so pass
-    /// [`FindReplaceMetrics::resolve`]'s [`FindReplaceMetrics::content_origin`]
-    /// and [`FindReplaceMetrics::row_height`] here, not the backend's own
-    /// `char_width()`/`line_height()` directly, or painted boxes and
-    /// clickable bands will disagree. On TUI, `tui::draw_find_replace`
-    /// paints at `(x + 1, y + 1)` with one row per cell, so
-    /// `content_origin = (x + 1, y + 1)` and `char_width = line_height =
-    /// 1.0` (TUI's content-relative `group_bounds` needs an
-    /// `editor_left` offset GTK/macOS/Win don't).
+    /// [`FindReplaceLayout::hit_test`] passes its own resolved origin and
+    /// pitch, so a caller holding a layout never picks these by hand.
     ///
     /// Coordinate frame: **ABSOLUTE** — `(x, y)` is compared directly
     /// against `content_origin`, no further adjustment by the caller.
     ///
-    /// Each [`FrHitRegion`] is still stored in character-cell units (TUI
-    /// paints cells, so it needs that), but the comparison below is done
-    /// in px: every region's cell rect is projected to a px rect — `rx0
-    /// = ox + col * char_width`, `rx1 = rx0 + width * char_width`, `ry0 =
-    /// oy + row * line_height`, `ry1 = ry0 + line_height` — and then `(x,
-    /// y)` is tested against that px rect directly. For every
-    /// `char_width`/`line_height` pair a backend actually passes, `x`
-    /// falls in `[rx0, rx1)` iff `floor((x - ox) / cw)` lands in
-    /// `[region.col, region.col + region.width)` — so this is a direct
-    /// px-space comparison with no caller-visible behaviour difference.
-    /// TUI in particular always calls this with `char_width = line_height
-    /// = 1.0`, where px and cell space are numerically identical.
+    /// Each [`FrHitRegion`] is stored in character-cell units, but the
+    /// comparison below is done in native units: every region's cell rect
+    /// is projected — `rx0 = ox + col * char_width`, `rx1 = rx0 + width *
+    /// char_width`, `ry0 = oy + row * line_height`, `ry1 = ry0 +
+    /// line_height` — and `(x, y)` is tested against that rect directly.
+    /// On a cell grid `char_width = line_height = 1.0`, where native and
+    /// cell space are numerically identical.
     pub fn hit_test(
         &self,
         x: f32,
@@ -389,40 +464,335 @@ impl FindReplacePanel {
         }
         FindReplaceHit::Empty
     }
+
+    /// Recompute [`Self::hit_regions`] from the panel's own width,
+    /// `show_replace`, `match_info` and replace-glyph widths (each glyph's
+    /// char count).
+    pub fn rebuild_hit_regions(&mut self) {
+        let (regions, _input_w) = compute_hit_regions(
+            self.panel_width,
+            self.show_replace,
+            &self.match_info,
+            self.replace_one_glyph.chars().count() as u16,
+            self.replace_all_glyph.chars().count() as u16,
+        );
+        self.hit_regions = regions;
+    }
+
+    /// The box this overlay occupies at the top-right of
+    /// [`Self::group_bounds`] — the rect a host paints and routes it in.
+    ///
+    /// `bounds` is the area the overlay may use: on a cell grid the box
+    /// is at most `bounds.width - 2` cells wide and never starts left of
+    /// `bounds.x`. `style`, `char_width` and `line_height` are the
+    /// painting backend's own ([`crate::Backend::style`],
+    /// [`crate::Backend::char_width`], [`crate::Backend::chrome_line_height`]);
+    /// a `line_height` of `1.0` or less is a cell grid.
+    ///
+    /// - Cell grid: `panel_width` cells wide, one row per visible field
+    ///   plus the two border rows, its right border one cell inside the
+    ///   group's right edge, and never on row 0.
+    /// - Pixel surface: `panel_width` char advances wide, one
+    ///   [`crate::Style::control_height`] row per visible field plus
+    ///   [`crate::Style::padding`] above and below, 10 units inside the
+    ///   group's right edge and 2 below its top.
+    pub fn anchored_rect_in(
+        &self,
+        bounds: Rect,
+        style: &crate::style::Style,
+        char_width: f32,
+        line_height: f32,
+    ) -> Rect {
+        if line_height > 1.0 {
+            return FindReplaceMetrics::resolve(self, style, char_width, line_height).popup_rect;
+        }
+        let panel_w = (self.panel_width as f32).min((bounds.width - 2.0).max(0.0));
+        let rows = if self.show_replace { 2.0 } else { 1.0 };
+        let gb = &self.group_bounds;
+        let right = gb.x.floor() + gb.width.floor();
+        let x = (right - panel_w - 1.0).max(bounds.x).max(0.0);
+        let y = gb.y.floor().max(1.0);
+        Rect::new(x, y, panel_w, rows + 2.0)
+    }
+
+    /// [`Self::anchored_rect_in`] with `backend`'s own style and metrics.
+    pub fn anchored_rect(&self, backend: &dyn crate::Backend, bounds: Rect) -> Rect {
+        self.anchored_rect_in(
+            bounds,
+            &backend.style(),
+            backend.char_width(),
+            backend.chrome_line_height(),
+        )
+    }
+
+    /// The text of `field`.
+    pub fn field_text(&self, field: FindReplaceField) -> &str {
+        match field {
+            FindReplaceField::Find => &self.query,
+            FindReplaceField::Replace => &self.replacement,
+        }
+    }
+
+    /// The field [`Self::focus`] names. The replace field counts only
+    /// while its row is visible.
+    pub fn focused_field(&self) -> FindReplaceField {
+        if self.focus == 1 && self.show_replace {
+            FindReplaceField::Replace
+        } else {
+            FindReplaceField::Find
+        }
+    }
+
+    /// Write `event` back onto the panel — the controlled-mode apply step
+    /// a host runs for every [`FindReplaceEvent`] it accepts. Toggling the
+    /// replace row rebuilds [`Self::hit_regions`], and hiding it moves
+    /// focus back to the find field. The match actions
+    /// ([`FindReplaceEvent::NextMatch`] and the rest) change nothing here:
+    /// they are the host's to perform.
+    pub fn apply_event(&mut self, event: &FindReplaceEvent) {
+        match event {
+            FindReplaceEvent::FieldEdited {
+                field,
+                text,
+                cursor,
+                sel_anchor,
+            } => {
+                match field {
+                    FindReplaceField::Find => self.query = text.clone(),
+                    FindReplaceField::Replace => self.replacement = text.clone(),
+                }
+                self.focus = field.focus_index();
+                self.cursor = *cursor;
+                self.sel_anchor = *sel_anchor;
+            }
+            FindReplaceEvent::Toggled { toggle, on } => match toggle {
+                FindReplaceToggle::ShowReplace => {
+                    self.show_replace = *on;
+                    if !*on && self.focus == 1 {
+                        self.focus = 0;
+                        self.cursor = self.query.chars().count();
+                        self.sel_anchor = None;
+                    }
+                    self.rebuild_hit_regions();
+                }
+                FindReplaceToggle::CaseSensitive => self.case_sensitive = *on,
+                FindReplaceToggle::WholeWord => self.whole_word = *on,
+                FindReplaceToggle::Regex => self.use_regex = *on,
+                FindReplaceToggle::PreserveCase => self.preserve_case = *on,
+                FindReplaceToggle::InSelection => self.in_selection = *on,
+            },
+            FindReplaceEvent::PrevMatch
+            | FindReplaceEvent::NextMatch
+            | FindReplaceEvent::ReplaceCurrent
+            | FindReplaceEvent::ReplaceAll
+            | FindReplaceEvent::Close => {}
+        }
+    }
+
+    /// The current value of `toggle`.
+    fn toggle_value(&self, toggle: FindReplaceToggle) -> bool {
+        match toggle {
+            FindReplaceToggle::ShowReplace => self.show_replace,
+            FindReplaceToggle::CaseSensitive => self.case_sensitive,
+            FindReplaceToggle::WholeWord => self.whole_word,
+            FindReplaceToggle::Regex => self.use_regex,
+            FindReplaceToggle::PreserveCase => self.preserve_case,
+            FindReplaceToggle::InSelection => self.in_selection,
+        }
+    }
+
+    /// The event flipping `toggle` reports.
+    fn flip(&self, toggle: FindReplaceToggle) -> FindReplaceEvent {
+        FindReplaceEvent::Toggled {
+            toggle,
+            on: !self.toggle_value(toggle),
+        }
+    }
+
+    /// The event a click on `target` reports, with `offset` the char
+    /// offset under the pointer for a click in a field.
+    fn click_event(&self, target: FindReplaceClickTarget, offset: usize) -> FindReplaceEvent {
+        use FindReplaceClickTarget as T;
+        let focus_field = |field: FindReplaceField| {
+            let text = self.field_text(field).to_string();
+            let cursor = offset.min(text.chars().count());
+            FindReplaceEvent::FieldEdited {
+                field,
+                text,
+                cursor,
+                sel_anchor: None,
+            }
+        };
+        match target {
+            T::Chevron => self.flip(FindReplaceToggle::ShowReplace),
+            T::FindInput(_) => focus_field(FindReplaceField::Find),
+            T::ReplaceInput(_) => focus_field(FindReplaceField::Replace),
+            T::ToggleCase => self.flip(FindReplaceToggle::CaseSensitive),
+            T::ToggleWholeWord => self.flip(FindReplaceToggle::WholeWord),
+            T::ToggleRegex => self.flip(FindReplaceToggle::Regex),
+            T::TogglePreserveCase => self.flip(FindReplaceToggle::PreserveCase),
+            T::ToggleInSelection => self.flip(FindReplaceToggle::InSelection),
+            T::PrevMatch => FindReplaceEvent::PrevMatch,
+            T::NextMatch => FindReplaceEvent::NextMatch,
+            T::Close => FindReplaceEvent::Close,
+            T::ReplaceCurrent => FindReplaceEvent::ReplaceCurrent,
+            T::ReplaceAll => FindReplaceEvent::ReplaceAll,
+        }
+    }
+
+    /// Apply one text-edit `op` to the focused field, reporting the
+    /// result when the text, caret or selection moved.
+    fn edit_focused(
+        &self,
+        op: crate::behaviour::text_edit::EditOp,
+    ) -> crate::Handled<FindReplaceEvent> {
+        use crate::behaviour::text_edit::{apply_flat_edit_op, col_to_byte};
+        let field = self.focused_field();
+        let text = self.field_text(field);
+        let len = text.chars().count();
+        let cursor = self.cursor.min(len);
+        let anchor = self.sel_anchor.map(|a| a.min(len));
+        let (new_text, new_cursor_b, new_anchor_b) = apply_flat_edit_op(
+            text,
+            col_to_byte(text, cursor),
+            anchor.map(|a| col_to_byte(text, a)),
+            op,
+        );
+        let to_chars = |b: usize| new_text[..b].chars().count();
+        let new_cursor = to_chars(new_cursor_b);
+        let new_anchor = new_anchor_b.map(to_chars).filter(|a| *a != new_cursor);
+        if new_text == text && new_cursor == cursor && new_anchor == anchor {
+            return crate::Handled::Consumed;
+        }
+        crate::Handled::Event(FindReplaceEvent::FieldEdited {
+            field,
+            text: new_text,
+            cursor: new_cursor,
+            sel_anchor: new_anchor,
+        })
+    }
+
+    /// The selected text of the focused field, if any.
+    fn focused_selection(&self) -> Option<String> {
+        use crate::behaviour::text_edit::{col_to_byte, flat_selected_text};
+        let text = self.field_text(self.focused_field());
+        let anchor = self.sel_anchor.map(|a| col_to_byte(text, a));
+        flat_selected_text(text, col_to_byte(text, self.cursor), anchor)
+    }
+
+    /// Resolve one key against the panel: Escape closes, Enter steps or
+    /// replaces, Tab moves between the two fields while the replace row
+    /// shows, Alt+C/W/R/P flip match case, whole word, regex and preserve
+    /// case, and every other key edits the focused field through the
+    /// shared flat text-edit core.
+    fn handle_key(
+        &self,
+        key: &crate::interactive::KeyEvent,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<FindReplaceEvent> {
+        use crate::behaviour::text_edit::{EditIntent, EditOp};
+        use crate::event::{Key, NamedKey};
+        use crate::Handled;
+
+        let mods = key.modifiers;
+        let field = self.focused_field();
+        match &key.key {
+            Key::Named(NamedKey::Escape) => return Handled::Event(FindReplaceEvent::Close),
+            Key::Named(NamedKey::Enter) => {
+                return Handled::Event(match field {
+                    FindReplaceField::Find if mods.shift => FindReplaceEvent::PrevMatch,
+                    FindReplaceField::Find => FindReplaceEvent::NextMatch,
+                    FindReplaceField::Replace if mods.ctrl || mods.cmd => {
+                        FindReplaceEvent::ReplaceAll
+                    }
+                    FindReplaceField::Replace => FindReplaceEvent::ReplaceCurrent,
+                });
+            }
+            Key::Named(NamedKey::Tab) => {
+                if !self.show_replace {
+                    return Handled::Ignored;
+                }
+                let other = match field {
+                    FindReplaceField::Find => FindReplaceField::Replace,
+                    FindReplaceField::Replace => FindReplaceField::Find,
+                };
+                let text = self.field_text(other).to_string();
+                let cursor = text.chars().count();
+                return Handled::Event(FindReplaceEvent::FieldEdited {
+                    field: other,
+                    text,
+                    cursor,
+                    sel_anchor: None,
+                });
+            }
+            Key::Named(NamedKey::Up | NamedKey::Down) => return Handled::Ignored,
+            Key::Char(c) if mods.alt && !mods.ctrl && !mods.cmd => {
+                let toggle = match c.to_ascii_lowercase() {
+                    'c' => Some(FindReplaceToggle::CaseSensitive),
+                    'w' => Some(FindReplaceToggle::WholeWord),
+                    'r' => Some(FindReplaceToggle::Regex),
+                    'p' => Some(FindReplaceToggle::PreserveCase),
+                    _ => None,
+                };
+                if let Some(toggle) = toggle {
+                    return Handled::Event(self.flip(toggle));
+                }
+            }
+            _ => {}
+        }
+        match EditIntent::from_key(&key.key, mods) {
+            Some(EditIntent::SelectAll) => self.edit_focused(EditOp::SelectAll),
+            Some(EditIntent::Op(op)) => self.edit_focused(op),
+            Some(EditIntent::Copy) => {
+                if let Some(text) = self.focused_selection() {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                }
+                Handled::Consumed
+            }
+            Some(EditIntent::Cut) => match self.focused_selection() {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    self.edit_focused(EditOp::DeleteSelection)
+                }
+                None => Handled::Consumed,
+            },
+            Some(EditIntent::Paste) | None => Handled::Ignored,
+        }
+    }
 }
 
-/// Resolved pixel geometry for a [`FindReplacePanel`] on a pixel backend
-/// (GTK/macOS/Win) — the single seam both [`native_surface_paint::paint`]
-/// and [`FindReplacePanel::hit_test`]'s caller read, so a painted box and
-/// its clickable band can never drift apart.
+/// Resolved pixel geometry for a [`FindReplacePanel`] on a pixel surface
+/// — the popup box, its content corner and its row pitch.
 ///
-/// [`Self::resolve`] is the same arithmetic `paint` itself runs to place
-/// the popup and lay out its rows; callers resolve this once per click
-/// and feed [`Self::content_origin`] and [`Self::row_height`] straight
-/// into [`FindReplacePanel::hit_test`] as `content_origin` and
-/// `line_height` respectively — `hit_test` only ever uses `line_height`
-/// as a row *pitch*, so passing the resolved [`Style::control_height`]
-/// there (instead of the backend's raw chrome line height) is exactly
-/// what keeps the two in lock-step.
+/// [`Self::resolve`] places the popup from the panel's
+/// [`FindReplacePanel::group_bounds`] the way
+/// [`FindReplacePanel::anchored_rect_in`] does; [`Self::for_popup`] reads
+/// the same geometry off an already-placed box, which is what
+/// [`FindReplaceLayout`] does for the rect a host paints the panel in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FindReplaceMetrics {
     /// Absolute position of the panel's content corner — inside the
     /// popup's own border and [`Style::padding`] inset. Pass straight
     /// into [`FindReplacePanel::hit_test`]'s `content_origin` parameter.
+    ///
+    /// [`Style::padding`]: crate::Style::padding
     pub content_origin: (f32, f32),
     /// Row pitch/box height every input and toggle/nav/action box is
     /// painted at — [`Style::control_height`], floored at the backend's
     /// `line_height` so an unusually tall chrome font is never clipped.
     /// Pass into [`FindReplacePanel::hit_test`]'s `line_height` parameter.
+    ///
+    /// [`Style::control_height`]: crate::Style::control_height
     pub row_height: f32,
     /// Absolute bounds of the popup itself, border included.
     pub popup_rect: Rect,
 }
 
 impl FindReplaceMetrics {
-    /// Resolve `panel`'s pixel geometry for one frame, given the host's
-    /// `Style` and its own per-cell metrics (`cw` = char width, `lh` =
-    /// line height, both in surface-native pixels).
+    /// Resolve `panel`'s pixel geometry anchored at its own
+    /// `group_bounds`, given the host's `Style` and its own per-cell
+    /// metrics (`cw` = char width, `lh` = line height, both in
+    /// surface-native pixels).
     pub fn resolve(
         panel: &FindReplacePanel,
         style: &crate::style::Style,
@@ -442,61 +812,269 @@ impl FindReplaceMetrics {
         let popup_x = ((gb.x + gb.width) - popup_w - 10.0).max(gb.x);
         let popup_y = gb.y + 2.0;
 
+        Self::for_popup(Rect::new(popup_x, popup_y, popup_w, popup_h), style, lh)
+    }
+
+    /// The geometry of a panel painted in `popup`, with `lh` the
+    /// surface's line height.
+    pub fn for_popup(popup: Rect, style: &crate::style::Style, lh: f32) -> Self {
+        let pad = style.padding;
         FindReplaceMetrics {
-            content_origin: (popup_x + pad, popup_y + pad),
-            row_height,
-            popup_rect: Rect::new(popup_x, popup_y, popup_w, popup_h),
+            content_origin: (popup.x + pad, popup.y + pad),
+            row_height: style.control_height.max(lh.max(1.0)),
+            popup_rect: popup,
+        }
+    }
+}
+
+/// A [`FindReplacePanel`]'s resolved layout: the box it fills and the
+/// projection of its cell-unit [`FrHitRegion`]s into the surface's native
+/// units. Paint and hit-test both read this one value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FindReplaceLayout {
+    /// The popup box, border included — the rect the panel was laid out
+    /// in.
+    pub area: Rect,
+    /// Absolute position of the content corner, inside the border (one
+    /// cell on a cell grid, [`crate::Style::padding`] on a pixel surface).
+    pub content_origin: (f32, f32),
+    /// Width of one region cell in native units.
+    pub char_width: f32,
+    /// Row pitch in native units.
+    pub row_height: f32,
+}
+
+impl FindReplaceLayout {
+    /// Lay a panel out filling `area`: `units` picks the cell-grid or
+    /// pixel geometry, `char_width`/`line_height` are the surface's own.
+    fn resolve(
+        area: Rect,
+        units: crate::primitive::Units,
+        style: &crate::style::Style,
+        char_width: f32,
+        line_height: f32,
+    ) -> Self {
+        match units {
+            crate::primitive::Units::Cells => FindReplaceLayout {
+                area,
+                content_origin: (area.x + 1.0, area.y + 1.0),
+                char_width: 1.0,
+                row_height: 1.0,
+            },
+            _ => {
+                let m = FindReplaceMetrics::for_popup(area, style, line_height);
+                FindReplaceLayout {
+                    area,
+                    content_origin: m.content_origin,
+                    char_width: char_width.max(1.0),
+                    row_height: m.row_height,
+                }
+            }
+        }
+    }
+
+    /// The target under absolute point `(x, y)`.
+    pub fn hit_test(&self, panel: &FindReplacePanel, x: f32, y: f32) -> FindReplaceHit {
+        panel.hit_test(x, y, self.content_origin, self.char_width, self.row_height)
+    }
+
+    /// `region`'s absolute rect.
+    pub fn region_rect(&self, region: &FrHitRegion) -> Rect {
+        Rect::new(
+            self.content_origin.0 + region.col as f32 * self.char_width,
+            self.content_origin.1 + region.row as f32 * self.row_height,
+            region.width as f32 * self.char_width,
+            self.row_height,
+        )
+    }
+
+    /// The char offset into a field whose region is `region` under
+    /// absolute `x`. A pixel field's text starts 4 units in from its box.
+    fn offset_at(&self, region: &FrHitRegion, x: f32) -> usize {
+        let rect = self.region_rect(region);
+        let inset = if self.char_width > 1.0 { 4.0 } else { 0.0 };
+        let rel = ((x - rect.x - inset) / self.char_width).max(0.0);
+        if self.char_width > 1.0 {
+            rel.round() as usize
+        } else {
+            rel.floor() as usize
+        }
+    }
+}
+
+impl crate::a11y::A11yPrimitive for FindReplacePanel {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Form)
+            .with_label("Find and replace")
+    }
+
+    /// The find field, and the replace field while its row shows.
+    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
+        use crate::a11y::{A11yChild, A11yInfo, A11yRole};
+        let field = |key: &str, label: &str, value: &str| {
+            let mut info = A11yInfo::new()
+                .with_role(A11yRole::TextInput)
+                .with_label(label);
+            if !value.is_empty() {
+                info = info.with_value(value);
+            }
+            A11yChild::new(key, info)
+        };
+        let mut out = vec![field("find", "Find", &self.query)];
+        if self.show_replace {
+            out.push(field("replace", "Replace", &self.replacement));
+        }
+        out
+    }
+}
+
+impl crate::primitive::Primitive for FindReplacePanel {
+    type Layout = FindReplaceLayout;
+    type Event = FindReplaceEvent;
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::FindReplace
+    }
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Fills `rect`, the box [`FindReplacePanel::anchored_rect`] placed.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> FindReplaceLayout {
+        FindReplaceLayout::resolve(
+            rect,
+            ctx.units(),
+            ctx.style(),
+            ctx.char_width,
+            ctx.chrome_line_height(),
+        )
+    }
+
+    fn paint(
+        &self,
+        layout: &FindReplaceLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint(self, surface, env.theme(), layout);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &FindReplaceLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        paint_cells::paint(cells, self, layout, env.theme());
+    }
+}
+
+impl crate::interactive::Interactive for FindReplacePanel {
+    type State = ();
+    type Action = FindReplaceEvent;
+
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// Every hit region, named by its index in [`FindReplacePanel::hit_regions`].
+    fn sub_regions(
+        &self,
+        layout: &FindReplaceLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.area.x, layout.area.y);
+        self.hit_regions
+            .iter()
+            .enumerate()
+            .map(|(i, (region, _))| {
+                let r = layout.region_rect(region);
+                (
+                    Rect::new(r.x - ox, r.y - oy, r.width, r.height),
+                    crate::interactive::SubTarget(i as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// - A left press takes focus; on a toggle, nav or action button it
+    ///   reports that button's event, and in a field it moves focus and
+    ///   the caret there ([`FindReplaceEvent::FieldEdited`]).
+    /// - Keys: see [`FindReplacePanel::handle_key`]. Committed text (a
+    ///   paste, an IME commit) is inserted into the focused field.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        layout: &FindReplaceLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<FindReplaceEvent> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(key, cx),
+            RoutedEvent::Text(text) => self.edit_focused(
+                crate::behaviour::text_edit::EditOp::InsertText(text.clone()),
+            ),
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => {
+                cx.request_focus(None);
+                let (x, y) = (local.x + layout.area.x, local.y + layout.area.y);
+                let FindReplaceHit::Target(target) = layout.hit_test(self, x, y) else {
+                    return Handled::Consumed;
+                };
+                let offset = self
+                    .hit_regions
+                    .iter()
+                    .find(|(_, t)| *t == target)
+                    .map_or(0, |(region, _)| layout.offset_at(region, x));
+                Handled::Event(self.click_event(target, offset))
+            }
+            _ => Handled::Ignored,
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// PaintSurface Phase 2b: shared paint implementation
+// Shared pixel paint
 // ─────────────────────────────────────────────────────────────────────
 //
-// Before this, `gtk::find_replace::draw_find_replace`,
-// `macos::find_replace::draw_find_replace` and
-// `win::find_replace::draw_find_replace` each independently walked
-// `panel.hit_regions` and painted every region with their own cairo /
-// CoreGraphics / Direct2D calls (quadraui#785 child #809 — re-measure
-// rather than trust the parent audit's 270/220/205 line counts, which
-// predate this PR and this repo's own history of two closed-as-wrong
-// audit findings, #481/#482).
+// Every pixel surface (GTK/macOS/Win) paints the panel through `paint`
+// below, walking `panel.hit_regions` against the panel's
+// `FindReplaceLayout`.
 //
-// Behavioural divergence found while unifying — reported per this
-// issue's acceptance bar, not resolved silently:
-//   - GTK painted a focused input's selection as a 50%-alpha rect
-//     drawn *after* the full (unsplit) text run, so the selected
-//     characters showed through, tinted.
-//   - Windows painted the same highlight as an **opaque** rect, also
-//     drawn after the full text run — so on Windows the selected
-//     characters were completely hidden underneath it. This reads as
-//     a latent rendering bug, not a deliberate style choice.
-//   - macOS painted no selection highlight at all — its module doc
-//     explicitly called this out as a "Scope omission (follow-up)".
+// A focused input's selection is filled first, at full opacity, and the
+// field's text is then drawn in three runs (prefix / selected / suffix) on
+// top — the same shape `primitives::form::paint`'s bracketed-text
+// selection uses — so the selected characters stay legible on every
+// backend. `PaintSurface::surface_fill_rect` doesn't guarantee alpha
+// blending (GTK's implementation discards the alpha channel), so an
+// opaque fill under the text is the only shape that reads correctly on
+// all three pixel backends. It also matches the cell painter, which
+// renders a selection as a solid `selection_bg` cell background.
 //
-// `paint` below resolves this by adopting the same shape
-// `primitives::form::paint`'s bracketed-text selection already uses
-// (`paint_bracketed_text`, #808): fill the selection rect first, at
-// full opacity, then draw the field's text in three runs (prefix /
-// selected / suffix) on top, so the selected characters stay legible
-// on every backend. `PaintSurface::surface_fill_rect` doesn't
-// guarantee alpha blending — GTK's implementation discards the alpha
-// channel entirely (`GtkBackend::surface_fill_rect` calls
-// `crate::gtk::set_source`, which is `cr.set_source_rgb`) — so an
-// opaque fill is the only shape that reads correctly on all three
-// pixel backends. It also matches how
-// `crate::tui::draw_find_replace` (`#[doc(hidden)]`, so not linked
-// here) already renders this: a solid `sel_bg` cell background, never
-// blended.
-//
-// `#[allow(dead_code)]`: exercised by each backend's own
-// `Backend::draw_find_replace` call site once compiled in, and by this
-// module's own `RecordingSurface` tests on every leg that enables one
-// of the three cfg'd features (gtk, win, or macos-on-macos) — see
-// `paint_surface.rs`'s module doc for why that's not actually dead
-// under `--features win` on a non-Windows host, the same shape this
-// module borrows from `primitives::form`'s `native_surface_paint`.
+// `#[allow(dead_code)]`: exercised through `Primitive::paint` once a pixel
+// backend is compiled in, and by this module's own `RecordingSurface`
+// tests on every leg that enables one of the three cfg'd features (gtk,
+// win, or macos-on-macos) — see `paint_surface.rs`'s module doc for why
+// that's not actually dead under `--features win` on a non-Windows host.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -504,9 +1082,8 @@ impl FindReplaceMetrics {
 ))]
 #[allow(dead_code)]
 mod native_surface_paint {
-    use super::{FindReplaceClickTarget, FindReplaceMetrics, FindReplacePanel};
+    use super::{FindReplaceClickTarget, FindReplaceLayout, FindReplacePanel};
     use crate::paint_surface::PaintSurface;
-    use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::Color;
     use crate::Rect;
@@ -520,7 +1097,7 @@ mod native_surface_paint {
         /// (see [`Self::row_h`]).
         lh: f32,
         /// Row pitch/height every input and toggle/nav/action box is
-        /// painted at, in surface-native pixels — [`Style::control_height`]
+        /// painted at, in surface-native pixels — [`crate::Style::control_height`]
         /// (26px by default), the same "standard single-line control"
         /// metric [`crate::primitives::button::ButtonMetrics`] and
         /// [`crate::primitives::text_input::TextInputMetrics`] resolve a
@@ -538,7 +1115,7 @@ mod native_surface_paint {
     /// theoretically-zero-width region never produces a degenerate
     /// fill/stroke rect. Row pitch and box height both use [`Metrics::row_h`]
     /// (not [`Metrics::lh`]) so every input/toggle/nav/action box reaches
-    /// the full [`Style::control_height`] instead of just the raw chrome
+    /// the full [`crate::Style::control_height`] instead of just the raw chrome
     /// text line height.
     fn region_rect(m: &Metrics, col: u16, row: u16, width: u16) -> Rect {
         Rect::new(
@@ -576,7 +1153,7 @@ mod native_surface_paint {
 
     /// Paint a toggle button (codicon glyph for match-case / whole-word /
     /// regex / preserve-case — TUI paints the plain-text equivalents `Aa`
-    /// / `ab` / `.*` / `AB` instead, see `tui::find_replace`): filled with
+    /// / `ab` / `.*` / `AB` instead, see `paint_cells`): filled with
     /// `accent_bg` and inverted text when `active`, outlined with
     /// `separator` and normal text otherwise.
     #[allow(clippy::too_many_arguments)]
@@ -606,9 +1183,8 @@ mod native_surface_paint {
 
     /// Paint a nav/dismiss/replace glyph (`↑` `↓` `≡` `×` and the
     /// app-supplied replace-one/replace-all glyphs): filled +
-    /// inverted when `active`, plain text with no outline otherwise —
-    /// every deleted per-backend copy painted no outline here, unlike
-    /// [`paint_toggle`]'s inactive state.
+    /// inverted when `active`, plain text with no outline otherwise,
+    /// unlike [`paint_toggle`]'s inactive state.
     #[allow(clippy::too_many_arguments)]
     fn paint_glyph(
         surface: &mut dyn PaintSurface,
@@ -640,8 +1216,7 @@ mod native_surface_paint {
     /// See this module's doc for why the selection highlight is filled
     /// *before* the text (split into prefix/selected/suffix runs)
     /// rather than as a translucent overlay drawn after a single full
-    /// run — that's the shape the three deleted per-backend copies
-    /// disagreed on.
+    /// run.
     #[allow(clippy::too_many_arguments)]
     fn paint_input(
         surface: &mut dyn PaintSurface,
@@ -727,48 +1302,36 @@ mod native_surface_paint {
         );
     }
 
-    /// Paint a laid-out [`FindReplacePanel`] using `surface`'s
-    /// [`PaintSurface`] verbs.
+    /// Paint `panel` over `layout` using `surface`'s [`PaintSurface`]
+    /// verbs.
     ///
-    /// Walks `panel.hit_regions` — the same list
-    /// [`super::compute_hit_regions`] builds once at panel construction
-    /// and every backend's click dispatch hit-tests against — so paint
-    /// and click can never disagree about where a target lives.
-    ///
-    /// `style` is the painting backend's own ([`crate::Backend::style`]):
-    /// a host hit-testing a click resolves the same
-    /// [`FindReplaceMetrics`] from that style and the surface's metrics.
+    /// Walks `panel.hit_regions` through `layout`'s own projection — the
+    /// one [`FindReplaceLayout::hit_test`] reads — so paint and click can
+    /// never disagree about where a target lives.
     pub(crate) fn paint(
         panel: &FindReplacePanel,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
-        style: &Style,
+        layout: &FindReplaceLayout,
     ) {
         use FindReplaceClickTarget as T;
 
-        let cw = surface.surface_char_width().max(1.0);
         let lh = surface.surface_line_height().max(1.0);
 
-        // Resolved once here and by `FindReplacePanel::hit_test`'s caller
-        // (see `FindReplaceMetrics`'s own doc) so a painted box and its
-        // clickable band can never disagree about where it sits.
-        let metrics = FindReplaceMetrics::resolve(panel, style, cw, lh);
-        let row_h = metrics.row_height;
-
-        surface.surface_fill_rect(metrics.popup_rect, theme.surface_bg);
-        surface.surface_stroke_rect(metrics.popup_rect, theme.separator, 1.0);
+        surface.surface_fill_rect(layout.area, theme.surface_bg);
+        surface.surface_stroke_rect(layout.area, theme.separator, 1.0);
 
         let m = Metrics {
-            cw,
+            cw: layout.char_width,
             lh,
-            row_h,
-            content_x: metrics.content_origin.0,
-            content_y: metrics.content_origin.1,
+            row_h: layout.row_height,
+            content_x: layout.content_origin.0,
+            content_y: layout.content_origin.1,
         };
 
         // Positions derived from neighbouring hit regions, not a hit
-        // region itself — the match-count string isn't clickable. Same
-        // trick every deleted per-backend copy (and TUI) used.
+        // region itself — the match-count string isn't clickable. The cell
+        // painter derives it the same way.
         let mut regex_end_col: Option<u16> = None;
         let mut prev_match_col: Option<u16> = None;
 
@@ -953,6 +1516,7 @@ mod native_surface_paint {
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
         use crate::primitives::find_replace::compute_hit_regions;
+        use crate::style::Style;
         use crate::Image;
 
         /// Records every drawing verb `paint` issues, so a paint
@@ -1030,6 +1594,7 @@ mod native_surface_paint {
         fn sample_panel(query: &str, cursor: usize, sel_anchor: Option<usize>) -> FindReplacePanel {
             let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
             FindReplacePanel {
+                id: crate::WidgetId::new("find_replace"),
                 query: query.into(),
                 replacement: String::new(),
                 show_replace: false,
@@ -1050,12 +1615,34 @@ mod native_surface_paint {
             }
         }
 
+        /// Paint `panel` anchored at its own `group_bounds`, laid out with
+        /// `surface`'s metrics and `style` — the geometry a pixel backend
+        /// resolves for `panel.anchored_rect`.
+        fn paint_resolved(
+            panel: &FindReplacePanel,
+            surface: &mut RecordingSurface,
+            theme: &Theme,
+            style: &Style,
+        ) {
+            let cw = surface.surface_char_width();
+            let lh = surface.surface_line_height();
+            let m =
+                crate::primitives::find_replace::FindReplaceMetrics::resolve(panel, style, cw, lh);
+            let layout = FindReplaceLayout {
+                area: m.popup_rect,
+                content_origin: m.content_origin,
+                char_width: cw,
+                row_height: m.row_height,
+            };
+            paint(panel, surface, theme, &layout);
+        }
+
         #[test]
         fn paints_popup_background_and_border() {
             let panel = sample_panel("needle", 6, None);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
@@ -1074,7 +1661,7 @@ mod native_surface_paint {
 
         /// The find input's own box (the `theme.background` fill
         /// `paint_input` draws before its border stroke) is exactly
-        /// [`Style::control_height`] (26px) tall, not the backend's raw
+        /// [`crate::Style::control_height`] (26px) tall, not the backend's raw
         /// `surface_line_height()` (16.0 on this `RecordingSurface`) —
         /// the same "standard single-line control" height `Button` and
         /// `TextInput` size their own boxes from.
@@ -1083,7 +1670,7 @@ mod native_surface_paint {
             let panel = sample_panel("needle", 6, None);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             let expected_h = Style::default().control_height;
             assert!(
@@ -1110,7 +1697,7 @@ mod native_surface_paint {
             panel.hit_regions = hit_regions;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             let control_height = Style::default().control_height;
             let find_row_y = surface
@@ -1140,7 +1727,7 @@ mod native_surface_paint {
             panel.case_sensitive = true;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.accent_bg),
@@ -1157,7 +1744,7 @@ mod native_surface_paint {
             panel.focus = 0;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
@@ -1175,7 +1762,7 @@ mod native_surface_paint {
         /// GUI backends (GTK/macOS/Win — anything routing through this
         /// shared `paint`) render the four toggle buttons as codicon
         /// glyphs, not the TUI's literal text pairs. TUI's own
-        /// rasteriser (`tui::find_replace`) has no `PaintSurface` impl
+        /// painter (`paint_cells`) has no `PaintSurface` impl
         /// and keeps painting `"Aa"`/`"ab"`/`".*"`/`"AB"`; this test
         /// covers only the `PaintSurface` path this module owns.
         ///
@@ -1193,7 +1780,7 @@ mod native_surface_paint {
             panel.hit_regions = hit_regions.clone();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             // Derive content_x the same way `paint` does — from the
             // popup background fill it always records first — rather
@@ -1266,16 +1853,14 @@ mod native_surface_paint {
         }
 
         /// An unfocused input paints its text but no cursor and no
-        /// selection highlight, even if `sel_anchor` is set — matches
-        /// every deleted per-backend copy's `if !is_focused { return }`
-        /// guard.
+        /// selection highlight, even if `sel_anchor` is set.
         #[test]
         fn unfocused_input_paints_no_selection_or_cursor() {
             let mut panel = sample_panel("needle", 3, Some(0));
             panel.focus = 1; // no replace row exists, so FindInput (focus 0) is unfocused
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 !surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
@@ -1296,7 +1881,7 @@ mod native_surface_paint {
             let panel = sample_panel("café🎉中文", 3, Some(6));
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme, &Style::default());
+            paint_resolved(&panel, &mut surface, &theme, &Style::default());
         }
     }
 }
@@ -1311,6 +1896,7 @@ mod hit_test_tests {
     fn panel(show_replace: bool) -> FindReplacePanel {
         let (hit_regions, _input_width) = compute_hit_regions(50, show_replace, "1 of 3", 2, 2);
         FindReplacePanel {
+            id: crate::WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace,
@@ -1471,10 +2057,341 @@ mod hit_test_tests {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-#[allow(unused_imports)]
-pub(crate) use native_surface_paint::paint;
+/// The panel's `Interactive` resolved directly, the leg a binding host
+/// takes: geometry of the cell and pixel layouts, the controlled-mode
+/// apply step, and the edits a driver test cannot reach cheaply.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::style::Style;
+    use crate::types::Modifiers;
+    use crate::Handled;
+
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: usize,
+        emitted: Vec<crate::UiEvent>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {
+            self.focus_requests += 1;
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: crate::PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn panel(show_replace: bool) -> FindReplacePanel {
+        let mut p = FindReplacePanel {
+            id: WidgetId::new("fr"),
+            query: "needle".into(),
+            replacement: "pin".into(),
+            show_replace,
+            focus: 0,
+            cursor: 6,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: Rect::new(0.0, 0.0, 80.0, 20.0),
+            panel_width: FR_PANEL_WIDTH,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions: Vec::new(),
+        };
+        p.rebuild_hit_regions();
+        p
+    }
+
+    fn cell_layout(p: &FindReplacePanel) -> FindReplaceLayout {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let rect = p.anchored_rect_in(Rect::new(0.0, 0.0, 80.0, 20.0), &Style::default(), 1.0, 1.0);
+        Primitive::layout(p, &ctx, rect)
+    }
+
+    fn run(p: &FindReplacePanel, event: RoutedEvent) -> (Handled<FindReplaceEvent>, MockHost) {
+        let layout = cell_layout(p);
+        let mut host = MockHost::default();
+        let handled = {
+            let mut cx = EventCx::new(p.id, &mut host);
+            p.handle(&mut (), &event, &layout, &mut cx)
+        };
+        (handled, host)
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn press_at(p: &FindReplacePanel, x: f32, y: f32) -> RoutedEvent {
+        let layout = cell_layout(p);
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(x - layout.area.x, y - layout.area.y),
+            mods: Modifiers::default(),
+        }
+    }
+
+    /// The cell box sits where the cell painter has always put it: right
+    /// border one cell inside the group's right edge, top border on row 1.
+    #[test]
+    fn cell_anchor_is_the_top_right_of_the_group() {
+        let p = panel(false);
+        let r = p.anchored_rect_in(Rect::new(0.0, 0.0, 80.0, 20.0), &Style::default(), 1.0, 1.0);
+        assert_eq!(r, Rect::new(29.0, 1.0, 50.0, 3.0));
+        let narrow =
+            p.anchored_rect_in(Rect::new(0.0, 0.0, 30.0, 20.0), &Style::default(), 1.0, 1.0);
+        assert_eq!(narrow.width, 28.0, "clamped to the bounds less two cells");
+        assert_eq!(
+            panel(true)
+                .anchored_rect_in(Rect::new(0.0, 0.0, 80.0, 20.0), &Style::default(), 1.0, 1.0)
+                .height,
+            4.0
+        );
+    }
+
+    /// On a pixel surface the anchored box and the layout's content
+    /// corner and pitch are the ones `FindReplaceMetrics::resolve` gives.
+    #[test]
+    fn pixel_layout_matches_the_resolved_metrics() {
+        let p = panel(true);
+        let style = Style::default();
+        let m = FindReplaceMetrics::resolve(&p, &style, 8.0, 16.0);
+        let rect = p.anchored_rect_in(Rect::new(0.0, 0.0, 800.0, 400.0), &style, 8.0, 16.0);
+        assert_eq!(rect, m.popup_rect);
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let layout = Primitive::layout(&p, &ctx, rect);
+        assert_eq!(layout.content_origin, m.content_origin);
+        assert_eq!(layout.row_height, m.row_height);
+        assert_eq!(layout.char_width, 8.0);
+    }
+
+    #[test]
+    fn clicking_each_switch_reports_it_flipped() {
+        let p = panel(true);
+        let layout = cell_layout(&p);
+        for (target, toggle) in [
+            (
+                FindReplaceClickTarget::Chevron,
+                FindReplaceToggle::ShowReplace,
+            ),
+            (
+                FindReplaceClickTarget::ToggleCase,
+                FindReplaceToggle::CaseSensitive,
+            ),
+            (
+                FindReplaceClickTarget::ToggleWholeWord,
+                FindReplaceToggle::WholeWord,
+            ),
+            (
+                FindReplaceClickTarget::ToggleRegex,
+                FindReplaceToggle::Regex,
+            ),
+            (
+                FindReplaceClickTarget::TogglePreserveCase,
+                FindReplaceToggle::PreserveCase,
+            ),
+            (
+                FindReplaceClickTarget::ToggleInSelection,
+                FindReplaceToggle::InSelection,
+            ),
+        ] {
+            let (region, _) = p.hit_regions.iter().find(|(_, t)| *t == target).unwrap();
+            let r = layout.region_rect(region);
+            let (handled, host) = run(&p, press_at(&p, r.x, r.y));
+            let on = toggle != FindReplaceToggle::ShowReplace;
+            assert_eq!(
+                handled,
+                Handled::Event(FindReplaceEvent::Toggled { toggle, on }),
+                "{target:?}"
+            );
+            assert_eq!(host.focus_requests, 1, "a press takes focus");
+        }
+    }
+
+    #[test]
+    fn clicking_in_the_find_field_moves_the_caret_there() {
+        let p = panel(false);
+        let layout = cell_layout(&p);
+        let (region, _) = &p.hit_regions[1];
+        let r = layout.region_rect(region);
+        let (handled, _) = run(&p, press_at(&p, r.x + 2.0, r.y));
+        assert_eq!(
+            handled,
+            Handled::Event(FindReplaceEvent::FieldEdited {
+                field: FindReplaceField::Find,
+                text: "needle".into(),
+                cursor: 2,
+                sel_anchor: None,
+            })
+        );
+    }
+
+    /// Typing goes through the flat text-edit core in char offsets, so a
+    /// multibyte query edits by whole characters.
+    #[test]
+    fn typing_and_backspace_edit_the_focused_field_by_chars() {
+        let mut p = panel(false);
+        p.query = "café".into();
+        p.cursor = 4;
+        let (handled, _) = run(
+            &p,
+            key(Key::Named(NamedKey::Backspace), Modifiers::default()),
+        );
+        assert_eq!(
+            handled,
+            Handled::Event(FindReplaceEvent::FieldEdited {
+                field: FindReplaceField::Find,
+                text: "caf".into(),
+                cursor: 3,
+                sel_anchor: None,
+            })
+        );
+        p.cursor = 1;
+        let (handled, _) = run(&p, key(Key::Char('h'), Modifiers::default()));
+        assert_eq!(
+            handled,
+            Handled::Event(FindReplaceEvent::FieldEdited {
+                field: FindReplaceField::Find,
+                text: "chafé".into(),
+                cursor: 2,
+                sel_anchor: None,
+            })
+        );
+    }
+
+    #[test]
+    fn shift_left_selects_and_copy_emits_the_selection() {
+        let p = panel(false);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let (handled, _) = run(&p, key(Key::Named(NamedKey::Left), shift));
+        let Handled::Event(event) = handled else {
+            panic!("expected an edit, got {handled:?}");
+        };
+        assert_eq!(
+            event,
+            FindReplaceEvent::FieldEdited {
+                field: FindReplaceField::Find,
+                text: "needle".into(),
+                cursor: 5,
+                sel_anchor: Some(6),
+            }
+        );
+        let mut selected = p.clone();
+        selected.apply_event(&event);
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let (handled, host) = run(&selected, key(Key::Char('c'), ctrl));
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(host.emitted, vec![crate::UiEvent::TextCopied("e".into())]);
+    }
+
+    #[test]
+    fn enter_escape_and_tab_map_to_their_actions() {
+        let p = panel(true);
+        let none = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..none
+        };
+        let ctrl = Modifiers { ctrl: true, ..none };
+        let enter = || Key::Named(NamedKey::Enter);
+        assert_eq!(
+            run(&p, key(enter(), none)).0,
+            Handled::Event(FindReplaceEvent::NextMatch)
+        );
+        assert_eq!(
+            run(&p, key(enter(), shift)).0,
+            Handled::Event(FindReplaceEvent::PrevMatch)
+        );
+        assert_eq!(
+            run(&p, key(Key::Named(NamedKey::Escape), none)).0,
+            Handled::Event(FindReplaceEvent::Close)
+        );
+        let (tab, _) = run(&p, key(Key::Named(NamedKey::Tab), none));
+        let Handled::Event(tab) = tab else {
+            panic!("Tab moves to the replace field");
+        };
+        let mut on_replace = p.clone();
+        on_replace.apply_event(&tab);
+        assert_eq!(on_replace.focused_field(), FindReplaceField::Replace);
+        assert_eq!(on_replace.cursor, 3);
+        assert_eq!(
+            run(&on_replace, key(enter(), none)).0,
+            Handled::Event(FindReplaceEvent::ReplaceCurrent)
+        );
+        assert_eq!(
+            run(&on_replace, key(enter(), ctrl)).0,
+            Handled::Event(FindReplaceEvent::ReplaceAll)
+        );
+        assert_eq!(
+            run(&panel(false), key(Key::Named(NamedKey::Tab), none)).0,
+            Handled::Ignored,
+            "with no replace row Tab leaves the panel"
+        );
+    }
+
+    #[test]
+    fn alt_letters_flip_the_matching_switches() {
+        let p = panel(true);
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        for (c, toggle) in [
+            ('c', FindReplaceToggle::CaseSensitive),
+            ('w', FindReplaceToggle::WholeWord),
+            ('r', FindReplaceToggle::Regex),
+            ('p', FindReplaceToggle::PreserveCase),
+        ] {
+            assert_eq!(
+                run(&p, key(Key::Char(c), alt)).0,
+                Handled::Event(FindReplaceEvent::Toggled { toggle, on: true })
+            );
+        }
+    }
+
+    /// Hiding the replace row rebuilds the hit regions without it and
+    /// pulls focus back to the find field.
+    #[test]
+    fn hiding_the_replace_row_refocuses_find_and_drops_its_regions() {
+        let mut p = panel(true);
+        p.focus = 1;
+        p.apply_event(&FindReplaceEvent::Toggled {
+            toggle: FindReplaceToggle::ShowReplace,
+            on: false,
+        });
+        assert_eq!(p.focus, 0);
+        assert_eq!(p.cursor, 6);
+        assert!(p.hit_regions.iter().all(|(r, _)| r.row == 0));
+    }
+}

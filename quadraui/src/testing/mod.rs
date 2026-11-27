@@ -1128,13 +1128,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    fn draw_find_replace(
-        &mut self,
-        _r: Rect,
-        _p: &crate::primitives::find_replace::FindReplacePanel,
-    ) {
-        self.record("draw_find_replace");
-    }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
     }

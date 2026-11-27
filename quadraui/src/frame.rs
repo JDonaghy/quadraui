@@ -83,10 +83,9 @@
 //! That `serde` capability is the whole reason both types exist:
 //! [`Surface`] is owned-but-not-serde and takes any primitive quadraui
 //! can paint, while [`OwnedFrame`] is the serializable snapshot and is
-//! therefore limited to primitives that are themselves `serde`-capable.
-//! [`FindReplacePanel`] is not, which is why [`OwnedContent`] has the
-//! contentless [`OwnedContent::FindReplace`] fallback (and
-//! [`OwnedContent::Opaque`] as the generic one). Reach
+//! therefore limited to primitives that are themselves `serde`-capable;
+//! [`OwnedContent::FindReplace`] and [`OwnedContent::Opaque`] are its
+//! contentless fallbacks. Reach
 //! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
 //! for `OwnedFrame` when that description has to be serialized.
 //!
@@ -211,7 +210,6 @@ use crate::primitives::data_table::DataTable;
 use crate::primitives::dialog::Dialog;
 use crate::primitives::diff_view::DiffView;
 use crate::primitives::editor::Editor;
-use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::Float;
 use crate::primitives::form::Form;
 use crate::primitives::image::Image;
@@ -265,10 +263,6 @@ pub enum Surface {
     Scrollbar {
         rect: Rect,
         sb: Scrollbar,
-    },
-    FindReplace {
-        rect: Rect,
-        panel: FindReplacePanel,
     },
     /// Any type-erased [`DynWidget`] — paints through
     /// [`crate::backend::DrawsPrimitives::draw_dyn`] rather than a
@@ -331,9 +325,6 @@ pub enum FrameZone {
         idx: usize,
     },
     Scrollbar {
-        idx: usize,
-    },
-    FindReplace {
         idx: usize,
     },
     /// The zone for a [`Surface::Widget`] — carries the widget's own id
@@ -499,9 +490,6 @@ impl ScreenLayout {
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
                 }
-                Surface::FindReplace { rect, panel } => {
-                    backend.draw_find_replace(*rect, panel);
-                }
                 Surface::Widget { rect, widget } => {
                     // A widget the platform presents itself (a native menu
                     // bar) is not painted in the window.
@@ -558,9 +546,6 @@ impl ScreenLayout {
     ///
     /// Only surfaces that carry both a plain `rect` and an owning
     /// [`WidgetId`] participate. Excluded, deliberately:
-    /// - Transient overlays (`FindReplace`) — these already own their
-    ///   own internal focus/dismiss handling while open, and being
-    ///   modal, nothing behind them should be Tab-reachable anyway.
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
@@ -589,10 +574,9 @@ impl ScreenLayout {
                 Surface::List { rect, list } => vec![(list.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::Spinner { .. }
-                | Surface::Progress { .. }
-                | Surface::Scrollbar { .. }
-                | Surface::FindReplace { .. } => Vec::new(),
+                Surface::Spinner { .. } | Surface::Progress { .. } | Surface::Scrollbar { .. } => {
+                    Vec::new()
+                }
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -635,7 +619,6 @@ impl ScreenLayout {
         match surface {
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
-            Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
             Surface::Widget { rect, widget } => (
                 *rect,
                 FrameZone::Widget {
@@ -692,13 +675,11 @@ impl Default for ScreenLayout {
 /// `#[non_exhaustive]` for the same reason as [`Surface`] and
 /// [`FrameZone`]: a new primitive adds a new variant here additively.
 ///
-/// [`Self::FindReplace`] is the fallback for the [`Surface`] variant
-/// whose primitive does not (yet) implement
-/// `serde::{Serialize, Deserialize}` ([`FindReplacePanel`]) — the node
-/// still gets a rect and its own distinct
-/// [`FrameZone`] tag via [`OwnedFrame::hit_map`], but carries no content
-/// to redraw or inspect. [`Self::Opaque`] is the generic fallback for any
-/// future primitive that likewise can't be captured yet.
+/// [`Self::FindReplace`] names a [`crate::FindReplacePanel`] node without
+/// its content — the node still gets a rect and a [`FrameZone`] via
+/// [`OwnedFrame::hit_map`], but carries nothing to redraw or inspect.
+/// [`Self::Opaque`] is the generic fallback for any primitive that can't
+/// be captured.
 #[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum OwnedContent {
@@ -792,7 +773,9 @@ pub enum OwnedContent {
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
     /// way a standalone `Button` ever reaches a frame.
     Button(Button),
-    /// No content captured — the source [`Surface`] was [`Surface::FindReplace`].
+    /// No content captured — captured from a [`crate::FindReplacePanel`]
+    /// reached through [`Surface::Widget`] via [`DynWidget::capture`];
+    /// maps to [`FrameZone::Widget`].
     FindReplace,
     /// No content captured — a generic fallback for any future
     /// non-serializable primitive. See this enum's doc for which
@@ -1215,7 +1198,7 @@ impl OwnedContent {
                 idx,
                 id: Some(button.id),
             },
-            OwnedContent::FindReplace => FrameZone::FindReplace { idx },
+            OwnedContent::FindReplace => FrameZone::Widget { idx, id: None },
             OwnedContent::Opaque => FrameZone::Empty,
         }
     }
@@ -1429,15 +1412,11 @@ impl OwnedFrame {
 /// Clone one [`Surface`]'s primitive into the `(rect, widget_id,
 /// content)` parts an [`OwnedNode`] holds. The widget-id rule mirrors
 /// [`ScreenLayout::tab_stops`]'s inclusion list exactly; the rect rule
-/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::FindReplace`]
-/// falls back to [`OwnedContent::FindReplace`], because
-/// [`FindReplacePanel`] does not implement `serde::{Serialize,
-/// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
+/// mirrors [`ScreenLayout::zone_for`]'s exactly.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
-        Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
         Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
         Surface::Progress { rect, bar } => (
             *rect,
@@ -1579,11 +1558,11 @@ mod tests {
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::FindReplace { idx: 1 },
+            FrameZone::Scrollbar { idx: 1 },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::FindReplace { idx: 1 });
+        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Scrollbar { idx: 1 });
         // Point outside the overlay but inside the tree.
         assert_eq!(map.hit_test(75.0, 75.0), FrameZone::List { idx: 0 });
         // Point outside everything.

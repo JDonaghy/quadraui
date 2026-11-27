@@ -39,7 +39,6 @@ pub mod color;
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
 pub mod events;
-mod find_replace;
 mod focus_ring;
 // Decode + downscale for the Kitty graphics protocol.
 // Gated separately from `kitty_graphics` below: this module alone needs
@@ -82,8 +81,6 @@ pub mod vt_testing;
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::TuiBackend;
 pub use cell_surface::BufferCellSurface;
-#[doc(hidden)]
-pub use find_replace::draw_find_replace;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
 pub(crate) use list::draw_list_with_overflow;

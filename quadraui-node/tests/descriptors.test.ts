@@ -856,7 +856,7 @@ test("inline tree leaf find_replace renders its query text", () => {
   // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage
   // in this file, via an inline leaf. `hit_regions` drives both click
   // routing AND which content the TUI rasteriser paints
-  // (`tui::draw_find_replace` walks it to place the find/replace input
+  // (the cell painter walks it to place the find/replace input
   // text) -- a real host builds it via `compute_find_replace_hit_regions`;
   // this test supplies just the one entry it needs directly. An inline
   // leaf gets the full 40-column viewport rather than a narrower flat-slot

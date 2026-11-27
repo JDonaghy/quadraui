@@ -6,30 +6,21 @@
 //! `MacBackend::new` seeds `chrome_font` with
 //! `super::text::system_ui_font` (the real San Francisco system UI
 //! font, wrapped with the bundled codicon fallback cascade) before the
-//! first frame paints, and `crate::primitives::find_replace::paint`
-//! reaches text through that same `chrome_font` unconditionally (see
-//! `MacBackend::draw_find_replace`'s doc) — so this test exercises the
-//! px-space hit-region model's exact failure mode: a TUI-style
-//! `char_width == 1.0` assumption would silently mis-hit-test every click
-//! here, because the real glyph pitch is not an integer number of device
-//! px per cell.
+//! first frame paints, so a TUI-style `char_width == 1.0` assumption
+//! anywhere between paint and hit-test would mis-route every click here:
+//! the real glyph pitch is not an integer number of device px per cell.
 //!
-//! This is deliberately a different shape from
-//! `primitives::find_replace`'s own in-crate `RecordingSurface` tests
-//! (`toggle_buttons_paint_codicon_glyphs_not_literal_text` etc.): those
-//! assert glyph-to-rect binding against a synthetic surface with no real
-//! font metrics, which proves the paint math but not that a live macOS
-//! click actually lands. This test drives the real `event -> handle ->
-//! render` path (`MacBackend::draw_find_replace` for paint,
-//! `FindReplacePanel::hit_test` fed with `FindReplaceMetrics::resolve`'s
-//! `content_origin`/`row_height`, plus `Backend::list_char_width()`, for
-//! click) the same way a production click router would, and reads the
-//! glyph back off the painted screen rather than off internal paint-call
-//! recordings. Mirrors `gtk_find_replace.rs`'s `GtkDriver` twin.
+//! The panel paints through its widget contract and every click runs
+//! through the shared routing engine into the panel's own
+//! `Interactive::handle`; glyphs are read back off the painted screen
+//! rather than off internal paint-call recordings. Mirrors
+//! `gtk_find_replace.rs`'s `GtkDriver` twin.
+
+use std::cell::Cell;
 
 use quadraui::{
-    AppLogic, Backend, FindReplaceClickTarget, FindReplaceHit, FindReplaceMetrics,
-    FindReplacePanel, Modifiers, MouseButton, Point, Reaction, Rect, Style, UiEvent,
+    AppLogic, Backend, FindReplacePanel, FrameTree, Modifiers, MouseButton, Point, Reaction, Rect,
+    ScreenLayout, Surface, UiEvent, WidgetId,
 };
 
 use quadraui::macos::testing::MacDriver;
@@ -48,18 +39,15 @@ const WHOLE_WORD_GLYPH: char = '\u{eb7e}';
 const REGEX_GLYPH: char = '\u{eb38}';
 const PRESERVE_CASE_GLYPH: char = '\u{eb2e}';
 
-/// Minimal `AppLogic` wrapping a `FindReplacePanel` with the replace row
-/// visible (so all four toggles, including `TogglePreserveCase`, have a
-/// hit region) and routing clicks through [`FindReplaceMetrics::resolve`]
-/// -- the same seam `MacBackend::draw_find_replace` ->
-/// `native_surface_paint::paint` resolves its geometry through -- fed
-/// with the backend's real (proportional) chrome-font metrics
-/// (`Backend::list_char_width()` / `Backend::chrome_line_height()`) --
-/// never a hardcoded `1.0, 1.0` TUI-style scale, and never the editor
-/// font's `char_width()` / `line_height()`, which `FindReplacePanel`
-/// never paints with.
+/// A `FindReplacePanel` with the replace row visible (so all four
+/// toggles, including preserve case, have a hit region), painted as a
+/// `Surface::Widget` in the box `FindReplacePanel::anchored_rect` places
+/// and routed through the app's frame tree into the panel's own
+/// `Interactive::handle`; every reported event is written back with
+/// `FindReplacePanel::apply_event`.
 struct FindReplaceDriverApp {
     panel: FindReplacePanel,
+    rect: Cell<Rect>,
 }
 
 impl FindReplaceDriverApp {
@@ -67,6 +55,7 @@ impl FindReplaceDriverApp {
         let (hit_regions, _input_width) =
             quadraui::compute_find_replace_hit_regions(50, true, "1 of 3", 2, 2);
         let panel = FindReplacePanel {
+            id: WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: true,
@@ -85,14 +74,10 @@ impl FindReplaceDriverApp {
             replace_all_glyph: "R*".into(),
             hit_regions,
         };
-        Self { panel }
-    }
-
-    /// Resolve this panel's pixel geometry via [`FindReplaceMetrics::resolve`]
-    /// -- the same call `native_surface_paint::paint` makes -- so the
-    /// painted boxes and the click bands below can never drift apart.
-    fn metrics(&self, cw: f32, lh: f32) -> FindReplaceMetrics {
-        FindReplaceMetrics::resolve(&self.panel, &Style::default(), cw, lh)
+        Self {
+            panel,
+            rect: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+        }
     }
 }
 
@@ -100,44 +85,26 @@ impl AppLogic for FindReplaceDriverApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_find_replace(self.panel.group_bounds, &self.panel);
+        let rect = self.panel.anchored_rect(backend, self.panel.group_bounds);
+        self.rect.set(rect);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(self.panel.clone()),
+        });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.panel.id, self.rect.get(), Box::new(self.panel.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::MouseDown { position, .. } => {
-                // `FindReplacePanel` is a chrome primitive: `MacBackend`
-                // (as `PaintSurface`) measures and paints it against
-                // `chrome_font`, never `current_font` (the editor font
-                // `Backend::char_width()`/`line_height()` report) — see
-                // `Backend::chrome_line_height`/`list_char_width`'s docs.
-                // Feeding `hit_test` the editor metrics here would
-                // silently mis-hit-test on any host where the two fonts'
-                // advances differ.
-                let cw = backend.list_char_width().max(1.0);
-                let lh = backend.chrome_line_height().max(1.0);
-                let metrics = self.metrics(cw, lh);
-                match self.panel.hit_test(
-                    position.x,
-                    position.y,
-                    metrics.content_origin,
-                    cw,
-                    metrics.row_height,
-                ) {
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleCase) => {
-                        self.panel.case_sensitive = !self.panel.case_sensitive;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleWholeWord) => {
-                        self.panel.whole_word = !self.panel.whole_word;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::ToggleRegex) => {
-                        self.panel.use_regex = !self.panel.use_regex;
-                    }
-                    FindReplaceHit::Target(FindReplaceClickTarget::TogglePreserveCase) => {
-                        self.panel.preserve_case = !self.panel.preserve_case;
-                    }
-                    _ => {}
-                }
+            UiEvent::FindReplace(id, event) if id == self.panel.id => {
+                self.panel.apply_event(&event);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,

@@ -463,7 +463,7 @@ fn indicators_app_paints_locatable_spinner_and_progress_labels() {
 // ─── Overlays with no example-app call site (in-test fixtures) ─────────────
 //
 // `draw_tooltip` / `CommandCenter` / `draw_completions` /
-// `draw_find_replace` aren't reached by *any* example app's `AppLogic`
+// `FindReplacePanel` aren't reached by *any* example app's `AppLogic`
 // today — grepping `examples/common/*.rs` for `Tooltip`, `CommandCenter`,
 // `Completions`, and `FindReplacePanel` turns up zero constructions, so
 // there is no "through a real example app" fixture to route through yet.
@@ -596,6 +596,7 @@ impl AppLogic for FindReplaceFixtureApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let (hit_regions, _input_width) = compute_find_replace_hit_regions(50, false, "", 2, 2);
         let panel = FindReplacePanel {
+            id: WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: false,
@@ -614,7 +615,8 @@ impl AppLogic for FindReplaceFixtureApp {
             replace_all_glyph: "R*".into(),
             hit_regions,
         };
-        backend.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel);
+        let rect = panel.anchored_rect(backend, Rect::new(0.0, 0.0, W as f32, H as f32));
+        let _ = backend.draw_dyn(rect, &panel, &());
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -628,8 +630,8 @@ fn find_replace_fixture_paints_locatable_query_and_match_info() {
     assert_locatable(
         &driver,
         &[
-            ("draw_find_replace", "needle"),
-            ("draw_find_replace", "1 of 3"),
+            ("draw_dyn(FindReplacePanel)", "needle"),
+            ("draw_dyn(FindReplacePanel)", "1 of 3"),
         ],
     );
 }

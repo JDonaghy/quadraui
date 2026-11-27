@@ -1,30 +1,22 @@
 //! `Find & Replace` demo — adapted from
 //! `quadraui/examples/common/find_replace_app.rs`.
 //!
-//! Exercises `FindReplacePanel::hit_test`: clicking a toggle/nav/close
-//! button reports which `FindReplaceClickTarget` was hit. Two variants
-//! show the panel at its two documented widths — compact and wide.
+//! Exercises `FindReplacePanel`'s layout hit-test: clicking a
+//! toggle/nav/close button reports which `FindReplaceClickTarget` was hit.
+//! Two variants show the panel at its two documented widths — compact and
+//! wide.
 //!
-//! Click routing scales the panel's column/row geometry by the running
-//! backend's real [`Backend::char_width`] / [`Backend::line_height`]
-//! (1.0/1.0 on TUI, real pixel metrics on GTK/macOS/Win), so a click
-//! lands in the right neighbourhood of cells on every backend rather
-//! than being off by whole screens on a pixel backend. It is still an
-//! **approximation** of each backend's actual panel position: every
-//! backend's `draw_find_replace` anchors the popup with its own formula
-//! (TUI clamps to whole cells; the shared GUI `paint()` uses a fixed
-//! 10px right inset and 2px top gap that don't reduce to a `char_width`/
-//! `line_height` multiple), and there is no `Backend`-owned method yet
-//! that reports a backend's resolved content origin back to the caller.
-//! A consumer that needs pixel-exact routing on a GUI backend should
-//! track that gap as a follow-up rather than copy this approximation
-//! verbatim.
+//! The panel paints through `draw_dyn` in the box
+//! `FindReplacePanel::anchored_rect` places at the top-right of the demo
+//! area, and a click is resolved against the `FindReplaceLayout` that
+//! paint recorded — so routing reads exactly the geometry on screen on
+//! every backend.
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
     compute_find_replace_hit_regions, Backend, BackendCaps, Color, FindReplaceClickTarget,
-    FindReplaceHit, FindReplacePanel, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId, FR_PANEL_WIDTH,
+    FindReplaceHit, FindReplaceLayout, FindReplacePanel, MouseButton, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId, FR_PANEL_WIDTH,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -59,6 +51,7 @@ impl FindReplaceDemo {
     pub fn new() -> Self {
         Self {
             panel: FindReplacePanel {
+                id: WidgetId::new("gallery:find-replace"),
                 query: "needle".into(),
                 replacement: String::new(),
                 show_replace: true,
@@ -119,25 +112,14 @@ impl FindReplaceDemo {
         Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0))
     }
 
-    /// The panel's content corner (inside its one-cell border), in the
-    /// same absolute coordinates the rasteriser paints at, scaled by the
-    /// real `char_width`/`line_height` of the backend that is about to
-    /// hit-test against it (see the module doc for why this is a
-    /// cross-backend *approximation*, not each backend's exact anchor
-    /// formula).
-    ///
-    /// `panel.group_bounds` is **absolute** (see [`Self::panel_for`]'s
-    /// call sites), matching the GTK/macOS rasteriser's own anchor
-    /// formula directly — no separate `rect` offset to add on top.
-    fn content_origin(panel: &FindReplacePanel, char_width: f32, line_height: f32) -> (f32, f32) {
-        let cw = char_width.max(1.0);
-        let lh = line_height.max(1.0);
-        let gb = &panel.group_bounds;
-        let panel_w = (panel.panel_width as f32 * cw).min((gb.width - 2.0 * cw).max(0.0));
-        let gb_right = gb.x + gb.width;
-        let x = (gb_right - (panel_w + cw)).max(gb.x);
-        let y = gb.y.max(lh);
-        (x + cw, y + lh)
+    /// The target under `(x, y)`, resolved against the layout the last
+    /// paint of `panel` recorded.
+    fn painted_target(panel: &FindReplacePanel, x: f32, y: f32) -> FindReplaceHit {
+        quadraui::primitive::with_painted_widgets(|p| {
+            p.painted_layout(&panel.id)
+                .and_then(|(_, layout)| layout.downcast_ref::<FindReplaceLayout>().copied())
+        })
+        .map_or(FindReplaceHit::Empty, |layout| layout.hit_test(panel, x, y))
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -180,18 +162,9 @@ impl Demo for FindReplaceDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::editor_rect(area, backend);
-        // `group_bounds` is **absolute** (anchored at `rect`'s own
-        // origin, not `(0, 0)`): the GTK/macOS rasteriser anchors the
-        // popup directly off `panel.group_bounds` and ignores the `rect`
-        // argument below entirely (see `Backend::draw_find_replace`'s
-        // per-backend docs), so an `(0, 0)`-relative `group_bounds` paints
-        // the popup at the window's top-left corner — over the sidebar —
-        // instead of this demo's own top-right. Passing a zeroed `rect`
-        // here keeps the TUI rasteriser's `editor_left` offset (which
-        // *does* add `rect.x` on top of `group_bounds.x`) from double
-        // counting it.
         let panel = self.panel_for(variant, rect);
-        backend.draw_find_replace(Rect::new(0.0, 0.0, rect.width, rect.height), &panel);
+        let panel_rect = panel.anchored_rect(backend, rect);
+        let _ = backend.draw_dyn(panel_rect, &panel, &());
 
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let status_rect = Rect::new(area.x, rect.y + rect.height, area.width, lh);
@@ -212,13 +185,9 @@ impl Demo for FindReplaceDemo {
                 ..
             } => {
                 let rect = Self::editor_rect(area, backend);
-                let group_bounds = rect;
-                let probe = self.panel_for(variant, group_bounds);
-                let char_width = backend.char_width();
-                let line_height = backend.line_height();
-                let origin = Self::content_origin(&probe, char_width, line_height);
-                let hit = probe.hit_test(position.x, position.y, origin, char_width, line_height);
-                self.panel.group_bounds = group_bounds;
+                let probe = self.panel_for(variant, rect);
+                let hit = Self::painted_target(&probe, position.x, position.y);
+                self.panel.group_bounds = rect;
                 self.last_click = Some(match hit {
                     FindReplaceHit::Target(target) => {
                         match target {
@@ -257,9 +226,7 @@ impl Demo for FindReplaceDemo {
     }
 
     fn data(&self, variant: usize) -> serde_json::Value {
-        // `FindReplacePanel` doesn't derive `Serialize` (it's not meant
-        // to round-trip, unlike most primitives) — report the fields a
-        // consumer would actually care about by hand.
+        // The fields a consumer cares about, without the hit regions.
         serde_json::json!({
             "query": self.panel.query,
             "replacement": self.panel.replacement,
