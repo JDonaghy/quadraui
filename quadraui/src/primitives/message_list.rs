@@ -29,6 +29,9 @@ use crate::primitives::row_stack;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 /// A single row in a [`MessageList`].
 ///
 /// `indent` is in surface units — TUI cells or GTK pixels — so the
@@ -351,8 +354,7 @@ impl crate::primitive::Primitive for MessageList {
         let _ = env;
     }
 
-    /// The TUI rasteriser over the backing buffer, on the theme
-    /// background.
+    /// The cell painter, on the theme background.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -360,16 +362,7 @@ impl crate::primitive::Primitive for MessageList {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_message_list(
-            buf,
-            crate::tui::backend::q_rect_to_ratatui(layout.bounds),
-            self,
-            env.theme().background,
-        );
+        paint_cells::paint(cells, layout.bounds, self, env.theme().background);
     }
 }
 

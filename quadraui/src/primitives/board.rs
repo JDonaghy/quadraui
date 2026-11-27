@@ -43,6 +43,9 @@ use crate::theme::Theme;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 // ── Shared layout constants ─────────────────────────────────────────────────
 // These constants are shared by pixel/DIP-unit backends (gtk, macos, win).
 // Cells and DIP units are not the same unit; tui::board keeps its own constants.
@@ -1361,7 +1364,6 @@ impl crate::primitive::Primitive for BoardModel {
         let _ = (layout, surface, env);
     }
 
-    /// The TUI rasteriser over the backing buffer.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1369,16 +1371,7 @@ impl crate::primitive::Primitive for BoardModel {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_board(
-            buf,
-            crate::tui::backend::q_rect_to_ratatui(layout.bounds),
-            self,
-            env.theme(),
-        );
+        paint_cells::paint(cells, self, layout, env.theme());
     }
 }
 

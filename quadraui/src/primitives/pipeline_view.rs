@@ -32,6 +32,9 @@ use crate::theme::Theme;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Status of a single pipeline stage.
@@ -494,7 +497,6 @@ impl crate::primitive::Primitive for PipelineView {
         let _ = (layout, surface, env);
     }
 
-    /// The TUI rasteriser over the backing buffer.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -502,16 +504,7 @@ impl crate::primitive::Primitive for PipelineView {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_pipeline_view(
-            buf,
-            crate::tui::backend::q_rect_to_ratatui(layout.area),
-            self,
-            env.theme(),
-        );
+        paint_cells::paint(cells, self, &layout.layout, env.theme());
     }
 }
 

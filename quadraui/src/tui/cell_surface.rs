@@ -756,6 +756,53 @@ pub(crate) fn draw_image_halfblock(
     true
 }
 
+/// A [`BufferCellSurface`] that exposes only the [`CellSurface`] verbs and
+/// no backing buffer, so a test can show that a widget's cell painter
+/// paints through the verbs alone.
+#[cfg(test)]
+pub(crate) struct VerbsOnly<'a>(pub BufferCellSurface<'a>);
+
+#[cfg(test)]
+impl CellSurface for VerbsOnly<'_> {
+    fn size(&self) -> (u16, u16) {
+        self.0.size()
+    }
+    fn put_char(&mut self, x: u16, y: u16, ch: char, style: CellStyle) {
+        self.0.put_char(x, y, ch, style);
+    }
+    fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle) {
+        self.0.put_wide(x, y, ch, style);
+    }
+    fn put_grapheme(&mut self, x: u16, y: u16, grapheme: &str, style: CellStyle) {
+        self.0.put_grapheme(x, y, grapheme, style);
+    }
+    fn put_str_clipped(
+        &mut self,
+        x: u16,
+        y: u16,
+        text: &str,
+        max_cols: u16,
+        style: CellStyle,
+    ) -> u16 {
+        self.0.put_str_clipped(x, y, text, max_cols, style)
+    }
+    fn fill(&mut self, rect: crate::Rect, style: CellStyle) {
+        self.0.fill(rect, style);
+    }
+    fn draw_border(&mut self, rect: crate::Rect, set: BorderSet, style: CellStyle) {
+        self.0.draw_border(rect, set, style);
+    }
+    fn get(&self, x: u16, y: u16) -> Option<(char, CellStyle)> {
+        self.0.get(x, y)
+    }
+    fn set_cursor(&mut self, x: u16, y: u16, shape: CursorShape) {
+        self.0.set_cursor(x, y, shape);
+    }
+    fn color_depth(&self) -> ColorDepth {
+        self.0.color_depth()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

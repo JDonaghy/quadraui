@@ -46,6 +46,9 @@ use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 /// The kind of change a [`DiffRow`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffRowKind {
@@ -712,7 +715,6 @@ impl crate::primitive::Primitive for DiffView {
         let _ = (layout, surface, env);
     }
 
-    /// The TUI rasteriser over the backing buffer.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -720,16 +722,7 @@ impl crate::primitive::Primitive for DiffView {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_diff_view(
-            buf,
-            crate::tui::backend::q_rect_to_ratatui(layout.geometry.bounds),
-            self,
-            env.theme(),
-        );
+        paint_cells::paint(cells, self, &layout.geometry, env.theme());
     }
 }
 
