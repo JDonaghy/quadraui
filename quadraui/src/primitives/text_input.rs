@@ -104,6 +104,7 @@ use crate::Handled;
 /// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TextInput {
     pub id: WidgetId,
     /// One entry per logical line. Newlines are implicit between

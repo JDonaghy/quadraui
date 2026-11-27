@@ -8,7 +8,7 @@
 // testing.ts`'s `Harness` has no row/tab-style verb for one `Form` field
 // yet (it indexes a `form` node as one leaf widget, not per field), so a
 // field's own id is read back through `formField` below -- `Form`'s own
-// `FormDescriptor.fields` array, found with the same `Widget.get` escape
+// `Form.fields` array, found with the same `Widget.get` escape
 // hatch `Harness.dispatch`'s own doc describes for a shape the harness has
 // no dedicated verb for -- rather than `h.find({id: <field id>})`.
 
@@ -38,7 +38,7 @@ function toggleSwitch(h: any, formId: string, fieldId: string, value: boolean): 
   h.dispatch({ Form: [formId, { ToggleChanged: { id: fieldId, value } }] });
 }
 
-/** The `FormFieldDescriptor` for category `name`'s `label`/`enabled` field, read off the detail `Form`'s own `fields` array -- see this file's own header doc for why, not `h.find({id: fieldId})`. */
+/** The `FormField` for category `name`'s `label`/`enabled` field, read off the detail `Form`'s own `fields` array -- see this file's own header doc for why, not `h.find({id: fieldId})`. */
 function detailField(h: any, name: string, field: "label" | "enabled"): any {
   const fields = h.find({ id: `settings:${name}:form` }).get("fields") as Array<{ id: string }>;
   const fieldId = field === "label" ? `settings:${name}:label` : `settings:${name}:enabled`;

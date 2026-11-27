@@ -43,6 +43,7 @@ pub(crate) mod paint_cells;
 /// the rasteriser applies per-span fg/bold/italic and the per-row `scale`
 /// multiplier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MessageRow {
     pub text: String,
     pub fg: Color,
@@ -119,6 +120,7 @@ impl MessageRow {
 /// assert_eq!(hit, MessageListHit::Row(1));
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MessageList {
     pub id: WidgetId,
     pub rows: Vec<MessageRow>,
@@ -291,6 +293,7 @@ const MESSAGE_LIST_WHEEL_ROWS_PER_NOTCH: f32 = 3.0;
 /// What a [`MessageList`] reports. `scroll_top` is the app's: it writes
 /// it back onto the descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum MessageListEvent {
     /// A wheel notch scrolled the list to `scroll_top`, clamped so the
     /// last row stays on screen. `at_bottom` says whether that is the

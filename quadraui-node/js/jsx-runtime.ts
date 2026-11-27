@@ -87,12 +87,12 @@ import type {
 } from "./app/nodes";
 import type { WidgetA11yNode, WidgetConstraints, WidgetEvent, WidgetLayoutCtx, WidgetPaint, WidgetRect, WidgetSize } from "./app/widget";
 import type {
-  ColumnDescriptor,
-  DataRowDescriptor,
-  ListItemDescriptor,
+  Column as ColumnDescriptor,
+  DataRow as DataRowDescriptor,
+  ListItem as ListItemDescriptor,
   StatusBarSegment,
-  TextDisplayLineDescriptor,
-  TreeRowDescriptor,
+  TextDisplayLine as TextDisplayLineDescriptor,
+  TreeRow as TreeRowDescriptor,
 } from "./wire";
 
 // --- node-constructor bindings ---------------------------------------------

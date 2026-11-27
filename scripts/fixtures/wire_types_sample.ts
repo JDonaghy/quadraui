@@ -11,14 +11,14 @@
 // the negative counterpart `scripts/check_wire_types.sh` asserts *fails*.
 
 import type {
-  ColumnDescriptor,
-  DataRowDescriptor,
-  DataTableDescriptor,
+  Column,
+  DataRow,
+  DataTable,
   GridTrack,
   LayoutNode,
   StyledText,
-  TreeRowDescriptor,
-  TreeViewDescriptor,
+  TreeRow,
+  TreeView,
   UiEvent,
 } from "../../quadraui-node/js/wire";
 
@@ -27,7 +27,7 @@ function styledText(text: string): StyledText {
 }
 
 function buildTree(): LayoutNode {
-  const row: TreeRowDescriptor = {
+  const row: TreeRow = {
     path: [0],
     indent: 0,
     icon: null,
@@ -35,7 +35,7 @@ function buildTree(): LayoutNode {
     badge: null,
     is_expanded: true,
   };
-  const tree: TreeViewDescriptor = {
+  const tree: TreeView = {
     id: "demo:tree",
     rows: [row],
     selection_mode: "Single",
@@ -51,12 +51,12 @@ function buildTree(): LayoutNode {
 }
 
 function buildTable(): LayoutNode {
-  const columns: ColumnDescriptor[] = [
+  const columns: Column[] = [
     { title: "Name", width: { Flex: 2.0 }, align: "Left" },
     { title: "Size", width: { FixedCells: 10.0 } },
   ];
-  const rows: DataRowDescriptor[] = [{ cells: [styledText("main.rs"), styledText("4 KB")] }];
-  const table: DataTableDescriptor = { id: "demo:table", columns, rows };
+  const rows: DataRow[] = [{ cells: [styledText("main.rs"), styledText("4 KB")] }];
+  const table: DataTable = { id: "demo:table", columns, rows };
   return { id: "demo:table", data_table: table };
 }
 

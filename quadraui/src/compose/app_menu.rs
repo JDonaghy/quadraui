@@ -84,6 +84,7 @@ fn items_or_none<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ContextMenuItem>
 /// Which menu is open and where in it the highlight sits — the visible
 /// state an [`AppMenu`] reports through [`AppMenuEvent::Changed`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppMenuView {
     /// The menu whose dropdown is open.
     #[serde(default)]
@@ -132,6 +133,7 @@ pub struct AppMenu {
 
 /// What an [`AppMenu`] reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum AppMenuEvent {
     /// An action item was activated. The menu has already reported

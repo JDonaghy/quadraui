@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 /// preference order `docs/PRIMITIVE_RULES.md` states: a non-breaking
 /// shape over a breaking one whenever one is available for free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ButtonVariant {
     /// The call-to-action for its surface (e.g. a dialog's "OK").
@@ -75,6 +76,7 @@ pub enum ButtonVariant {
 /// Icon placement relative to [`Button::label`] when [`Button::icon`] is
 /// set. No effect when `icon` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ButtonIconPosition {
     /// Icon paints before the label (e.g. `[ ⚠ Delete ]`).
@@ -169,6 +171,7 @@ impl ButtonMetrics {
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Button {
     pub id: WidgetId,
@@ -326,6 +329,7 @@ impl Default for Button {
 /// exhaustive struct literal to grow in lockstep. Construct with
 /// [`Self::new`] and set fields directly afterwards.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ButtonSpec {
     pub label: String,

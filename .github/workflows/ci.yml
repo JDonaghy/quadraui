@@ -608,7 +608,8 @@ jobs:
 
   backend-loc-ratchet:
     # Keeps the four per-backend directories under `quadraui/src/` (`tui`,
-    # `macos`, `win`, `gtk`) from growing unnoticed while the consolidation
+    # `macos`, `win`, `gtk`) and `quadraui-binding-core/src` from growing
+    # unnoticed while the consolidation
     # epics' shared engines land beside them instead of replacing code
     # inside them. `scripts/backend_loc_ratchet.py` counts each directory's
     # non-test `.rs` lines (everything before a file's first
@@ -649,21 +650,18 @@ jobs:
     # fail to type-check under `mypy --strict`/`pyright`/`tsc --strict`, or if the
     # "bad" misspelled-key fixtures
     # (`scripts/fixtures/wire_types_sample_bad.{py,ts}`) type-check clean
-    # when they should not. `gen_wire_types.py` builds its wire-data schema
-    # by running `quadraui-binding-core`'s `export_wire_schema` binary
-    # (built from `quadraui-binding-core/src/wire_schema.rs`), so this job
-    # needs a Rust toolchain too -- a field or variant added to a
-    # wire-decoded Rust type without updating `wire_schema.rs` already
-    # fails `cargo test -p quadraui-binding-core` (or `cargo check --tests
-    # -p quadraui-binding-core`; the `coverage` drift guards live in a
-    # `#[cfg(test)]` module, so a bare `cargo check`/`cargo build` does not
-    # compile them); the regeneration step below is what catches the
-    # matching "Rust side changed but the generated `.pyi`/`.d.ts` weren't
-    # regenerated" half -- `_quadraui.pyi`'s own source of truth is instead
+    # when they should not. `gen_wire_types.py` reads its wire-data schema
+    # from `quadraui-binding-core`'s `export_wire_schema` binary (built with
+    # `--features schema`), which derives one JSON Schema document from the
+    # Rust wire types with `schemars` -- so a field added to a registered
+    # descriptor reaches the generated `.pyi`/`.d.ts` with no hand edit,
+    # and the regeneration step below catches a committed file that was
+    # not regenerated. The `wire::schema` tests validate decoder-accepted
+    # samples of every registered kind against that schema.
+    # `_quadraui.pyi`'s own source of truth is instead
     # `quadraui-py/src/lib.rs`'s `#[pymethods]`/`#[pyfunction]` items,
-    # parsed by `gen_wire_types.py` directly (no Rust-side JSON export for
-    # those), so a method signature change there is caught by the same
-    # `--check` without needing its own coverage guard.
+    # parsed by `gen_wire_types.py` directly, so a method signature change
+    # there is caught by the same `--check`.
     name: Wire types (generated .pyi / .d.ts) staleness + type-check
     runs-on: ubuntu-latest
     needs: bump-shape
@@ -682,6 +680,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      - name: Wire schema tests (schemars export vs. the decoder)
+        run: cargo test -p quadraui-binding-core --features schema --lib wire::schema
       - name: Regenerate + type-check wire types
         run: scripts/check_wire_types.sh
 

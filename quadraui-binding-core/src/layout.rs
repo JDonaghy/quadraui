@@ -167,7 +167,7 @@ pub struct LayoutStyled {
 /// already uses (`"tab_bar_bg"`, `"selected_bg"`, `"row_height"`,
 /// `"scrollbar_width"`, …) — [`style_override_tokens!`] is the single
 /// source of truth both this struct and its impls below expand from, and
-/// `crate::wire::style`'s decode and `crate::wire_schema`'s `style_value`
+/// `crate::wire::style`'s decode and `crate::wire::layout::schema`'s `StyleValue`
 /// schema expand the exact same table through their own callback. Adding a
 /// field to `Theme`/`Style` and wiring it up here is one appended line to
 /// that one table, not a four-way hand-sync.

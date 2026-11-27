@@ -465,6 +465,7 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
 /// same `WidgetId` but a different detail (e.g. a `Tree`'s row 2 vs. row
 /// 3) still count as a hover change.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HitDetail {
     TreeRow {

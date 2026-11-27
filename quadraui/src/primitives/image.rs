@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 /// this value plus the resolved paint size/scale — see
 /// `crate::image_cache::ImageCache`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ImageSource {
     /// Raw encoded image bytes (PNG/JPEG/SVG/...) — the backend's
     /// decoder sniffs the format from content, so no separate MIME hint
@@ -58,6 +59,7 @@ pub enum ImageSource {
 /// the equivalent CSS `object-fit` keywords since the semantics are
 /// identical.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ImageFit {
     /// Scale to fit entirely within the target rect, preserving aspect
     /// ratio. May letterbox (leave empty space on one axis).
@@ -96,6 +98,7 @@ pub enum ImageFit {
 /// assert_eq!(layout.bounds.height, 64.0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Image {
     pub id: WidgetId,
     pub source: ImageSource,

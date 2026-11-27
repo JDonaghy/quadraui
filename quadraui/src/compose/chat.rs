@@ -170,6 +170,7 @@ pub struct ChatTurn {
 /// controlled-state write-backs: each names a descriptor field a gesture
 /// changed, for the app to store ([`Chat::apply`] stores them all).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum ChatEvent {
     /// The input was submitted. Carries the full input text (with `\n`

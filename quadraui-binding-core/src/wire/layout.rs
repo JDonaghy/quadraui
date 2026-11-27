@@ -100,25 +100,25 @@ pub const LAYOUT_NODE_KEYS: [&str; 8] = [
 // to [`check_node_sibling_keys`] (`UNIVERSAL_NODE_SIBLING_KEYS` folds in
 // automatically, so none of these repeats `"style"`/`"class"`/`"size"`/
 // `"min"`/`"max"`/`"wire_version"`). Named constants, not inline literals
-// at each call site, so this module's own `#[cfg(test)]`
-// `node_shape_key_constants_match_the_wire_schema_field_list` test can
-// cross-check every one against `wire_schema::schema()`'s own field list
-// for that node kind: a field added on one side without the other fails
+// at each call site, so `wire::schema`'s
+// `node_shape_key_constants_match_the_schema_properties` test can
+// cross-check every one against the property list of that node kind's
+// `schema` type below: a field added on one side without the other fails
 // that test instead of silently drifting into a false "unknown key"
 // warning (or a strict-mode app's new hard rejection) the first time a real
 // app sends it.
-const ROW_SHAPE_KEYS: [&str; 7] = [
+pub(super) const ROW_SHAPE_KEYS: [&str; 7] = [
     "row", "padding", "margin", "gap", "justify", "align", "wrap",
 ];
-const COLUMN_SHAPE_KEYS: [&str; 7] = [
+pub(super) const COLUMN_SHAPE_KEYS: [&str; 7] = [
     "column", "padding", "margin", "gap", "justify", "align", "wrap",
 ];
-const GRID_SHAPE_KEYS: [&str; 3] = ["grid", "padding", "margin"];
-const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
-const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
-const SIDEBAR_PANEL_SHAPE_KEYS: [&str; 1] = ["sidebar_panel"];
-const SPLIT_TREE_SHAPE_KEYS: [&str; 1] = ["split_tree"];
-const SCROLL_SHAPE_KEYS: [&str; 3] = ["scroll", "padding", "margin"];
+pub(super) const GRID_SHAPE_KEYS: [&str; 3] = ["grid", "padding", "margin"];
+pub(super) const SPLIT_SHAPE_KEYS: [&str; 4] = ["split", "padding", "margin", "gap"];
+pub(super) const TABS_SHAPE_KEYS: [&str; 3] = ["tabs", "padding", "margin"];
+pub(super) const SIDEBAR_PANEL_SHAPE_KEYS: [&str; 1] = ["sidebar_panel"];
+pub(super) const SPLIT_TREE_SHAPE_KEYS: [&str; 1] = ["split_tree"];
+pub(super) const SCROLL_SHAPE_KEYS: [&str; 3] = ["scroll", "padding", "margin"];
 
 /// Decodes one layout-tree node dict, then wraps it in a
 /// [`LayoutNode::Styled`] if that same dict also carries a `"class"`
@@ -1137,3 +1137,455 @@ fn layout_tabs_from_value(
 #[cfg(test)]
 #[path = "tests/layout.rs"]
 mod tests;
+
+/// The wire shapes of the eight [`LAYOUT_NODE_KEYS`] container nodes, the
+/// leaf node and their shared sibling keys, as `schemars` types. The
+/// decoder above reads these dicts key by key; these types describe the
+/// same keys so the exported wire schema covers layout trees, and
+/// `wire::schema`'s tests check every node the decoder accepts against
+/// them.
+#[cfg(feature = "schema")]
+// These types are never constructed: they exist only for their derived
+// `JsonSchema` impls.
+#[allow(dead_code)]
+pub mod schema {
+    use std::borrow::Cow;
+
+    use schemars::{JsonSchema, Schema, SchemaGenerator};
+
+    use quadraui::{Color, SectionSize, TabBarSegment, Toolbar};
+
+    /// A `"padding"` value: one number for every side, an `{x, y}` pair,
+    /// or per-side numbers.
+    #[derive(JsonSchema)]
+    #[serde(untagged)]
+    pub enum PaddingValue {
+        Uniform(f32),
+        Axis(PaddingAxis),
+        Sides(PaddingSides),
+    }
+
+    #[derive(JsonSchema)]
+    pub struct PaddingAxis {
+        #[serde(default)]
+        pub x: Option<f32>,
+        #[serde(default)]
+        pub y: Option<f32>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct PaddingSides {
+        #[serde(default)]
+        pub top: Option<f32>,
+        #[serde(default)]
+        pub right: Option<f32>,
+        #[serde(default)]
+        pub bottom: Option<f32>,
+        #[serde(default)]
+        pub left: Option<f32>,
+    }
+
+    /// A `"style"` colour token: a `Color` object, or a `"#rrggbb"` /
+    /// `"#rrggbbaa"` hex string.
+    #[derive(JsonSchema)]
+    #[serde(untagged)]
+    pub enum StyleColorValue {
+        Color(Color),
+        Hex(String),
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum CellOverflowValue {
+        Ellipsis,
+        Clip,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum FontWeightValue {
+        Normal,
+        Bold,
+    }
+
+    macro_rules! style_schema_ty {
+        (f32) => {
+            f32
+        };
+        (u8) => {
+            u8
+        };
+        (u64) => {
+            u64
+        };
+        (CellOverflow) => {
+            CellOverflowValue
+        };
+    }
+
+    macro_rules! define_style_value {
+        (
+            colors: [ $( $cfield:ident => $tfield:ident ),* $(,)? ],
+            theme_floats: [ $( $ffield:ident => $tffield:ident ),* $(,)? ],
+            metrics: [ $( $mfield:ident : $mty:ident => $setter:ident => $decode:ident ),* $(,)? ],
+        ) => {
+            /// A node's `"style"` override, scoped to its subtree: every
+            /// `Theme` colour token and `Style` metric token is an optional
+            /// key (with `bg`/`fg`/`border`/`accent` aliasing
+            /// `Theme::background`/`foreground`/`border_fg`/`accent_fg`),
+            /// plus the font keys and the `hover`/`pressed`/`focus`
+            /// interaction-state branches.
+            #[derive(JsonSchema)]
+            pub struct StyleValue {
+                $( #[serde(default)] pub $cfield: Option<StyleColorValue>, )*
+                $( #[serde(default)] pub $ffield: Option<f32>, )*
+                $( #[serde(default)] pub $mfield: Option<style_schema_ty!($mty)>, )*
+                #[serde(default)]
+                pub font_family: Option<String>,
+                #[serde(default)]
+                pub font_size: Option<f32>,
+                #[serde(default)]
+                pub font_weight: Option<FontWeightValue>,
+                #[serde(default)]
+                pub hover: Option<Box<StyleValue>>,
+                #[serde(default)]
+                pub pressed: Option<Box<StyleValue>>,
+                #[serde(default)]
+                pub focus: Option<Box<StyleValue>>,
+            }
+        };
+    }
+    crate::layout::style_override_tokens!(define_style_value);
+
+    /// One or more named style sets: a name, a whitespace-separated list
+    /// of names, or an array of names.
+    #[derive(JsonSchema)]
+    #[serde(untagged)]
+    pub enum ClassValue {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    /// The sibling keys every node dict may carry.
+    #[derive(JsonSchema)]
+    pub struct NodeCommon {
+        #[serde(default)]
+        pub wire_version: Option<u32>,
+        #[serde(default)]
+        pub style: Option<StyleValue>,
+        #[serde(default)]
+        pub class: Option<ClassValue>,
+        #[serde(default)]
+        pub size: Option<SectionSize>,
+        #[serde(default)]
+        pub min: Option<f32>,
+        #[serde(default)]
+        pub max: Option<f32>,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum JustifyValue {
+        Start,
+        Center,
+        End,
+        SpaceBetween,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum AlignValue {
+        Start,
+        Center,
+        End,
+        Stretch,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum OrientationValue {
+        Horizontal,
+        Vertical,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum ScrollAxisValue {
+        Vertical,
+        Horizontal,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutRowNode {
+        pub row: Vec<LayoutNode>,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(default)]
+        pub gap: Option<f32>,
+        #[serde(default)]
+        pub justify: Option<JustifyValue>,
+        #[serde(default)]
+        pub align: Option<AlignValue>,
+        #[serde(default)]
+        pub wrap: Option<bool>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutColumnNode {
+        pub column: Vec<LayoutNode>,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(default)]
+        pub gap: Option<f32>,
+        #[serde(default)]
+        pub justify: Option<JustifyValue>,
+        #[serde(default)]
+        pub align: Option<AlignValue>,
+        #[serde(default)]
+        pub wrap: Option<bool>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutGridPayload {
+        pub columns: Vec<quadraui::layout::GridTrack>,
+        pub rows: Vec<quadraui::layout::GridTrack>,
+        pub cells: Vec<LayoutNode>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutGridNode {
+        pub grid: LayoutGridPayload,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSplitPayload {
+        pub id: String,
+        pub orientation: OrientationValue,
+        pub ratio: f32,
+        #[serde(default)]
+        pub first_min: Option<f32>,
+        #[serde(default)]
+        pub second_min: Option<f32>,
+        pub first: Box<LayoutNode>,
+        pub second: Box<LayoutNode>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSplitNode {
+        pub split: LayoutSplitPayload,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(default)]
+        pub gap: Option<f32>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutTabEntryNode {
+        pub id: String,
+        pub title: String,
+        pub content: Box<LayoutNode>,
+        #[serde(default)]
+        pub closable: Option<bool>,
+        #[serde(default)]
+        pub is_dirty: Option<bool>,
+        #[serde(default)]
+        pub is_preview: Option<bool>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutTabsPayload {
+        pub id: String,
+        pub tabs: Vec<LayoutTabEntryNode>,
+        #[serde(default)]
+        pub selected: Option<usize>,
+        #[serde(default)]
+        pub closable: Option<bool>,
+        #[serde(default)]
+        pub scroll_offset: Option<usize>,
+        #[serde(default)]
+        pub focused_index: Option<usize>,
+        #[serde(default)]
+        pub right_segments: Option<Vec<TabBarSegment>>,
+        #[serde(default)]
+        pub active_accent: Option<Color>,
+        #[serde(default)]
+        pub compact: Option<bool>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutTabsNode {
+        pub tabs: LayoutTabsPayload,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSidebarPanelPayload {
+        pub id: String,
+        #[serde(default)]
+        pub toolbar: Option<Toolbar>,
+        #[serde(default)]
+        pub toolbar_height: Option<f32>,
+        pub content: Box<LayoutNode>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSidebarPanelNode {
+        pub sidebar_panel: LayoutSidebarPanelPayload,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutScrollPayload {
+        pub id: String,
+        #[serde(default)]
+        pub axis: Option<ScrollAxisValue>,
+        #[serde(default)]
+        pub offset: Option<f32>,
+        pub content: Box<LayoutNode>,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutScrollNode {
+        pub scroll: LayoutScrollPayload,
+        #[serde(default)]
+        pub padding: Option<PaddingValue>,
+        #[serde(default)]
+        pub margin: Option<f32>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct SplitTreeSplitPayload {
+        pub orientation: OrientationValue,
+        pub ratio: f32,
+        pub first: Box<SplitTreeNode>,
+        pub second: Box<SplitTreeNode>,
+    }
+
+    /// One `"split_tree"` node: a `{"leaf": <node>}` pane or a nested
+    /// `{"split": {...}}`.
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SplitTreeNode {
+        Leaf(Box<LayoutNode>),
+        Split(SplitTreeSplitPayload),
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSplitTreePayload {
+        pub id: String,
+        pub root: SplitTreeNode,
+    }
+
+    #[derive(JsonSchema)]
+    pub struct LayoutSplitTreeNode {
+        pub split_tree: LayoutSplitTreePayload,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    #[derive(JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    pub enum A11yLiveValue {
+        Off,
+        Polite,
+        Assertive,
+    }
+
+    /// A leaf's `"a11y"` override.
+    #[derive(JsonSchema)]
+    pub struct LeafA11y {
+        #[serde(default)]
+        pub label: Option<String>,
+        #[serde(default)]
+        pub description: Option<String>,
+        #[serde(default)]
+        pub live: Option<A11yLiveValue>,
+    }
+
+    /// The keys a leaf node carries besides its one widget-kind key.
+    #[derive(JsonSchema)]
+    pub struct LeafCommon {
+        pub id: String,
+        #[serde(default)]
+        pub draggable: Option<bool>,
+        #[serde(default)]
+        pub drop_target: Option<bool>,
+        #[serde(default)]
+        pub a11y: Option<LeafA11y>,
+        #[serde(flatten)]
+        pub common: NodeCommon,
+    }
+
+    /// A leaf node: `{"id": ..., "<kind>": {...descriptor...}}`, with
+    /// exactly one widget-kind key out of the kinds
+    /// [`crate::wire::schema::leaf_kind_schemas`] lists.
+    pub struct LayoutLeafNode;
+
+    impl JsonSchema for LayoutLeafNode {
+        fn schema_name() -> Cow<'static, str> {
+            "LayoutLeafNode".into()
+        }
+
+        fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+            let mut schema = LeafCommon::json_schema(generator);
+            let kinds = crate::wire::schema::leaf_kind_schemas(generator);
+            let props = schema
+                .ensure_object()
+                .entry("properties")
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if let Some(props) = props.as_object_mut() {
+                for (kind, kind_schema) in kinds {
+                    props.insert(kind.to_string(), kind_schema.to_value());
+                }
+            }
+            schema.insert(
+                "description".into(),
+                "A widget leaf: an `id` plus exactly one widget-kind key holding that kind's \
+                 descriptor."
+                    .into(),
+            );
+            schema
+        }
+    }
+
+    /// One layout-tree node: a container or a widget leaf.
+    #[derive(JsonSchema)]
+    #[serde(untagged)]
+    pub enum LayoutNode {
+        Row(LayoutRowNode),
+        Column(LayoutColumnNode),
+        Grid(LayoutGridNode),
+        Split(LayoutSplitNode),
+        Tabs(LayoutTabsNode),
+        SidebarPanel(LayoutSidebarPanelNode),
+        Scroll(LayoutScrollNode),
+        SplitTree(LayoutSplitTreeNode),
+        Leaf(LayoutLeafNode),
+    }
+}

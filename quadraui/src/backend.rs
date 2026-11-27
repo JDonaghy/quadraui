@@ -4173,6 +4173,7 @@ pub struct Display {
 /// travels inside [`crate::UiEvent::SystemThemeChanged`], and every
 /// `UiEvent` payload satisfies that bound — see `event.rs`'s module doc.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SystemTheme {
     /// `true` when the OS is set to a dark appearance (Windows "Dark" app
     /// mode, macOS Dark Appearance, GTK's `prefer-dark-theme`, or — on TUI —

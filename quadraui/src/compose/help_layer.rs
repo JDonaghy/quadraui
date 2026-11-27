@@ -175,6 +175,7 @@ impl HelpRegistry {
 /// and its `Interactive` report, and what [`HelpOverlay::apply`] writes
 /// back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum HelpOverlayAction {
     /// The overlay just opened.
     Opened,

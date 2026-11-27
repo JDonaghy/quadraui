@@ -172,7 +172,7 @@ anywhere a node goes, mixed freely with nodes. Get the shape from
 ```python
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from quadraui.wire import TreeRowDescriptor  # stub-only; never import at runtime
+    from quadraui.wire import TreeRow  # stub-only; never import at runtime
 ```
 
 A malformed descriptor fails when the engine decodes it, with

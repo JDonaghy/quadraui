@@ -38,6 +38,7 @@ use crate::Handled;
 /// assert_eq!(md.scroll_offset, 0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Markdown {
     pub id: WidgetId,

@@ -82,6 +82,7 @@ const STEPPER_WIDTH: f32 = 3.0;
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct NumberInput {
     pub id: WidgetId,

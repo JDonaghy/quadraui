@@ -53,9 +53,40 @@ mod frame;
 mod layout;
 mod leaf;
 mod overlay;
+#[cfg(feature = "schema")]
+// The schema-only wire types in `schema` are never constructed; they exist
+// only for their derived `JsonSchema` impls.
+#[allow(dead_code)]
+pub mod schema;
 mod shell;
 mod style;
 mod value;
+
+/// Version of the layout-tree / render-output wire shape a render
+/// callback's returned `dict`/object carries in its optional top-level
+/// `"wire_version"` key -- see [`crate::wire::check_wire_version`] for the
+/// decode-time check against this constant.
+///
+/// # Mismatch policy
+///
+/// - **Absent key**: treated as version `1` -- every render callback
+///   written before this field existed, in either binding, keeps decoding
+///   unchanged.
+/// - **`wire_version` <= this constant**: accepted. The wire shape only
+///   ever grows additively (new optional keys, never a changed or removed
+///   one -- see `quadraui/docs/PRIMITIVE_RULES.md` rule 8), so a tree
+///   built against an older version is still fully decodable by a newer
+///   host.
+/// - **`wire_version` > this constant**: rejected with a `DecodeError`
+///   naming both versions. A binding newer than this host may have
+///   started emitting a shape this decoder doesn't know about yet;
+///   accepting it silently risks silently dropping data the binding meant
+///   to send, so this host raises instead of guessing.
+///
+/// Bump this constant only alongside a real additive change to the wire
+/// shape, and only once both `quadraui-py` and `quadraui-node` emit the
+/// new value.
+pub const WIRE_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod test_support;
@@ -374,7 +405,7 @@ mod tests {
         let version_mismatch = err(decode_render_output(
             "render",
             json!({
-                "wire_version": crate::wire_schema::WIRE_VERSION + 1,
+                "wire_version": crate::WIRE_VERSION + 1,
                 "button": {"id": "b1", "label": "Go"},
             }),
         ));

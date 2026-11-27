@@ -717,6 +717,7 @@ pub trait EventSink {
 /// `Reaction` instead (see that method's own `TreeTableController` routing
 /// blocks).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeTableControllerWireEvent {
     /// Row selected — click or keyboard navigation. `id` is the selected
     /// node's own [`quadraui::compose::NodeId`] (a plain `String`).

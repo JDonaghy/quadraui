@@ -310,6 +310,7 @@ pub fn semantic_event_for_hit(
 /// drag-specific hit description — has no `Deserialize` of its own either,
 /// since neither type has a reverse (host -> engine) decode path.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DragGestureWireEvent {
     /// A `MouseDown` landed on a leaf

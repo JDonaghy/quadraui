@@ -61,6 +61,7 @@ pub type ActionId = String;
 
 /// Layout direction for the section stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Axis {
     #[default]
     Vertical,
@@ -69,6 +70,7 @@ pub enum Axis {
 
 /// Scroll model for a `MultiSectionView`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ScrollMode {
     /// Each section owns its scrollbar; sections are sized by
     /// [`SectionSize`].
@@ -85,6 +87,7 @@ pub enum ScrollMode {
 /// e.g. an SC panel might be `[Fixed(3) /* commit input */, EqualShare,
 /// EqualShare, EqualShare]`.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SectionSize {
     /// Exact size in main-axis units (cells / pixels).
     Fixed(u16),
@@ -109,6 +112,7 @@ pub enum SectionSize {
 
 /// Right-aligned action button in a section header (or in a toolbar aux).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HeaderAction {
     pub id: ActionId,
     pub icon: Icon,
@@ -129,6 +133,7 @@ fn default_true() -> bool {
 /// where chevron is shown only if [`Self::show_chevron`] is `true`, and
 /// the actions are right-aligned.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SectionHeader {
     pub icon: Option<Icon>,
     pub title: StyledText,
@@ -148,6 +153,7 @@ pub struct SectionHeader {
 /// a plain "No data" up to a VSCode-style welcome view ("Open Folder" /
 /// "Clone Repository" buttons).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EmptyBody {
     /// Optional centered icon above the message.
     pub icon: Option<Icon>,
@@ -162,6 +168,7 @@ pub struct EmptyBody {
 /// Single-line text input rendered inline (used for SC commit messages,
 /// search-within-section, etc.).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct InlineInput {
     pub id: WidgetId,
     pub text: String,
@@ -176,6 +183,7 @@ pub struct InlineInput {
 
 /// Auxiliary widget rendered between a section's header and its body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SectionAux {
     /// Single-line text input (e.g. SC commit message).
     Input(InlineInput),
@@ -191,6 +199,7 @@ pub enum SectionAux {
 /// `Custom` is the escape hatch for app-defined widgets the rasteriser
 /// can't paint (host paints in returned [`SectionLayout::body_bounds`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum SectionBody {
     Tree(TreeView),
     List(ListView),
@@ -212,6 +221,7 @@ pub enum SectionBody {
 
 /// One section in a `MultiSectionView`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Section {
     pub id: SectionId,
     pub header: SectionHeader,
@@ -279,6 +289,7 @@ pub struct Section {
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MultiSectionView {
     pub id: WidgetId,
     pub sections: Vec<Section>,
@@ -382,6 +393,7 @@ pub enum MultiSectionViewHit {
 
 /// Sub-zone of a section header that was hit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum HeaderHit {
     /// Leading chevron — explicit collapse/expand.
     Chevron,
@@ -395,6 +407,7 @@ pub enum HeaderHit {
 
 /// Sub-zone of a section aux that was hit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum AuxHit {
     /// Hit on the input region of an `Input` or `Search` aux.
     Input,
@@ -420,6 +433,7 @@ pub enum ScrollbarHit {
 /// for is the app's to apply: the view keeps collapse, scroll, sizes and
 /// aux-input text as descriptor fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum MultiSectionViewEvent {
     /// A header was clicked, or activated from the keyboard (Enter or

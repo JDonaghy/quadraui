@@ -1,9 +1,6 @@
-use std::collections::HashSet;
-
 use serde_json::json;
 
 use crate::wire::test_support::{decode, err};
-use crate::wire::value::UNIVERSAL_NODE_SIBLING_KEYS;
 
 use super::*;
 
@@ -840,60 +837,4 @@ fn rejects_an_out_of_range_selected_index() {
         "{}",
         err.to_string()
     );
-}
-
-/// The field names `crate::wire_schema::schema()` declares for `def_name`
-/// — [`crate::wire_schema::DefJson::Obj`]'s own field list, flattened to
-/// just the names. Panics if no such `Obj` def exists, so a typo'd
-/// `def_name` in a caller below fails loudly rather than silently
-/// comparing against an empty set.
-fn schema_field_names(def_name: &str) -> HashSet<String> {
-    crate::wire_schema::schema()
-        .into_iter()
-        .find_map(|def| match def {
-            crate::wire_schema::DefJson::Obj { name, fields, .. } if name == def_name => {
-                Some(fields.into_iter().map(|f| f.name).collect())
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no such schema `Obj` def: {def_name}"))
-}
-
-/// Every per-kind sibling-key constant [`layout_node_from_value_inner`]
-/// passes to [`check_node_sibling_keys`] (plus [`UNIVERSAL_NODE_SIBLING_KEYS`]
-/// it folds in automatically) names exactly the field set
-/// `crate::wire_schema::schema()` declares for that node's own generated
-/// def -- the same source `docs/bindings-wire-format.md`'s *Generated
-/// reference* section renders from. A field added to one side without
-/// the other would otherwise only surface as a silent false "unknown
-/// key" warning (or a surprise strict-mode rejection) the first time a
-/// real app sent it, rather than failing this test at compile-review
-/// time.
-#[test]
-fn node_shape_key_constants_match_the_wire_schema_field_list() {
-    let cases: &[(&str, &[&str])] = &[
-        ("LayoutRowNode", &ROW_SHAPE_KEYS),
-        ("LayoutColumnNode", &COLUMN_SHAPE_KEYS),
-        ("LayoutGridNode", &GRID_SHAPE_KEYS),
-        ("LayoutSplitNode", &SPLIT_SHAPE_KEYS),
-        ("LayoutTabsNode", &TABS_SHAPE_KEYS),
-        ("LayoutSidebarPanelNode", &SIDEBAR_PANEL_SHAPE_KEYS),
-        ("LayoutSplitTreeNode", &SPLIT_TREE_SHAPE_KEYS),
-        ("LayoutScrollNode", &SCROLL_SHAPE_KEYS),
-    ];
-    for (def_name, shape_keys) in cases {
-        let mut expected = schema_field_names(def_name);
-        for universal in UNIVERSAL_NODE_SIBLING_KEYS {
-            // `schema_field_names` is the generated reference's own
-            // field list, which already carries these; strip them back
-            // out so the comparison is against `shape_keys` alone, the
-            // same split `check_node_sibling_keys` itself makes.
-            expected.remove(universal);
-        }
-        let actual: HashSet<String> = shape_keys.iter().map(|s| s.to_string()).collect();
-        assert_eq!(
-            actual, expected,
-            "{def_name}'s shape-key constant has drifted from its wire_schema field list"
-        );
-    }
 }

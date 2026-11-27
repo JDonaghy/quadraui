@@ -33,6 +33,7 @@ fn default_step() -> f32 {
 /// assert_eq!(slider.step, 1.0);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Slider {
     pub id: WidgetId,

@@ -139,7 +139,7 @@ def test_auto_ids_from_node_constructors_are_stable_across_rerender():
 def test_toolbar_without_an_explicit_id_still_builds_a_wire_dict():
     """`Toolbar` falls back to its own call-order counter (it never passes
     through `Node`/`_walk`), but omitting `id=` must still produce a
-    well-formed `ToolbarDescriptor` rather than raising."""
+    well-formed `Toolbar` rather than raising."""
     toolbar = Toolbar(buttons=[{"Action": {"id": "a", "label": "Go"}}])
     assert isinstance(toolbar["id"], str)
     assert toolbar["buttons"] == [{"Action": {"id": "a", "label": "Go"}}]
@@ -1033,7 +1033,7 @@ def test_a_raw_escape_hatch_dict_that_sets_its_own_wire_version_wins():
 
 def test_forcing_a_wire_version_newer_than_this_host_understands_raises():
     """Bumping `runtime.WIRE_VERSION` past what the native extension's own
-    `wire_schema::WIRE_VERSION` accepts makes the host's version gate
+    `quadraui_binding_core::WIRE_VERSION` accepts makes the host's version gate
     reject the next render with `VersionMismatchError`, exactly as it
     would for a hand-built wire dict carrying the same inflated value."""
 

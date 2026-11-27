@@ -807,7 +807,7 @@ test("a raw escape-hatch object that sets its own wire_version wins", () => {
 
 test("forcing a wire_version newer than this host understands raises", () => {
   // Bumping `runtime.WIRE_VERSION` past what the native extension's own
-  // `wire_schema::WIRE_VERSION` accepts makes the host's version gate
+  // `quadraui_binding_core::WIRE_VERSION` accepts makes the host's version gate
   // reject the next render with `VersionMismatchError`, exactly as it
   // would for a hand-built wire object carrying the same inflated value.
   const runtime = require("../js/app/runtime.ts");

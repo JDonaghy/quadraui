@@ -109,6 +109,7 @@ const DROPDOWN: PopupKey = PopupKey(0);
 /// assert_eq!(combo.filtered_indices(), vec![0, 1]);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct ComboBox {
     pub id: WidgetId,

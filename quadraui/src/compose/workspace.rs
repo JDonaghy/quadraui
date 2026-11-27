@@ -229,6 +229,7 @@ impl WorkspaceDoc {
 /// `_ => {}` arm.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum WorkspaceEvent {
     /// A document was added to the strip and made active.
     Opened {

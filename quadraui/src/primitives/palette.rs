@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 /// ignore this field — they will render the list as usual, which is a
 /// graceful degradation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum PaletteMode {
     /// Search + list mode — the default. The query filters the item list.
     #[default]
@@ -104,6 +105,7 @@ pub enum PaletteMode {
 /// assert_eq!(layout.hit_test(0.0, 2.0), PaletteHit::Item(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Palette {
     pub id: WidgetId,
     /// Header text shown above the query input, e.g. `"Commands"` or
@@ -178,6 +180,7 @@ impl Default for Palette {
 
 /// One row in a `Palette`'s filtered result list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PaletteItem {
     /// Primary row text (file name, command name, buffer label).
     pub text: StyledText,
@@ -213,6 +216,7 @@ fn default_true() -> bool {
 /// Preview pane content shown alongside the item list when the palette
 /// operates in split-layout mode (file pickers, symbol pickers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PalettePreview {
     /// Syntax-highlighted content lines.
     pub lines: Vec<StyledText>,
@@ -1692,6 +1696,7 @@ pub(crate) mod native_surface_paint {
 
 /// Events a `Palette` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum PaletteEvent {
     /// The query text changed (user typed, pasted, or deleted).
     QueryChanged { value: String },

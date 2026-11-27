@@ -52,6 +52,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(back.x, back.y), CommandCenterHit::Back);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandCenter {
     pub id: WidgetId,
     pub back_enabled: bool,
@@ -102,6 +103,7 @@ pub enum CommandCenterHit {
 /// Which part of a [`CommandCenter`] an activation landed on — the
 /// payload of [`crate::UiEvent::CommandCenterActivated`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CommandCenterTarget {
     /// The back (`◀`) nav arrow.
     Back,

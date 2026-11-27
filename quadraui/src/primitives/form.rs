@@ -167,6 +167,7 @@ use serde::{Deserialize, Serialize};
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Form {
     pub id: WidgetId,
     pub fields: Vec<FormField>,
@@ -265,6 +266,7 @@ pub struct Form {
 /// [`ControlWidth::ContentEnd`], which places it against the row's right
 /// edge instead.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ControlWidth {
     /// Stretch the control to fill the row's remaining width after the
     /// label column — every field's control ends at the same right
@@ -327,6 +329,7 @@ impl ControlWidth {
 /// Ant Design's `Form` `layout` prop (`horizontal` / `vertical` /
 /// `inline`), with `Hidden` added for label-less rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LabelPosition {
     /// Label beside the input, on the same row. Ant's "horizontal"
     /// layout; quadraui's only behaviour before this field existed.
@@ -348,6 +351,7 @@ pub enum LabelPosition {
 /// [`Form::label_width`]/[`FormField::label_width`] or the backend's
 /// own widest-label measurement).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum LabelAlign {
     #[default]
     Start,
@@ -369,6 +373,7 @@ pub enum LabelAlign {
 /// the shared positioning math in [`Form::layout`] changes, so no
 /// backend-specific code needs to change to pick this up.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FormSpacing {
     /// Uniform inset, applied on all four edges of the form's content
     /// area before any field is laid out. `0.0` (the default)
@@ -399,6 +404,7 @@ pub struct FormSpacing {
 /// [`FormSpacing::row_align`] as the form-wide default, or on
 /// [`FormField::row_align`] to override a single field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum RowAlign {
     /// Items pack left-to-right starting at `items_start_x`, leaving
     /// any slack at the row's right edge — today's only behavior.
@@ -418,6 +424,7 @@ pub enum RowAlign {
 
 /// Validation state rendered as a colored indicator + message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ValidationState {
     Error(String),
     Warning(String),
@@ -425,6 +432,7 @@ pub enum ValidationState {
 
 /// One row in a `Form`: a label + an input.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FormField {
     pub id: WidgetId,
     /// Rendered to the left of the field. Omit (empty spans) for rows
@@ -490,6 +498,7 @@ pub struct FormField {
 
 /// The input variant carried by a `FormField`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum FieldKind {
     /// A bold/sectioned header row. Not interactive; used to group
     /// related fields. The field's `label` carries the header text;
@@ -718,6 +727,7 @@ pub enum FieldKind {
 
 /// One toggle in a [`FieldKind::ToggleGroup`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ToggleGroupItem {
     pub id: WidgetId,
     pub label: String,
@@ -726,6 +736,7 @@ pub struct ToggleGroupItem {
 
 /// One button in a [`FieldKind::ButtonRow`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ButtonRowItem {
     pub id: WidgetId,
     pub label: String,
@@ -5042,6 +5053,7 @@ pub(crate) use native_surface_paint::{
 
 /// Events a `Form` emits back to the app.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum FormEvent {
     /// A `Toggle` field's value changed.

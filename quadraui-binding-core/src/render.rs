@@ -1697,6 +1697,7 @@ pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &D
 /// currently visible (plus whatever prefetch margin it chooses) instead of
 /// every row up front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ItemsWindow {
     pub start: usize,
     pub total: usize,
@@ -1724,6 +1725,7 @@ pub fn items_window_from_value(value: &serde_json::Value) -> Option<ItemsWindow>
 /// for next, computed by [`rows_requested_for_window`] once scrolling moves
 /// outside the slice an [`ItemsWindow`] says is currently loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RowsRequestedEvent {
     pub id: WidgetId,
     pub start: usize,

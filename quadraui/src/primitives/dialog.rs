@@ -299,6 +299,7 @@ pub enum DialogSeverity {
 /// Not `Eq`: [`Self::spec`] carries a [`crate::ButtonSpec`], which has an
 /// `f32` (`icon_gap`) with no total order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DialogButton {
     pub id: WidgetId,
     pub label: String,

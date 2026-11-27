@@ -143,6 +143,7 @@ use crate::Handled;
 /// assert_eq!(layout.hit_test(1.0, 0.0), TabBarHit::Tab(0));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TabBar {
     pub id: WidgetId,
     pub tabs: Vec<TabItem>,
@@ -268,6 +269,19 @@ impl TabIcon {
     }
 }
 
+/// [`TabIcon`]'s two accepted wire shapes, `Codicon` first for the same
+/// reason as [`crate::Icon`]'s.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+enum TabIconWire {
+    Codicon { codicon: String, color: Color },
+    Glyph { glyph: String, color: Color },
+}
+
+#[cfg(feature = "schema")]
+crate::schema_as!(TabIcon, "TabIcon", TabIconWire);
+
 /// Accepts both `{"glyph": ..., "color": ...}` and `{"codicon": "...",
 /// "color": ...}` — the same two-shape convention as [`Icon`]'s manual
 /// `Deserialize` impl; see that type's doc for why `Codicon` is tried
@@ -277,16 +291,9 @@ impl<'de> Deserialize<'de> for TabIcon {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Wire {
-            Codicon { codicon: String, color: Color },
-            Glyph { glyph: String, color: Color },
-        }
-
-        match Wire::deserialize(deserializer)? {
-            Wire::Glyph { glyph, color } => Ok(TabIcon { glyph, color }),
-            Wire::Codicon { codicon, color } => {
+        match TabIconWire::deserialize(deserializer)? {
+            TabIconWire::Glyph { glyph, color } => Ok(TabIcon { glyph, color }),
+            TabIconWire::Codicon { codicon, color } => {
                 let glyph = crate::codicon_names::codepoint(&codicon).ok_or_else(|| {
                     serde::de::Error::custom(format!(
                         "unknown codicon name {codicon:?} — see codicon_names::NAMES"
@@ -358,6 +365,7 @@ where
 
 /// One tab in a `TabBar`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TabItem {
     /// Display label, e.g. `" 3: main.rs "`. Backends may underline a subset
     /// (the filename portion after the last `": "`) — they are responsible
@@ -401,6 +409,7 @@ impl Default for TabItem {
 /// use `width_cells` for click-region book-keeping in cell units; pixel
 /// positioning is done by Pango measurement at draw time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TabBarSegment {
     /// Text / icon glyph to render (e.g. `" … "`, `" ⇅ "`, `"2 of 5"`).
     pub text: String,
@@ -935,6 +944,7 @@ impl TabBarLayout {
 /// (e.g. a stroked border) is additive rather than breaking.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TabFrame {
     /// No enclosing decoration beyond the tab's ordinary active
     /// background.
@@ -954,6 +964,7 @@ pub enum TabFrame {
 /// `#[non_exhaustive]`: a future separator style is additive.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TabSeparator {
     /// Reserve one column after the tab and paint
     /// [`TAB_SEPARATOR_CHAR`] in it, so adjacent labels read as distinct
@@ -977,6 +988,7 @@ pub enum TabSeparator {
 /// field stays `pub` for reading.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TabChrome {
     /// Which frame to paint around the active tab. Defaults to
     /// [`TabFrame::None`].
@@ -1062,6 +1074,7 @@ impl TabChrome {
 /// that descriptor rides inside the binding layer's own frame enums), so
 /// the empty case costs two pointers rather than two whole [`Icon`]s.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
     #[serde(default)]
@@ -1416,6 +1429,7 @@ impl TabBar {
 /// defined for plugin invariants §10 — plugin-declared tab bars will
 /// consume events directly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum TabBarEvent {
     /// User clicked a tab body (not its close button) — index is into

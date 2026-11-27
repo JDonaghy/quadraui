@@ -584,6 +584,9 @@ fn native_spec(
     }
 }
 
+/// A per-axis rounding function: `quantise_horizontal` or `quantise_vertical`.
+type Quantise = fn(f32, f32) -> f32;
+
 /// [`stack_rects`]'s multi-line path for a `wrap` stack.
 fn stack_rects_wrapped(
     area: Rect,
@@ -595,26 +598,22 @@ fn stack_rects_wrapped(
     natural: &mut dyn FnMut(usize) -> NaturalSize,
 ) -> Vec<Rect> {
     let n = children.len();
-    let (main_metric, cross_metric, quantise_main, quantise_cross): (
-        f32,
-        f32,
-        fn(f32, f32) -> f32,
-        fn(f32, f32) -> f32,
-    ) = if horizontal {
-        (
-            char_width,
-            line_height,
-            quantise_horizontal,
-            quantise_vertical,
-        )
-    } else {
-        (
-            line_height,
-            char_width,
-            quantise_vertical,
-            quantise_horizontal,
-        )
-    };
+    let (main_metric, cross_metric, quantise_main, quantise_cross): (f32, f32, Quantise, Quantise) =
+        if horizontal {
+            (
+                char_width,
+                line_height,
+                quantise_horizontal,
+                quantise_vertical,
+            )
+        } else {
+            (
+                line_height,
+                char_width,
+                quantise_vertical,
+                quantise_horizontal,
+            )
+        };
     let gap = quantise_main(style.gap, main_metric);
     // The distance between lines runs along the cross axis, so it is
     // quantised by the cross-axis rule against the cross metric.

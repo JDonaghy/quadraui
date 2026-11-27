@@ -357,5 +357,51 @@ class MainExitStatusTest(unittest.TestCase):
             self.assertEqual(rc, 0)
 
 
+class BindingCoreRatchetTest(unittest.TestCase):
+    def _tree(self, tmp: str, n: int) -> Path:
+        d = Path(tmp) / "binding-core-src"
+        d.mkdir()
+        (d / "lib.rs").write_text("\n".join(f"line{i}" for i in range(n)) + "\n")
+        return d
+
+    def _run(self, tmp: str, binding_core_src: Path, baseline: dict[str, int], *extra: str) -> int:
+        src_root = Path(tmp) / "src"
+        src_root.mkdir(exist_ok=True)
+        baseline_file = Path(tmp) / "baseline.json"
+        baseline_file.write_text(json.dumps(baseline))
+        return ratchet.main(
+            [
+                *extra,
+                "--src-root",
+                str(src_root),
+                "--binding-core-src",
+                str(binding_core_src),
+                "--baseline",
+                str(baseline_file),
+                "--allowance",
+                "10",
+            ]
+        )
+
+    def test_counts_the_binding_core_dir_under_its_own_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            counts = ratchet.current_counts(
+                Path(tmp) / "src", binding_core_src=self._tree(tmp, 7)
+            )
+            self.assertEqual(counts[ratchet.BINDING_CORE_KEY], 7)
+
+    def test_binding_core_growth_past_allowance_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = self._run(tmp, self._tree(tmp, 200), {ratchet.BINDING_CORE_KEY: 100})
+            self.assertEqual(rc, 1)
+
+    def test_binding_core_shrink_is_written_down(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = self._run(tmp, self._tree(tmp, 50), {ratchet.BINDING_CORE_KEY: 100}, "--write")
+            self.assertEqual(rc, 0)
+            written = json.loads((Path(tmp) / "baseline.json").read_text())
+            self.assertEqual(written, {ratchet.BINDING_CORE_KEY: 50})
+
+
 if __name__ == "__main__":
     unittest.main()

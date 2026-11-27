@@ -68,6 +68,28 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- `quadraui.wire` (#2979) is generated from a JSON Schema derived from the
+  Rust wire types themselves, so every descriptor `TypedDict` is now named
+  after its Rust type: the `Descriptor` suffix is gone (`ButtonDescriptor`
+  -> `Button`, `TreeViewDescriptor` -> `TreeView`, `ListViewDescriptor` ->
+  `ListView`, `ColumnDescriptor` -> `Column`, `ListItemDescriptor` ->
+  `ListItem`, `TreeRowDescriptor` -> `TreeRow`, `CanvasDescriptor` ->
+  `Canvas`, `PasswordDescriptor` -> `PasswordInput`, `FloatDescriptor` ->
+  `Float`, ...). `SplitTreeRecursiveNode` is `SplitTreeNode`,
+  `EditorDiffLine` is `DiffLine`, `MsvAxis` is `Axis` and
+  `DialogChromeDescriptor` is `DialogChromeWire`. `TreePath` is gone (a
+  path is a plain `List[int]`), as are `EditorStyle`, `IconGlyph` and
+  `IconCodicon` (`Icon` is still the union of both shapes). Optionality
+  now matches what the decoder accepts: an `Option<T>` field may be
+  omitted (`NotRequired[Optional[T]]`) rather than being a required
+  nullable key, and field types are the real Rust types (an integer field
+  is `int`, an enum field its literal set). A `list`/`tree`/`data_table`
+  leaf body is `ListView | ListViewLeaf` (the leaf variant adds
+  `scroll_px`/`items_window`), and `WidgetKind` names every leaf kind.
+  Docstrings are the Rust types' own first paragraph. New definitions
+  describe the leaf `a11y`/`draggable`/`drop_target` keys, every
+  `run_shell` config shape and the drag/tree-table/hit wire events.
+
 - `progress`, `spinner`, `scrollbar`, `command_line`, `message_list`,
   `multi_section_view` and `find_replace` leaves decode through the
   generic widget leaf (`quadraui::decode_widget`), like `button` or

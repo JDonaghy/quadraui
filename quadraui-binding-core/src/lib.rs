@@ -28,7 +28,8 @@ pub mod services;
 pub mod text_input;
 pub mod widget_state;
 pub mod wire;
-pub mod wire_schema;
+
+pub use wire::WIRE_VERSION;
 
 /// A wire-decode failure from any decoder in [`wire`] or
 /// [`extra_paint::decode_extra_primitive`] — the core counterpart of a

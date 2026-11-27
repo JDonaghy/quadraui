@@ -51,6 +51,7 @@ pub(crate) mod paint_cells;
 
 /// The kind of change a [`DiffRow`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffRowKind {
     /// Line is identical on both sides.
     Same,
@@ -67,6 +68,7 @@ pub enum DiffRowKind {
 /// Either side may be `None` (padding row) when one side has more lines
 /// in a change run than the other.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiffRow {
     /// Content from the left (original) file, or `None` for padding.
     pub left: Option<String>,
@@ -140,6 +142,7 @@ pub fn unified_row_text(row: &DiffRow) -> &str {
 
 /// A contiguous group of rows to display, bracketed by context lines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiffHunk {
     /// 1-based line number of the first row's left content in the original
     /// left text. Used to render `@@ -left_start,N +right_start,M @@` headers
@@ -168,6 +171,7 @@ pub fn unified_hunk_header(hunk: &DiffHunk) -> String {
 
 /// Display mode for the diff widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffMode {
     /// Two-column layout: left (original) on the left, right (modified) on
     /// the right, separated by a centre divider.
@@ -187,6 +191,7 @@ pub enum DiffMode {
 /// deletion) ships in a follow-up. On GTK v1 this setting is accepted but
 /// the right pane renders read-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffEditability {
     /// Both panes are read-only (default).
     #[default]
@@ -200,6 +205,7 @@ pub enum DiffEditability {
 
 /// Which pane has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffPane {
     /// Left (original) pane.
     #[default]
@@ -442,6 +448,7 @@ fn scroll_window(scroll_offset: usize, visible_rows: usize, total: usize) -> (us
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DiffView {
     /// Stable identifier for this widget instance.
     pub id: WidgetId,
@@ -622,6 +629,7 @@ const DIFF_WHEEL_ROWS_PER_NOTCH: f32 = 3.0;
 /// What a [`DiffView`] reports. `scroll_offset` and `focused_pane` are the
 /// app's: it writes each back onto the descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DiffViewEvent {
     /// A wheel notch or PageUp/PageDown scrolled the view to
     /// `scroll_offset`, already clamped so the last line stays reachable.

@@ -83,10 +83,21 @@ impl std::error::Error for KindError {
 pub type DecodeFn =
     fn(serde_json::Value) -> Result<Box<dyn crate::primitive::DynWidget>, serde_json::Error>;
 
+/// Returns the JSON Schema of a runtime-registered widget kind's payload.
+/// Registered through [`register_widget_kind_with_schema`]; a binding's
+/// schema export reads it back with [`runtime_widget_kind_schema`].
+pub type SchemaFn = fn() -> serde_json::Value;
+
+#[derive(Clone, Copy)]
+struct RuntimeKind {
+    decode: DecodeFn,
+    schema: Option<SchemaFn>,
+}
+
 fn runtime_registry(
-) -> &'static std::sync::RwLock<std::collections::HashMap<&'static str, DecodeFn>> {
+) -> &'static std::sync::RwLock<std::collections::HashMap<&'static str, RuntimeKind>> {
     static REGISTRY: std::sync::OnceLock<
-        std::sync::RwLock<std::collections::HashMap<&'static str, DecodeFn>>,
+        std::sync::RwLock<std::collections::HashMap<&'static str, RuntimeKind>>,
     > = std::sync::OnceLock::new();
     REGISTRY.get_or_init(Default::default)
 }
@@ -102,6 +113,33 @@ fn runtime_registry(
 /// entry or already registered; [`unregister_widget_kind`] frees a
 /// runtime name for reuse.
 pub fn register_widget_kind(kind: &'static str, decode: DecodeFn) -> Result<(), KindError> {
+    insert_runtime_kind(
+        kind,
+        RuntimeKind {
+            decode,
+            schema: None,
+        },
+    )
+}
+
+/// [`register_widget_kind`], plus the JSON Schema of the kind's payload,
+/// which a binding's wire-schema export lists under `kind` alongside the
+/// static [`widget_kinds!`] entries.
+pub fn register_widget_kind_with_schema(
+    kind: &'static str,
+    decode: DecodeFn,
+    schema: SchemaFn,
+) -> Result<(), KindError> {
+    insert_runtime_kind(
+        kind,
+        RuntimeKind {
+            decode,
+            schema: Some(schema),
+        },
+    )
+}
+
+fn insert_runtime_kind(kind: &'static str, entry: RuntimeKind) -> Result<(), KindError> {
     if is_static_widget_kind(kind) {
         return Err(KindError::Duplicate(kind.to_string()));
     }
@@ -111,8 +149,20 @@ pub fn register_widget_kind(kind: &'static str, decode: DecodeFn) -> Result<(), 
     if registry.contains_key(kind) {
         return Err(KindError::Duplicate(kind.to_string()));
     }
-    registry.insert(kind, decode);
+    registry.insert(kind, entry);
     Ok(())
+}
+
+/// The payload schema a runtime kind was registered with through
+/// [`register_widget_kind_with_schema`]; `None` for an unknown kind or one
+/// registered through plain [`register_widget_kind`].
+pub fn runtime_widget_kind_schema(kind: &str) -> Option<serde_json::Value> {
+    runtime_registry()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(kind)
+        .and_then(|entry| entry.schema)
+        .map(|schema| schema())
 }
 
 /// Removes a kind [`register_widget_kind`] added. A static
@@ -159,7 +209,7 @@ pub fn decode_registered_widget(
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(kind)
-        .copied();
+        .map(|entry| entry.decode);
     match decode {
         Some(decode) => decode(value).map_err(|source| KindError::Decode {
             kind: kind.to_string(),
@@ -167,6 +217,36 @@ pub fn decode_registered_widget(
         }),
         None => Err(KindError::Unknown(kind.to_string())),
     }
+}
+
+/// The JSON Schema of a widget kind's descriptor type. With the `schema`
+/// feature every `schemars::JsonSchema` type implements it, so a
+/// [`widget_kinds!`] entry whose type lacks a schema fails to compile;
+/// without the feature every type implements it trivially.
+pub trait KindSchema {
+    /// The descriptor's schema, registered in `generator`'s definitions and
+    /// returned as a reference to them.
+    #[cfg(feature = "schema")]
+    fn kind_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema;
+}
+
+#[cfg(feature = "schema")]
+impl<T: schemars::JsonSchema> KindSchema for T {
+    fn kind_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        generator.subschema_for::<T>()
+    }
+}
+
+#[cfg(not(feature = "schema"))]
+impl<T: ?Sized> KindSchema for T {}
+
+/// Receives each `(kind, descriptor type)` pair of a [`widget_kinds!`]
+/// table through the generated `visit_widget_kinds`, so a consumer such
+/// as a binding's schema export can walk the table's types, not just its
+/// kind strings.
+pub trait KindVisitor {
+    /// Called once per table entry, in table order.
+    fn visit<T: KindSchema>(&mut self, kind: &'static str);
 }
 
 /// Declare the `kind` string → descriptor type table [`decode_widget`]
@@ -177,7 +257,10 @@ pub fn decode_registered_widget(
 /// [`crate::primitive::DynWidget`] — every built-in `Primitive` that also
 /// implements [`crate::interactive::Interactive`] gets the latter for
 /// free via that trait's blanket impl (see [`crate::primitive::DynWidget`]'s
-/// own doc).
+/// own doc). It also generates `is_static_widget_kind`,
+/// `static_widget_kinds` and `visit_widget_kinds`, which hands each entry's
+/// type to a [`KindVisitor`]; with the `schema` feature each `$ty` must
+/// therefore also implement `schemars::JsonSchema` (see [`KindSchema`]).
 ///
 /// An entry may carry attributes, which land on the generated `match`
 /// arm. That is how a descriptor whose `Primitive`/`Interactive` impls
@@ -290,6 +373,10 @@ macro_rules! widget_kinds {
         }
 
         /// This table's static kind strings on this build, in table order.
+        // Pushed one entry at a time so each entry's own `#[cfg(...)]`
+        // can drop it; a `vec![...]` literal cannot carry per-element
+        // attributes.
+        #[allow(clippy::vec_init_then_push)]
         pub fn static_widget_kinds() -> ::std::vec::Vec<&'static str> {
             #[allow(unused_mut)]
             let mut kinds = ::std::vec::Vec::new();
@@ -298,6 +385,14 @@ macro_rules! widget_kinds {
                 kinds.push($kind);
             )*
             kinds
+        }
+
+        pub fn visit_widget_kinds<V: $crate::widget_kinds::KindVisitor>(visitor: &mut V) {
+            $(
+                $( #[$meta] )*
+                visitor.visit::<$ty>($kind);
+            )*
+            let _ = visitor;
         }
     };
 }
@@ -484,6 +579,41 @@ mod tests {
             Err(KindError::Duplicate(_))
         ));
         assert!(static_widget_kinds().contains(&"cell_grid"));
+    }
+
+    #[test]
+    fn a_runtime_kind_registered_with_a_schema_reports_it() {
+        fn schema() -> serde_json::Value {
+            serde_json::json!({"type": "object", "required": ["id"]})
+        }
+        register_widget_kind_with_schema("test_runtime_schema", decode_test_progress, schema)
+            .expect("registers");
+        register_widget_kind("test_runtime_no_schema", decode_test_progress).expect("registers");
+        assert_eq!(
+            runtime_widget_kind_schema("test_runtime_schema"),
+            Some(schema())
+        );
+        assert_eq!(runtime_widget_kind_schema("test_runtime_no_schema"), None);
+        assert_eq!(runtime_widget_kind_schema("cell_grid"), None);
+        let widget = decode_widget("test_runtime_schema", serde_json::json!({"id": "s"}))
+            .expect("decodes through the registered decode");
+        assert_eq!(widget.id().map(|id| id.as_str()), Some("s"));
+        unregister_widget_kind("test_runtime_schema");
+        unregister_widget_kind("test_runtime_no_schema");
+        assert_eq!(runtime_widget_kind_schema("test_runtime_schema"), None);
+    }
+
+    #[test]
+    fn visit_widget_kinds_walks_every_static_entry_in_order() {
+        struct Names(Vec<&'static str>);
+        impl KindVisitor for Names {
+            fn visit<T: KindSchema>(&mut self, kind: &'static str) {
+                self.0.push(kind);
+            }
+        }
+        let mut names = Names(Vec::new());
+        visit_widget_kinds(&mut names);
+        assert_eq!(names.0, static_widget_kinds());
     }
 
     #[test]

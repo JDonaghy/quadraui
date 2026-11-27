@@ -18,19 +18,10 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequen
 
 from .wire import (
     Accelerator,
-    ButtonDescriptor,
     ContextMenuItem,
-    DataTableDescriptor,
-    ImageDescriptor,
     ImageSource,
-    ListViewDescriptor,
-    ProgressBarDescriptor,
     ShellConfigDescriptor,
-    SpinnerDescriptor,
     SystemTheme,
-    TabBarDescriptor,
-    TextDisplayDescriptor,
-    TreeViewDescriptor,
     UiEvent,
 )
 

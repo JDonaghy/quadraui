@@ -41,6 +41,7 @@ pub struct TabDragSource {
 /// [`TabGroupEvent`](crate::compose::TabGroupEvent)'s `TabReordered`,
 /// `TabMovedToPane`, `TabSplitToNewPane` and `PaneCollapsed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TabDropInstruction {
     /// The drop was a no-op: outside every pane, dropped back onto the
     /// source tab's own position, or (for `Split`) the only tab of the

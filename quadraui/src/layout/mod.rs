@@ -70,6 +70,7 @@ use stack::{
 /// [`ResolvedSide`]/[`Anchor`] itself need to round-trip through JSON
 /// for a Lua-extension-declared float to deserialise cleanly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Side {
     Top,
     #[default]
@@ -103,6 +104,7 @@ pub enum ResolvedSide {
 /// overflow the viewport, try the opposite side; if both overflow, pin
 /// to the viewport edge on the preferred side. See [`Anchor::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Anchor {
     /// Bounds of the element the overlay is positioned against, in
     /// ABSOLUTE (target-surface) coordinates. A cursor-position anchor
@@ -377,6 +379,7 @@ pub fn visible_range_walk(
 /// `EqualShare` variant yet — a grid track adds them if a consumer needs
 /// them, same as `SectionSize` did.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum GridTrack {
     /// Exact size in the container's native units (cells / pixels).
     Fixed(f32),

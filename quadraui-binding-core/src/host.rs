@@ -2183,6 +2183,7 @@ pub fn resolve_layout_node_windowed(
 /// `expanded` from the derived one in the same snapshot, since both can
 /// be live for the same tree at once.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WidgetStateSnapshot {
     /// A `Tree`'s stored cursor row, if `id` is a tree being tracked by
     /// [`resolve_tree_cursor`].

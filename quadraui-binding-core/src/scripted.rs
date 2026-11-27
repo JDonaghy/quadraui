@@ -146,6 +146,7 @@ pub(crate) fn lookup_scripted_widget(id: &str) -> Option<Rc<dyn ExtraPaint>> {
 /// (see this module's own doc, "Splicing into a decoded tree without a
 /// `Deserialize` impl").
 #[derive(Debug, Clone, Default, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScriptedWidgetDescriptor {
     #[serde(default)]
     pub props: ScriptedProps,

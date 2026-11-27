@@ -37,7 +37,7 @@ from quadraui import QuiApp
 if TYPE_CHECKING:
     # `quadraui.wire` is a stub-only module -- see its own module docstring --
     # so this import only runs under a type checker.
-    from quadraui.wire import Key, ListItemDescriptor, Modifiers, UiEvent
+    from quadraui.wire import Key, ListItem, Modifiers, UiEvent
 
 WIDTH = 20
 HEIGHT = 10
@@ -62,7 +62,7 @@ def _key_event(key: "Key") -> "UiEvent":
     }
 
 
-def make_rows(count: int) -> "list[ListItemDescriptor]":
+def make_rows(count: int) -> "list[ListItem]":
     return [
         {"text": {"spans": [{"text": f"Row {i}", "fg": None, "bg": None}]}}
         for i in range(count)
@@ -74,7 +74,7 @@ class RenderStateDemo:
     `set_handler` handler mutates -- the two callbacks never touch each
     other or `QuiApp` directly, only this shared `state`."""
 
-    def __init__(self, rows: "list[ListItemDescriptor]") -> None:
+    def __init__(self, rows: "list[ListItem]") -> None:
         self.rows = rows
         self.state: Dict[str, int] = {"selected_idx": 0}
         self.app = QuiApp(WIDTH, HEIGHT, render=self._render)

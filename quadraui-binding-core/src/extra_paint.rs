@@ -267,24 +267,40 @@ impl PasswordInput {
     }
 }
 
+/// [`PasswordInput`]'s wire shape: the plaintext value and a caret byte
+/// offset, which `Deserialize` turns into the one-line [`TextInput`].
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "PasswordInput"))]
+struct PasswordInputWire {
+    id: WidgetId,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    cursor: Option<usize>,
+    #[serde(default)]
+    has_focus: bool,
+    #[serde(default = "password_input_default_mask")]
+    mask_char: char,
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for PasswordInput {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        PasswordInputWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        PasswordInputWire::json_schema(generator)
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for PasswordInput {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(serde::Deserialize)]
-        struct Wire {
-            id: WidgetId,
-            #[serde(default)]
-            value: String,
-            #[serde(default)]
-            cursor: Option<usize>,
-            #[serde(default)]
-            has_focus: bool,
-            #[serde(default = "password_input_default_mask")]
-            mask_char: char,
-        }
-        let wire = Wire::deserialize(deserializer)?;
+        let wire = PasswordInputWire::deserialize(deserializer)?;
         let char_count = wire.value.chars().count();
         let cursor_col = wire.cursor.unwrap_or(char_count).min(char_count);
         Ok(PasswordInput {
@@ -342,26 +358,42 @@ pub struct TextArea {
     pub visible_rows: usize,
 }
 
+/// [`TextArea`]'s wire shape: the whole value as one string with `'\n'`
+/// line breaks and a caret byte offset.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "TextArea"))]
+struct TextAreaWire {
+    id: WidgetId,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    placeholder: Option<String>,
+    #[serde(default)]
+    cursor: Option<usize>,
+    #[serde(default)]
+    has_focus: bool,
+    #[serde(default = "text_area_default_rows")]
+    visible_rows: usize,
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for TextArea {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        TextAreaWire::schema_name()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        TextAreaWire::json_schema(generator)
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for TextArea {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(serde::Deserialize)]
-        struct Wire {
-            id: WidgetId,
-            #[serde(default)]
-            value: String,
-            #[serde(default)]
-            placeholder: Option<String>,
-            #[serde(default)]
-            cursor: Option<usize>,
-            #[serde(default)]
-            has_focus: bool,
-            #[serde(default = "text_area_default_rows")]
-            visible_rows: usize,
-        }
-        let wire = Wire::deserialize(deserializer)?;
+        let wire = TextAreaWire::deserialize(deserializer)?;
         let (cursor_line, cursor_col) = quadraui::behaviour::text_edit::byte_offset_to_line_col(
             &wire.value,
             wire.cursor.unwrap_or(0),
@@ -442,6 +474,7 @@ impl ExtraPaint for TextArea {
 /// split [`quadraui::compose::tree_table_controller`]'s own module doc
 /// describes for *Lazy loading*.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeTableControllerNode {
     pub id: String,
     #[serde(default)]
@@ -497,6 +530,7 @@ impl TreeTableControllerNode {
 /// so the very first frame — before any controller is cached at all —
 /// still paints the full seeded model rather than nothing.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeTableControllerDescriptor {
     pub id: WidgetId,
     #[serde(default)]
@@ -628,6 +662,12 @@ macro_rules! extra_primitives {
                     &EXTRA_PRIMITIVE_KINDS,
                 )),
             }
+        }
+
+        /// Hands each [`EXTRA_PRIMITIVE_KINDS`] entry's descriptor type to
+        /// `visitor`, in table order.
+        pub fn visit_extra_primitive_kinds<V: quadraui::KindVisitor>(visitor: &mut V) {
+            $( visitor.visit::<$ty>($kind); )+
         }
 
         /// [`decode_extra_primitive`] against an already-[`serde_json::Value`]

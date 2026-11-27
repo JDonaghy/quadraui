@@ -75,6 +75,7 @@ pub const DEFAULT_IGNORE_DIRS: &[&str] = &["target", "node_modules", "__pycache_
 /// `handle_event`, which apply the browsing changes themselves and so
 /// only ever report [`Self::Confirmed`] and [`Self::Cancelled`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum PathPickerAction {
     /// The user confirmed a path — an existing entry for the folder

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Per-backend line-count ratchet for `quadraui/src/{tui,macos,win,gtk}` (#2373).
+"""Line-count ratchet for `quadraui/src/{tui,macos,win,gtk}` (#2373) and
+`quadraui-binding-core/src` (#2979).
 
 Those four directories grew by roughly 4.1k lines in three days while the
 consolidation epics' shared engines landed beside them instead of replacing
@@ -13,6 +14,10 @@ a differently-named `#[cfg(test)]` module never truncates the count) and
 compares the count against a committed baseline
 (`scripts/backend_loc_baseline.json`), the same ratchet shape as
 `tools/comment_history_lint.py`'s per-module thresholds.
+
+`quadraui-binding-core/src` is ratcheted the same way under its own
+baseline key, so the binding layer's size can only move toward the
+"bindings are thin" target as widget logic moves into `quadraui` itself.
 
 A directory fails when it grows *past its baseline by more than a small
 allowance* (`--allowance`, default below) -- a one- or two-line diff doesn't
@@ -34,6 +39,7 @@ Usage:
     scripts/backend_loc_ratchet.py --baseline FILE        # override the default baseline file
     scripts/backend_loc_ratchet.py --allowance N          # override the default per-dir allowance
     scripts/backend_loc_ratchet.py --src-root DIR         # override `quadraui/src` (tests only)
+    scripts/backend_loc_ratchet.py --binding-core-src DIR # override `quadraui-binding-core/src` (tests only)
 
 Run from anywhere; paths are resolved relative to this script's location
 unless `--src-root`/`--baseline` are given explicitly.
@@ -48,6 +54,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASELINE_FILE = Path(__file__).resolve().parent / "backend_loc_baseline.json"
 DEFAULT_SRC_ROOT = REPO_ROOT / "quadraui" / "src"
+DEFAULT_BINDING_CORE_SRC = REPO_ROOT / "quadraui-binding-core" / "src"
+
+# The baseline key `quadraui-binding-core/src`'s count is reported and
+# ratcheted under.
+BINDING_CORE_KEY = "quadraui-binding-core/src"
 
 # The four per-backend directories #2373 is ratcheting. Mirrors the module
 # table `tools/comment_history_lint.py` already uses for the same
@@ -140,8 +151,15 @@ def count_lines(directory: Path) -> int:
     return total
 
 
-def current_counts(src_root: Path, dirs: tuple[str, ...] = BACKEND_DIRS) -> dict[str, int]:
-    return {d: count_lines(src_root / d) for d in dirs}
+def current_counts(
+    src_root: Path,
+    dirs: tuple[str, ...] = BACKEND_DIRS,
+    binding_core_src: Path | None = None,
+) -> dict[str, int]:
+    counts = {d: count_lines(src_root / d) for d in dirs}
+    if binding_core_src is not None:
+        counts[BINDING_CORE_KEY] = count_lines(binding_core_src)
+    return counts
 
 
 def load_baseline(path: Path) -> dict[str, int]:
@@ -227,6 +245,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Directory containing the backend subdirectories (default: %(default)s).",
     )
     parser.add_argument(
+        "--binding-core-src",
+        type=Path,
+        default=DEFAULT_BINDING_CORE_SRC,
+        metavar="DIR",
+        help=f"Directory counted under the {BINDING_CORE_KEY!r} key (default: %(default)s).",
+    )
+    parser.add_argument(
         "--allowance",
         type=int,
         default=DEFAULT_ALLOWANCE,
@@ -254,7 +279,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     baseline = load_baseline(args.baseline)
-    counts = current_counts(args.src_root)
+    counts = current_counts(args.src_root, binding_core_src=args.binding_core_src)
 
     if args.write:
         new_baseline = reconcile_baseline(counts, baseline)

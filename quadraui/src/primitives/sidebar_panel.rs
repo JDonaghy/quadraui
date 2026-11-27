@@ -99,6 +99,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(1.0, 1.0), SidebarPanelHit::Content { x: 1.0, y: 1.0 });
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SidebarPanel {
     pub id: WidgetId,
     /// Optional header toolbar. When `None` the slot is **not**

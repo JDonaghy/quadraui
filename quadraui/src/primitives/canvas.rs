@@ -117,6 +117,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(layout.hit_test(5.0, 2.0), CanvasHit::Inside);
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Canvas {
     pub id: WidgetId,
     pub ops: Vec<DrawOp>,
@@ -145,6 +146,7 @@ pub struct Canvas {
 /// every [`DrawOp`] coordinate already uses (module doc's "Coordinate
 /// frame" section) — and resolved through [`CanvasLayout::region_hit_test`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CanvasRegion {
     pub id: WidgetId,
     pub rect: Rect,
@@ -179,6 +181,7 @@ pub struct CanvasRegion {
 /// `match` on this enum. Per `PRIMITIVE_RULES.md` rule 8, a downstream
 /// `match` needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CanvasCursor {
     Default,
@@ -220,6 +223,7 @@ impl CanvasCursor {
 /// `#[non_exhaustive]`: per `PRIMITIVE_RULES.md` rule 8, a downstream
 /// `match` needs a wildcard arm so a later op kind stays additive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum DrawOp {
     /// Fill an axis-aligned rect with a solid colour.
@@ -364,6 +368,7 @@ pub enum DrawOp {
 /// the real enum, kept private to this module since nothing outside the
 /// native-paint seam needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum CanvasFontRole {
     Chrome,
     Editor,
