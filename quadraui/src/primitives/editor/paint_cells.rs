@@ -798,6 +798,39 @@ mod tests {
         }
     }
 
+    /// A span with a font scale paints one cell per character, so the
+    /// text after it stays in its own columns: the cell grid cannot
+    /// scale glyphs.
+    #[test]
+    fn scaled_span_paints_one_cell_per_char_without_column_drift() {
+        use super::super::{EditorStyledSpan, Style};
+        let mut line = decorated_line(0, 0);
+        line.raw_text = "# Head body".into();
+        line.diagnostics.clear();
+        line.spell_errors.clear();
+        line.indent_guides.clear();
+        line.colorcolumns.clear();
+        line.spans = vec![EditorStyledSpan {
+            start_byte: 0,
+            end_byte: 6,
+            style: Style {
+                fg: Color::rgb(220, 60, 60),
+                bg: None,
+                bold: true,
+                italic: false,
+                font_scale: 1.6,
+            },
+        }];
+        let editor = test_editor(vec![line], vec![]);
+        let theme = Theme::default();
+        let mut buf = Buffer::empty(RtRect::new(0, 0, 20, 5));
+        let _ = paint_editor(&mut buf, RtRect::new(0, 0, 20, 5), &editor, &theme);
+        let row: String = (0..11).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert_eq!(row, "# Head body");
+        assert_eq!(buf[(5, 0)].fg, qc(Color::rgb(220, 60, 60)));
+        assert_eq!(buf[(7, 0)].fg, qc(theme.foreground));
+    }
+
     /// `paint_editor` must bounds-check every overlay write against
     /// `buf.area` (the buffer's real, already-resized extent), not the
     /// caller-supplied `area`. A resize between layout computation and

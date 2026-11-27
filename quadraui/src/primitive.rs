@@ -1361,6 +1361,151 @@ where
     }
 }
 
+/// A widget painted at a layout its host already resolved, in place of
+/// the one the widget's own [`Primitive::layout`] would resolve.
+///
+/// A popup host often places a widget itself: it flips a tooltip above
+/// its anchor, sizes a dialog box to content it measured, or positions a
+/// completion list against a cursor. Wrapping the widget and that layout
+/// in a `Placed` hands it to [`crate::DrawsPrimitives::draw_dyn`] /
+/// [`crate::DrawsPrimitives::draw_primitive`] unchanged: [`Self::layout`]
+/// returns the held layout whatever `rect` it is given, and every other
+/// part of the widget contract — paint, bleed, zone, focus, sub-regions,
+/// event handling, popups, accessibility — is the widget's own. Painting
+/// and hit-testing therefore agree with the host's placement.
+///
+/// The held layout must be in the same coordinate frame the widget's own
+/// [`Primitive::layout`] would return for the `rect` passed to the draw
+/// call — absolute for a widget whose layout bakes in its area's origin.
+/// A host whose widget's layout type is `#[non_exhaustive]` starts from
+/// the widget's own resolution and overrides the fields it owns:
+///
+/// ```ignore
+/// let mut layout = backend.layout_primitive(viewport, &dialog);
+/// layout.layout = host_dialog_layout;
+/// backend.draw_dyn(viewport, &quadraui::Placed::new(dialog, layout), &state);
+/// ```
+pub struct Placed<W: Primitive> {
+    /// The widget painted.
+    pub widget: W,
+    /// The layout it paints at.
+    pub layout: W::Layout,
+}
+
+impl<W: Primitive> Placed<W> {
+    /// Pair `widget` with the `layout` it paints at.
+    pub fn new(widget: W, layout: W::Layout) -> Self {
+        Self { widget, layout }
+    }
+}
+
+impl<W: Primitive> A11yPrimitive for Placed<W> {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        self.widget.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
+        self.widget.a11y_children()
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.widget.a11y_focus_key()
+    }
+}
+
+impl<W> Primitive for Placed<W>
+where
+    W: Primitive,
+    W::Layout: Clone,
+{
+    type Layout = W::Layout;
+    type Event = W::Event;
+
+    fn id(&self) -> Option<&WidgetId> {
+        self.widget.id()
+    }
+
+    fn font_role(&self) -> crate::FontRole {
+        self.widget.font_role()
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        self.widget.measure(ctx, avail)
+    }
+
+    fn capture(&self) -> OwnedContent {
+        self.widget.capture()
+    }
+
+    /// The held layout; `rect` is not consulted.
+    fn layout(&self, _ctx: &LayoutCtx, _rect: Rect) -> W::Layout {
+        self.layout.clone()
+    }
+
+    fn paint_bleed(&self, style: &Style) -> f32 {
+        self.widget.paint_bleed(style)
+    }
+
+    fn paint_zone(&self, layout: &W::Layout, units: Units) -> Option<Rect> {
+        self.widget.paint_zone(layout, units)
+    }
+
+    fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool {
+        self.widget.native_presentation(backend, rect)
+    }
+
+    fn paint(&self, layout: &W::Layout, surface: &mut dyn PaintSurface, env: &PaintEnv) {
+        self.widget.paint(layout, surface, env)
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(&self, layout: &W::Layout, cells: &mut dyn CellSurface, env: &PaintEnv) {
+        self.widget.paint_cells(layout, cells, env)
+    }
+}
+
+impl<W> Interactive for Placed<W>
+where
+    W: Interactive,
+    W::Layout: Clone,
+{
+    type State = W::State;
+    type Action = W::Action;
+
+    const HOVER_ON_SUB_REGIONS_ONLY: bool = W::HOVER_ON_SUB_REGIONS_ONLY;
+    const OPENS_POPUPS: bool = W::OPENS_POPUPS;
+
+    fn focus(&self) -> FocusSpec {
+        self.widget.focus()
+    }
+
+    fn handle(
+        &self,
+        state: &mut W::State,
+        event: &RoutedEvent,
+        layout: &W::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<W::Action> {
+        self.widget.handle(state, event, layout, cx)
+    }
+
+    fn a11y_actions(&self, state: &W::State) -> Vec<A11yAction> {
+        self.widget.a11y_actions(state)
+    }
+
+    fn sub_regions(&self, layout: &W::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        self.widget.sub_regions(layout)
+    }
+
+    fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str> {
+        self.widget.sub_region_name(sub)
+    }
+
+    fn popups(&self, state: &W::State, layout: &W::Layout) -> Vec<crate::popup::Popup> {
+        self.widget.popups(state, layout)
+    }
+}
+
 impl dyn DynWidget {
     /// Downcast back to a concrete widget type `T` — `self.as_any()` plus
     /// [`std::any::Any::downcast_ref`] in one call. Inherent to `dyn

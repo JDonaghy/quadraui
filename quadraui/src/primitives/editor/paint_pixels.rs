@@ -110,22 +110,42 @@ impl Ctx<'_> {
         }
     }
 
-    /// Absolute x of byte `byte` of `text` in this row's text.
-    fn x_at(&self, s: &mut dyn PaintSurface, text: &str, byte: usize) -> f32 {
-        self.text_x + s.surface_text_x_at_index(text, ROLE, byte)
+    /// Absolute x of byte `byte` of `text`, shaped with `runs`, in this
+    /// row's text.
+    fn x_at(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        byte: usize,
+    ) -> f32 {
+        self.text_x + s.surface_text_x_at_index(text, runs, ROLE, byte)
     }
 
-    /// Absolute x of character column `col` of `text`.
-    fn x_at_col(&self, s: &mut dyn PaintSurface, text: &str, col: usize) -> f32 {
-        self.x_at(s, text, char_to_byte_idx(text, col))
+    /// Absolute x of character column `col` of `text`, shaped with `runs`.
+    fn x_at_col(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        col: usize,
+    ) -> f32 {
+        self.x_at(s, text, runs, char_to_byte_idx(text, col))
     }
 
-    /// The advance of the glyph at `byte`, or one cell past the end.
-    fn glyph_w(&self, s: &mut dyn PaintSurface, text: &str, byte: usize) -> f32 {
+    /// The advance of the glyph at `byte` shaped with `runs`, or one cell
+    /// past the end.
+    fn glyph_w(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        byte: usize,
+    ) -> f32 {
         let next = next_char_boundary(text, byte);
         let w = if next > byte {
-            s.surface_text_x_at_index(text, ROLE, next)
-                - s.surface_text_x_at_index(text, ROLE, byte)
+            s.surface_text_x_at_index(text, runs, ROLE, next)
+                - s.surface_text_x_at_index(text, runs, ROLE, byte)
         } else {
             0.0
         };
@@ -271,13 +291,14 @@ fn paint_selection(ctx: &Ctx, s: &mut dyn PaintSurface, sel: &EditorSelection, c
             continue;
         }
         let text = rl.raw_text.as_str();
-        let start_x = ctx.x_at_col(s, text, cols.start);
+        let runs = line_runs(rl, ctx.theme.foreground);
+        let start_x = ctx.x_at_col(s, text, &runs, cols.start);
         let end_x = if cols.extends_beyond {
             // The index form keeps trailing whitespace, which a measured
             // ink width drops on some surfaces.
-            ctx.x_at(s, text, text.len())
+            ctx.x_at(s, text, &runs, text.len())
         } else {
-            ctx.x_at_col(s, text, cols.end)
+            ctx.x_at_col(s, text, &runs, cols.end)
         };
         s.surface_fill_rect(
             Rect::new(start_x, y, (end_x - start_x).max(0.0), ctx.lh),
@@ -370,26 +391,30 @@ fn severity_color(severity: DiagnosticSeverity, theme: &Theme) -> Color {
 // ── Row text ────────────────────────────────────────────────────────────
 
 /// `rl.raw_text` partitioned into runs: each byte takes the last span
-/// covering it, gaps take `default_fg`.
+/// covering it (colour, weight, slant and font scale), gaps take
+/// `default_fg` unscaled.
 fn line_runs(rl: &EditorLine, default_fg: Color) -> Vec<TextRunStyle> {
     let text = rl.raw_text.as_str();
-    let mut byte_style: Vec<(Color, bool, bool)> = vec![(default_fg, false, false); text.len()];
+    let mut byte_style: Vec<(Color, bool, bool, f32)> =
+        vec![(default_fg, false, false, 1.0); text.len()];
     for span in &rl.spans {
         let start = snap_to_char_boundary(text, span.start_byte);
         let end = snap_to_char_boundary(text, span.end_byte);
-        for st in byte_style.iter_mut().take(end).skip(start) {
-            *st = (span.style.fg, span.style.bold, span.style.italic);
+        let st = &span.style;
+        for b in byte_style.iter_mut().take(end).skip(start) {
+            *b = (st.fg, st.bold, st.italic, st.font_scale);
         }
     }
     let mut runs: Vec<TextRunStyle> = Vec::new();
     let mut start = 0usize;
     for i in 1..=text.len() {
         if i == text.len() || (text.is_char_boundary(i) && byte_style[i] != byte_style[start]) {
-            let (fg, bold, italic) = byte_style[start];
+            let (fg, bold, italic, scale) = byte_style[start];
             runs.push(
                 TextRunStyle::new(start..i, fg)
                     .with_bold(bold)
-                    .with_italic(italic),
+                    .with_italic(italic)
+                    .with_scale(scale),
             );
             start = i;
         }
@@ -403,33 +428,34 @@ fn paint_line_text(ctx: &Ctx, s: &mut dyn PaintSurface, rl: &EditorLine, y: f32)
     let theme = ctx.theme;
     let text = rl.raw_text.as_str();
     let text_y = y + ctx.v_off;
+    let runs = line_runs(rl, theme.foreground);
+    let box_h = ctx.natural_h * runs.iter().map(|r| r.scale).fold(1.0, f32::max);
 
     for span in &rl.spans {
         let Some(bg) = span.style.bg else {
             continue;
         };
-        let x0 = ctx.x_at(s, text, span.start_byte);
-        let x1 = ctx.x_at(s, text, span.end_byte);
+        let x0 = ctx.x_at(s, text, &runs, span.start_byte);
+        let x1 = ctx.x_at(s, text, &runs, span.end_byte);
         if x1 > x0 {
-            s.surface_fill_rect(Rect::new(x0, text_y, x1 - x0, ctx.natural_h), bg);
+            s.surface_fill_rect(Rect::new(x0, text_y, x1 - x0, box_h), bg);
         }
     }
-    s.surface_draw_text_line(
-        Point::new(ctx.text_x, text_y),
-        text,
-        &line_runs(rl, theme.foreground),
-        ROLE,
-    );
+    s.surface_draw_text_line(Point::new(ctx.text_x, text_y), text, &runs, ROLE);
 
-    let mut last_text = text;
+    let mut ghost_w = None;
     if rl.is_ghost_continuation {
         if let Some(ghost) = &rl.ghost_suffix {
             draw_plain(s, ctx.text_x, text_y, ghost, theme.ghost_text_fg);
-            last_text = ghost;
+            ghost_w = Some(s.surface_measure_text(ghost).0);
         }
     }
     if let Some(ann) = &rl.annotation {
-        let ann_x = ctx.text_x + s.surface_measure_text(last_text).0 + ctx.cw * 2.0;
+        let text_end = match ghost_w {
+            Some(w) => ctx.text_x + w,
+            None => ctx.x_at(s, text, &runs, text.len()),
+        };
+        let ann_x = text_end + ctx.cw * 2.0;
         draw_plain(s, ann_x, text_y, ann, theme.annotation_fg);
     }
 }
@@ -467,17 +493,21 @@ fn paint_line_bracket_match(ctx: &Ctx, s: &mut dyn PaintSurface, view_idx: usize
 /// Wavy diagnostic underlines and dotted spell underlines, two pixels
 /// above the row's bottom edge.
 fn paint_line_underlines(ctx: &Ctx, s: &mut dyn PaintSurface, rl: &EditorLine, y: f32) {
+    if rl.diagnostics.is_empty() && rl.spell_errors.is_empty() {
+        return;
+    }
     let text = rl.raw_text.as_str();
+    let runs = line_runs(rl, ctx.theme.foreground);
     let underline_y = y + ctx.lh - 2.0;
     for dm in &rl.diagnostics {
-        let x0 = ctx.x_at_col(s, text, dm.start_col);
-        let x1 = ctx.x_at_col(s, text, dm.end_col);
+        let x0 = ctx.x_at_col(s, text, &runs, dm.start_col);
+        let x1 = ctx.x_at_col(s, text, &runs, dm.end_col);
         let verbs = wave_path(x0, x1, underline_y);
         s.surface_draw_path(&verbs, severity_color(dm.severity, ctx.theme), 1.0);
     }
     for sm in &rl.spell_errors {
-        let x0 = ctx.x_at_col(s, text, sm.start_col);
-        let x1 = ctx.x_at_col(s, text, sm.end_col);
+        let x0 = ctx.x_at_col(s, text, &runs, sm.start_col);
+        let x1 = ctx.x_at_col(s, text, &runs, sm.end_col);
         let mut dx = x0;
         while dx < x1 {
             s.surface_fill_rect(Rect::new(dx, underline_y, 1.0, 1.0), ctx.theme.spell_error);
@@ -581,9 +611,10 @@ fn paint_primary_cursor(ctx: &Ctx, s: &mut dyn PaintSurface) {
         cursor.pos.col
     };
     let text = rl.raw_text.as_str();
+    let runs = line_runs(rl, ctx.theme.foreground);
     let byte = char_to_byte_idx(text, col);
-    let x = ctx.x_at(s, text, byte);
-    let w = ctx.glyph_w(s, text, byte);
+    let x = ctx.x_at(s, text, &runs, byte);
+    let w = ctx.glyph_w(s, text, &runs, byte);
     paint_caret(ctx, s, cursor.shape, x, ctx.row_y(cursor.pos.view_line), w);
 }
 
@@ -599,7 +630,8 @@ fn paint_ai_ghost_text(ctx: &Ctx, s: &mut dyn PaintSurface) {
     let Some(ghost) = &rl.ghost_suffix else {
         return;
     };
-    let x = ctx.x_at_col(s, &rl.raw_text, cursor.pos.col);
+    let runs = line_runs(rl, ctx.theme.foreground);
+    let x = ctx.x_at_col(s, &rl.raw_text, &runs, cursor.pos.col);
     let y = ctx.row_y(cursor.pos.view_line) + ctx.v_off;
     draw_plain(s, x, y, ghost, ctx.theme.ghost_text_fg);
 }
@@ -624,9 +656,10 @@ fn paint_secondary_cursors(ctx: &Ctx, s: &mut dyn PaintSurface) {
             pos.col
         };
         let text = rl.raw_text.as_str();
+        let runs = line_runs(rl, ctx.theme.foreground);
         let byte = char_to_byte_idx(text, col);
-        let x = ctx.x_at(s, text, byte);
-        let w = ctx.glyph_w(s, text, byte);
+        let x = ctx.x_at(s, text, &runs, byte);
+        let w = ctx.glyph_w(s, text, &runs, byte);
         paint_caret(ctx, s, shape, x, ctx.row_y(pos.view_line), w);
     }
 }
@@ -1445,6 +1478,182 @@ mod gtk_pixel_tests {
             gutter, wide,
             "gutter number and body text (same glyph, \"7\") should share a baseline, got \
              gutter={gutter:?}, body={wide:?}"
+        );
+    }
+
+    // ── Font scale ──────────────────────────────────────────────────────
+
+    const SCALE_TEST_W: i32 = 240;
+    const SCALE_TEST_PITCH: f64 = 48.0;
+    const SCALE: f32 = 1.6;
+
+    /// `"HHHH HHHH"` with its first word at [`SCALE`] and its second at
+    /// 1.0, each span with background `bgs[i]`, painted one row tall at
+    /// [`SCALE_TEST_PITCH`], with `cursor` placed on the row.
+    fn scale_test_paint(
+        bgs: [Option<Color>; 2],
+        cursor: Option<crate::primitives::editor::EditorCursor>,
+    ) -> (Vec<u8>, i32) {
+        use crate::primitives::editor::{EditorStyledSpan, Style};
+        let theme = Theme::default();
+        let span = |start_byte, end_byte, bg, font_scale| EditorStyledSpan {
+            start_byte,
+            end_byte,
+            style: Style {
+                fg: theme.foreground,
+                bg,
+                bold: false,
+                italic: false,
+                font_scale,
+            },
+        };
+        let mut editor = scroll_test_editor(1, 9, 1);
+        editor.rect = Rect::new(0.0, 0.0, SCALE_TEST_W as f32, SCALE_TEST_PITCH as f32);
+        editor.lines[0].raw_text = "HHHH HHHH".into();
+        editor.lines[0].spans = vec![span(0, 4, bgs[0], SCALE), span(5, 9, bgs[1], 1.0)];
+        editor.cursor = cursor;
+        let (_, char_w) = centre_test_metrics();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, SCALE_TEST_W, SCALE_TEST_PITCH as i32)
+                .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+            paint_editor(
+                &cr,
+                &pango_layout,
+                &metrics,
+                &editor,
+                &theme,
+                char_w,
+                SCALE_TEST_PITCH,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// The x ranges, inset 2px, of the scaled first word and the
+    /// unscaled second word when the scale is honoured.
+    fn scale_test_word_ranges() -> ((i32, i32), (i32, i32)) {
+        let (_, cw) = centre_test_metrics();
+        let scaled_end = 4.0 * cw * f64::from(SCALE);
+        let second = scaled_end + cw;
+        (
+            (2, (scaled_end - 2.0) as i32),
+            ((second + 2.0) as i32, (second + 4.0 * cw - 2.0) as i32),
+        )
+    }
+
+    /// The height of the band from the first to the last row holding a
+    /// pixel of exactly `color` within `[x0, x1)`. A row whose glyph ink
+    /// (a crossbar, say) covers every background pixel in the range
+    /// still counts, so the result is the painted box, not the font's
+    /// stroke layout.
+    fn rows_of_color(data: &[u8], stride: i32, (x0, x1): (i32, i32), color: Color) -> i32 {
+        let rows: Vec<i32> = (0..SCALE_TEST_PITCH as i32)
+            .filter(|&y| {
+                (x0..x1).any(|x| scroll_test_pixel(data, stride as usize, x, y) == rgb(color))
+            })
+            .collect();
+        match (rows.first(), rows.last()) {
+            (Some(top), Some(bottom)) => bottom - top + 1,
+            _ => 0,
+        }
+    }
+
+    /// A span with a font scale paints taller glyphs than an unscaled
+    /// span on the same line.
+    #[test]
+    fn scaled_span_paints_taller_glyphs_than_unscaled_span() {
+        let theme = Theme::default();
+        let (data, stride) = scale_test_paint([None, None], None);
+        let (scaled_x, plain_x) = scale_test_word_ranges();
+        let ink = |(x0, x1): (i32, i32)| {
+            let (top, bottom) = centre_test_ink_extent(
+                &data,
+                stride,
+                x0,
+                x1,
+                0,
+                SCALE_TEST_PITCH as i32,
+                theme.background,
+            )
+            .expect("word should paint ink");
+            bottom - top + 1
+        };
+        let (scaled_h, plain_h) = (ink(scaled_x), ink(plain_x));
+        assert!(
+            scaled_h as f32 >= plain_h as f32 * 1.4,
+            "a {SCALE}x span should paint glyphs ~{SCALE}x as tall as an unscaled one, got \
+             {scaled_h}px vs {plain_h}px"
+        );
+    }
+
+    /// A scaled span's background fills the line box grown to the scaled
+    /// font's height; an unscaled span's on the same line fills the
+    /// same box.
+    #[test]
+    fn scaled_span_grows_the_line_box() {
+        let red = Color::rgb(200, 30, 30);
+        let blue = Color::rgb(30, 30, 200);
+        let (data, stride) = scale_test_paint([Some(red), Some(blue)], None);
+        let (natural, _) = centre_test_metrics();
+        let (scaled_x, plain_x) = scale_test_word_ranges();
+        let scaled_rows = rows_of_color(&data, stride, scaled_x, red);
+        let plain_rows = rows_of_color(&data, stride, plain_x, blue);
+        let grown = natural * f64::from(SCALE);
+        assert!(
+            (f64::from(scaled_rows) - grown).abs() <= 2.0,
+            "the scaled span's background should cover the grown line box ({grown}px), got \
+             {scaled_rows} rows"
+        );
+        assert_eq!(
+            scaled_rows, plain_rows,
+            "every span on the line shares the grown line box"
+        );
+    }
+
+    /// A bar caret after a scaled span sits at the scaled advance.
+    #[test]
+    fn caret_after_scaled_span_sits_at_scaled_advance() {
+        use crate::primitives::editor::{CursorPos, CursorShape, EditorCursor};
+        let theme = Theme::default();
+        let cursor = EditorCursor {
+            pos: CursorPos {
+                view_line: 0,
+                col: 4,
+            },
+            shape: CursorShape::Bar,
+        };
+        let (data, stride) = scale_test_paint([None, None], Some(cursor));
+        let surface = ImageSurface::create(Format::ARgb32, 8, 8).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.set_font_description(Some(&pango::FontDescription::from_string("Monospace 12")));
+        layout.set_text("HHHH");
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrFloat::new_scale(f64::from(SCALE)));
+        layout.set_attributes(Some(&attrs));
+        let expected = f64::from(layout.size().0) / f64::from(pango::SCALE);
+        let caret_x = (0..SCALE_TEST_W)
+            .find(|&x| {
+                scroll_test_pixel(&data, stride as usize, x, SCALE_TEST_PITCH as i32 - 1)
+                    == rgb(theme.cursor)
+            })
+            .expect("bar caret should paint");
+        assert!(
+            (f64::from(caret_x) - expected).abs() <= 1.0,
+            "caret after a {SCALE}x four-glyph span should sit at its scaled advance \
+             {expected}px, got {caret_x}px"
         );
     }
 }

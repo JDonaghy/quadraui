@@ -76,6 +76,7 @@ export interface TreeStyle {
   row_height?: number | null;
   bordered?: boolean;
   vim_keys?: boolean;
+  show_scrollbar?: boolean;
 }
 
 export interface Modifiers {
@@ -626,6 +627,8 @@ export interface StyleValue {
   tab_padding_x?: number;
   tooltip_delay_ms?: number;
   tooltip_auto_dismiss_ms?: number;
+  status_bar_cell_gap?: number;
+  status_bar_cell_overflow?: "ellipsis" | "clip";
   font_family?: string;
   font_size?: number;
   font_weight?: "normal" | "bold";
@@ -1540,7 +1543,7 @@ export interface _ControlWidthFixed {
   Fixed: number;
 }
 
-export type ControlWidth = ("Fill" | "Content") | _ControlWidthFixed;
+export type ControlWidth = ("Fill" | "Content" | "ContentEnd") | _ControlWidthFixed;
 
 export type LabelPosition = "Left" | "Top" | "Inline" | "Hidden";
 

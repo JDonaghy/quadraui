@@ -26,21 +26,22 @@ use windows::Win32::Foundation::E_UNEXPECTED;
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
     ID2D1RenderTarget, ID2D1SolidColorBrush, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_ROUNDED_RECT,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteFactory2, IDWriteFactory5, IDWriteFontCollection,
     IDWriteFontCollection1, IDWriteFontFallback, IDWriteFontFile, IDWriteLocalizedStrings,
-    IDWriteTextFormat, IDWriteTextFormat1, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS,
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
-    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+    IDWriteTextFormat, IDWriteTextFormat1, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
+    DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_TEXT_RANGE,
     DWRITE_UNICODE_RANGE, DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows_numerics::Vector2;
 
 use crate::event::Rect;
 use crate::win::msg::pt_to_dip;
-use crate::Color;
+use crate::{Color, TextRunStyle};
 
 /// Live DirectWrite handles for the configured editor font: the shared
 /// factory plus an `IDWriteTextFormat` for the current family + size.
@@ -263,44 +264,100 @@ impl DWrite {
         draw_text(target, self.format_for(bold), text, rect, color)
     }
 
-    /// Paint `text` as one line with its top-left at `origin`: each run
-    /// is drawn at the advance of the prefix before it, in its own colour
-    /// and weight. Bytes no run covers are left unpainted; `italic` is not
-    /// applied.
+    /// `text` laid out on one line in the regular format, each run's
+    /// weight, slant and font size (its scale times the format's) applied
+    /// over its range.
+    fn line_layout(&self, text: &str, runs: &[TextRunStyle]) -> WinResult<IDWriteTextLayout> {
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: `factory`/`text_format` are this handle's live
+        // interfaces; `wide` outlives this synchronous call.
+        let layout = unsafe {
+            self.factory
+                .CreateTextLayout(&wide, &self.text_format, f32::MAX, f32::MAX)?
+        };
+        // SAFETY: `text_format` is this handle's live interface.
+        let size = unsafe { self.text_format.GetFontSize() };
+        for run in runs {
+            let Some(range) = utf16_range(text, run) else {
+                continue;
+            };
+            // SAFETY: `layout` is the live layout built above; `range`
+            // lies within its text.
+            unsafe {
+                if run.bold {
+                    layout.SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, range)?;
+                }
+                if run.italic {
+                    layout.SetFontStyle(DWRITE_FONT_STYLE_ITALIC, range)?;
+                }
+                if run.is_scaled() {
+                    layout.SetFontSize(size * run.scale, range)?;
+                }
+            }
+        }
+        Ok(layout)
+    }
+
+    /// Paint `text` as one line with its top-left at `origin`, shaped as
+    /// one DirectWrite layout: each run in its own colour, weight, slant
+    /// and size, every run on the tallest run's baseline. Bytes no run
+    /// covers are left unpainted.
     pub(crate) fn draw_text_line(
         &self,
         target: &ID2D1RenderTarget,
         origin: crate::Point,
         text: &str,
         runs: &[crate::TextRunStyle],
-    ) {
+    ) -> WinResult<()> {
+        let layout = self.line_layout(text, runs)?;
         for run in runs {
-            let Some(range) = run.byte_range_in(text) else {
+            let Some(range) = utf16_range(text, run) else {
                 continue;
             };
-            let x = origin.x + self.text_x_at_index(text, range.start);
-            let slice = &text[range];
-            let (w, h) = self
-                .measure_text_styled(slice, run.bold)
-                .unwrap_or((0.0, 0.0));
-            // Wider than the run so the layout's clip never trims an
-            // overhanging glyph edge.
-            let rect = Rect::new(x, origin.y, w + h, h.max(self.natural_line_height()));
-            let _ = self.draw_text_styled(target, slice, rect, run.fg, run.bold);
+            if crate::testing::text_run_sink_active() {
+                let bytes = run.byte_range_in(text).unwrap_or_default();
+                let x0 = self.text_x_at_index(text, runs, bytes.start);
+                let w = self.text_x_at_index(text, runs, bytes.end) - x0;
+                let h = self.natural_line_height() * run.scale;
+                crate::testing::record_text_run(
+                    &text[bytes],
+                    Rect::new(origin.x + x0, origin.y, w, h),
+                );
+            }
+            let effect: IUnknown = get_or_create_brush(target, run.fg)?.cast()?;
+            // SAFETY: `layout` is the live layout built above; `effect`
+            // is a live brush borrowed for this call.
+            unsafe { layout.SetDrawingEffect(&effect, range)? };
         }
+        let unpainted = get_or_create_brush(target, Color::rgba(0, 0, 0, 0))?;
+        // SAFETY: `target` is the live render target; `layout` and
+        // `unpainted` are live interfaces borrowed for this call.
+        unsafe {
+            target.DrawTextLayout(
+                Vector2::new(origin.x, origin.y),
+                &layout,
+                &unpainted,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+        }
+        Ok(())
     }
 
-    /// Advance of `text[..byte_idx]` in this format, trailing whitespace
-    /// included, in DIPs.
-    pub(crate) fn text_x_at_index(&self, text: &str, byte_idx: usize) -> f32 {
+    /// Advance of `text[..byte_idx]` laid out with `runs` applied,
+    /// trailing whitespace included, in DIPs.
+    pub(crate) fn text_x_at_index(
+        &self,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        byte_idx: usize,
+    ) -> f32 {
         let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-        measure_advance(&self.factory, &self.text_format, &text[..end]).unwrap_or(0.0)
-    }
-
-    /// The cluster boundary of `text` nearest to `x` DIPs from the line
-    /// start.
-    pub(crate) fn text_index_at_x(&self, text: &str, x: f32) -> usize {
-        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| self.text_x_at_index(text, i))
+        let mut metrics = Default::default();
+        self.line_layout(&text[..end], runs)
+            // SAFETY: `layout` is the live layout just built; `metrics`
+            // is a plain stack struct the call writes through.
+            .and_then(|layout| unsafe { layout.GetMetrics(&mut metrics) })
+            .map_or(0.0, |()| metrics.widthIncludingTrailingWhitespace)
     }
 
     fn format_for(&self, bold: bool) -> &IDWriteTextFormat {
@@ -654,6 +711,18 @@ pub fn has_font_family(family: &str) -> WinResult<bool> {
     Ok(exists.as_bool())
 }
 
+/// `run`'s byte range in `text` as the UTF-16 range a DirectWrite layout
+/// of `text` indexes by, or `None` when it covers no bytes.
+fn utf16_range(text: &str, run: &crate::TextRunStyle) -> Option<DWRITE_TEXT_RANGE> {
+    let range = run.byte_range_in(text)?;
+    let start = text[..range.start].encode_utf16().count() as u32;
+    let length = text[range].encode_utf16().count() as u32;
+    Some(DWRITE_TEXT_RANGE {
+        startPosition: start,
+        length,
+    })
+}
+
 /// `IDWriteTextLayout::GetMetrics` for `text` laid out against `format`
 /// with an effectively unbounded box — `(width, height)` DIPs of the
 /// tightest box the text actually occupies. Used both for the
@@ -674,26 +743,6 @@ fn measure_text(
     // plain stack struct the call writes through.
     unsafe { layout.GetMetrics(&mut metrics)? };
     Ok((metrics.width, metrics.height))
-}
-
-/// `text`'s advance in `format`, trailing whitespace included — the
-/// x a following glyph starts at, which [`measure_text`]'s ink-oriented
-/// width stops short of after a space.
-fn measure_advance(
-    factory: &IDWriteFactory,
-    format: &IDWriteTextFormat,
-    text: &str,
-) -> WinResult<f32> {
-    if text.is_empty() {
-        return Ok(0.0);
-    }
-    let wide: Vec<u16> = text.encode_utf16().collect();
-    // SAFETY: as in `measure_text`.
-    let layout = unsafe { factory.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)? };
-    let mut metrics = Default::default();
-    // SAFETY: as in `measure_text`.
-    unsafe { layout.GetMetrics(&mut metrics)? };
-    Ok(metrics.widthIncludingTrailingWhitespace)
 }
 
 /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, clipped
