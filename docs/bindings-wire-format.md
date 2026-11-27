@@ -3726,15 +3726,15 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `form` | `FormDescriptor` | no |  |
 | `text_input` | `TextInputDescriptor` | no |  |
 | `text_field` | `TextFieldDescriptor` | no |  |
-| `number_input` | `NumberInputDescriptor` | no |  |
-| `combo_box` | `ComboBoxDescriptor` | no |  |
-| `date_picker` | `DatePickerDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
+| `number_input` | `NumberInputDescriptor` | no |  |
+| `combo_box` | `ComboBoxDescriptor` | no |  |
+| `date_picker` | `DatePickerDescriptor` | no |  |
 | `progress` | `ProgressBarDescriptor` | no |  |
 | `spinner` | `SpinnerDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
@@ -3795,15 +3795,15 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `form` | `FormDescriptor \| null` | no |  |
 | `text_input` | `TextInputDescriptor \| null` | no |  |
 | `text_field` | `TextFieldDescriptor \| null` | no |  |
-| `number_input` | `NumberInputDescriptor \| null` | no |  |
-| `combo_box` | `ComboBoxDescriptor \| null` | no |  |
-| `date_picker` | `DatePickerDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
+| `number_input` | `NumberInputDescriptor \| null` | no |  |
+| `combo_box` | `ComboBoxDescriptor \| null` | no |  |
+| `date_picker` | `DatePickerDescriptor \| null` | no |  |
 | `progress` | `ProgressBarDescriptor \| null` | no |  |
 | `spinner` | `SpinnerDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |

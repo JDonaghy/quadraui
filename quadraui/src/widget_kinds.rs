@@ -421,6 +421,9 @@ widget_kinds! {
     // `Primitive`/`Interactive` impls carry no feature gate.
     "find_replace" => crate::FindReplacePanel,
     "command_line" => crate::CommandLine,
+    "number_input" => crate::NumberInput,
+    "combo_box" => crate::ComboBox,
+    "date_picker" => crate::DatePicker,
     // `DataTable` and `MultiSectionView` implement the contract only on a
     // build with a backend feature.
     #[cfg(any(

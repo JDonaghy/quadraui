@@ -222,7 +222,7 @@ _INLINE_LEAF_CASES = [
         [{"MouseDown": {"button": "Left", "position": {"x": 38.0, "y": 0.0}, "modifiers": {}}}],
         [
             {"FocusChanged": "ni:1"},
-            ("ni:1", {"TextInputChanged": {"id": "ni:1", "value": "43"}}),
+            ("ni:1", {"NumberChanged": {"id": "ni:1", "value": 43.0}}),
         ],
         id="number_input",
     ),
@@ -283,7 +283,12 @@ _INLINE_LEAF_CASES = [
         ],
         [
             {"FocusChanged": "dp:1"},
-            None,
+            # The click lands on the grid's first visible cell, so the
+            # picker reports the focus move before Enter confirms a day.
+            (
+                "dp:1",
+                {"DateFocusMoved": {"id": "dp:1", "value": {"year": 2024, "month": 2, "day": 25}}},
+            ),
             (
                 "dp:1",
                 {"DateChanged": {"id": "dp:1", "value": {"year": 2024, "month": 3, "day": 15}}},
@@ -313,6 +318,9 @@ _INLINE_LEAF_CASES = [
         [
             {"FocusChanged": "cb:1"},
             None,
+            # Typing filters the options, so the box highlights the first
+            # match before reporting the new text.
+            ("cb:1", {"ComboBoxHighlightChanged": {"id": "cb:1", "index": 0}}),
             ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
         ],
         id="combo_box",
@@ -594,13 +602,9 @@ def test_icon_grid_leaf_renders_item_label():
 
 
 def test_number_input_stepper_click_increments_and_decrements_the_value():
-    # `NumberInput::layout` needs no backend metrics (its stepper column
-    # is a fixed width), so -- unlike `RadioGroup`/`ComboBox`/`DatePicker`
-    # below, which only get coarse click-to-focus -- a click precisely
-    # resolving to the increment/decrement half of the stepper column
-    # replaces the raw click outright with the `ValueChanged` it stands
-    # for, translated into `FormEvent::TextInputChanged` (`NumberInput`
-    # has no `FormEvent` slot of its own).
+    # A click on the increment/decrement half of the stepper column is
+    # resolved by `NumberInput`'s own `Interactive::handle`, which reports
+    # the stepped value as `FormEvent::NumberChanged`.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {"number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}
@@ -618,7 +622,7 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
     assert received[0]["FocusChanged"] == "ni:1"
     widget_id, form_event = received[1]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 43.0}}
 
     received.clear()
     app.push_event(
@@ -628,7 +632,7 @@ def test_number_input_stepper_click_increments_and_decrements_the_value():
     assert len(received) == 1, "already focused -- no second FocusChanged"
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "41"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 41.0}}
 
 
 def test_number_input_up_key_increments_the_focused_value():
@@ -658,7 +662,7 @@ def test_number_input_up_key_increments_the_focused_value():
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ni:1"
-    assert form_event == {"TextInputChanged": {"id": "ni:1", "value": "43"}}
+    assert form_event == {"NumberChanged": {"id": "ni:1", "value": 43.0}}
 
 
 def test_radio_group_arrow_key_changes_the_selection():
@@ -694,15 +698,15 @@ def test_radio_group_arrow_key_changes_the_selection():
 
 
 def test_combo_box_typing_filters_then_enter_commits():
-    # Every `ComboBoxEvent` shape has a dedicated `FormEvent` variant
-    # already (`Form`'s own `FieldKind::ComboBox` embeds the same
-    # primitive), so typing and `Enter` carry straight through. A render
+    # `ComboBox`'s own `Interactive::handle` reports typing and `Enter` as
+    # the matching `FormEvent` variants; typing also highlights the first
+    # filtered option. A render
     # callback echoes `ComboBoxTextChanged`'s `value` back as `text` --
     # same echo-loop contract `_focused_text_input_app` exercises for
     # `text_input` -- so `Enter`'s own `ComboBoxEvent::commit` reads the
     # just-typed text rather than the field's initial, empty one.
     app = QuiApp(40, 20)
-    state = {"text": ""}
+    state = {"text": "", "open": False}
 
     def render():
         return {
@@ -710,6 +714,7 @@ def test_combo_box_typing_filters_then_enter_commits():
                 "id": "cb:1",
                 "options": ["alpha", "beta"],
                 "text": state["text"],
+                "open": state["open"],
                 "focused": True,
             }
         }
@@ -727,17 +732,20 @@ def test_combo_box_typing_filters_then_enter_commits():
             return
         _, form_event = event["Form"]
         if "ComboBoxTextChanged" in form_event:
+            # A text edit opens the list, per `ComboBoxEvent::TextChanged`'s
+            # apply contract.
             state["text"] = form_event["ComboBoxTextChanged"]["value"]
+            state["open"] = True
 
     app.set_handler(handler)
     app.push_event(
         {"KeyPressed": {"key": {"Char": "a"}, "modifiers": {}, "repeat": False}}
     )
     app.run(1)
-    assert len(received) == 1
-    widget_id, form_event = received[0]["Form"]
-    assert widget_id == "cb:1"
-    assert form_event == {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}
+    assert [event["Form"] for event in received] == [
+        ("cb:1", {"ComboBoxHighlightChanged": {"id": "cb:1", "index": 0}}),
+        ("cb:1", {"ComboBoxTextChanged": {"id": "cb:1", "value": "a"}}),
+    ]
 
     received.clear()
     app.push_event(

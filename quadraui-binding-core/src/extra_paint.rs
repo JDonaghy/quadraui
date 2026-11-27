@@ -12,9 +12,8 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Column, ComboBox, DatePicker, Form, Icon, MenuBar, NaturalSize, NumberInput,
-    NumberInputHit, Point, Rect, StyledText, TextField, TextInput, Toolbar, ToolbarButton,
-    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText, TextField,
+    TextInput, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -262,119 +261,6 @@ impl ExtraPaint for TextField {
     /// same reasoning as [`TextInput::natural_size`].
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-impl ExtraPaint for NumberInput {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Precise, not whole-area, unlike [`TextInput::hit_test`] above:
-    /// [`quadraui::NumberInput::layout`] needs no backend metrics (its
-    /// stepper column is a fixed `STEPPER_WIDTH`), so the real
-    /// increment/decrement/text-area regions are resolvable here, which is
-    /// what lets a stepper click be routed precisely (see
-    /// `crate::engine::InteractionEngine::handle`'s own `NumberInput`
-    /// click arm) instead of only coarse click-to-focus.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        self.layout(area).hit_test(point) != NumberInputHit::Outside
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
-impl ExtraPaint for ComboBox {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // The field takes the first row of `area`; while `self.open` with a
-        // non-empty filter, the dropdown is the box's own popup, painted
-        // above the frame by the runner.
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check. A press on the open list is a popup
-    /// event, which this host does not route yet: the engine swallows it
-    /// so it never reaches the leaf the list covers. Typing,
-    /// `Up`/`Down`/`Enter`/`Escape` still work once focused via
-    /// [`ExtraPaint::tab_stop`].
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// One row, the field: the open dropdown is a popup painted above
-    /// the frame, not part of this leaf's size. No
-    /// natural width: the field always fills `area.width`, same as a
-    /// bare [`TextInput`].
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-impl ExtraPaint for DatePicker {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Standalone (non-`Form`-embedded) display: derive a 7-column,
-        // 6-row month grid plus a one-row header (and a one-row time field
-        // when `self.time` is set), clipped to the given area. The header
-        // and time rows are one line each, scaled by `line_height` (the
-        // backend-native unit: cells on TUI, pixels on native) so they size
-        // correctly on every backend instead of collapsing to one pixel on
-        // native; the grid rows are then whatever is left over divided by
-        // six, floored at one line, so a date picker painted into a band
-        // shorter than 7 lines deliberately overflows the band rather than
-        // shrinking its cells below a usable size.
-        let line_height = backend.line_height();
-        let header_height = line_height;
-        let time_height = if self.time.is_some() {
-            line_height
-        } else {
-            0.0
-        };
-        let cell_width = (area.width / 7.0).max(line_height);
-        let cell_height = ((area.height - header_height - time_height) / 6.0).max(line_height);
-        let layout = self.layout(
-            area.x,
-            area.y,
-            cell_width,
-            cell_height,
-            header_height,
-            time_height,
-        );
-        let _ = layout;
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check, same limitation [`ComboBox`]'s own
-    /// `hit_test` documents above: resolving a click to a prev/next
-    /// control or a specific day cell needs the backend's `line_height`
-    /// [`ExtraPaint::paint`] uses to derive the grid's
-    /// `cell_width`/`cell_height`, which this trait's `hit_test` has no
-    /// parameter for — not wired yet rather than impossible, same
-    /// caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/`PageDown`/`Enter`
-    /// navigation still works once focused via [`ExtraPaint::tab_stop`].
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
     }
 }
 
@@ -1035,9 +921,6 @@ extra_primitives! {
     "form" => Form,
     "text_input" => TextInput,
     "text_field" => TextField,
-    "number_input" => NumberInput,
-    "combo_box" => ComboBox,
-    "date_picker" => DatePicker,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
     "toolbar" => ToolbarWithOverflow,
@@ -1129,7 +1012,10 @@ extra_primitives! {
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 31] = [
+pub const WIDGET_KINDS: [&str; 34] = [
+    "number_input",
+    "combo_box",
+    "date_picker",
     "progress",
     "spinner",
     "scrollbar",

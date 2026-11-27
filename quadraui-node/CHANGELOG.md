@@ -113,6 +113,16 @@ fragment step for this package (that mechanism, and
   (e.g. `FieldEdited` placing the caret in the clicked field) instead of
   the raw `MouseDown`. `message_list` drag-select and Ctrl-C copy are
   unchanged.
+- `number_input`, `combo_box` and `date_picker` leaves decode through the
+  generic widget leaf too, so each widget's own `Interactive::handle`
+  produces its events. `number_input` reports a step, an arrow key or a
+  commit as `NumberChanged`/`NumberDraftChanged`/`NumberCommitted` with a numeric value, e.g.
+  `{ Form: [id, { NumberChanged: { id, value: 43 } }] }` (previously re-shaped into a string-valued
+  `{ Form: [id, { TextInputChanged: { id, value: "43" } }] }`). `date_picker` reports
+  a click or arrow-key scrub as `{ Form: [id, { DateFocusMoved: ... }] }` (previously
+  dropped). `combo_box` reports the first filtered option as
+  `ComboBoxHighlightChanged` before each typed `ComboBoxTextChanged`, and
+  `Enter` on a closed box opens the list rather than committing.
 
 ### Removed
 

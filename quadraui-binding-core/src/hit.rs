@@ -1436,10 +1436,7 @@ mod tests {
     /// clicks there.
     #[test]
     fn clip_hits_to_viewport_drops_a_chrome_hit_with_no_overlap() {
-        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::ComboBox::new(
-            WidgetId::new("bar"),
-            vec!["a".to_string()],
-        ));
+        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::TextInput::new(WidgetId::new("bar")));
         let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
         let mut hits = vec![PaintedHit::Extra {
             id: WidgetId::new("bar"),

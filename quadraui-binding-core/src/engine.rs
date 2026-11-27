@@ -54,8 +54,8 @@ use crate::host::{
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
 use crate::semantic::{
-    focus_scoped_key_event, number_input_click_event, scripted_key_press, scripted_region_click,
-    semantic_event_for_hit, DragGestureWireEvent,
+    focus_scoped_key_event, scripted_key_press, scripted_region_click, semantic_event_for_hit,
+    DragGestureWireEvent,
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -5037,26 +5037,12 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
-                // A non-double click landing on ANY extra's body — not just
-                // `TextInput`/`NumberInput` — gets `HitDetail::ExtraBody`
-                // (`hit_test_painted`'s own `Extra` arm doesn't distinguish
-                // by kind), so this is the first arm of the same `if`/
-                // `else if` chain the other `detail` variants use below,
-                // with its own `semantic_event_for_hit` fallback folded in
-                // rather than left to the chain's final arm — a `Checkbox`
-                // body click (which `text_input_click_event`/
-                // `number_input_click_event` both no-op on, since neither
-                // finds the kind it looks for) still resolves through
-                // `semantic_event_for_hit`'s own `ExtraBody` arm this way.
-                // Folding every `ExtraBody` outcome into one arm up front
-                // makes it structurally impossible for two of them to fire
-                // for the same click as a future kind is wired in here.
-                // Must run before `semantic_event_for_hit` is reached,
-                // since `TextInput`'s caret placement is a side effect on
-                // `text_editors` only (a `SetCursor` never changes the
-                // buffer, so there is no event to swap in; see
-                // `text_input_click_event`'s own doc) and `NumberInput`'s
-                // stepper click DOES swap `event` outright.
+                // A non-double click on any extra's body places a text
+                // caret first (a side effect on `text_editors` only, with
+                // no event to swap in; see `text_input_click_event`), then
+                // resolves through `semantic_event_for_hit`'s `ExtraBody`
+                // arm. Keeping every `ExtraBody` outcome in this one arm
+                // means two of them can never fire for the same click.
                 if !double_click && matches!(detail, HitDetail::ExtraBody) {
                     if let Some(position) = event_position(&event) {
                         text_input_click_event(
@@ -5066,12 +5052,7 @@ impl InteractionEngine {
                             quadraui::TextInputMeasure::from_metrics(&backend.measure()),
                             &self.text_editors,
                         );
-                        if let Some(number_input_event) =
-                            number_input_click_event(&self.hit_map.borrow(), *id, position)
-                        {
-                            event = number_input_event;
-                            attach_hit = false;
-                        } else if let Some(semantic) = semantic_event_for_hit(
+                        if let Some(semantic) = semantic_event_for_hit(
                             *id,
                             detail,
                             button,
@@ -13816,7 +13797,13 @@ mod tests {
             };
             let mut node = LayoutNode::Column(LayoutContainer::new(
                 vec![
-                    leaf("combo", LeafDescriptor::Extra(Rc::new(combo))),
+                    leaf(
+                        "combo",
+                        LeafDescriptor::Widget {
+                            kind: "combo_box",
+                            widget: Rc::new(combo),
+                        },
+                    ),
                     leaf(
                         "under",
                         LeafDescriptor::Widget {

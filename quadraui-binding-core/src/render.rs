@@ -4287,16 +4287,9 @@ mod tests {
     #[test]
     fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
         use crate::extra_paint::{PasswordInput, TextArea};
-        use quadraui::{ComboBox, TextField, TextInput};
+        use quadraui::{TextField, TextInput};
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
-            (
-                "combo_box",
-                Rc::new(ComboBox::new(
-                    WidgetId::new("combo_box"),
-                    vec!["a".to_string(), "b".to_string()],
-                )),
-            ),
             (
                 "text_input",
                 Rc::new(TextInput::new(WidgetId::new("text_input"))),
@@ -4321,7 +4314,7 @@ mod tests {
             ),
         ];
         assert!(
-            kinds.len() >= 5,
+            kinds.len() >= 4,
             "this test's own point is coverage across every self-sizing extra leaf kind"
         );
 
