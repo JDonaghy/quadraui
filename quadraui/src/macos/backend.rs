@@ -64,9 +64,7 @@ use crate::primitives::menu_bar::MenuBar;
 use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
-use crate::{
-    Accelerator, AcceleratorId, Key, Modifiers, ParsedBinding, PlatformServices, Theme,
-};
+use crate::{Accelerator, AcceleratorId, Key, Modifiers, ParsedBinding, PlatformServices, Theme};
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
 // backend.

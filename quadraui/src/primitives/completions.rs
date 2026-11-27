@@ -1087,45 +1087,14 @@ pub(crate) mod native_surface_paint {
             let detail_reserve = detail_info.as_ref().map(|(_, dw)| *dw + 8.0).unwrap_or(0.0);
             let text_right_limit = row.x + row.width - detail_reserve - 4.0;
 
-            // A span that overflows `text_right_limit` is ellipsis-
-            // truncated via the shared `fit_text_prefix` rather than
-            // hard-clipped mid-glyph — same treatment as `ListView`'s
-            // and `TreeView`'s rasterisers.
-            for span in &item.label.spans {
-                let remaining = text_right_limit - cursor_x;
-                if remaining <= 0.0 {
-                    break;
-                }
-                let span_fg = span.fg.unwrap_or(theme.completion_fg);
-                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-                let (paint_text, paint_w, truncated) = if sw <= remaining {
-                    (span.text.clone(), sw, false)
-                } else {
-                    let (t, w) = crate::paint_surface::fit_text_prefix(
-                        surface, &span.text, span.bold, remaining,
-                    );
-                    (t, w, true)
-                };
-                if paint_w <= 0.0 {
-                    break;
-                }
-                if let Some(sbg) = span.bg {
-                    surface.surface_fill_rect(Rect::new(cursor_x, row.y, paint_w, row.height), sbg);
-                }
-                surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, row.y + (row.height - sh) / 2.0, paint_w, sh),
-                    &paint_text,
-                    span_fg,
-                    span.bold,
-                    false,
-                    false,
-                    1.0,
-                );
-                cursor_x += paint_w;
-                if truncated {
-                    break;
-                }
-            }
+            let cursor_x = crate::primitives::row_stack::row_content_paint::paint_row_spans(
+                surface,
+                &item.label,
+                cursor_x,
+                text_right_limit,
+                (row.y, row.height),
+                theme.completion_fg,
+            );
 
             surface.surface_pop_clip();
 

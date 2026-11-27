@@ -1108,20 +1108,12 @@ pub(crate) mod native_surface_paint {
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
 
-            // Focus-visible ring: a square stroke flush with the
-            // focused row's own bounds, in `Theme::focus_ring_color` at
-            // `Style::focus_ring_width` — see
-            // `crate::primitives::list::native_surface_paint::paint`'s
-            // matching comment for why this one isn't outset like
-            // `Button`'s/`TextInput`'s. Gated on `focus_ring_visible`,
-            // not `tree.has_focus` — see this fn's own doc and
-            // `TreeView::has_focus`'s doc for why the two are kept
-            // separate.
+            // Gated on `focus_ring_visible`, not `tree.has_focus` — see
+            // this fn's own doc and `TreeView::has_focus`'s doc for why
+            // the two are kept separate.
             if is_selected && focus_ring_visible {
-                surface.surface_stroke_rect(
-                    row_rect,
-                    theme.focus_ring_color(),
-                    style.focus_ring_width,
+                crate::primitives::row_stack::row_content_paint::paint_focus_ring(
+                    surface, row_rect, theme, style,
                 );
             }
 

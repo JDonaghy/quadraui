@@ -44,7 +44,7 @@ use crate::event::{Key, MouseButton, NamedKey};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-use crate::types::{apply_selection_gesture, SelectionGesture};
+use crate::types::SelectionGesture;
 use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
@@ -1382,21 +1382,11 @@ pub(crate) mod native_surface_paint {
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
 
-            // Focus-visible ring: a square stroke flush with the
-            // selected row's own bounds, in `Theme::focus_ring_color`
-            // at `Style::focus_ring_width`. Unlike `Button`'s/
-            // `TextInput`'s ring, this one is not outset — adjacent
-            // rows have no gap between them, so an outset stroke would
-            // bleed into the row above/below. Gated on
-            // `focus_ring_visible`, not `list.has_focus` — see this
-            // fn's own doc and `ListView::has_focus`'s doc for why the
-            // two are kept separate.
+            // Gated on `focus_ring_visible`, not `list.has_focus` — see
+            // this fn's own doc and `ListView::has_focus`'s doc for why
+            // the two are kept separate.
             if is_selected && focus_ring_visible {
-                surface.surface_stroke_rect(
-                    row_rect,
-                    theme.focus_ring_color(),
-                    style.focus_ring_width,
-                );
+                row_stack::row_content_paint::paint_focus_ring(surface, row_rect, theme, style);
             }
 
             // Per-row clip: with h_scroll the cursor starts to the left
@@ -1428,45 +1418,14 @@ pub(crate) mod native_surface_paint {
             // boundary sits.
             let text_right_limit = row_x + row_w - detail_reserve - 4.0;
 
-            // A span that overflows `text_right_limit` is ellipsis-
-            // truncated (via the shared `fit_text_prefix`) rather than
-            // hard-clipped mid-glyph — see `Tree`'s identical treatment,
-            // the pattern every overflowing primitive now follows.
-            for span in &item.text.spans {
-                let remaining = text_right_limit - cursor_x;
-                if remaining <= 0.0 {
-                    break;
-                }
-                let span_fg = span.fg.unwrap_or(decoration_fg);
-                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-                let (paint_text, paint_w, truncated) = if sw <= remaining {
-                    (span.text.clone(), sw, false)
-                } else {
-                    let (t, w) = crate::paint_surface::fit_text_prefix(
-                        surface, &span.text, span.bold, remaining,
-                    );
-                    (t, w, true)
-                };
-                if paint_w <= 0.0 {
-                    break;
-                }
-                if let Some(sbg) = span.bg {
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
-                }
-                surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, paint_w, sh),
-                    &paint_text,
-                    span_fg,
-                    span.bold,
-                    false,
-                    false,
-                    1.0,
-                );
-                cursor_x += paint_w;
-                if truncated {
-                    break;
-                }
-            }
+            row_stack::row_content_paint::paint_row_spans(
+                surface,
+                &item.text,
+                cursor_x,
+                text_right_limit,
+                (row_y, row_h),
+                decoration_fg,
+            );
 
             // Detail text is pinned to the visible viewport (does not
             // scroll with h_scroll) so it stays readable regardless of
@@ -2702,17 +2661,11 @@ impl WidgetAction for ListViewEvent {
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListViewState {
-    /// The full multi-selection set, sorted/deduped by
-    /// [`apply_selection_gesture`]. Empty until a Ctrl/Cmd or Shift
-    /// gesture first grows it beyond the single `selected_idx` every
-    /// plain click/arrow press collapses it back to.
-    pub selected: Vec<usize>,
-    /// The index a Shift range-extension grows from — the last
-    /// `Replace`/`Toggle` target, per [`SelectionGesture::Range`]'s own
-    /// doc. `None` until the first extending gesture, at which point it
-    /// seeds from `cursor` (or `ListView::selected_idx` if even that is
-    /// unset yet) rather than defaulting to row `0`.
-    pub anchor: Option<usize>,
+    /// The multi-selection set and the anchor a Shift range-extension
+    /// grows from — the shared row-widget selection engine `TreeView` and
+    /// `DataTable` keep too. Both stay empty until the first gesture,
+    /// which seeds them from the cursor row rather than from row `0`.
+    pub selection: crate::types::SelectionCore,
     /// The row the last keyboard/mouse move actually landed on,
     /// independent of whatever `ListView::selected_idx` the app echoes
     /// back next frame (which, for a `SelectionSet`, may only carry
@@ -2749,32 +2702,14 @@ impl ListView {
         }
     }
 
-    /// The multi-selection set [`Self::handle_mouse_down`]'s `Toggle`/`Range`
-    /// gestures grow from: `state.selected` once any gesture has grown it
-    /// beyond a single row, falling back to `[self.selected_idx]` (or
-    /// empty, for an empty list) before the first one — the same
-    /// lazy-seed convention [`Self::current_idx`] applies to the cursor,
-    /// so a first Ctrl/Cmd-click never discards the descriptor's own
-    /// `selected_idx` the way an unseeded empty `Vec` would.
-    fn current_selected(&self, state: &ListViewState) -> Vec<usize> {
-        if !state.selected.is_empty() {
-            state.selected.clone()
-        } else if self.items.is_empty() {
-            Vec::new()
-        } else {
-            vec![self.selected_idx.min(self.items.len() - 1)]
-        }
-    }
-
     /// Build the `Handled::Event` that moves the selection to `target`
     /// (already clamped into `self.items`), honouring `extend` (Shift
     /// held) the same way a click's own [`SelectionGesture`] does: a
     /// plain move collapses to a single-row `SelectionChanged` and
-    /// re-anchors there; an extending move grows `state.selected` via
-    /// [`apply_selection_gesture`]'s `Range` gesture from `state.anchor`
-    /// (seeded from [`Self::current_idx`] the first time an extension
-    /// starts, not reset on every subsequent one) and reports the full
-    /// set via `SelectionSet`. Either way, `state.cursor` is updated to
+    /// re-anchors there; an extending move grows the selection as a
+    /// `Range` gesture from its anchor (seeded from [`Self::current_idx`]
+    /// the first time an extension starts, not reset on every subsequent
+    /// one) and reports the full set via `SelectionSet`. Either way, `state.cursor` is updated to
     /// `target` so the *next* call keeps extending from where this one
     /// left off, even though the app's own echoed `selected_idx` may not
     /// track that.
@@ -2790,15 +2725,16 @@ impl ListView {
         let current = self.current_idx(state);
         state.cursor = Some(target);
         if extend {
-            let anchor = *state.anchor.get_or_insert(current);
             let indices =
-                apply_selection_gesture(&state.selected, anchor, target, SelectionGesture::Range);
-            state.selected = indices.clone();
+                state
+                    .selection
+                    .on_gesture(Some(current), target, SelectionGesture::Range);
             state.cursor_echo = indices.first().copied();
             Handled::Event(ListViewEvent::SelectionSet { indices })
         } else {
-            state.anchor = Some(target);
-            state.selected = vec![target];
+            state
+                .selection
+                .on_gesture(Some(current), target, SelectionGesture::Replace);
             state.cursor_echo = Some(target);
             Handled::Event(ListViewEvent::SelectionChanged { idx: target })
         }
@@ -2861,8 +2797,8 @@ impl ListView {
                 } else {
                     let indices: Vec<usize> = (0..self.items.len()).collect();
                     let last = self.items.len() - 1;
-                    state.selected = indices.clone();
-                    state.anchor = Some(last);
+                    state.selection.selected = indices.clone();
+                    state.selection.anchor = Some(last);
                     state.cursor = Some(last);
                     Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
@@ -2904,30 +2840,15 @@ impl ListView {
         };
         cx.request_focus(None);
         let current = self.current_idx(state);
-        match SelectionGesture::from_modifiers(*mods) {
+        let gesture = SelectionGesture::from_modifiers(*mods);
+        let indices = state.selection.on_gesture(Some(current), idx, gesture);
+        state.cursor = Some(idx);
+        match gesture {
             SelectionGesture::Replace => {
-                state.anchor = Some(idx);
-                state.cursor = Some(idx);
-                state.selected = vec![idx];
                 state.cursor_echo = Some(idx);
                 Handled::Event(ListViewEvent::SelectionChanged { idx })
             }
-            gesture @ SelectionGesture::Toggle => {
-                let anchor = state.anchor.unwrap_or(current);
-                let selected = self.current_selected(state);
-                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
-                state.selected = indices.clone();
-                state.anchor = Some(idx);
-                state.cursor = Some(idx);
-                state.cursor_echo = indices.first().copied();
-                Handled::Event(ListViewEvent::SelectionSet { indices })
-            }
-            gesture @ SelectionGesture::Range => {
-                let anchor = *state.anchor.get_or_insert(current);
-                let selected = self.current_selected(state);
-                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
-                state.selected = indices.clone();
-                state.cursor = Some(idx);
+            SelectionGesture::Toggle | SelectionGesture::Range => {
                 state.cursor_echo = indices.first().copied();
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
@@ -3556,8 +3477,10 @@ mod interactive_tests {
         let l = list(3, 0);
         let layout = layout_for(&l);
         let mut state = ListViewState {
-            selected: vec![0],
-            anchor: Some(0),
+            selection: crate::types::SelectionCore {
+                selected: vec![0],
+                anchor: Some(0),
+            },
             cursor: Some(0),
             cursor_echo: Some(0),
         };
@@ -3580,7 +3503,7 @@ mod interactive_tests {
                 indices: vec![0, 2]
             })
         );
-        assert_eq!(state.selected, vec![0, 2]);
+        assert_eq!(state.selection.selected, vec![0, 2]);
     }
 
     /// Regression for the bug the second review round flagged: a list
@@ -3613,7 +3536,7 @@ mod interactive_tests {
                 indices: vec![1, 2]
             })
         );
-        assert_eq!(state.selected, vec![1, 2]);
+        assert_eq!(state.selection.selected, vec![1, 2]);
     }
 
     #[test]

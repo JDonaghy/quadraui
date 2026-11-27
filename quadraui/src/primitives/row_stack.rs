@@ -336,7 +336,76 @@ pub(crate) mod row_content_paint {
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::image::Image;
+    use crate::style::Style;
+    use crate::theme::Theme;
     use crate::types::{Color, Icon, StyledText};
+
+    /// Paint `text`'s spans left to right from `cursor_x` within the row
+    /// band `row_y`..`row_y + row_h`, each in its own colour (else
+    /// `default_fg`) and weight, vertically centred, over its own `bg`
+    /// when set. A span that overflows `right_limit` is ellipsis-truncated
+    /// via the shared [`crate::paint_surface::fit_text_prefix`] rather
+    /// than hard-clipped mid-glyph, and nothing after it paints. Returns
+    /// the cursor past the last painted glyph.
+    pub(crate) fn paint_row_spans(
+        surface: &mut dyn PaintSurface,
+        text: &StyledText,
+        mut cursor_x: f32,
+        right_limit: f32,
+        (row_y, row_h): (f32, f32),
+        default_fg: Color,
+    ) -> f32 {
+        for span in &text.spans {
+            let remaining = right_limit - cursor_x;
+            if remaining <= 0.0 {
+                break;
+            }
+            let span_fg = span.fg.unwrap_or(default_fg);
+            let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
+            let (paint_text, paint_w, truncated) = if sw <= remaining {
+                (span.text.clone(), sw, false)
+            } else {
+                let (t, w) = crate::paint_surface::fit_text_prefix(
+                    surface, &span.text, span.bold, remaining,
+                );
+                (t, w, true)
+            };
+            if paint_w <= 0.0 {
+                break;
+            }
+            if let Some(sbg) = span.bg {
+                surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
+            }
+            surface.surface_draw_text_run_styled(
+                Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, paint_w, sh),
+                &paint_text,
+                span_fg,
+                span.bold,
+                false,
+                false,
+                1.0,
+            );
+            cursor_x += paint_w;
+            if truncated {
+                break;
+            }
+        }
+        cursor_x
+    }
+
+    /// Stroke a row's focus-visible ring: a square stroke flush with
+    /// `row_rect`, in [`Theme::focus_ring_color`] at
+    /// [`Style::focus_ring_width`]. Unlike `Button`'s/`TextInput`'s ring it
+    /// is not outset — adjacent rows have no gap between them, so an
+    /// outset stroke would bleed into the row above/below.
+    pub(crate) fn paint_focus_ring(
+        surface: &mut dyn PaintSurface,
+        row_rect: Rect,
+        theme: &Theme,
+        style: &Style,
+    ) {
+        surface.surface_stroke_rect(row_rect, theme.focus_ring_color(), style.focus_ring_width);
+    }
 
     /// Paint a row's optional leading icon glyph (`ListItem::icon` /
     /// `PaletteItem::icon` / `TreeRow::icon`) at `cursor_x`, nerd-font
