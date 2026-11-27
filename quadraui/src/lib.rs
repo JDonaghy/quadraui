@@ -979,16 +979,19 @@ pub use compose::{
     PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion,
     ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
     SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent, TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
-    ToastStackAction, ToastStackController, ToolbarHoverTracker, TreeController,
-    TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
-    WorkspaceLayout, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
+    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent,
+    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
+    TreeController, TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace,
+    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
+    WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
     FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
     HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
 };
+pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -996,7 +999,6 @@ pub use compose::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
-pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.

@@ -2718,6 +2718,7 @@ class _UiEventDict(TypedDict):
     MultiSectionView: NotRequired[Tuple[WidgetId, Any]]
     Chat: NotRequired[Tuple[WidgetId, Any]]
     Sidebar: NotRequired[Tuple[WidgetId, Any]]
+    TabGroup: NotRequired[Tuple[WidgetId, Any]]
     ScrollView: NotRequired[Tuple[WidgetId, ScrollViewEvent]]
     HelpOverlay: NotRequired[Tuple[WidgetId, Any]]
     PathPicker: NotRequired[Tuple[WidgetId, Any]]

@@ -5353,6 +5353,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `MultiSectionView` | `[WidgetId, unknown]` |  |
 | `Chat` | `[WidgetId, unknown]` |  |
 | `Sidebar` | `[WidgetId, unknown]` |  |
+| `TabGroup` | `[WidgetId, unknown]` |  |
 | `ScrollView` | `[WidgetId, ScrollViewEvent]` |  |
 | `HelpOverlay` | `[WidgetId, unknown]` |  |
 | `PathPicker` | `[WidgetId, unknown]` |  |
