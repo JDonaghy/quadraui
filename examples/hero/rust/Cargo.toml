@@ -20,6 +20,13 @@ path = "src/bin/native.rs"
 # runner.
 required-features = ["tui"]
 
+[[bin]]
+name = "hero-capture"
+path = "src/bin/capture.rs"
+# `tui` for the same reason as `counter-native`; `capture` for the PNG
+# encoder. Add `gtk`, `macos` or `win` for that backend's image.
+required-features = ["tui", "capture"]
+
 [features]
 # No default backend, matching quadraui's own feature policy. Each feature
 # forwards to the identically-named one on quadraui. The hero program
@@ -28,9 +35,14 @@ tui = ["quadraui/tui"]
 gtk = ["quadraui/gtk"]
 macos = ["quadraui/macos"]
 win = ["quadraui/win"]
+# The screenshot tool (`src/bin/capture.rs`, run by scripts/capture_hero.sh).
+capture = ["dep:image"]
 
 [dependencies]
 quadraui = { path = "../../../quadraui" }
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+] }
 
 [[test]]
 name = "headless"

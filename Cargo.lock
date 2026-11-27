@@ -3393,6 +3393,7 @@ dependencies = [
 name = "quadraui-hero"
 version = "0.0.0"
 dependencies = [
+ "image",
  "quadraui",
 ]
 
