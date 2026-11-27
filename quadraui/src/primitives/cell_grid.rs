@@ -2055,17 +2055,33 @@ impl CellGrid {
     /// editing handler (the one [`crate::TextField`] and `Form`'s text
     /// row use), reporting a changed buffer, caret or selection as
     /// [`CellGridEvent::CellEditChanged`]. Ctrl/Cmd+C and Ctrl/Cmd+X copy
-    /// the selection out through `cx`.
+    /// the selection out through `cx`; with nothing selected they answer
+    /// `Ignored`, so the chord bubbles to the app's accelerators.
     fn edit_event(
         &self,
         edit: &CellEditState,
         event: &RoutedEvent,
         cx: &mut EventCx,
     ) -> Handled<CellGridEvent> {
-        use crate::behaviour::text_edit::{handle_flat_edit_event, FlatEditOutcome, FlatEditState};
-        let mut flat = FlatEditState::default();
-        flat.cursor = Some(edit.cursor.min(edit.text.len()));
-        flat.anchor = edit.selection_anchor;
+        use crate::behaviour::text_edit::{
+            flat_selected_text, handle_flat_edit_event, EditIntent, FlatEditOutcome,
+            FlatEditState,
+        };
+        let cursor = edit.cursor.min(edit.text.len());
+        if let RoutedEvent::Key(key) = event {
+            if matches!(
+                EditIntent::from_key(&key.key, key.modifiers),
+                Some(EditIntent::Copy | EditIntent::Cut)
+            ) && flat_selected_text(&edit.text, cursor, edit.selection_anchor).is_none()
+            {
+                return Handled::Ignored;
+            }
+        }
+        let mut flat = FlatEditState {
+            cursor: Some(cursor),
+            anchor: edit.selection_anchor,
+            ..Default::default()
+        };
         let before = flat;
         let text = match handle_flat_edit_event(
             &edit.text,
@@ -3501,23 +3517,32 @@ mod interactive_tests {
             },
         ] {
             let mut state = CellGridState::default();
-            let mut host = MockHost::default();
-            let mut cx = EventCx::new(g.id, &mut host);
-            let outcome = g.handle(
-                &mut state,
-                &RoutedEvent::Key(KeyEvent {
-                    key: Key::Char('v'),
-                    modifiers,
-                    repeat: false,
-                }),
-                &layout,
-                &mut cx,
-            );
-            // Must bubble (`Ignored`), not insert a literal "v" and claim
-            // the keypress — a claimed Ctrl/Cmd+V would never reach
-            // `preprocess_event`'s later paste step, and an Alt+V would
-            // never reach a future Alt accelerator.
-            assert_eq!(outcome, Handled::Ignored, "modifiers = {modifiers:?}");
+            for letter in ['v', 'c', 'x'] {
+                let mut host = MockHost::default();
+                let mut cx = EventCx::new(g.id, &mut host);
+                let outcome = g.handle(
+                    &mut state,
+                    &RoutedEvent::Key(KeyEvent {
+                        key: Key::Char(letter),
+                        modifiers,
+                        repeat: false,
+                    }),
+                    &layout,
+                    &mut cx,
+                );
+                // Must bubble (`Ignored`), not insert the literal letter
+                // and claim the keypress — a claimed Ctrl/Cmd+V would never
+                // reach `preprocess_event`'s later paste step, a Ctrl/Cmd+C
+                // or +X with nothing selected would never reach the app's
+                // own copy accelerator, and an Alt chord would never reach
+                // a future Alt accelerator.
+                assert_eq!(
+                    outcome,
+                    Handled::Ignored,
+                    "letter = {letter:?}, modifiers = {modifiers:?}"
+                );
+                assert!(host.emitted.is_empty(), "letter = {letter:?}");
+            }
         }
     }
 

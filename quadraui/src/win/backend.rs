@@ -3834,15 +3834,7 @@ impl Backend for WinBackend {
         rect: Rect,
         chart: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
-        crate::primitives::layout_metrics::pixel_chart_layout(
-            chart,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            self.current_line_height,
-            self.current_char_width,
-        )
+        chart.layout_in(rect, self.current_char_width, self.current_line_height)
     }
 }
 

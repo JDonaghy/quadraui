@@ -2706,6 +2706,12 @@ pub struct DataTableState {
     pub typeahead: crate::behaviour::typeahead::Typeahead,
     /// The column Left/Right last moved to.
     pub cursor_col: Option<usize>,
+    /// The row the last keyboard move or click landed on — the moving end
+    /// of a Shift extension, which `DataTable::selected_idx` alone cannot
+    /// carry. It counts only while the descriptor's `selected_idx` lies
+    /// inside [`Self::selection`]'s set; once the app selects elsewhere,
+    /// the descriptor wins.
+    pub cursor: Option<usize>,
     /// A header divider drag in progress.
     pub resize: Option<ColumnResizeDrag>,
     /// A scrollbar thumb drag in progress.
@@ -2739,6 +2745,19 @@ impl DataTable {
         self.rows.len().saturating_sub(layout.layout.visible_rows)
     }
 
+    /// The keyboard cursor row: [`DataTableState::cursor`] while the
+    /// descriptor's `selected_idx` still lies in the widget's own
+    /// selection set, otherwise `selected_idx`.
+    fn current_idx(&self, state: &DataTableState) -> Option<usize> {
+        let in_set = self
+            .selected_idx
+            .is_some_and(|idx| state.selection.selected.contains(&idx));
+        match state.cursor {
+            Some(cursor) if in_set && cursor < self.rows.len() => Some(cursor),
+            _ => self.selected_idx,
+        }
+    }
+
     /// Report a scroll offset change, or just consume when it did not move.
     fn scroll_to(&self, scroll_offset: usize) -> crate::Handled<DataTableEvent> {
         if scroll_offset == self.scroll_offset {
@@ -2770,19 +2789,21 @@ impl DataTable {
         if scroll_offset != self.scroll_offset {
             cx.emit(DataTableEvent::ScrollChanged { scroll_offset }.into_ui_event(self.id));
         }
+        let current = self.current_idx(state);
+        state.cursor = Some(target);
         if extend {
-            let indices =
-                state
-                    .selection
-                    .on_gesture(self.selected_idx, target, SelectionGesture::Range);
+            let indices = state
+                .selection
+                .on_gesture(current, target, SelectionGesture::Range);
             return Handled::Event(DataTableEvent::SelectionSet { indices });
         }
-        if self.selected_idx == Some(target) {
-            return Handled::Consumed;
-        }
+        let was_single = state.selection.selected.len() <= 1;
         state
             .selection
             .on_gesture(Some(target), target, SelectionGesture::Replace);
+        if self.selected_idx == Some(target) && was_single {
+            return Handled::Consumed;
+        }
         Handled::Event(DataTableEvent::RowSelected { idx: target })
     }
 
@@ -2807,7 +2828,8 @@ impl DataTable {
                 NavKey::PageDown(_) => NavKey::PageDown(page),
                 other => other,
             };
-            return match FlatNav::mv(self.rows.len(), self.selected_idx, nav, false, |_| true) {
+            let current = self.current_idx(state);
+            return match FlatNav::mv(self.rows.len(), current, nav, false, |_| true) {
                 Some(target) => self.move_cursor(state, target, mods.shift, layout, cx),
                 None => Handled::Ignored,
             };
@@ -2855,7 +2877,7 @@ impl DataTable {
                             .unwrap_or_default()
                     })
                     .collect();
-                let from = self.selected_idx.unwrap_or(0);
+                let from = self.current_idx(state).unwrap_or(0);
                 match state
                     .typeahead
                     .push_now(*c, |i| labels[i].as_str(), labels.len(), from)
@@ -2879,7 +2901,9 @@ impl DataTable {
         use crate::types::SelectionGesture;
         use crate::Handled;
         let gesture = SelectionGesture::from_modifiers(mods);
-        let indices = state.selection.on_gesture(self.selected_idx, idx, gesture);
+        let current = self.current_idx(state);
+        state.cursor = Some(idx);
+        let indices = state.selection.on_gesture(current, idx, gesture);
         match gesture {
             SelectionGesture::Replace => Handled::Event(DataTableEvent::RowSelected { idx }),
             _ => Handled::Event(DataTableEvent::SelectionSet { indices }),

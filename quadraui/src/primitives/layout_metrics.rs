@@ -25,7 +25,6 @@
 
 use crate::event::Rect as QRect;
 use crate::primitives::board::{BoardLayout, BoardMeasure, BoardModel};
-use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
 use crate::primitives::data_table::{ColumnMeasure, DataTable, DataTableLayout};
 use crate::primitives::form::{
     FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
@@ -983,34 +982,6 @@ pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) ->
             BOARD_CARD_H_PX,
             BOARD_CARD_GAP_PX,
         ),
-    )
-}
-
-// ── Chart ────────────────────────────────────────────────────────────
-
-/// Compute a [`Chart`]'s layout — the twin of every backend's
-/// `*_chart_layout`. Pure passthrough to
-/// [`Chart::layout`]; kept here (rather than inlined at each call site)
-/// so a future backend gets it for free, matching every other fn in
-/// this module.
-pub fn pixel_chart_layout(
-    chart: &Chart,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    line_height: f32,
-    char_width: f32,
-) -> ChartLayout {
-    chart.layout(
-        x,
-        y,
-        ChartMeasure {
-            width: w,
-            height: h,
-            char_width,
-            line_height,
-        },
     )
 }
 

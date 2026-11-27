@@ -256,6 +256,66 @@ fn ctrl_and_shift_clicks_grow_a_multi_selection() {
 }
 
 #[test]
+fn repeated_shift_down_keeps_extending_the_selection_and_scrolls_with_it() {
+    let mut driver = driver();
+    let y = row_y(&driver, 2);
+    driver.click(TABLE.x + 2.0, y);
+    let shift_down = || UiEvent::KeyPressed {
+        key: quadraui::Key::Named(NamedKey::Down),
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    };
+    for _ in 0..3 {
+        driver.dispatch(shift_down());
+    }
+    assert_eq!(
+        applied(&driver).last(),
+        Some(&DataTableEvent::SelectionSet {
+            indices: vec![2, 3, 4, 5]
+        })
+    );
+    // The moving end, not the descriptor's `selected_idx`, drives the
+    // scroll: row 9 sits one past the nine-row viewport.
+    for _ in 0..4 {
+        driver.dispatch(shift_down());
+    }
+    assert_eq!(
+        applied(&driver).last(),
+        Some(&DataTableEvent::SelectionSet {
+            indices: (2..=9).collect()
+        })
+    );
+    assert_eq!(driver.app().table.scroll_offset, 1);
+    // A plain arrow collapses the extension one row past its moving end.
+    driver.press_named(NamedKey::Down);
+    assert_eq!(driver.app().table.selected_idx, Some(10));
+}
+
+#[test]
+fn a_plain_arrow_back_onto_the_selected_row_collapses_the_extension() {
+    let mut driver = driver();
+    let y = row_y(&driver, 2);
+    driver.click(TABLE.x + 2.0, y);
+    driver.dispatch(UiEvent::KeyPressed {
+        key: quadraui::Key::Named(NamedKey::Down),
+        modifiers: Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+    driver.press_named(NamedKey::Up);
+    assert_eq!(
+        applied(&driver).last(),
+        Some(&DataTableEvent::RowSelected { idx: 2 }),
+        "Up lands on the descriptor's own selected row but still collapses [2, 3]"
+    );
+}
+
+#[test]
 fn typing_jumps_to_the_first_matching_row() {
     let mut driver = driver();
     let y = row_y(&driver, 0);
