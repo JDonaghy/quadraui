@@ -11,8 +11,11 @@ cargo new counter && cd counter
 cargo add quadraui --features tui
 ```
 
-> Until 0.12 is on crates.io, add it from git instead:
-> `cargo add quadraui --git https://github.com/JDonaghy/quadraui --branch develop --features tui`
+> **Versions.** These pages track `develop`, which becomes 0.12. The last
+> crates.io release is 0.11, and some APIs used here are newer. Until 0.12
+> is published, pin a `develop` commit rather than following its tip (the
+> same advice the README gives):
+> `cargo add quadraui --git https://github.com/JDonaghy/quadraui --rev <commit-sha> --features tui`
 
 ## 2. Write the app
 
@@ -91,6 +94,11 @@ The three parts:
 - **Update** is `handle()`: match the event, change state, return
   `Reaction::Redraw` (or `Reaction::Exit`).
 
+Rust has no `App`, `Column` or `Row` (the Python and Node versions do).
+`put` places a widget at a column and row, `cols` cells wide and one row
+(`h`) high. A widget that needs several rows, such as a list, needs a
+height too: add a `rows` argument and use `rows * h`.
+
 ## 3. Run it in the terminal
 
 ```sh
@@ -98,6 +106,10 @@ cargo run
 ```
 
 Click `+` and `-`. `q` quits.
+
+Run it in a real terminal (tmux and ssh are fine). The terminal backend
+asks the terminal for its cursor position at startup, so it fails when
+input is piped or there is no terminal.
 
 ## 4. Run it in a native window
 
@@ -119,19 +131,111 @@ into your project root.
 
 ## 5. Test it headless
 
-`TuiDriver` runs the app against an in-memory terminal: click what was
-painted, then read the screen. This is `examples/hero/rust/tests/headless.rs`:
+`TuiDriver` runs the app against an in-memory terminal: find what was
+painted, click it, then read the screen. This is
+`examples/hero/rust/tests/headless.rs`:
 
 <!-- sample: examples/hero/rust/tests/headless.rs -->
 ```rust,noplayground
+#[allow(dead_code)]
+#[path = "../src/main.rs"]
+mod hero;
+
+use quadraui::tui::testing::TuiDriver;
+
+fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
+    let (x, y) = driver
+        .find(label)
+        .unwrap_or_else(|| panic!("{label:?} not on screen:\n{}", driver.screen()));
+    driver.click(x, y);
+}
+
 #[test]
 fn plus_minus_plus_counts_to_one() {
     let mut driver = TuiDriver::new(hero::Counter::default(), 30, 5);
     driver.render();
     assert!(driver.screen_contains("Count: 0"), "{}", driver.screen());
+    // `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
+    // DoubleClick, which a Button does not treat as a second activation
+    // (see examples/hero/README.md, "Gaps").
+    for label in ["+", "-", "+"] {
+        click_label(&mut driver, label);
+    }
 ```
 
+- The `#[path]` line compiles `src/main.rs` into the test as module
+  `hero`, so a binary crate can test its app. In your own project you can
+  do the same, or move `Counter` into `src/lib.rs` and `use counter::Counter`.
+- `TuiDriver::new(app, 30, 5)` is a 30x5-cell terminal. `click(x, y)`
+  takes cell coordinates; `find(text)` gives the coordinates of painted
+  text. `press(key)`, `type_char(c)`, `screen()` and `app()` do what their
+  names say. Tab and bar parts have helpers by id, such as
+  `tab_center(&bar_id, 2)`.
+- **Two clicks on the same spot count once**: clicks less than 400 ms and
+  1.5 cells apart fold into a double-click, which a button does not treat
+  as a second press. A test that means two separate clicks calls
+  `driver.set_double_click_folding(false)` first. A user clicking quickly
+  in a live app hits the same limit today.
+
 `GtkDriver`, `MacDriver` and `WinDriver` do the same off screen in pixels.
+
+## 6. Next: a text field and a list
+
+The counter uses two widgets. The
+[parity app](https://github.com/JDonaghy/quadraui/tree/develop/examples/parity)
+is a todo list CI runs in all three languages, with a text field, a list
+and a status bar. Its Rust version, `examples/parity/rust/src/main.rs`,
+shows the parts the counter does not. `ListView` and `ListItem` have no
+`new()` or `Default` yet, so every field is spelled out:
+
+<!-- sample: examples/parity/rust/src/main.rs -->
+```rust,noplayground
+        let items = self.todos.iter().map(|t| ListItem {
+            text: StyledText::plain(t),
+            icon: None,
+            detail: None,
+            decoration: Default::default(),
+        });
+        let list = ListView {
+            id: WidgetId::new("todos"),
+            title: None,
+            items: items.collect(),
+            selected_idx: self.selected,
+            scroll_offset: 0,
+            has_focus: false,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+            striped: false,
+        };
+```
+
+A text field is a `FormField` with `kind: FieldKind::TextInput { .. }`
+inside a `Form`; the file builds one in full. Their events, matched in
+`handle`:
+
+<!-- sample: examples/parity/rust/src/main.rs -->
+```rust,noplayground
+        match event {
+            UiEvent::Form(_, FormEvent::TextInputChanged { value, .. }) => {
+                self.log.push(format!("edit {value}"));
+                self.draft = value;
+            }
+            UiEvent::Form(_, FormEvent::TextInputCommitted { .. }) => self.add(),
+            UiEvent::Form(_, FormEvent::FocusChanged { id }) => self.focused_field = Some(id),
+            UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) => {
+                self.log.push(format!("select {idx}"));
+                self.selected = idx;
+            }
+```
+
+`TextInputChanged` carries the whole new value; `TextInputCommitted` is
+Enter. The form's focused field is app state in Rust, which is why the app
+tracks `FocusChanged`. `log` records each update for the parity check;
+your app does not need it. The
+[API reference](https://docs.rs/quadraui) lists every widget's fields and
+every `UiEvent`.
 
 ## About the hand-placed layout
 
@@ -140,10 +244,14 @@ longer than the [Python](python.md) and [Node](node.md) versions. Those get
 `Column` and `Row` from their app layer; a Rust equivalent is proposed in
 [`examples/hero/README.md`](https://github.com/JDonaghy/quadraui/blob/develop/examples/hero/README.md)
 but not built yet. For real apps today, `ShellApp` gives you a VS Code-style
-frame with the regions already laid out, and the `layout` feature adds
-flexbox and grid ([Layout](../concepts/layout.md)).
+frame with the regions already laid out: the smallest one is
+[`quadraui/examples/hello.rs`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/examples/hello.rs)
+(`cargo run --example hello --features tui` in a clone). The `layout`
+feature adds flexbox and grid for computing rectangles
+([Layout](../concepts/layout.md)); it has no worked example in these pages
+yet, so see `quadraui::flex` in the [API reference](https://docs.rs/quadraui).
 
-## Next
+## More
 
 - [The shape of an app](../concepts/index.md), and how it maps onto Elm,
   iced, Textual and React.

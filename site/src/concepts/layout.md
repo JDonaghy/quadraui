@@ -22,6 +22,12 @@ In JSX the same containers are `<column>`, `<row>`, `<split>` and so on.
 `Column` and `Row` take `gap`, `padding` and `margin`. Children currently
 share the space equally: the wire format accepts a per-child size, minimum
 and maximum, but the `Column`/`Row` constructors do not expose them yet.
+So in the counter the label takes half the height and each button half the
+width, however large the terminal or window is.
+
+The root of the tree fills the whole window or terminal. The size you pass
+to `App(width, height, ...)` is used only by a headless run (the test
+harness); a live `run_tui()` or `run_native()` ignores it.
 
 ## Rust: three levels
 

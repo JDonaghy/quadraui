@@ -17,7 +17,9 @@ If you know **Elm, iced, Textual or React**, you know the shape already:
 **state**, a **view** that turns state into a widget tree each frame, and
 **update** code that changes state when an event arrives. There is no data
 binding and no manual redraw. [The shape of an app](concepts/index.md) maps
-each part onto the framework you know.
+each part onto the framework you know. Python and Node build the view from
+`Column` and `Row`; Rust, for now, implements a lower-level trait and
+places each widget itself (third below).
 
 ## The same counter, three ways
 
@@ -88,7 +90,7 @@ if (require.main === module) {
   const counter = new Counter();
   const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
   const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // Ending a live session needs both calls, deferred out of the handler (examples/hero/README.md, "Gaps").
+  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
   const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
 }
 module.exports = { Counter };

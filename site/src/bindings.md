@@ -34,9 +34,17 @@ has the table.
   and borrows out of the Rust API.
 - **Layout.** Python and Node have `Column`/`Row`; Rust places widgets in
   rectangles (or uses `ShellApp` or the `layout` feature).
-- **Quitting.** There is no default quit key in Python or Node, and Node
-  must stop a live session outside the event handler; the counter shows
-  the pattern. An `App.quit()` safe to call from a handler is proposed.
+- **Quitting.** There is no default quit key in Python or Node. Python
+  raises `SystemExit` from `on_event`. Node cannot stop a live session from
+  inside a handler (`app.stopLive()` throws there), so the counter's
+  `quit()` defers `live.stop()` and `app.stopLive()` with `setImmediate`.
+  An `App.quit()` safe to call from a handler is proposed.
+- **Node from npm.** `@quadraui/node` is first published with 0.12, and its
+  app and JSX entry points need #2801 to load from `node_modules`; until
+  then Node apps run from a clone ([Node quick start](quick-start/node.md)).
+- **Text.** Python lets a span leave out `fg`/`bg`; the TypeScript type
+  requires both (`null` for the theme's colour). Rust uses
+  `StyledSpan::plain`.
 - **Native windows.** The Linux Python wheel and the npm addons are
   terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
 
@@ -55,6 +63,7 @@ by `scripts/gen_wire_types.py`, and CI fails if they drift:
   [`js/app/nodes.ts`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-node/js/app/nodes.ts).
 
 **Versions.** The bindings' minor version always equals the Rust crate's:
-`quadraui` 0.12.x on PyPI and `@quadraui/node` 0.12.x pair with crate
-0.12.x. The policy is
+`quadraui` 0.N.x on PyPI pairs with crate 0.N.x, and so will
+`@quadraui/node` from 0.12, its first npm release. The last release is
+0.11; these pages track `develop`, which becomes 0.12. The policy is
 [`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/decisions/BINDING_VERSION_POLICY.md).

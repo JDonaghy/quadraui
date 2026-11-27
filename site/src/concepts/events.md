@@ -23,7 +23,17 @@ both languages, `snake_case` in Python and `camelCase` in Node:
 
 For input that belongs to no widget, such as a global shortcut, pass
 `on_event` / `onEvent` to `App`. `key_name(event)` / `keyName(event)` turns
-a key event into a name like `"q"`, `"Enter"` or `"Down"`.
+a key event into a name:
+
+- a printable character is itself: `"q"`, `"A"`, `" "` (space);
+- other keys have names: `"Enter"`, `"Escape"`, `"Backspace"`, `"Delete"`,
+  `"Up"`, `"Down"`, `"Left"`, `"Right"`, `"Home"`, `"End"`, `"PageUp"`,
+  `"PageDown"`, `"F1"` to `"F12"`;
+- anything that is not a key event gives `None` / `null`.
+
+The focused widget sees a key first, so `on_event` gets only the keys it
+did not use: Enter on a focused button presses the button, and Tab moves
+focus ([Focus](focus.md)).
 
 ## Rust: one `handle`, matched by id
 
@@ -43,19 +53,34 @@ nothing changed, `Exit` to quit.
 
 ## Common events
 
+What each Python / Node callback receives, and the Rust event it answers:
+
 | Widget | Python / Node callback | Rust `UiEvent` |
 |---|---|---|
-| Button | `on_click` / `onClick` | `ButtonActivated { widget }` |
-| List | `on_select`, `on_activate` | `List(id, ...)` |
-| Tree | `on_select`, `on_activate`, `on_row_click`, `on_toggle_expand` | `Tree(id, ...)` |
-| Table | `on_select`, `on_activate`, `on_header_click` | `DataTable(id, ...)` |
-| Tabs | `on_activate`, `on_close` | `TabBar(id, ...)` |
-| Status bar | `on_segment_click` | `StatusBar(id, ...)` |
-| Form fields | `on_change`, `on_submit` | `Form(id, ...)` |
-| Any key | `on_event` + `key_name` | `KeyPressed { key, modifiers, .. }` |
+| Button | `on_click()` / `onClick()` | `ButtonActivated { widget }` |
+| List | `on_select(index)`, `on_activate(index)` | `List(id, ListViewEvent::SelectionChanged { idx })`, `ItemActivated { idx }` |
+| Tree | `on_select(path)`, `on_activate(path)`, `on_row_click(path)`, `on_toggle_expand(path)`; a path is a list of indices | `Tree(id, TreeEvent::SelectionChanged { path })`, `RowActivated`, `RowClicked`, `RowToggleExpand` |
+| Table | `on_select(row)`, `on_activate(row)`, `on_header_click(column)` | `DataTable(id, DataTableEvent::RowSelected { idx })`, `RowActivated`, `HeaderClicked { col }` |
+| Tabs | `on_activate(index)`, `on_close(index)` | `TabBar(id, TabBarEvent::TabActivated { index })`, `TabClosed { index }` |
+| Status bar | `on_segment_click(segment_id)` | `StatusBar(id, StatusBarEvent::SegmentClicked { id })` |
+| Text field (in a `Form`) | `on_change(text)`, `on_submit(text)` | `Form(id, FormEvent::TextInputChanged { value, .. })`, `TextInputCommitted { .. }` |
+| Any key | `on_event(event)` + `key_name` | `KeyPressed { key, modifiers, .. }` |
 
+`on_change` gets the field's whole new value, not the key that changed it.
 The full list of events and their payloads is generated from one Rust
-schema into [the bindings' wire types](../bindings.md#reference).
+schema into [the bindings' wire types](../bindings.md#reference); for Rust,
+see `UiEvent` in the [API reference](https://docs.rs/quadraui).
+
+## Two quick clicks are one double-click
+
+Two clicks less than 400 ms and 1.5 cells apart fold into a double-click.
+A button does not treat the second half of a double-click as another
+press, so clicking `+` twice quickly counts once, in a live app and in the
+test harnesses. In tests, click a different widget in between, press Enter
+on the (now focused) button, or in Rust call
+`TuiDriver::set_double_click_folding(false)`. Making a button activate on
+every press is tracked as a gap in
+[`examples/hero/README.md`](https://github.com/JDonaghy/quadraui/blob/develop/examples/hero/README.md#gaps-this-exposed).
 
 ## If you know...
 

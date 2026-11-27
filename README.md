@@ -16,7 +16,10 @@ by `scripts/capture_hero.sh` through each backend's headless test driver.*
 If you know **Elm, iced, Textual or React**, you know the shape already:
 **state**, a **view** that turns state into a widget tree each frame, and
 **update** code that changes state when an event arrives. There is no data
-binding and no manual redraw. Here is the same counter in each language:
+binding and no manual redraw. Here is the same counter in each language.
+Python and Node build the view from `Column` and `Row`; Rust, for now,
+implements a lower-level trait and places each widget itself (third
+below):
 
 **Python**
 
@@ -85,7 +88,7 @@ if (require.main === module) {
   const counter = new Counter();
   const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
   const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // Ending a live session needs both calls, deferred out of the handler (examples/hero/README.md, "Gaps").
+  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
   const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
 }
 module.exports = { Counter };
@@ -232,7 +235,10 @@ comfortable with a pre-1.0 API.
 
 ## Status
 
-`0.11.x` — pre-1.0, published on crates.io. Breaking changes are grouped
+`0.11.x` — pre-1.0, published on crates.io, with `quadraui` on PyPI at
+the same minor version. `@quadraui/node` is first published to npm with
+0.12, the next release, and the docs site already tracks `develop`, which
+becomes 0.12. Breaking changes are grouped
 into scheduled minor releases and recorded in `CHANGELOG.md`. What a `0.x`
 release may change is D-019 in
 [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md);
@@ -526,7 +532,10 @@ terminal.
 - **Widgets addressed by id.** Every identified widget painted through
   `draw_dyn` records its rect and sub-regions for the frame, so a test
   targets a widget, or one part of it, by `WidgetId` instead of by
-  coordinates (for example `TuiDriver::tab_center(&bar_id, 2)`).
+  coordinates (for example `TuiDriver::tab_center(&bar_id, 2)`). For a
+  button, `TuiDriver::find("label")` gives the painted label's cell to
+  click; the Python and Node harnesses' `click_text` / `clickText` do the
+  same.
 - **Conformance matrix.** `quadraui/tests/conformance.rs` runs the same
   scenarios against every backend and reports a per-primitive matrix.
 - **End-to-end drivers.** `quadraui::tui::testing::TuiDriver` runs a real

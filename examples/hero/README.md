@@ -14,6 +14,9 @@ each language:
 A native window: `cargo run -p quadraui-hero --features tui,macos --bin
 counter-native` (or `tui,gtk` / `tui,win`) runs the same Rust `Counter`. In
 Python and Node, swap `run_tui()` for `run_native(...)`. `q` quits all three.
+`node examples/hero/node/run_tui.ts path/to/app.tsx` runs a JSX file of your
+own the same way, which is how the Node quick start runs a reader's app until
+`@quadraui/node` loads from `node_modules` (#2801).
 
 ## The shared shape
 

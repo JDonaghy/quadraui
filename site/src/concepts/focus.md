@@ -14,6 +14,17 @@ Widgets declare their stops themselves (`Interactive::focus()` in Rust,
 returning none, one stop, or one per child), so a screen gets a sensible
 Tab order with no extra code. The focused widget paints a focus ring.
 
+Two things you will notice in the terminal today, both open issues rather
+than intended behaviour:
+
+- A `TextDisplay` is a Tab stop. In the counter, Tab therefore visits
+  the `Count:` label as well as the buttons, and while the label has
+  focus its focus ring covers the text.
+- In Python and Node, the focus ring outlines the button's whole share
+  of the layout (often several rows tall, since `Column` and `Row` split
+  space equally) and is drawn over the button's left bracket, so `[ + ]`
+  shows as `│ + ]`. The Rust counter draws no ring.
+
 ## Setting focus
 
 In Python and Node, pass `has_focus` / `hasFocus` to the widget that should
