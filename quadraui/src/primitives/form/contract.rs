@@ -524,13 +524,13 @@ impl Primitive for Form {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_edit(env);
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let painted = self.with_painted_edit(env);
             super::native_surface_paint::paint(
                 &painted,
                 &layout.layout,
@@ -555,7 +555,7 @@ impl Primitive for Form {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 

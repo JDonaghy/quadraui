@@ -831,13 +831,13 @@ impl crate::primitive::Primitive for TextField {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_caret(env.widget_state_as::<TextFieldState>());
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let painted = self.with_painted_caret(env.widget_state_as::<TextFieldState>());
             paint_text_field_gui(
                 surface,
                 layout.area,
@@ -853,7 +853,7 @@ impl crate::primitive::Primitive for TextField {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 

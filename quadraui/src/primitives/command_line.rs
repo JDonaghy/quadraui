@@ -744,13 +744,13 @@ impl crate::primitive::Primitive for CommandLine {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_caret(env.widget_state_as::<CommandLineState>());
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let painted = self.with_painted_caret(env.widget_state_as::<CommandLineState>());
             let selection = painted.selection;
             native_surface_paint::paint(
                 &painted,
@@ -767,7 +767,7 @@ impl crate::primitive::Primitive for CommandLine {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 

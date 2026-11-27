@@ -2521,6 +2521,7 @@ impl crate::primitive::Primitive for Palette {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_caret(env.widget_state_as::<PaletteState>());
         let style = env.style();
         #[cfg(any(
             feature = "gtk",
@@ -2532,7 +2533,6 @@ impl crate::primitive::Primitive for Palette {
             if layout.area.width < 20.0 || layout.area.height < layout.line_height * 4.0 {
                 return;
             }
-            let painted = self.with_painted_caret(env.widget_state_as::<PaletteState>());
             native_surface_paint::paint(
                 &painted,
                 layout.area,
@@ -2552,7 +2552,7 @@ impl crate::primitive::Primitive for Palette {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme, style, env);
+            let _ = (&painted, layout, surface, theme, style, env);
         }
     }
 
