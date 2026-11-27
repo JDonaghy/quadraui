@@ -1,553 +1,412 @@
 # Implementing a quadraui backend
 
 **`Backend` is sealed — see [`quadraui::Backend`]'s rustdoc.** It cannot
-be implemented outside this crate; that isn't a style preference, it's
-enforced by a private supertrait, plus a `compile_fail` doctest proving
-an out-of-crate `impl Backend` is rejected (quadraui#800). If your target
-isn't one of the four in-tree backends (TUI, GTK, Win-GUI, macOS —
-`quadraui/src/{tui,gtk,win,macos}/backend.rs`), the supported path is
+be implemented outside this crate: it requires a private supertrait, and a
+`compile_fail` doctest proves an out-of-crate `impl Backend` is rejected.
+If your target isn't one of the four in-tree backends (TUI, GTK, Win-GUI,
+macOS — `quadraui/src/{tui,gtk,win,macos}/`), the supported path is
 **contributing a fifth in-tree backend to this repo**, not writing an
-out-of-tree crate against `Backend`. `docs/PRIMITIVE_RULES.md` rule 8
-explains why: a new primitive adds a required `Backend` method in an
-ordinary PR, with no default and no version-bump ceremony, and an
-out-of-tree implementor would have no way to keep up with that.
+out-of-tree crate against `Backend`. A backend plugs into crate-private
+seams an outside crate cannot reach (the shared event preprocessing in
+`crate::runtime`, the `BackendCore` accelerator and text-selection state,
+`crate::platform`'s desktop plumbing), and the trait gains platform-service
+methods in ordinary PRs.
+
+**A backend never learns about widgets.** You do not write a `draw_<widget>`
+method or a per-widget file. Every widget lays itself out and paints itself
+through the widget contract ([`Primitive`] + [`Interactive`]) onto one paint
+target your backend provides. Adding a widget to quadraui changes no backend;
+adding a backend makes every widget work on it.
+
+<!-- TODO(0.12 final pass): this guide describes the trait as W9 leaves it. On
+develop at 94f45833 `trait Backend` still declares 111 methods: the 66 in §2
+plus 45 legacy widget methods (draw_tree/list/data_table/split/split_tree/chart/
+board/canvas/progress/spinner/scrollbar/message_list/find_replace/…, their
+*_layout twins, list_char_width, scrollbar_reserve, tree_scroll_row_height, …),
+and src/{gtk,macos,win,tui}/ still hold per-widget rasterisers (tree.rs,
+list.rs, data_table.rs, split.rs, chart.rs, board.rs, …). After W9 (#2981 plus
+the residue sweep) confirm both are gone; if any survive, name them here as
+legacy. -->
 
 Audience: you're opening a PR against this repo to add a new render
 backend — a new GPU surface, a webview, a different terminal library, an
-embedded display, the next major desktop toolkit — or you want to
-understand why the existing backends look the way they do.
-
-This guide covers the patterns and pitfalls. The per-primitive contracts
-themselves live in each primitive's rustdoc; treat this doc as the
-"how to think about backends" complement to those contracts.
+embedded display, the next desktop toolkit — or you want to understand why
+the existing backends look the way they do. [`docs/BACKEND.md`](docs/BACKEND.md)
+is the companion reference for the trait's event-loop, error-reporting and
+`UiEvent`-emission conventions.
 
 ## 1. Mental model
 
-quadraui has three rules — they're worth internalising before reading
-any primitive code:
+Three rules, worth internalising before reading any backend code:
 
-1. **Apps build primitives from state, every frame, by value.** No
-   retained widget tree. No `widget.set_text(...)` between frames. The
-   app holds canonical state; primitives are throwaway snapshots.
-2. **Backends rasterise primitives.** A backend is a set of `draw_<P>`
-   functions, one per primitive it renders. Each takes a primitive plus
-   theme/layout and writes to its target (Cairo context, GPU command
-   buffer, ratatui buffer, …).
-3. **Events flow back as data.** When the user clicks/types/scrolls,
-   the backend matches the input against the rendered primitive's
-   geometry, emits a `*Event` enum referencing the primitive's
-   `WidgetId`, and the app handles it. **No closures cross the
-   primitive boundary.**
+1. **Apps build widget descriptors from state, every frame, by value.** No
+   retained widget tree, no `widget.set_text(...)` between frames. The app
+   holds canonical state; descriptors (`TabBar`, `TreeView`, `Dialog`, …)
+   are cheap snapshots. What must survive between frames — a hover index,
+   a half-finished drag — is the widget's [`Interactive::State`], which the
+   runtime keeps in its widget-state store keyed by [`WidgetId`].
+2. **Widgets paint themselves; backends rasterise paint verbs.** A widget's
+   [`Primitive::layout`] resolves every geometry decision, and
+   [`Primitive::paint`] (pixels) or [`Primitive::paint_cells`] (terminal
+   cells) turns that layout into calls on a [`PaintSurface`] or
+   [`CellSurface`]. Your backend implements one of those two traits; that is
+   the whole of its rendering job.
+3. **Events flow back as data.** The backend translates native input into
+   [`UiEvent`]s. The shared runtime hit-tests them against the frame's
+   widgets, delivers a [`RoutedEvent`] to the widget's
+   [`Interactive::handle`], and hands the app the widget's semantic result
+   as another `UiEvent` carrying the widget's `WidgetId`. **No closures cross
+   the widget boundary.**
 
+```text
+ app state ─build─▶ widget descriptor ─layout/paint─▶ PaintSurface / CellSurface ─▶ screen
+     ▲                                                                                │
+     │                                                                          native input
+     │                                                                                ▼
+ AppLogic::handle ◀─ UiEvent::<Widget>(id, action) ◀─ Interactive::handle ◀─ runtime ◀─ backend
 ```
-   app state ─build──▶ primitive ─paint──▶ pixels
-                                              │
-                                              │ user input
-                                              ▼
-   app state ◀─update── *Event {id, kind} ◀── backend
-```
 
-This is unusual if you've used GTK/Qt/SwiftUI (retained-mode) or
-React/Dioxus (virtual DOM diffing). It's closer to immediate-mode
-GUIs (egui, imgui) but with serializable primitives instead of
-opaque widget calls.
+Who owns what:
 
-The wins:
+| Layer | Owns | Lives in |
+|---|---|---|
+| Widget | layout, paint, hit regions, focus stops, event handling | `src/primitives/`, `src/compose/`, or your own crate |
+| Shared runtime | `draw_dyn`/`draw_primitive`, z-order, hit-testing, focus, popups, widget state, accelerator rewrite, Ctrl-C copy | `src/backend.rs` (`DrawsPrimitives`), `src/runtime.rs`, `src/frame_tree.rs`, `src/popup.rs`, `src/widget_state.rs` |
+| Backend | one paint target, text metrics, native event translation, platform services, a runner, a test driver | `src/<platform>/` |
 
-- **Same primitive, three or more rendering targets.** No
-  per-backend coordination.
-- **Plugin-safe.** Primitives are `Serialize + Deserialize`, so a Lua
-  script can describe UI as a JSON-ish table and the backend renders
-  it without trusting Lua to manage Rust object lifetimes.
-- **Trivial undo, time-travel, snapshot-testing.** Primitives are
-  plain data. Diff them, log them, replay them.
+This is closer to immediate-mode GUIs (egui, imgui) than to retained-mode
+toolkits (GTK, Qt) or virtual-DOM diffing (React), but with serializable
+descriptors instead of opaque widget calls. The wins: the same widget on
+every target with no per-backend code; descriptors a plugin can declare as
+data; snapshot testing on plain values. The cost: descriptors are rebuilt
+every frame, which is cheap in practice.
 
-The losses:
+## 2. What a backend implements
 
-- **Per-frame allocation.** You build new primitive structs every
-  paint. In practice this is cheap (vimcode does it at 60 fps without
-  measurable cost), but if you target ≥10k items you'll want to use
-  partial-rebuild patterns (see `TextDisplay`).
-- **No retained focus/selection state in the primitive.** The app
-  has to remember focus across frames (`focused_field` on
-  [`Form`], `selected_path` on [`TreeView`]).
+`Backend` is platform services only. Grouped by job:
 
-## 2. The three contracts every backend must honour
+| Job | Methods |
+|---|---|
+| Frame + viewport | `viewport`, `cell_grid`, `begin_frame`, `end_frame` |
+| Theme, style, fonts | `set_theme`, `theme`, `set_style`, `style`, `set_nerd_fonts`, `nerd_fonts_enabled`, `set_editor_font`, `set_ui_font`, `default_fonts`, `register_font_from_memory`, `set_nerd_font_fallback`, `has_font_family` |
+| Paint target | `paint_surface` (pixel backends) or `cell_surface` (cell backends), `push_clip`, `pop_clip`, `draw_focus_ring` |
+| Metrics | `line_height`, `char_width`, `chrome_line_height`, `set_current_line_height`, `set_current_char_width`, `measure`, `measure_text`, `wheel_delta_rows`, `scales_text_rows`, `snap_height` |
+| Events + scheduling | `poll_events`, `wait_events`, `waker`, `request_frame_in`, `request_full_repaint`, `invalidate_rect`, `invalidation_log`, `register_accelerator`, `unregister_accelerator` |
+| Structural observation | `register_text_region`, `register_zone`, `cancel_text_selection_drag`, `modal_stack_handle`, `drag_state_handle`, `focus_tree`, `set_focus`, `frame_capture`, `last_frame`, `screenshot`, `last_error` |
+| Native chrome | `install_menu_bar`, `show_context_menu`, `menu_style`, `set_menu_style`, `effective_menu_style`, `begin_window_drag`, `toggle_window_maximize`, `begin_window_resize`, `set_cursor`, `titlebar_control_inset`, `set_caret_shape`, `window`, `tray` |
+| OS services | `services` (a `dyn PlatformServices`: clipboard, dialogs, notifications, URLs, trash, secrets, …), `backend_caps` |
 
-### Contract A: owned data, no closures, serde-friendly
+<!-- TODO(0.12 final pass): the table lists the 66 methods W9 keeps. Today
+`tests/backend_method_ratchet.rs` has BACKEND_METHOD_COUNT_BASELINE = 111; the
+45 not tabulated are the legacy widget methods W9 (#2981 plus the residue sweep)
+deletes. After W9 confirm the baseline is exactly 66, that the trait's methods
+match this table name for name, and that no `draw_<widget>`/`<widget>_layout`
+method remains. If a merged PR moved one of these to another seam, update the
+table. -->
 
-This is the [§10 plugin invariants](docs/UI_CRATE_DESIGN.md#10-plugin-invariants)
-made operational:
+Beyond the trait, an in-tree backend ships:
 
-| Rule | What it looks like in practice |
-|------|--------------------------------|
-| `WidgetId` is `String` | Backends can store `WidgetId` in events, send it across threads, hand it to plugins. Never take `&'static str`. |
-| Events are plain enums | `TabBarEvent::TabActivated { index }`, `StatusBarEvent::SegmentClicked { id }`. No `Box<dyn Fn>`. |
-| Primitives implement `Serialize + Deserialize` | Plugin can declare a panel as JSON. App deserializes → primitive → backend renders. |
-| WidgetIds are namespaced | `"plugin:my-ext:send"`, not `"send"`. Prevents collisions when plugins bring their own UI. |
-| No global event handlers | Every event references a `WidgetId`. The app's dispatch table is `HashMap<WidgetId, fn>` or similar. |
-| Primitives don't borrow app state | Owned data or explicit `'a` lifetimes. No `Arc<Mutex<AppState>>` smuggled through `WidgetId`. |
+- **A paint target.** A `PaintSurface` impl (`gtk/surface.rs`,
+  `macos/surface.rs`, `win/surface.rs`) or a `CellSurface` impl
+  (`tui/cell_surface.rs`), handed out by `paint_surface()`/`cell_surface()`
+  inside the frame scope and `None` outside it. Section 3.
+- **Native event translation** into `UiEvent`, using the shared
+  constructors. Section 6.
+- **A runner** — `<platform>::run(app)` and
+  `<platform>::shell_runner::run_with_shell(app, config)` — that owns the
+  native event loop, feeds each event through the shared preprocessing, and
+  paints each frame. Section 4.
+- **A test driver** — `TuiDriver`, `GtkDriver`, `MacDriver`, `WinDriver` in
+  `<platform>/testing.rs` — that runs an `AppLogic` headlessly, so the
+  conformance suite and every widget test can drive your backend. See
+  [`docs/TESTING.md`](docs/TESTING.md).
+- **`BackendCaps`** declaring honestly what the platform supports
+  (`mouse`, `scroll`, `drag`, `text_selection`, `native_menu`,
+  `window_chrome`, `pointer_cursor`).
 
-If your backend respects these, plugins (current and future) can
-declare UI without app code changes. If you violate one, you'll find
-out the day the first plugin crashes.
+## 3. The paint target
 
-### Contract B: measurer-parameterised algorithms
+### Pixel backends: `PaintSurface`
+
+[`PaintSurface`] is a small set of drawing verbs. The required ones:
+
+| Verb | What it does |
+|---|---|
+| `surface_begin_frame` / `surface_end_frame` / `surface_viewport` | frame bracket and size |
+| `surface_line_height` / `surface_char_width` / `surface_measure_text` | text metrics in your native unit |
+| `surface_fill_rect` / `surface_fill_rounded_rect` / `surface_stroke_rect` | rectangles |
+| `surface_draw_text_run` | one run of text in the current font |
+| `surface_draw_line` | a straight stroke |
+| `surface_push_clip` / `surface_pop_clip` | a clip stack (must nest) |
+| `surface_draw_image` | a decoded image, or `ImagePaintResult::Unsupported` |
+
+The rest have portable defaults built from the required verbs — alpha fills,
+rounded strokes, styled and role-specific text runs, shaped text lines
+(`surface_draw_text_line`, `surface_text_x_at_index`,
+`surface_text_index_at_x`), shadows, paths, alpha blits. Override a default
+when your platform does it better: every in-tree pixel backend overrides the
+text-line verbs with its own shaper, because the default assumes one
+monospace font.
+
+`DrawsPrimitives::draw_dyn` and `draw_primitive` — the blanket entry points
+every app and container calls — do the rest for you. They build the
+[`LayoutCtx`] from your metrics, call the widget's `layout`, push a clip
+around the widget's rect (widened by `Primitive::paint_bleed` for shadows),
+select the widget's font role, call `paint` with a [`PaintEnv`] carrying
+theme, style, live hover/press and the widget's persistent state, and record
+the painted layout for hit-testing.
+
+### Cell backends: `CellSurface`
+
+A terminal cannot express `PaintSurface`'s verbs (a bordered box is literal
+box-drawing glyphs chosen per corner; a double-width CJK glyph occupies two
+cells), so a cell backend implements [`CellSurface`] instead: `size`,
+`put_char`, `put_wide`, `put_str_clipped`, `fill`, `draw_border`, `get`,
+`set_cursor`, `color_depth`, plus the defaulted `put_grapheme` and
+`emit_graphics` (inline images; `false` when unsupported). Widgets paint to
+it from `Primitive::paint_cells`. `quadraui::tui::BufferCellSurface` wraps a
+bare buffer for tests and headless renders.
+
+<!-- TODO(0.12 final pass): after #2980 (CSR) removes the ratatui escape hatch from
+`CellSurface`, confirm the verb list above matches `src/cell_surface.rs` exactly. -->
+
+### Frame scope
+
+The native drawing handle (a `ratatui::Frame`, a `cairo::Context`, a
+`CGContextRef`, an `ID2D1RenderTarget`) is only valid inside the toolkit's
+draw callback. The TUI, GTK and macOS backends stash it for the duration
+of a closure with an inherent `enter_frame_scope` method, and
+`paint_surface()`/`cell_surface()` answer `Some` only inside that scope.
+The Windows backend has no `enter_frame_scope`: `begin_frame`/`end_frame`
+bracket the Direct2D render target with `BeginDraw`/`EndDraw` in its
+`WM_PAINT` handling, and its `paint_surface()` always answers `Some`, with
+each verb degrading on its own while no render target is attached. [`docs/BACKEND.md`](docs/BACKEND.md#1-frame-ownership)
+shows the pattern.
+
+## 4. The runner's paint sequence
+
+Every runner paints a frame in the same order (see `paint_frame` in
+`src/tui/run.rs`):
+
+1. `begin_frame(viewport)`.
+2. Enter the frame scope and call `app.render(backend, area)`. The app
+   paints widgets with `backend.draw_dyn(rect, &widget, &())`, or pushes
+   `Surface::Widget` entries onto a `ScreenLayout` and calls `draw`.
+3. `crate::popup::paint_open_popups(backend)` — popups the frame's widgets
+   opened ([`Interactive::popups`]) paint above everything.
+4. The text-selection highlight, then `draw_focus_ring` around the focused
+   widget.
+5. `end_frame()`.
+
+Between frames, each native event goes through `crate::runtime`'s shared
+preprocessing before the app sees it: ambient hover/press tracking,
+double-click folding, routing into the widgets of `AppLogic::frame_tree`,
+accelerator rewrite, Ctrl-C copy of the active selection, Tab focus
+cycling. Your runner calls it; you do not re-implement any of it.
+
+### Write-back and repaint
+
+Some widgets correct app-owned state during layout: [`TabBar`]'s layout
+reports `corrected_scroll_offset` so the active tab stays visible, and the
+app writes it back for the next frame (`examples/common/demo.rs` does this
+right after `draw_dyn`). That needs a reliable "paint again" path. Whatever
+your platform's "request another frame" mechanism is, make sure it fires
+during continuous input:
+
+- **TUI**: the loop redraws on its next iteration.
+- **GTK**: do not defer a repaint through `glib::idle_add_local_once` —
+  during a window drag-resize the idle queue is starved, and the user sees a
+  stale frame until the drag stops.
+- **Win-GUI**: `InvalidateRect` schedules a `WM_PAINT`, which Win32
+  delivers before idling.
+- **macOS**: `setNeedsDisplay` on the view.
+
+## 5. Measurer-parameterised algorithms
 
 **The most important pattern in quadraui**, and the source of the
 hardest-to-debug class of bug.
 
-When a rendering algorithm needs a "width" or per-element measurement
-(`fit X within Y` / `where does Z scroll to` / `which slice fits in N
-units`), it lives in quadraui *parameterised over a measurement
-closure*. Two examples shipped:
+When an algorithm needs a width (`fit X within Y`, `where does Z scroll to`,
+`which slice fits in N units`), it lives in shared code *parameterised over
+a measurement closure*. Widgets call these from their own `layout`,
+measuring through `LayoutCtx::text_width`, which `draw_dyn` binds to your
+backend's `Backend::measure_text`:
 
-```rust
-// In quadraui:
-StatusBar::fit_right_start<F: Fn(&StatusBarSegment) -> usize>(
-    &self, bar_width: usize, min_gap: usize, measure: F,
-) -> usize;
+```rust,ignore
+// Signature excerpts from src/primitives/{status_bar,tab_bar}.rs; bodies elided.
+impl StatusBar {
+    pub fn fit_right_start<F>(&self, bar_width: usize, min_gap: usize, measure: F) -> usize
+    where
+        F: Fn(&StatusBarSegment) -> usize;
+}
 
-TabBar::fit_active_scroll_offset<F: Fn(usize) -> usize>(
-    active: usize, tab_count: usize, available_width: usize, measure: F,
-) -> usize;
+impl TabBar {
+    pub fn fit_active_scroll_offset<F>(
+        active: usize,
+        tab_count: usize,
+        available_width: usize,
+        measure: F,
+    ) -> usize
+    where
+        F: Fn(usize) -> usize;
+}
 ```
 
-Each backend supplies its native measurer:
+Your backend's only part is to measure in its own native unit:
 
-| Backend | Measurer for `&str` length | Unit |
-|---------|----------------------------|------|
-| TUI (ratatui) | `s.chars().count()` | cells |
-| GTK (Cairo + Pango) | `layout.set_text(s); layout.pixel_size().0 as usize` | pixels |
-| Win-GUI (Direct2D + DirectWrite) | DirectWrite `IDWriteTextLayout::GetMetrics().widthIncludingTrailingWhitespace as usize` | pixels |
-| macOS (Core Text) | `CTLineGetTypographicBounds(line, ...).width as usize` | pixels |
+| Backend | `measure_text` measures with | Unit |
+|---|---|---|
+| TUI | `quadraui::text_util::display_width` (cell count; a wide glyph is 2) | cells |
+| GTK | Pango layout pixel size | pixels |
+| Win-GUI | DirectWrite text-layout metrics | DIPs |
+| macOS | Core Text typographic bounds | points |
 
-The shared algorithm doesn't care about units — it just compares
-`measure(i) + measure(j) ≤ width` in whatever unit the closure
-returns. Each backend uses its own.
+The shared algorithm compares `measure(i) + measure(j) <= width` in
+whatever unit the closure returns. **Never bake a unit into shared code.**
+If you find yourself writing `let w = name.len() * 8` or `let cell_width = 1`
+in a widget, stop: that constant silently breaks some backend. Take the
+measurer. The symptom of getting it wrong is one backend's tabs, segments or
+list items landing off-screen or clipped in ways that look like timing bugs
+but aren't (vimcode#158 took five commits to trace to this).
 
-**When you add a new "fit/scroll/elide" primitive method, follow the
-same pattern. Do NOT bake a unit into shared code.** The cost of
-getting this wrong was 5 commits and 3 layered band-aids before the
-right architecture surfaced (vimcode issue #158). Symptom: one
-backend's tabs / segments / list items appear off-screen or clipped
-in ways that look like timing bugs but aren't.
+## 6. Mapping paint verbs and input to your toolkit
 
-**Detection signal for new contributors:** if you find yourself
-wanting to write `let w = name.len() * 8` or `let cell_width = 1` in
-shared code, stop. That constant is a unit assumption that will
-silently break some backend. Take a measurer instead.
+The in-tree pixel backends implement the same verbs; this is the
+translation table for a fifth.
 
-### Contract C: per-primitive backend contract
+| Verb | GTK (Cairo + Pango) | Win-GUI (Direct2D + DirectWrite) | macOS (Core Graphics + Core Text) |
+|---|---|---|---|
+| `surface_fill_rect` | `cr.set_source_rgb(..); cr.rectangle(x, y, w, h); cr.fill()` | `rt.FillRectangle(&rect, &brush)` | `CGContextSetRGBFillColor(..); CGContextFillRect(ctx, rect)` |
+| `surface_draw_text_run` | `layout.set_text(t); cr.move_to(x, y); pangocairo::functions::show_layout(cr, &layout)` | `rt.DrawTextLayout(origin, &layout, &brush, ..)` | `CTLineCreateWithAttributedString(s); CGContextSetTextPosition(ctx, x, y); CTLineDraw(line, ctx)` |
+| bold, in `surface_draw_text_run_styled` | a Pango weight attribute | an `IDWriteTextFormat` with `DWRITE_FONT_WEIGHT_BOLD` | a `CTFont` with `kCTFontBoldTrait` |
+| `surface_push_clip` / `surface_pop_clip` | `cr.save(); cr.rectangle(..); cr.clip()` / `cr.restore()` | `rt.PushAxisAlignedClip(..)` / `rt.PopAxisAlignedClip()` | `CGContextSaveGState; CGContextClipToRect` / `CGContextRestoreGState` |
+| `surface_measure_text` | `layout.pixel_size()` | `GetMetrics().widthIncludingTrailingWhitespace` | `CTLineGetTypographicBounds` |
 
-Some primitives are purely declarative — give the backend the data,
-it paints. Others have measurement-dependent state that the backend
-MUST maintain each frame, otherwise the primitive renders fine but
-interactions break in subtle ways.
+On a cell backend the same jobs are `CellSurface::fill`,
+`CellSurface::put_str_clipped`, a bold `CellStyle`, and writing only inside
+the rect you were given.
 
-Two primitives ship with non-trivial contracts:
+| Native input | GTK | Win-GUI | macOS |
+|---|---|---|---|
+| key | `EventControllerKey::connect_key_pressed` | `WM_KEYDOWN` / `WM_CHAR` | `keyDown(_:)` |
+| resize | the size passed to the draw func | `WM_SIZE` | the view's frame change |
+| click | `GestureClick::connect_pressed` | `WM_LBUTTONDOWN` | `mouseDown(with:)` |
 
-- **[`TabBar`]** — measure each tab → call `fit_active_scroll_offset`
-  → write the result back to wherever the app stores `scroll_offset`
-  → repaint if it changed. Skipping any step makes the active tab land
-  off-screen after layout changes. Read [`TabBar`]'s "Backend contract"
-  rustdoc section.
-- **[`StatusBar`]** — call `fit_right_start` → render only the visible
-  slice → click handlers must skip dropped segments. Skipping makes
-  narrow bars overlap/touch, and ghost-clicks fire on hidden segments.
-  Read [`StatusBar`]'s "Backend contract" rustdoc section.
+The TUI backend reads all three from crossterm.
 
-The other seven primitives ([`TreeView`], [`ListView`], [`Form`],
-[`Palette`], [`ActivityBar`], [`Terminal`], [`TextDisplay`]) are
-mostly declarative — render the data, route events. Their rustdoc
-calls out any per-primitive convention worth knowing (e.g.
-`Palette` MUST intercept all clicks when open).
+### Use the shared `UiEvent` constructors
 
-**Always read a primitive's "Backend contract" section before
-implementing it.** It's two paragraphs and saves a debugging
-session.
+`crate::event` exports free-function constructors — `mouse_down`,
+`mouse_up`, `mouse_moved`, `scroll`, `window_resized`, `files_dropped` —
+that own each event's shape, including the mouse-wheel sign flip
+(`scroll`'s `dy_native_down_positive` parameter negates once, there). A new
+backend's translator needs exactly three backend-native pieces:
 
-## 3. The two-pass paint pattern
-
-Backends without **mid-draw mutability** (you can't change app state
-while a paint is in progress) need a way to react to measurements
-they take during a paint. The pattern:
-
-```text
-              ┌──────────────────────┐
-              │  Pass 1: paint with  │
-              │  current app state   │
-              └─────────┬────────────┘
-                        │ (measure tabs / fit segments / …)
-                        ▼
-              ┌──────────────────────┐
-              │  Apply measurements  │
-              │  → mutate app state  │
-              └─────────┬────────────┘
-                        │
-                if state changed?
-                        │
-                ┌───────┴───────┐
-                │ no            │ yes
-                ▼               ▼
-            we're done     ┌──────────────────────┐
-                           │  Pass 2: paint again │
-                           │  with corrected state│
-                           └──────────────────────┘
-```
-
-Pass 2 measures the same widths and reaches the same corrected
-state, so its apply step changes nothing — converges in 2 frames.
-
-**Per-backend wiring:**
-
-- **TUI (ratatui)**: pass 2 is just calling `terminal.draw(...)` again
-  in the same iteration of the main loop. Cheap (≤1ms for a typical
-  terminal). See `examples/tui_demo.rs::run` for the pattern.
-- **GTK (Cairo)**: pass 2 happens **inside the same `set_draw_func`
-  callback** — drop the immutable engine borrow, mutate state, then
-  re-enter `draw_editor` overdrawing the same Cairo context. Critical:
-  do NOT defer pass 2 via `glib::idle_add_local_once`. During
-  continuous events (window drag-resize), GTK's idle queue is
-  starved and the deferred callback never fires until the events
-  stop — the user sees a stale frame the entire time.
-- **Win-GUI (Direct2D)**: every `WM_PAINT` message produces a paint;
-  invalidate the area at the end of pass 1 if state changed, the
-  next `WM_PAINT` is pass 2. Reliable because Windows posts
-  `WM_PAINT` whenever the paint area is invalidated, regardless of
-  what other messages are pending.
-- **GPU / web / custom backends**: whatever your "request another
-  frame" mechanism is, make sure it fires reliably during continuous
-  input. If your engine has the equivalent of `requestAnimationFrame`
-  scheduling, prefer that over an idle queue.
-
-The two-pass pattern only applies to primitives with the contract-C
-"measure-then-correct" requirement. For purely declarative primitives,
-a single paint per state change is enough.
-
-## 4. Backend operation reference
-
-Side-by-side mapping of the operations every backend needs. If you
-already know your target API, this table is enough to translate
-patterns directly. If you don't, find your target's column and treat
-it as a checklist of "things to learn first."
-
-The TUI and GTK columns mirror what you'll find in `examples/tui_demo.rs`
-and `examples/gtk_demo.rs`. The Win-GUI column reflects the production
-Win-GUI backend in vimcode (`src/win_gui/quadraui_win.rs`); macOS is
-the planned shape based on Core Graphics + Core Text idioms.
-
-### Measure text width (the core of contract B)
-
-| Backend | Code | Returns |
-|---------|------|---------|
-| **TUI** (ratatui) | `text.chars().count()` | cells (`usize`) |
-| **GTK** (Pango) | `layout.set_text(text); layout.pixel_size().0 as usize` | pixels (`usize`) |
-| **Win-GUI** (DirectWrite) | `dw.create_text_layout(text, format, w, h)?.GetMetrics()?.widthIncludingTrailingWhitespace as usize` | DIPs (`usize`) |
-| **macOS** (Core Text) | `let line = CTLineCreateWithAttributedString(astr); CTLineGetTypographicBounds(line, ...).width as usize` | points (`usize`) |
-
-The unit doesn't matter to quadraui — pass the same unit to
-`available_width` and the closure return type matches. Mix-ups
-between backends are impossible because each backend supplies its own
-measurer; mix-ups *within* one backend (using cells in one place and
-pixels in another) are the bug class to watch for.
-
-### Fill rectangle in a colour
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `for x in area.x..area.x + area.width { buf.cell_mut(...).set_style(Style::default().bg(rat_color(c))); }` |
-| **GTK** | `cr.set_source_rgb(r, g, b); cr.rectangle(x, y, w, h); cr.fill().ok();` |
-| **Win-GUI** | `let brush = rt.CreateSolidColorBrush(&color, None)?; rt.FillRectangle(&D2D_RECT_F { left: x, top: y, right: x+w, bottom: y+h }, &brush);` |
-| **macOS** | `CGContextSetRGBFillColor(ctx, r, g, b, 1.0); CGContextFillRect(ctx, CGRectMake(x, y, w, h));` |
-
-### Draw text at a position
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `for ch in text.chars() { buf.cell_mut(pos).set_char(ch); pos.x += 1; }` |
-| **GTK** | `layout.set_text(text); cr.move_to(x, y); pangocairo::functions::show_layout(cr, &layout);` |
-| **Win-GUI** | `rt.DrawTextLayout(D2D_POINT_2F { x, y }, &text_layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);` |
-| **macOS** | `let line = CTLineCreateWithAttributedString(astr); CGContextSetTextPosition(ctx, x, y); CTLineDraw(line, ctx);` |
-
-### Apply bold to text
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `style.add_modifier(Modifier::BOLD)` |
-| **GTK** | `let attrs = pango::AttrList::new(); attrs.insert(pango::AttrInt::new_weight(Weight::Bold)); layout.set_attributes(Some(&attrs));` |
-| **Win-GUI** | Configure a separate `IDWriteTextFormat` with `DWRITE_FONT_WEIGHT_BOLD`; use that format for the bold span. |
-| **macOS** | Use a separate `CTFont` with `kCTFontBoldTrait` set; reference it in the `NSAttributedString`'s font attribute. |
-
-### Clip to rectangle (popups, dialogs)
-
-| Backend | Code |
-|---------|------|
-| **TUI** | Implicit — write only inside the rect's `(x, y)` range. No clip API. |
-| **GTK** | `cr.save().ok(); cr.rectangle(x, y, w, h); cr.clip(); /* draw */ cr.restore().ok();` |
-| **Win-GUI** | `rt.PushAxisAlignedClip(&rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE); /* draw */ rt.PopAxisAlignedClip();` |
-| **macOS** | `CGContextSaveGState(ctx); CGContextClipToRect(ctx, rect); /* draw */ CGContextRestoreGState(ctx);` |
-
-Clipping is **mandatory** for popup primitives (`Palette`, dialog,
-context menu) — without it, long text bleeds past popup borders.
-
-### Schedule another paint (the two-pass trigger)
-
-| Backend | Code |
-|---------|------|
-| **TUI** | Just call `terminal.draw(...)` again in the same loop iteration. The next event-loop tick redraws unconditionally. |
-| **GTK** | Inline within the same `set_draw_func` callback — `do_paint(); apply_state(); if changed { do_paint(); }`. Do **not** use `glib::idle_add_local_once` (starves under continuous events). |
-| **Win-GUI** | `InvalidateRect(hwnd, None, false);` — schedules a `WM_PAINT` for the next message-pump iteration. Reliable because Win32 always processes pending paints before idling. |
-| **macOS** | `view.setNeedsDisplay(true);` (AppKit) or `view.setNeedsDisplay()` (UIKit) — schedules a redraw for the next run-loop pass. |
-
-### Receive a key event
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `match event::read()? { Event::Key(k) => match k.code { KeyCode::Char('q') => ..., KeyCode::Left => ..., } }` |
-| **GTK** | `let kc = EventControllerKey::new(); kc.connect_key_pressed(\|_, key, _, _\| match key { gdk::Key::Left => ..., gdk::Key::q => ..., });` |
-| **Win-GUI** | `WM_KEYDOWN` with `wparam` = virtual key code (`VK_LEFT`, etc.); `WM_CHAR` with character. Translate via your own dispatch table. |
-| **macOS** | `keyDown(_:)` on `NSResponder` (AppKit) or `pressesBegan(_:with:)` (UIKit). |
-
-### Receive a resize event (and read viewport size)
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `Event::Resize(w, h)` from crossterm; or read `terminal.size()?` at the start of each frame. |
-| **GTK** | The `width`/`height` parameters passed to `set_draw_func` reflect the current size. |
-| **Win-GUI** | `WM_SIZE` with `lparam`'s low/high words = new client width/height. Read via `LOWORD(lparam)` / `HIWORD(lparam)`. |
-| **macOS** | `viewDidLayoutSubviews()` (UIKit) or override `setFrame(_:)` (AppKit); read `bounds`. |
-
-### Receive a mouse click (with coordinates)
-
-| Backend | Code |
-|---------|------|
-| **TUI** | `Event::Mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, .. })` |
-| **GTK** | `GestureClick::new()` with `connect_pressed(\|gesture, n_press, x, y\| ...)` |
-| **Win-GUI** | `WM_LBUTTONDOWN` with `LOWORD(lparam)` / `HIWORD(lparam)` for client-area pixel coords. |
-| **macOS** | `mouseDown(with event:)`; coords via `event.locationInWindow` then `convert(_:from:)`. |
-
-### Notes on the table
-
-- **The patterns themselves don't change between rows.** Only the API
-  surface does. Once you've internalised "measure → fit → write back
-  → repaint if changed" from one backend's example, you can transcribe
-  it to any other column.
-- **All four backends fundamentally do the same thing** — measure
-  geometry, fill rectangles, draw text, route events. Differences are
-  cosmetic (call shapes, type names, retained-vs-immediate tradeoffs).
-- **The TUI column is the easy case** — char cells, no font metrics
-  to wrangle, integer arithmetic. Read the TUI demo first to fix the
-  pattern in your head, then translate to your target.
-- **For Win-GUI specifically**: `windows-rs` is verbose but
-  mechanical. The `unsafe` blocks are unavoidable for Win32 / D2D
-  calls; isolate them in narrow helpers and the surface that touches
-  quadraui primitives stays safe.
-
-### Don't re-type `UiEvent` construction — call the shared constructors
-
-Every backend's translator (`gtk::events`, `macos::events`, `tui::events`)
-used to hand-write the same `UiEvent::MouseDown { widget: None, button,
-position, modifiers }`-shaped struct literal, with only the button-number
-and modifier-mask *values* differing per platform (issue #495). That
-duplication is gone: `crate::event` exports free-function constructors —
-[`mouse_down`], [`mouse_up`], [`mouse_moved`], [`scroll`], and
-[`window_resized`] — that own the event shape, including the mouse-wheel
-sign flip (`scroll`'s `dy_native_down_positive` parameter negates once,
-here, instead of every backend re-deriving and re-commenting the same
-negation).
-
-A new backend's event translator is genuinely small once you use these.
-It needs exactly three backend-native pieces:
-
-1. A keysym/keycode → [`Key`] table (see `gdk_key_to_quadraui_key`,
-   `ns_keycode_to_named_key`, `vk_to_named_key` for the existing shapes).
+1. A keysym/keycode → [`Key`] table (`gdk_key_to_quadraui_key`,
+   `ns_keycode_to_named_key`, `vk_to_named_key` are the existing shapes).
 2. A button-number → [`MouseButton`] map (`gdk_button_to_quadraui`,
    `ns_button_number_to_quadraui`).
 3. A modifier-bitmask → [`Modifiers`] map (`gdk_modifiers_to_quadraui`,
    `ns_modifier_flags_to_quadraui`).
 
-...plus one-line wrappers that call the shared constructors with those
-three tables' output. `gtk::events`'s and `macos::events`'s `MouseDown`/
-`MouseUp`/`MouseMoved`/`Scroll`/`WindowResized` translators are ~40 lines
-combined post-#495 — down from each backend independently re-typing the
-five `UiEvent` variant shapes. Grep either module for `UiEvent::Mouse` or
-`UiEvent::Scroll`: there should be none outside `crate::event` itself.
+…plus one-line wrappers that call the shared constructors with those
+tables' output. No backend module constructs `UiEvent::MouseDown` or
+`UiEvent::Scroll` literals of its own.
 
-## 5. Click intercept hierarchy
+## 7. Hit-testing and z-order are not your job
 
-When the user clicks anywhere, your backend must check potential
-targets **in z-order, top-to-bottom**, and route to the first match.
-A common bug class: missing one layer makes clicks fall through to
-hidden widgets, triggering actions the user can't see.
+The runtime decides which widget an event belongs to:
 
-Recommended dispatch order:
+1. **An open modal suspends widget routing.** While `modal_stack_handle()`'s
+   stack is non-empty, no frame widget sees the event; the modal's owner
+   handles it (a compose controller, or `crate::dispatch::dispatch_mouse_down`
+   against the stack). A click "below" a modal never reaches the button
+   underneath.
+2. **Open popups** — a dropdown, a submenu, a date grid — answer before any
+   frame widget, whatever order their owners were painted in
+   (`FrameTree::hit`).
+3. **Frame widgets**, back to front, each tested against the sub-regions it
+   declared (`Interactive::sub_regions`) and the layout it painted with.
 
-1. **Modal overlays first** — open `Palette`, dialog, context menu.
-   If any is visible, **all clicks** go through it. Don't even
-   compute editor / panel hit-tests.
-2. **Floating popups** — tooltips, hover popups, autocomplete.
-   These have priority over the underlying editor.
-3. **Chrome** — tab bar (segments + buttons), status bar (segments),
-   activity bar, sidebars. Each has its own `*Event` channel.
-4. **Editor / main content area** — the catch-all when nothing else
-   matched.
+What your backend must get right is the geometry underneath: `measure_text`
+must agree with what `surface_draw_text_run` actually paints, or hit-tests
+drift from the pixels; and `surface_push_clip` must clip, or a long label
+bleeds past its popup's border.
 
-For each chrome layer, the backend stores per-frame hit zones (e.g.
-`Vec<(Rect, WidgetId)>` populated during paint, consulted during
-click handling). The pattern in vimcode's GTK backend is `Rc<RefCell<HashMap<...>>>`
-filled inside `set_draw_func` and read inside the click controller.
+## 8. Minimal walkthroughs
 
-**Modal click intercept is mandatory** for `Palette` per its
-rustdoc — skipping it is a backend bug class documented in
-`NATIVE_GUI_LESSONS.md` §10.
-
-## 6. Minimal backend walkthroughs
-
-The best way to grok the patterns is to read a working backend that
-exercises the contracts. Two runnable examples ship with the crate,
-demonstrating the **same demo app** in two different rendering
-backends — proving the app side is fully backend-agnostic.
-
-**Shared structure:** the two demos share their app code via
-`examples/common/mod.rs` (~240 lines: `AppState`, `build_tab_bar`,
-`build_status_bar`, event-dispatch helpers). Each demo is then ~350-450
-lines of pure backend code. Side-by-side `diff tui_demo.rs gtk_demo.rs`
-shows exactly what differs between two backends rendering the same
-declarative UI — that's the abstraction quadraui exists to provide.
-
-### `examples/tui_demo.rs` — TUI / ratatui (~350 lines)
+`examples/tui_demo.rs` and `examples/gtk_demo.rs` run the **same app**
+(`examples/common/demo.rs`) and differ only in the runner they call. The
+app paints a `TabBar` and a `StatusBar` with `draw_dyn`, writes the tab
+bar's corrected scroll offset back, and handles keys. Nothing in the app is
+backend-specific:
 
 ```bash
-cargo run --example tui_demo
-```
-
-Cell-unit measurement (TUI is the easy case — units match the
-engine's defaults). Demonstrates:
-
-- **Building primitives from app state** — `build_tab_bar(state)` /
-  `build_status_bar(state, focused_id)`.
-- **TabBar contract** — `draw_tab_bar` measures each tab in cells,
-  calls `fit_active_scroll_offset`, returns the corrected offset.
-  Main loop compares to app state, runs pass 2 if it changed.
-- **StatusBar contract** — `draw_status_bar` calls
-  `fit_right_start_chars(width, 2-cell gap)` and renders only the
-  visible slice.
-- **Event flow** — Tab cycles `focused_status_idx`, Enter dispatches
-  via `handle_status_action(&id)`, state mutation reflected on next
-  frame.
-- **No hidden state** — every paint rebuilds primitives from
-  `AppState`. No retained widget references.
-
-### `examples/gtk_demo.rs` — GTK4 / Cairo + Pango (~430 lines)
-
-```bash
+cargo run --example tui_demo --features tui
 cargo run --example gtk_demo --features gtk
 ```
 
-(Requires GTK4 development libraries — `libgtk-4-dev` on Debian /
-Ubuntu, `gtk4-devel` on Fedora, `gtk4` on Homebrew. Off by default
-so `cargo build` works on platforms without them.)
+(GTK needs the GTK4 development libraries — `libgtk-4-dev` on Debian/Ubuntu,
+`gtk4-devel` on Fedora, `gtk4` on Homebrew.)
 
-Pixel-unit measurement (the harder case — every backend other than
-TUI needs this pattern). Same demo app as `tui_demo.rs`, with the
-**identical AppState struct, identical primitive builders**, and a
-GTK-flavoured backend layer. Demonstrates everything the TUI demo
-does, plus:
+To see a backend from the inside, read `paint_frame` in `src/tui/run.rs`
+and then `src/tui/cell_surface.rs`; for pixels, `src/gtk/surface.rs`.
 
-- **Pango pixel measurer** — each tab's full slot width is
-  `tab_pad + label_pixels + close_pixels + tab_pad + outer_gap`
-  (~6 chars-equivalent of overhead per tab; this is the under-
-  estimation that motivated lesson §12 in NATIVE_GUI_LESSONS.md).
-- **Two-pass paint inline within `set_draw_func`** — pass 1 paints,
-  the post-paint apply mutates app state via `RefCell::borrow_mut`
-  after dropping the immutable borrow, pass 2 overdraws the same
-  Cairo context. **No `idle_add`** — the deferred-callback approach
-  is unreliable during continuous resize (drag the window narrow
-  while many tabs are open to see this matter).
-- **Per-frame interaction state passed alongside the primitive** —
-  the focused status segment's bold styling is computed from a
-  separate `focused_id` parameter, not stored on the primitive
-  struct.
+## 9. Backend-implementer checklist
 
-The hint row at the bottom shows `[pass-2 fired]` when the demo's
-last paint triggered a second pass — flip the flag on/off by
-resizing the window or opening/closing tabs.
+<!-- TODO(0.12 final pass): until W9 a new backend would also have to implement
+the 45 legacy widget methods (see the marker under §2). After W9 confirm this
+checklist is complete for a backend that implements only the §2 table. -->
 
-### Read both before implementing a new backend
+### Paint
 
-Comparing the two demos side-by-side is the fastest way to see
-which parts are app code (identical) and which are backend code
-(different). The structure transfers near-verbatim to Direct2D /
-Core Graphics / wgpu / browser canvas — only the `draw_*`
-internals change.
+- [ ] **Every required `PaintSurface` verb** (or every `CellSurface` verb)
+      is implemented, and `paint_surface()`/`cell_surface()` answer `Some`
+      only inside the frame scope, or every verb degrades safely outside
+      it (section 3, *Frame scope*).
+- [ ] **The clip stack nests** and actually clips — `draw_dyn` pushes one
+      clip per widget, and a popup paints inside its own.
+- [ ] **`measure_text` agrees with what you paint**, in your native unit,
+      for every `FontRole`.
+- [ ] **The text-line verbs use your platform shaper** if your UI font is
+      proportional; the defaults assume one monospace font.
+- [ ] **`draw_focus_ring`** strokes the focused widget's rect after the app
+      and its popups have painted.
 
-## 7. Backend-implementer checklist
+### Events
 
-Run through this when you stand up a new backend. Each item is
-"implement and test it works"; missing one is a bug class waiting
-for a smoke test.
+- [ ] **Native input goes through the shared `UiEvent` constructors** and
+      the three translation tables of section 6.
+- [ ] **The runner calls the shared preprocessing** for every event, so
+      widget routing, accelerators, copy and Tab cycling work.
+- [ ] **Owned `WidgetId` everywhere** — never `&'static str` in an event.
+- [ ] **Repaint requests fire under continuous input** (section 4).
+- [ ] **Every required `UiEvent` variant** in the
+      [emission matrix](docs/BACKEND.md#uievent-emission-matrix) is emitted.
 
-### Per-primitive
+### Platform
 
-- [ ] **Every primitive your app uses has a `draw_<primitive>`
-      function.**
-- [ ] **For [`TabBar`]**: implement the measure → fit → correct →
-      repaint contract. See its rustdoc.
-- [ ] **For [`StatusBar`]**: implement the fit → render-slice →
-      click-skip contract. See its rustdoc.
-- [ ] **For [`Palette`]**: when one is open, intercept ALL mouse
-      events (clicks AND scrolls AND drags) and ALL keys.
-- [ ] **For [`Form`]**: route Tab / Shift-Tab to focus-change
-      events; route printable keys to the focused field's mutation.
-- [ ] **For [`Terminal`]**: per-cell `bg` + `fg` + `bold/italic/underline`
-      attrs; cursor cell inverts fg/bg; selection / find overlays use
-      theme accent colours.
-- [ ] **For [`TextDisplay`]**: when `auto_scroll == true`, pin to
-      bottom; otherwise respect `scroll_offset`. User scroll-up sets
-      `auto_scroll = false`.
-
-### Cross-cutting
-
-- [ ] **Owned `WidgetId` everywhere** — never `&'static str` in event
-      types or hit-region tables.
-- [ ] **No closures in events** — only plain data with `WidgetId`
-      references.
-- [ ] **Modal overlays intercept first** in all click handlers.
-- [ ] **Two-pass paint** wired for any primitive with a contract-C
-      requirement.
-- [ ] **Measurer closures use the backend's native units** —
-      no shared constants leaking between backends.
-- [ ] **Every per-frame interaction state** (hover, drag, focus-within)
-      lives **outside** the primitive — passed as a parameter to your
-      `draw_*` function.
-- [ ] **Click hit-tests use the SAME geometry as draw** — extract a
-      shared measurement function so they can't drift.
-- [ ] **All popup/dialog content is clipped to the popup bounds** —
-      otherwise text bleeds past borders.
-- [ ] **All popup positions are clamped to screen bounds** —
-      especially right and bottom edges.
-- [ ] **Focus flags cleared on every competing click** — clicking
-      the editor must clear sidebar/terminal focus, etc. (See
-      vimcode's `NATIVE_GUI_LESSONS.md` §7 for the patterns.)
+- [ ] **`BackendCaps` is honest.** `begin_window_drag`,
+      `toggle_window_maximize`, `begin_window_resize` and `set_cursor` all
+      default to a `false`-returning no-op; declare `window_chrome` /
+      `pointer_cursor` once you override them.
+- [ ] **Every `PlatformServices` method** either does the real thing or
+      returns `Unsupported`; it never fakes success.
 - [ ] **Every new toolkit-crate import has its Cargo feature enabled.**
-      Some bindings gate *per class*: `objc2-app-kit` ships every class,
-      enum and constant behind a feature named after its originating
-      header, so `use objc2_app_kit::NSCursor` without
-      `features = ["NSCursor"]` is an `unresolved import`, not a warning
-      — and the feature is not reliably the symbol's own name
-      (`NSApplicationActivationPolicy` is in `NSRunningApplication`,
-      `NSBackingStoreType` in `NSGraphics`). Because `src/macos` only
-      compiles on `target_os = "macos"`, nothing on a Linux dev box or
-      the default CI legs catches this; `quadraui/tests/macos_appkit_features.rs`
-      is the portable guard, and adding an import means registering it
-      there too (#498).
+      Some bindings gate per class: `objc2-app-kit` puts every class, enum
+      and constant behind a feature named after its originating header, so
+      `use objc2_app_kit::NSCursor` without `features = ["NSCursor"]` is an
+      `unresolved import` — and the feature is not reliably the symbol's
+      own name (`NSApplicationActivationPolicy` is in `NSRunningApplication`,
+      `NSBackingStoreType` in `NSGraphics`). `src/macos` only compiles on
+      `target_os = "macos"`, so nothing on a Linux box catches this;
+      `quadraui/tests/macos_appkit_features.rs` is the portable guard, and
+      a new import is registered there too.
 - [ ] **Type-check your backend's target from wherever you are, before
-      pushing.** `cargo check --features <backend>` on the *host* triple
-      compiles none of a `target_os`-gated module (`lib.rs` gates
-      `mod macos` on `target_os = "macos"`), so it exits 0 having proved
-      nothing. `cargo check` never links, so it does not need that
-      platform's SDK — only its `rust-std`. From a Linux box:
+      pushing.** `cargo check --features <backend>` on the host triple
+      compiles none of a `target_os`-gated module, so it exits 0 having
+      proved nothing. `cargo check` never links, so it needs only the
+      target's `rust-std`, not its SDK. From a Linux box:
 
       ```bash
       rustup target add aarch64-apple-darwin   # once
@@ -555,157 +414,139 @@ for a smoke test.
           --target aarch64-apple-darwin --all-targets
       ```
 
-      `--all-targets` matters: it compiles the `#[cfg(test)]` blocks too,
-      which is where the `-D warnings` `dead_code` failures from a
-      too-narrow `crate::desktop` gate show up. `--target
-      aarch64-apple-darwin` matters because `macos-latest` is Apple
-      silicon. This turns the macOS workflow's slow
-      once-per-macOS-touching-PR compile signal into a ~15s local one
-      (#498 burned two merge-gate round trips before anyone tried it).
-      **It still does not run anything** — see the AppKit-at-runtime
-      caveat under *Recommended testing* below.
-- [ ] **Don't call the native toolkit from a plain `#[test]`.** libtest
-      runs every test on a spawned worker thread, in a process that never
-      created an `NSApplication` / GTK `Application` / message loop.
-      Vending an AppKit object there (`+[NSCursor arrowCursor]`,
-      `NSWindow`, `NSMenu`) is a hazard no Linux leg can see, and it fails
-      only on the one runner that matters. Two ways out, and prefer the
-      first: **split the mapping decision out as a pure value** (see
-      `macos::backend`'s `MacCursorKind` / `mac_cursor_kind`, which made
-      the `PointerShape` → cursor table assertable on any thread and any
-      OS), or **gate on `MainThreadMarker::new()`** and accept that the
-      test no-ops in CI (see `macos::menu_bar_install`'s tests). A test
-      that asserts the toolkit's own invariant ("these factory methods
-      return a shared instance") buys nothing either way — assert *your*
-      mapping, not Apple's.
+      `--all-targets` compiles the `#[cfg(test)]` blocks too, which is
+      where `-D warnings` `dead_code` failures show up. This still runs
+      nothing — see the next item.
+- [ ] **Don't call the native toolkit from a plain `#[test]`.** libtest runs
+      each test on a worker thread, in a process that never created an
+      `NSApplication` / GTK `Application` / message loop. Vending an AppKit
+      object there fails only on the one runner that matters. Split the
+      mapping decision out as a pure value (as `macos::backend`'s
+      `MacCursorKind` does for cursors) or gate on `MainThreadMarker::new()`
+      and accept that the test no-ops in CI. Assert *your* mapping, not the
+      toolkit's own invariants.
 
-### Recommended testing
+### Testing
 
-- [ ] **Snapshot test** the primitives your app builds at known
-      states. Plain-data primitives are trivial to compare with
-      `assert_eq!` or `insta`.
-- [ ] **Manual resize test** — drag your window narrower and wider
-      while many tabs / many right-segments are open. Active tab
-      stays visible? Status bar drops segments cleanly? Both
-      symptoms of contract-C correctness.
-- [ ] **Multi-pane test** — if your app has split layouts, test that
-      each pane's chrome is independent (one tab bar's scroll doesn't
-      affect another's).
-- [ ] **Modal overlay test** — open a `Palette`, click "below" it on
-      what would normally be a button — the click must be eaten by
-      the palette, not the button.
+- [ ] **A headless driver** in `<platform>/testing.rs`, registered with the
+      conformance suite (`tests/conformance/`), so every widget's paint and
+      click tests run on your backend. [`docs/TESTING.md`](docs/TESTING.md)
+      describes the tiers.
+- [ ] **Manual resize test** — drag the window narrow and wide with many
+      tabs and many status segments open. The active tab stays visible and
+      the status bar drops segments cleanly.
+- [ ] **Modal test** — open a palette or dialog and click "below" it on a
+      button: the modal must eat the click.
 
-## 8. When to extend quadraui itself
+## 10. When to extend quadraui itself
 
-You'll inevitably want a primitive that doesn't exist yet. Options
-in increasing scope:
+You'll want something that doesn't exist yet. In increasing scope:
 
-1. **Use existing primitives creatively.** A simple "Notification
-   list" can be a `ListView` with custom decoration. A "log viewer"
-   is a `TextDisplay`. A "config screen" is a `Form`. Try this
-   first — you'll find ~80% of "I need a new primitive" goes away.
+1. **Compose existing widgets.** A notification list is a `ListView`; a log
+   viewer is a `TextDisplay`; a settings screen is a `Form`. Try this first.
+2. **Write a widget.** Implement [`Primitive`] (`layout`, `paint`,
+   `paint_cells`) and [`Interactive`] (`focus`, `handle`, `State`, `Action`)
+   for your type — in your own crate if you like, since `Primitive`,
+   `Interactive`, `PaintSurface` and `CellSurface` are all public. It paints
+   on every backend through `draw_dyn` and the runtime routes events to it,
+   with no change to any backend.
+   [`docs/PRIMITIVE_RULES.md`](docs/PRIMITIVE_RULES.md) has the rules for a
+   widget that ships in this crate.
+3. **Add a paint verb.** Only when no combination of existing verbs can
+   express what a widget needs. Add it to `PaintSurface` (or `CellSurface`)
+   with a portable default where one exists, and implement it on every
+   backend in the same PR.
+4. **Add a platform service.** A new `PlatformServices` method states its
+   TUI story and returns an honest `Unsupported` where a platform lacks it
+   — see the `PlatformServices` rule in `docs/PRIMITIVE_RULES.md`.
+5. **Ask whether it's app-specific.** A markdown editor or a Kubernetes
+   resource graph is probably app code composed from existing widgets,
+   not a new quadraui widget.
 
-2. **Pass extra per-frame state alongside the primitive** to your
-   `draw_*` function. Hover indices, focus rings, drag overlays,
-   highlight ranges — these are typically per-frame interaction
-   state, not primitive state. Don't bloat the primitive.
+[`docs/decisions/DECISIONS.md`](docs/decisions/DECISIONS.md) records which
+widgets shipped, which were deferred, and why. Add to it when you add one.
 
-3. **Extend an existing primitive.** Add a field, add a `*Event`
-   variant. Make sure it satisfies all six §10 invariants. Prefer
-   `Option<T>` + `#[serde(default)]` for backward compatibility.
+## 11. Reference implementations
 
-4. **Add a new primitive.** Mirror the existing module structure
-   (`src/primitives/your_primitive.rs`), add `pub use` to `lib.rs`,
-   write rustdoc with the "Backend contract" section, add a
-   `*_roundtrip_serde` test in `lib.rs`. If it has fit/scroll/elide
-   logic, parameterise over a measurer (Contract B above).
+Read the backend closest to your target before writing a fifth:
 
-5. **Ask whether it's app-specific.** Highly app-specific UI (a
-   markdown editor, a kubernetes resource graph) is probably
-   better as app code that consumes the existing primitives, not
-   a new primitive. The bar for "this is reusable across multiple
-   apps" should be high.
+- `src/tui/` — `TuiBackend`, terminals via ratatui + crossterm. Cell units,
+  no font metrics; the easiest to read first.
+- `src/gtk/` — `GtkBackend`, GTK4 (Cairo + Pango).
+- `src/win/` — `WinBackend`, Windows (Direct2D + DirectWrite). Also renders
+  headlessly for `WinDriver`.
+- `src/macos/` — `MacBackend`, macOS (Core Graphics + Core Text). Built and
+  tested on `macos-latest` CI.
 
-When in doubt, look at `quadraui/docs/decisions/DECISIONS.md` for the
-existing rationale on which primitives shipped, which were deferred,
-and why. Add to that log when adding new ones.
+A new backend adds `src/<platform>/` with its `backend`, `events`, `run`,
+`shell_runner`, `services`, paint-surface and `testing` modules,
+`impl Backend for <Platform>Backend`, and
+`impl crate::backend::sealed::Sealed for <Platform>Backend` (required —
+`Backend` is sealed). `tests/per_backend_file_ratchet.rs` keeps each backend
+directory to platform modules.
 
-## 9. Reference implementations
+<!-- TODO(0.12 final pass): after W9 (#2981) check the module list above against
+the `PLATFORM_FILES` allow-lists in `tests/per_backend_file_ratchet.rs`. -->
 
-The four in-tree `impl Backend` blocks are the reference implementations
-— read the one closest to your target before writing a fifth:
+## 12. Desktop plumbing you get for free (`crate::platform`)
 
-- `src/tui/backend.rs` — `TuiBackend`, TUI (ratatui + crossterm). Full
-  feature parity; the easiest one to read first (cell units, no font
-  metrics to wrangle).
-- `src/gtk/backend.rs` — `GtkBackend`, GTK4 (Cairo + Pango).
-- `src/win/backend.rs` — `WinBackend`, Windows (Direct2D + DirectWrite).
-  Window/event/platform-services infrastructure is real and CI-blocking;
-  most per-primitive rasterisers are still `todo!()` stubs (see the
-  crate root README's *Status* section).
-- `src/macos/backend.rs` — `MacBackend`, macOS (Core Graphics + Core
-  Text). Every in-window rasteriser shipped; built/tested for real on
-  `macos-latest` CI.
+Some interaction patterns are windowing-generic: the same state machine or
+hazard shows up on every desktop toolkit. quadraui factors them into
+`src/platform/` (`pub(crate)`, re-exported at `crate::desktop`), so a new
+backend doesn't re-derive them from a GTK or AppKit source read. None of it
+depends on `gtk4`, `objc2`, `windows` or any other toolkit crate.
 
-These were originally prototyped as per-backend code in [vimcode] — still
-quadraui's primary consumer and R&D lab for new patterns — then extracted
-in-tree behind the `Backend` trait. A new backend belongs in this repo
-the same way: add `src/<platform>/backend.rs`, `impl Backend for
-<Platform>Backend`, and `impl crate::backend::sealed::Sealed for
-<Platform>Backend` (required — `Backend` is sealed, see the top of this
-file) alongside it.
+Each item is `#[cfg]`-gated **on the features of the backends that call it,
+nothing wider** — `src/platform/mod.rs` explains why. Adopting one means
+**widening that item's gate with your backend's feature in the same commit
+as the call.** Skipping the widen is a hard build failure, not a warning:
+with CI's `RUSTFLAGS: "-D warnings"`, a `pub(crate)` item with no caller
+under some feature set is `dead_code`, and the failure only appears on a
+build with your feature, which the default Linux legs never run.
 
-[vimcode]: https://github.com/JDonaghy/vimcode
+| What | Type | The hazard it solves |
+|---|---|---|
+| Client-side titlebar drag-to-move (and edge-resize) arm/threshold/commit | `WindowDragArm<P>` (`platform/window_drag.rs`) | Calling a native "begin move" synchronously on the raw press starts an interactive grab that swallows a following double-click. `WindowDragArm` owns the arm/discard/threshold/commit sequencing; your backend still makes the native call (`gdk4::Toplevel::begin_move`, `NSWindow::performWindowDragWithEvent:`, …) once `commit_if_past_threshold` hands the press back. If your platform's API already tells a drag from a click (AppKit's does), call `.take()` unconditionally and skip the threshold, as `MacBackend::begin_window_drag` does. |
+| Nested-modal-loop re-entrancy guard | `ModalPumpDepth` + `ModalPumpGuard` (`platform/modal_pump.rs`) | A synchronous file dialog or message box that pumps the native event loop internally lets every other pending source run too — including your own input handlers, which may try to mutably borrow the backend the dialog call already holds. Unguarded, that second borrow panics inside a non-unwindable native callback and aborts the process. Clone a `ModalPumpDepth` into every runner closure that touches the backend; each checks `is_pumping()` and no-ops. Wrap the nested-loop call in a `ModalPumpGuard` (a depth counter, so a dialog opened from inside another dialog's pump stays guarded until the outermost one unwinds). |
+| Headless smoke-mode config and pass/fail predicates | `SmokeConfig`, `smoke_size_ok`, `smoke_clipboard_round_trip_ok` (`platform/smoke.rs`) | "Does the live window look sane" bugs (a tiny or garbled window) only reproduce against a real running window. `SmokeConfig::from_env(ms_var, paste_var)` reads your backend's own env-var names; your runner's one-shot timer calls the predicates after presenting the window, then closes it, so an unattended `xvfb-run`-style invocation exits deterministically. `gtk::run` is the worked example. |
+| `PointerShape`/`ResizeEdge` enum walk | `ALL_RESIZE_EDGES`, `all_pointer_shapes()` (`platform/pointer_shape.rs`) | Every backend owns its own `PointerShape` → native-cursor table. These list every variant, so your mapping test covers all of them, including any added later. |
 
-## 10. Desktop-interaction plumbing you get for free (`crate::desktop`)
-
-A handful of interaction patterns are genuinely windowing-generic — the
-same state machine or hazard shows up on every real desktop toolkit,
-not just the one that first implemented it. quadraui factors those into
-`src/desktop.rs` (`pub(crate)`, in-tree only) so a new backend doesn't
-have to reinvent them from a GTK or AppKit source read. None of it
-depends on `gtk4`, `objc2`, `windows`, or any other toolkit crate —
-it's plain Rust, generic over whatever payload your backend's native
-events carry.
-
-Each item is nonetheless `#[cfg]`-gated — **on the feature(s) of the
-backends that actually call it today, nothing wider** (see the module doc
-for why the `cfg`s exist at all despite there being no toolkit dependency
-to gate). So the gates are not uniform: `WindowDragArm` is
-`any(feature = "gtk", all(feature = "macos", target_os = "macos"))`
-because both backends use it, while `ModalPumpDepth`/`ModalPumpGuard` are
-plain `feature = "gtk"` — GTK's file-dialog pump is their only adopter so
-far — and `WindowDragArm::{discard, commit_if_past_threshold}` are
-`any(feature = "gtk", test)`, since macOS's `.take()`-only usage never
-calls them.
-
-Adopting a piece therefore means **widening that piece's own gate with
-your backend's feature, in the same commit as the call** — not
-introducing a standalone `your-backend` feature gate, and not leaving the
-gate alone. Skipping the widen is not a warning: with `ci.yml`'s
-workspace-wide `RUSTFLAGS: "-D warnings"`, a `pub(crate)` item with no
-caller under some compiled feature set is a hard `dead_code` **build
-failure** — and one that only appears on a build with *your* feature and
-not `gtk`, which is exactly the combination your own backend's CI job
-runs and the default Linux legs never do (#498 shipped this bug to
-`macos-latest`).
-
-| What | Type | Extracted from | The hazard it solves |
-|---|---|---|---|
-| CSD titlebar drag-to-move (and, by the same shape, edge-resize) arm/threshold/commit state machine | `desktop::WindowDragArm<P>` | `gtk::backend::GtkBackend::armed_window_drag` (#400) | Calling a native "begin move" synchronously on the raw press starts an interactive grab that swallows a following double-click. `WindowDragArm` owns the arm/discard/threshold-check/commit *sequencing*; your backend still makes the actual native call (`gdk4::Toplevel::begin_move`, `NSWindow::performWindowDragWithEvent:`, …) once `commit_if_past_threshold` hands the press back — or, if your platform's own API already disambiguates drag-vs-click internally (AppKit's does), just call `.take()` unconditionally instead and skip the threshold step entirely. `macos::backend::MacBackend::begin_window_drag` (#498) is the worked example of that second shape. |
-| Nested-modal-loop re-entrancy guard | `desktop::ModalPumpDepth` + `desktop::ModalPumpGuard` | `gtk::services::GtkPlatformServices`'s `pumping` field + `PumpGuard` (#427) | A synchronous file-dialog/message-box call that internally pumps the native event loop (GTK's async `FileDialog` awaited via `MainContext::iteration`, AppKit's `runModal`, Win32's `IFileOpenDialog::Show`) lets *every other* pending event-loop source run too — including your own idle-drain timer and input controllers, which may try to mutably borrow the same `Rc<RefCell<Backend>>` the dialog call is already holding borrowed. Unguarded, that second borrow panics inside a non-unwindable native callback frame and aborts the process. Clone a `ModalPumpDepth` into every runner closure that touches the backend; each checks `is_pumping()` and no-ops instead. Wrap the nested-loop call itself in a `ModalPumpGuard` (a depth counter, not a bool, so a dialog opened re-entrantly from inside another dialog's pump stays guarded until the *outermost* one unwinds). |
-| Headless smoke-mode config + pass/fail predicates | `desktop::SmokeConfig`, `desktop::smoke_size_ok`, `desktop::smoke_clipboard_round_trip_ok` | `gtk::run` (#450, GD-5) | The "does the live window actually look sane" class of bug (quadraui#437: a tiny/garbled window) only reproduces against a real, running window — a headless in-process driver structurally can't catch it. `SmokeConfig::from_env(ms_var, paste_var)` reads your backend's own env-var names (so `QUADRAUI_GTK_SMOKE_MS` and a future `QUADRAUI_WIN_SMOKE_MS` don't collide) and the two predicates are pure size/round-trip comparisons your runner's one-shot timer calls after presenting the window — see `gtk::run::schedule_smoke_check` for the full wiring (present → wait `after_ms` → assert → close, so an unattended `xvfb-run`-style invocation exits deterministically instead of hanging). |
-| `PointerShape`/`ResizeEdge` enum-walk scaffold | `desktop::ALL_RESIZE_EDGES`, `desktop::all_pointer_shapes()` | `gtk::backend`'s cursor-name match (#406) | Every backend still owns its own `PointerShape` → native-cursor table — cursor names/objects are inherently native, and some platforms (AppKit) don't even have a public cursor for every `ResizeEdge`. What was missing was a canonical list of every variant to build and *test* that table against, instead of each backend hand-listing all 9 combinations (and silently under-covering a future 10th). Iterate `all_pointer_shapes()` in your own mapping test the way `gtk::backend::pointer_shape_cursor_name_maps_every_variant` and `macos::backend`'s equivalent do. |
-
-None of this is optional plumbing you can skip past — `Backend::begin_window_drag` / `toggle_window_maximize` / `begin_window_resize` / `set_cursor` all default to a `false`-returning no-op (§7's checklist covers declaring `BackendCaps::window_chrome`/`pointer_cursor` honestly once you override any of them), so a backend that never touches `crate::desktop` still compiles and runs — it just doesn't support a client-side-decoration titlebar. Wire it in once your backend has a real window handle to drive; `gtk::backend::GtkBackend` and `macos::backend::MacBackend` are both worked examples to copy from, and between them cover both the "needs a threshold" and "native API already disambiguates" shapes of `WindowDragArm`.
+`src/platform/` also holds trash, open-with, reveal-in-file-manager, URL
+opening, notifications, clipboard error mapping, paste-keypress detection
+and caught-panic reporting. Read its module doc before writing any of those
+yourself.
 
 ## See also
 
-- [`docs/UI_CRATE_DESIGN.md`](docs/UI_CRATE_DESIGN.md) — full design
-  rationale, the 13 §7 decisions, the §10 plugin invariants.
-- [`docs/decisions/DECISIONS.md`](docs/decisions/DECISIONS.md) — running log of
-  primitive decisions (which shipped, which deferred, why).
-- vimcode's `docs/NATIVE_GUI_LESSONS.md` — production lessons from
-  shipping three backends. §12-14 cover the unit-mismatch / idle-add
-  / debugging-instinct lessons that motivated this guide; §1-11
-  cover backend bugs we hit in Win-GUI specifically.
+- [`docs/BACKEND.md`](docs/BACKEND.md) — the trait's event-loop shape,
+  frame ownership, error reporting and `UiEvent` emission matrix.
+- [`docs/PRIMITIVE_RULES.md`](docs/PRIMITIVE_RULES.md) — rules for widgets
+  that ship in this crate.
+- [`docs/COMPOSE.md`](docs/COMPOSE.md) — the composite widgets and
+  controllers built on the contract.
+- [`docs/UI_CRATE_DESIGN.md`](docs/UI_CRATE_DESIGN.md) — design rationale
+  and the plugin invariants (owned `WidgetId`s, plain-data events,
+  serde-friendly descriptors).
+- [`docs/NATIVE_GUI_LESSONS.md`](docs/NATIVE_GUI_LESSONS.md) — production
+  lessons from shipping the native backends.
+
+[`quadraui::Backend`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html
+[`Primitive`]: https://docs.rs/quadraui/latest/quadraui/primitive/trait.Primitive.html
+[`Primitive::layout`]: https://docs.rs/quadraui/latest/quadraui/primitive/trait.Primitive.html#tymethod.layout
+[`Primitive::paint`]: https://docs.rs/quadraui/latest/quadraui/primitive/trait.Primitive.html#tymethod.paint
+[`Primitive::paint_cells`]: https://docs.rs/quadraui/latest/quadraui/primitive/trait.Primitive.html#method.paint_cells
+[`Interactive`]: https://docs.rs/quadraui/latest/quadraui/interactive/trait.Interactive.html
+[`Interactive::State`]: https://docs.rs/quadraui/latest/quadraui/interactive/trait.Interactive.html#associatedtype.State
+[`Interactive::handle`]: https://docs.rs/quadraui/latest/quadraui/interactive/trait.Interactive.html#tymethod.handle
+[`Interactive::popups`]: https://docs.rs/quadraui/latest/quadraui/interactive/trait.Interactive.html#method.popups
+[`RoutedEvent`]: https://docs.rs/quadraui/latest/quadraui/interactive/enum.RoutedEvent.html
+[`PaintSurface`]: https://docs.rs/quadraui/latest/quadraui/trait.PaintSurface.html
+[`CellSurface`]: https://docs.rs/quadraui/latest/quadraui/trait.CellSurface.html
+[`PaintEnv`]: https://docs.rs/quadraui/latest/quadraui/primitive/struct.PaintEnv.html
+[`LayoutCtx`]: https://docs.rs/quadraui/latest/quadraui/primitive/struct.LayoutCtx.html
+[`UiEvent`]: https://docs.rs/quadraui/latest/quadraui/enum.UiEvent.html
+[`WidgetId`]: https://docs.rs/quadraui/latest/quadraui/struct.WidgetId.html
+[`TabBar`]: https://docs.rs/quadraui/latest/quadraui/struct.TabBar.html
+[`Key`]: https://docs.rs/quadraui/latest/quadraui/enum.Key.html
+[`MouseButton`]: https://docs.rs/quadraui/latest/quadraui/enum.MouseButton.html
+[`Modifiers`]: https://docs.rs/quadraui/latest/quadraui/struct.Modifiers.html

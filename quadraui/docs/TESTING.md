@@ -1,22 +1,37 @@
 # Testing
 
+How quadraui is tested, and how to test what you add to it: a widget, an
+example, a backend. The short version for a widget is *Testing a
+contract widget* below. Every widget is one `Primitive` + `Interactive`
+type, so it is tested the same way on every backend: unit tests on its
+layout and `handle`, plus a black-box driver test that paints it,
+clicks it and reads the result back.
+
 ## Quality gate
 
-**Required for any change touching a primitive or rasteriser:**
+**Required for any change touching a widget, a paint surface or a
+backend:**
 
 ```bash
 cargo build --features tui --features gtk
 cargo test --features tui
-cargo test --features gtk    # If GTK runtime is available
+cargo test --features gtk,tui    # If GTK runtime is available
 cargo clippy --features tui -- -D warnings
-cargo clippy --features gtk -- -D warnings
+cargo clippy --features gtk,tui -- -D warnings
 cargo fmt --check
 ```
 
 If GTK runtime libraries aren't available locally, the GTK feature won't
-build — that's a CI concern. Run TUI checks at minimum.
+build — that's a CI concern. Run TUI checks at minimum. A change under
+`src/macos/` also needs the cross-target compile check (it compiles every
+line of `src/macos/` on Linux, but runs nothing):
 
-**Mini-app validation:** if the change affects a primitive consumed by
+```bash
+RUSTFLAGS="-D warnings" cargo check -p quadraui --features macos \
+    --target aarch64-apple-darwin --all-targets
+```
+
+**Mini-app validation:** if the change affects a widget consumed by
 the kubeui demos, verify they still build:
 
 ```bash
@@ -24,33 +39,26 @@ cd kubeui && cargo build
 cd kubeui-gtk && cargo build  # if GTK is available
 ```
 
-## CI matrix (`.github/workflows/ci.yml`, `.github/workflows/macos.yml`, `.github/workflows/fuzz.yml`)
+## CI matrix (`.github/workflows/`)
 
 The commands above are the local minimum; CI runs a wider matrix on every
-push/PR to `main` or `develop`. This section is kept in sync with the
-workflow files as the matrix changes — if you touch either file, update
-this list in the same PR.
+push/PR to `main` or `develop`. The workflow files are the source of
+truth; this table is the map. If you add or remove a job, update this
+table in the same PR.
 
 | Job | Runner(s) | What it covers |
 |---|---|---|
 | `rustfmt` | ubuntu-latest | `cargo fmt --all --check` |
-| `repo-lint` | ubuntu-latest | `cargo run -p quadraui-repo-lint` (`tools/lint`, #1110's meta-test-relocation half — see "What unit tests don't cover" below for the still-open host-font half of #1110) — maintainer-workflow guards (CLAUDE.md/ci.yml wording, `.githooks/` worktree behaviour, example manifest hygiene) that used to be `quadraui/tests/*.rs` files an outside contributor's ordinary `cargo test` would trip over; moved to a plain binary CI runs explicitly instead |
-| `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap` — a new `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
-| `tui (build, test, clippy)` | ubuntu-latest, **windows-latest** (`continue-on-error`, see the job's comments for the rollout plan) | `cargo build`/`test`/`clippy --features tui`; a `win`-feature compile check + arithmetic-only unit tests (`cargo check`/`test -p quadraui --features win`, ubuntu leg only, #538); on the windows-latest leg (all three `continue-on-error`, see the job's comments for the rollout plan): a real build + clippy of the `win_demo` example (`--features win`, #19/#21) and `cargo test -p quadraui --features win` (#24 — the first step that actually *runs* `cfg(target_os = "windows")` code against real Direct2D, via `src/win/testing.rs`'s `HeadlessSurface`); the tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); a build of the `tui_terminal` example (`--features tui,terminal`, #483 — `required-features` means the plain `tui`-only build above silently skips it); the `terminal_engine` unit tests (`--features tui,terminal --lib terminal_engine`, #483 — gated on `terminal` alone in `lib.rs`, so nothing else in this matrix compiles them); the conformance matrix, uploaded as an artifact per OS leg; on the windows-latest leg only, a second conformance run under `--features win --test conformance -- --nocapture` (quadraui#722 review) uploads the `win` column's C0 and Tier-1 tables as their own artifacts (`conformance-matrix-c0-win`, `conformance-matrix-win`) — without it, the `win` burn-down grid never left the log of a step whose stdout `cargo test` discards on a pass |
-| `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs`); a build of the `gtk_terminal` example (`--features gtk,terminal`, #483, same `required-features` gap as `tui_terminal` above); the gtk+tui conformance matrix, uploaded as an artifact |
-| `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout — see the job's comments for how (#528) |
-| `macos (build, test, clippy)` (separate workflow, `macos.yml`) | macos-latest, **`pull_request` gated on a `quadraui/src/**` path filter (#598, widened by #792), plus `workflow_dispatch`/weekly `schedule`**, with a per-ref `concurrency` group cancelling superseded runs | `cargo build`/`test`/`clippy --features macos` — the only place `src/macos`'s tests (including `MacDriver`'s, quadraui#493, and the Tier-1 `backends()` row it adds to `tests/conformance.rs`) run; the Tier-1 conformance matrix (`--features macos --test conformance -- --nocapture`), uploaded as `conformance-matrix-macos` (no Tier-0/C0 artifact yet — `MacBackend` has no C0 driver, see `c0_paint_smoke`'s doc); a Homebrew `gtk4` install followed by `cargo test --features macos,tui,gtk --test cross_backend_parity` (#792 item 3) — the only leg where the macOS twin test in that file (`pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state`) actually runs, since the whole file is `cfg(all(feature = "tui", feature = "gtk"))` at the top. The path filter is load-bearing, not incidental (see the workflow's own header comment): a PR that doesn't touch `quadraui/src/**` gets no check at all, but one that does — macOS-specific or not, per #792's fix for the #537 failure mode — gets a *real*, merge-blocking macos-latest build+test+clippy — `#484`'s progress bar. Still weekly (Mondays 06:00 UTC) / manual-dispatch otherwise, for the same "don't let a regression sit undiscovered" reason as before #598 |
-| `fuzz` (separate workflow, `fuzz.yml`, quadraui#1130) | ubuntu-latest, **`schedule` (daily 03:00 UTC) + `workflow_dispatch` only — never `push`/`pull_request`** | `cargo +nightly fuzz run <target>` (via `cargo-fuzz`, installed fresh each run) for each target in `quadraui/fuzz/fuzz_targets/`, 5 minutes each, one job per target (`fail-fast: false`) so one crash doesn't hide the others' results. Crash artifacts upload via `actions/upload-artifact` on failure. See "Property tests and fuzzing" below for what's covered and why this never blocks a PR |
-
-Not yet covered by CI at all: real `WinBackend` *rasterisers* running on
-Windows — every `Backend::draw_*`/`*_layout` method is still a `todo!()`
-stub (see `src/win/backend.rs`'s module docs), so there is nothing yet
-for a `windows-latest` test to paint through the trait. #24's
-`HeadlessSurface` closes the *infrastructure* gap (a real, GPU-free
-Direct2D render target a test can paint into and read pixels back from)
-ahead of the rasterisers that will need it — see the `tui` job row above
-for the three `continue-on-error` windows-latest steps and the rollout
-plan that flips each to blocking once proven stable.
+| `repo-lint` | ubuntu-latest | `cargo run -p quadraui-repo-lint` (`tools/lint`): maintainer-workflow guards (CLAUDE.md/ci.yml wording, `.githooks/` behaviour, example manifest hygiene) kept out of `quadraui/tests/` so an outside contributor's `cargo test` never trips on them |
+| `Example-test coverage` | ubuntu-latest, PR events only | `tools/example_coverage.py --fail-on-gap`: a `tui_*.rs` example added by the PR must have a matching `TuiDriver` test |
+| `Comment-history lint`, `Backend line-count ratchet`, `Wire types`, `CHANGELOG [Unreleased] entry check`, `cargo-semver-checks`, `cargo doc`, `cargo package`, `msrv`, `musl static build` | ubuntu-latest | Repository hygiene and publishability gates; each job's own comments say what it checks |
+| `tui + win (build, test, clippy)` | ubuntu-latest **and** windows-latest, both blocking | `cargo build`/`test`/`clippy --features tui`; benches (verify-only); the `win`-feature compile check and arithmetic-only unit tests on Linux; the macOS cross-target compile check; on windows-latest, a real `--features win` build, test and clippy against Direct2D (`src/win/testing.rs`'s `HeadlessSurface`); the Tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); the `terminal_engine` unit tests; the `layout`, `a11y`, `tui-images` and `control` feature legs; the conformance matrix, uploaded as an artifact per OS (plus the `win` C0 and Tier-1 tables on windows-latest) |
+| `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs` and every two-backend widget test); quadraui-py `check` under `gtk`/`macos`/`win`; the gtk+tui conformance matrix, uploaded as an artifact |
+| `quadraui-py (maturin develop + pytest)` | ubuntu-latest | The Python binding's test suite |
+| `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout |
+| `gallery capture (tui/gtk/windows)` | ubuntu-latest, windows-latest | Renders the gallery pages to PNGs, uploaded as artifacts for visual review |
+| `macOS` (separate workflow, `macos.yml`) | macos-latest; push to `develop` and PRs to `main` touching `quadraui/src/**`, plus weekly and manual dispatch | `cargo build`/`test`/`clippy --features macos` — the only CI place `src/macos`'s tests (including `MacDriver`'s) run. A develop PR is tested on a Mac by the coordinator's Test stage instead |
+| `fuzz` (separate workflow, `fuzz.yml`) | ubuntu-latest, `schedule` (daily) + `workflow_dispatch` only, never `push`/`pull_request` | `cargo +nightly fuzz run <target>` for each target in `quadraui/fuzz/fuzz_targets/`, 5 minutes each; see "Property tests and fuzzing" below |
 
 ## Property tests and fuzzing (quadraui#1130)
 
@@ -119,20 +127,21 @@ against.
 
 ## Coverage taxonomy
 
-Three bug classes, three test shapes. An agent picking up an issue
-should map the work to the relevant rows and add tests accordingly —
-no per-issue restatement needed.
+Five bug classes, five test shapes. An agent picking up an issue should
+map the work to the relevant rows and add tests accordingly — no
+per-issue restatement needed.
 
 | Bug class | Test shape | Lives in |
 |---|---|---|
-| **Coordinate drift** between paint and click | Paint/click round-trip — paint into the backend's headless surface, find a painted glyph, hit_test that exact coordinate, assert the hit identifies the painted element. | `tui/<name>.rs::tests` and `gtk/<name>.rs::tests`. |
-| **Consumer-side click-routing drift** | Consumer-state round-trip — paint, simulate the consumer's click handler, assert the host's state mutation matches the painted UI. | Adjacent to the consumer pattern. Template: `tui::multi_section_view::tests`. |
-| **State-derived paint geometry** | Painted-indicator test — set state to a known value, paint, find the indicator in the buffer/surface, assert it lands at the position the formula predicts. | Same module as the rasteriser. |
-| **Example / app-wiring drift** | Example-driver round-trip — drive the *whole* `AppLogic` through the headless driver, script real `UiEvent`s, assert on the re-rendered screen. Catches mis-routed handlers, missing `Reaction::Redraw`, stale state — none of which (1)–(3) can see. | `tests/tui_example_driver.rs` (TUI, `TuiDriver`), `tests/gtk_example_driver.rs` (GTK, `GtkDriver`), and `tests/macos_example_driver.rs` (macOS, `MacDriver` — quadraui#493, still thin: `PipelineApp`/`DataTableApp` only). |
+| **Coordinate drift** between paint and click | Paint/click round-trip: paint through a driver, find the painted glyph or sub-part, click that exact coordinate, assert the widget reports the element that painted there. | `tests/widget_contract_<widget>.rs` (black-box), plus the widget module's own `contract_tests` for `layout`/`paint_cells`. |
+| **Behaviour drift** between input paths | Event parity: the same gesture through the runtime (a driver click), a direct `Interactive::handle` call, and `a11y::route_widget_action` produces the same `UiEvent`. | The widget module's `contract_tests` (direct and a11y legs) and `tests/widget_contract_<widget>.rs` (runtime leg). |
+| **Consumer-side click-routing drift** | Consumer-state round-trip: drive the consumer's `AppLogic`, click what painted, assert the host's state matches the painted UI. | Next to the consumer pattern, or `tests/<backend>_example_driver.rs` for an example. |
+| **State-derived paint geometry** (hover, press, scroll, selection) | Painted-indicator test: set the state, paint, find the indicator in the rendered frame, assert it lands where the formula predicts. | The widget's driver test; hover and press on every backend through `tests/hover_channel_<backend>.rs`. |
+| **Example / app-wiring drift** | Example-driver round-trip: drive the *whole* `AppLogic` through a headless driver, script real `UiEvent`s, assert on the re-rendered screen. Catches mis-routed handlers, a missing `Reaction::Redraw`, stale state. | `tests/tui_example_driver.rs` (`TuiDriver`), `tests/gtk_example_driver.rs` (`GtkDriver`), `tests/macos_example_driver.rs` (`MacDriver`), `tests/win_example_driver.rs` (`WinDriver`). |
 
-Every primitive needs (1). Primitives with consumer-pattern recipes
-need (2). Primitives with state-derived indicators need (3). Every
-runnable example should have at least one (4) covering its core
+Every widget needs rows 1 and 2. Widgets with consumer-pattern recipes
+need row 3. Widgets with state-derived indicators need row 4. Every
+runnable example should have at least one row-5 test covering its core
 interaction.
 
 **Each test must be empirically verified by mutation.** Break the
@@ -142,63 +151,564 @@ catch its bug class is theatre.
 
 ## Acceptance bar for new code
 
-**Every PR that adds or changes a primitive (`<name>.rs`) or an example (`examples/tui_*.rs` / `examples/gtk_*.rs` / `examples/macos_*.rs`) must include the matching test from the coverage taxonomy above** — the paint/click round-trip for a primitive, the example-driver round-trip for an example (TUI via `tests/tui_example_driver.rs` / `TuiDriver`, GTK via `tests/gtk_example_driver.rs` / `GtkDriver` — both landed, #301 GD-1..GD-3; macOS via `tests/macos_example_driver.rs` / `MacDriver` — quadraui#493, still thin coverage of the 16 `macos_*` examples). **A PR missing its test is rejected at review.** This is enforced by the adversarial reviewer, which reads the project rules in [`CLAUDE.md`](../../CLAUDE.md) (see *"Demos are mandatory for visual features"*).
+**Every PR that adds or changes a widget, or an example
+(`examples/tui_*.rs` / `gtk_*.rs` / `macos_*.rs` / `win_*.rs`), must
+include the matching test from the coverage taxonomy above**: the
+round-trip and event-parity tests for a widget, the example-driver
+round-trip for an example. **A PR missing its test is rejected at
+review.** This is enforced by the adversarial reviewer, which reads the
+project rules in [`CLAUDE.md`](../../CLAUDE.md) (see *"Demos are
+mandatory for visual features"*).
 
-Tests must use the **high-level driver API** — `find("text")` to locate a painted target, then `click(x, y)` with the coords it returns, plus `screen_contains()`, `press()`, `type_char()`. **Hardcoded coordinates are brittle and out of policy** — locate, don't guess. A coordinate that's correct today silently rots the first time padding, a label, or a layout metric changes.
+Tests must use the **high-level driver API** — `find("text")` to locate
+a painted target, then `click(x, y)` with the coords it returns, plus
+`screen_contains()`, `press()`, `type_char()`. For a sub-part with no
+unique text (a tab's close button, a divider, an activity row), locate
+it with `quadraui::primitive::painted_sub_center(&id, sub)`. **Hardcoded
+coordinates are brittle and out of policy** — locate, don't guess. A
+coordinate that's correct today silently rots the first time padding, a
+label, or a layout metric changes. A test may click inside a rect it
+declared itself (the area it painted a widget at); that is a located
+coordinate, not a guessed one.
 
-**Checking the rule is measurable, not just stated:** `tools/example_coverage.py` (repo root) prints a matrix of every `examples/tui_*.rs` / `examples/gtk_*.rs` against whether its `AppLogic` struct is wired into the matching example-driver test file, and exits non-zero if any example is missing coverage (#310).
+**Checking the rule is measurable, not just stated:** `tools/example_coverage.py`
+(repo root) prints a matrix of every `examples/tui_*.rs` /
+`examples/gtk_*.rs` against whether its `AppLogic` struct is wired into
+the matching example-driver test file, and exits non-zero if any example
+is missing coverage.
 
 ```bash
 tools/example_coverage.py
 ```
 
-**This is also a CI gate, not just a local check (#311):** the `Example-test coverage` job in `.github/workflows/ci.yml` runs the same tool with `--fail-on-gap` on every PR, which fails the check only when a `tui_*.rs` example *added by that PR* lacks coverage — pre-existing gaps (most of GTK, and the TUI examples still mid the #B1-#B5 backfill) print in the matrix but don't fail the run, and newly-added `gtk_*.rs` examples are excluded entirely pending `GtkDriver` (#301). CI diffs against the PR's actual base commit (`github.event.pull_request.base.sha`); to approximate that locally, diff against `origin/develop` — this repo's branching policy merges feature PRs into `develop` (`main` only moves via release merges from `develop`), and `--base` defaults to `origin/develop` for exactly this reason:
+**This is also a CI gate:** the `Example-test coverage` job runs the same
+tool with `--fail-on-gap` on every PR. It fails only when a `tui_*.rs`
+example *added by that PR* lacks coverage; pre-existing gaps print in the
+matrix but don't fail the run, and `gtk_*.rs` examples are reported, not
+gated. CI diffs against the PR's base commit; to approximate that
+locally, diff against `origin/develop` (feature PRs merge into
+`develop`; `main` only moves via release merges):
 
 ```bash
 tools/example_coverage.py --fail-on-gap --base origin/develop
 ```
 
-## Example-driver tests (end-to-end, in-process)
+## Testing a contract widget
 
-`quadraui::tui::testing::TuiDriver` drives a whole `AppLogic` impl — the
-same type the `tui_*` examples instantiate — through the real
-event → `handle` → `render` path, against ratatui's in-memory
-`TestBackend`. No TTY, no pty: deterministic and `cargo test`-native.
+A widget is one type implementing `Primitive` (layout, pixel paint, cell
+paint) and `Interactive` (focus, `handle`, sub-regions, popups). There is
+no per-backend code to test separately: the same `paint` runs on GTK,
+macOS and Win, and the same `paint_cells` on TUI. Test it in four layers.
+
+The examples below use one small widget, `Chip`: a one-row label that a
+click or Enter activates — a smaller cousin of the toggle chip in
+[`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md#writing-a-widget)'s worked
+example. It is written the way a widget outside the crate would be (requires
+quadraui's `tui` feature for `paint_cells`):
 
 ```rust
-let mut d = TuiDriver::new(PipelineApp::new(), 100, 30);
-let (x, y) = d.find("Go").unwrap();   // locate the painted action button
-d.click(x, y);                         // MouseDown in cell coords — no escape math
-assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test→handle→render
+use quadraui::{
+    A11yInfo, A11yPrimitive, CellSurface, CellSurfaceStyle, EventCx, FocusSpec, Handled,
+    Interactive, Key, KeyEvent, LayoutCtx, MouseButton, NamedKey, PaintEnv, PaintSurface,
+    PointerKind, Primitive, Rect, RoutedEvent, UiEvent, WidgetAction, WidgetId,
+};
+
+#[derive(Debug, Clone)]
+pub struct Chip {
+    pub id: WidgetId,
+    pub label: String,
+}
+
+pub struct ChipActivated;
+
+impl WidgetAction for ChipActivated {
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        UiEvent::ButtonActivated { widget: id }
+    }
+}
+
+impl A11yPrimitive for Chip {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+impl Primitive for Chip {
+    type Layout = Rect;
+    type Event = ChipActivated;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+        rect
+    }
+
+    fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, env: &PaintEnv) {
+        let theme = env.theme();
+        let bg = if env.is_hovered(&self.id) { theme.hover_bg } else { theme.background };
+        surface.surface_fill_rect(*layout, bg);
+        surface.surface_draw_text_run(*layout, &self.label, theme.foreground);
+    }
+
+    fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, env: &PaintEnv) {
+        let theme = env.theme();
+        let bg = if env.is_hovered(&self.id) { theme.hover_bg } else { theme.background };
+        let style = CellSurfaceStyle {
+            fg: Some(theme.foreground),
+            bg: Some(bg),
+            ..Default::default()
+        };
+        cells.fill(*layout, style);
+        let (x, y, w) = (layout.x as u16, layout.y as u16, layout.width as u16);
+        cells.put_str_clipped(x, y, &self.label, w, style);
+    }
+}
+
+impl Interactive for Chip {
+    type State = ();
+    type Action = ChipActivated;
+
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::Stop
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        _layout: &Rect,
+        cx: &mut EventCx,
+    ) -> Handled<ChipActivated> {
+        match event {
+            RoutedEvent::Pointer { kind: PointerKind::Down(MouseButton::Left), .. } => {
+                cx.request_focus(None);
+                Handled::Event(ChipActivated)
+            }
+            RoutedEvent::Key(KeyEvent { key: Key::Named(NamedKey::Enter), .. }) => {
+                Handled::Event(ChipActivated)
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
 ```
 
-- **Why it's distinct from the round-trips above.** Those test one
-  `draw_*` fn on a hand-built struct; this tests the example's wiring.
-- **No drift from production.** `render`/`dispatch` call the same
-  `tui::run::render_frame` / `dispatch_event` the live runner uses, so
-  the test path renders + pre-processes events (text selection, Ctrl-C)
-  identically to `tui::run`.
-- **Mouse is a `UiEvent::MouseDown` in backend coordinates** — no SGR
-  escape-sequence math, the ergonomic win over a pty runner for
-  click-heavy primitives.
-- **Drags work too.** `mouse_down`/`mouse_move`/`mouse_up`/`drag` route
-  through `TuiBackend::translate_injected` — the same `apply_dispatch` +
-  `DragState` layer `wait_events` uses — so a scripted drag exercises the
-  real selection/drag machinery. E.g. drag over a registered text region
-  → `TextSelectionChanged`, then `ctrl_char('c')` → `TextCopied` (see
-  `panel_drag_selects_text_and_ctrl_c_copies_it`). (Scrollbar thumb-drag
-  isn't wired into any TUI example yet — `apply_dispatch` passes no
-  scroll surfaces — so there's nothing to drive there until a consumer
-  adopts it; the offset math is unit-tested in `dispatch.rs`.)
-- **Generalizes across backends.** Because `AppLogic` is
-  backend-neutral, `GtkDriver` (below) feeds identical scripted events to
-  the identical app and snapshots the Cairo surface — true cross-backend
-  parity from one event script.
+### 1. Unit tests: `layout` and `handle`, no backend
 
-**Limitation:** the driver renders into a `TestBackend` buffer, so it
-does *not* exercise real ANSI/escape emission — terminal-protocol bugs
+`layout` is a pure function of a `LayoutCtx` and a rect, so test it
+directly: build a `LayoutCtx::new(line_height, char_width, nerd_fonts)`
+(`1.0, 1.0` is a cell grid; a pixel metric like `16.0, 8.0` is a pixel
+backend), lay out at a **non-zero origin**, and assert on the geometry.
+
+`handle` takes an `EventCx` over any `EventHost`. A recording host lets a
+test assert on what the widget asked for (focus, pointer capture, a
+redraw) as well as on what it returned:
+
+```rust
+use quadraui::backend::PointerShape;
+use quadraui::interactive::SubTarget;
+use quadraui::primitive::Units;
+use quadraui::EventHost;
+
+#[derive(Default)]
+struct RecordingHost {
+    focus_requests: Vec<Option<SubTarget>>,
+}
+
+impl EventHost for RecordingHost {
+    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+        false
+    }
+    fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+        self.focus_requests.push(sub);
+    }
+    fn capture_pointer(&mut self, _id: &WidgetId) {}
+    fn release_pointer(&mut self) {}
+    fn set_cursor(&mut self, _cursor: PointerShape) {}
+    fn request_redraw(&mut self) {}
+    fn emit(&mut self, _event: UiEvent) {}
+    fn units(&self) -> Units {
+        Units::Cells
+    }
+}
+
+#[test]
+fn a_press_focuses_and_activates_the_chip() {
+    let chip = Chip { id: WidgetId::new("chip"), label: "OK".into() };
+    let ctx = LayoutCtx::new(1.0, 1.0, false);
+    let layout = chip.layout(&ctx, Rect::new(3.0, 2.0, 4.0, 1.0));
+
+    let mut host = RecordingHost::default();
+    let press = RoutedEvent::Pointer {
+        kind: PointerKind::Down(MouseButton::Left),
+        sub: None,
+        local: quadraui::Point::new(1.0, 0.0),
+        mods: Default::default(),
+    };
+    let outcome = chip.handle(&mut (), &press, &layout, &mut EventCx::new(chip.id, &mut host));
+
+    assert!(matches!(outcome, Handled::Event(ChipActivated)));
+    assert_eq!(host.focus_requests, vec![None]);
+}
+```
+
+A `RoutedEvent::Pointer`'s `local` is relative to the widget's own rect,
+so a unit test never needs to know where the widget will be painted.
+
+For a widget in this crate, these tests live in the widget module's own
+`#[cfg(test)] mod contract_tests` (see `src/primitives/button.rs`).
+That module also holds two legs of the event-parity test: the same
+`RoutedEvent::Action(A11yAction::Click)` through a direct `handle` call
+and through `a11y::route_widget_action` over a one-node `FrameTree` must
+produce the same `UiEvent`.
+
+### 2. Black-box driver test: paint, locate, click
+
+The acceptance-bar test. An `AppLogic` paints the widget as a
+`Surface::Widget` and routes it through a `FrameTree`; a driver clicks
+what painted and asserts on what the app received. Paint and routing
+must use the same rect (see `LESSONS.md`, *Paint and hit-test must be
+handed the same rect*), so `render` records the rect it painted at and
+`frame_tree` reads it back:
+
+```rust
+use std::cell::Cell;
+
+use quadraui::tui::testing::TuiDriver;
+use quadraui::{AppLogic, Backend, FrameTree, Reaction, ScreenLayout, Surface};
+
+struct ChipApp {
+    chip: Chip,
+    /// The rect `render` painted the chip at; `frame_tree` routes against it.
+    painted: Cell<Rect>,
+    activations: Vec<WidgetId>,
+}
+
+impl ChipApp {
+    fn new() -> Self {
+        Self {
+            chip: Chip { id: WidgetId::new("chip"), label: "OK".into() },
+            painted: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+            activations: Vec::new(),
+        }
+    }
+
+    fn screen(&self, rect: Rect) -> ScreenLayout {
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget { rect, widget: Box::new(self.chip.clone()) });
+        frame
+    }
+}
+
+impl AppLogic for ChipApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        // Sized from the backend's own metrics, so the same app runs on
+        // cells and pixels.
+        let rect = Rect::new(0.0, 0.0, backend.char_width() * 6.0, backend.line_height());
+        self.painted.set(rect);
+        self.screen(rect).draw(backend);
+    }
+
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        self.screen(self.painted.get()).into_frame_tree()
+    }
+
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        vec![(self.chip.id, self.painted.get())]
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::ButtonActivated { widget } = event {
+            self.activations.push(widget);
+        }
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn clicking_the_painted_label_activates_the_chip() {
+    let mut d = TuiDriver::new(ChipApp::new(), 20, 3);
+    let (x, y) = d.find("OK").expect("label painted");
+    d.click(x, y);
+    assert_eq!(d.app().activations, vec![WidgetId::new("chip")]);
+}
+
+#[test]
+fn tab_then_enter_activates_the_chip() {
+    let mut d = TuiDriver::new(ChipApp::new(), 20, 3);
+    d.press_named(NamedKey::Tab);
+    d.press_named(NamedKey::Enter);
+    assert_eq!(d.app().activations.len(), 1);
+}
+```
+
+`AppLogic::frame_tree` is what opts the app into the routing engine: hit
+test, click-to-focus, pointer capture and `Interactive::handle` all run
+against it. A widget's focus stops join Tab cycling once its id appears
+in `extra_tab_stops`. For a widget in this crate the file is
+`tests/widget_contract_<widget>.rs`; `tests/widget_contract_button.rs`
+is the minimal model.
+
+### 3. Sub-parts, hover and press
+
+**Sub-parts.** A composite widget names its parts through
+`Interactive::sub_regions`. `draw_dyn` records them, translated to
+absolute coordinates, in the frame's `PaintedWidgets`, so a test reaches
+a part with no unique text through it:
+`quadraui::primitive::painted_sub_center(&id, sub)` returns the point to
+click, and `painted_hit(x, y)` answers which widget and sub-part sit
+under a point. `tests/widget_contract_shell_view.rs` clicks activity
+rows and drags the sidebar divider this way.
+
+**Hover and press.** A widget reads hover and press from
+`PaintEnv::is_hovered` / `hovered_sub` / `is_pressed` / `pressed_sub`.
+`draw_dyn(.., &())` fills them from the runtime's ambient pointer state,
+which the drivers' `mouse_move` / `mouse_down` update. Assert on the
+rendered output, not on widget state:
+
+```rust
+#[test]
+fn hovering_the_chip_tints_it() {
+    quadraui::interaction::reset_ambient_interaction();
+    let mut d = TuiDriver::new(ChipApp::new(), 20, 3);
+    let (x, y) = d.find("OK").expect("label painted");
+    let at_rest = d.style_at(x as u16, y as u16).expect("cell in grid").bg;
+
+    d.mouse_move(x, y);
+
+    let hovered = d.style_at(x as u16, y as u16).expect("cell in grid").bg;
+    assert_ne!(at_rest, hovered, "hover repaints the chip");
+}
+```
+
+The ambient state is per-thread and outlives a test's frames, so reset
+it first (`LESSONS.md`, *Ambient hover is per-thread state*). To paint
+one specific hover without a pointer, pass an explicit
+`InteractionState` as `draw_dyn`'s `state` argument, or build a
+`PaintEnv` with `with_interaction` for a direct `paint` call. Every
+widget that tints is on the shared `HoverBoard` fixture
+(`tests/common/hover_board.rs`), which `tests/hover_channel_tui.rs`,
+`_gtk.rs`, `_macos.rs` and `_win.rs` drive on each backend and read back
+as cell styles or pixels.
+
+**Popups.** A widget that opens a dropdown, a calendar or a submenu sets
+`Interactive::OPENS_POPUPS` and answers `Interactive::popups`. The
+runtime paints popups above the frame and hit-tests them first, so test
+them black-box: open the popup, assert it paints over a widget painted
+after the owner, click an item, then press outside or Escape and assert
+the dismissal. `tests/widget_contract_popups.rs` does all four for
+`ComboBox`.
+
+### 4. Every backend, one test body
+
+A widget test written against `ConformanceDriver` runs unchanged on every
+driver the build enables. `ConformanceDriver::new_fixture` takes a
+`LogicalViewport` in cells and sizes each backend's surface from it, and
+`click_text` resolves text to each backend's own coordinates:
+
+```rust
+use quadraui::testing::{ConformanceDriver, LogicalViewport};
+
+fn click_then_enter<D: ConformanceDriver<App = ChipApp>>(app: impl Fn(&D) -> &ChipApp) {
+    quadraui::interaction::reset_ambient_interaction();
+    let mut d = D::new_fixture(ChipApp::new(), LogicalViewport::new(20, 3));
+    d.click_text("OK");
+    d.press_named(NamedKey::Enter);
+    assert_eq!(app(&d).activations.len(), 2);
+}
+
+#[test]
+fn click_then_enter_tui() {
+    click_then_enter::<TuiDriver<ChipApp>>(|d| d.app());
+}
+
+#[cfg(feature = "gtk")]
+#[test]
+fn click_then_enter_gtk() {
+    click_then_enter::<quadraui::gtk::testing::GtkDriver<ChipApp>>(|d| d.app());
+}
+```
+
+`ConformanceDriver` has no app accessor, so a shared body that inspects
+app state takes one as a closure, as above. Add a `MacDriver` leg under
+`#[cfg(all(feature = "macos", target_os = "macos"))]` and a `WinDriver`
+leg under `#[cfg(all(feature = "win", target_os = "windows"))]`.
+
+## The example drivers (end-to-end, in-process)
+
+Each backend ships a headless driver that runs a whole `AppLogic` — the
+same type the examples instantiate — through the real
+event → `handle` → `render` path, painting into an in-memory surface. No
+TTY, no window, no display server: deterministic and `cargo test`-native.
+
+| Driver | Feature | Paints into | Units | Reads back |
+|---|---|---|---|---|
+| `quadraui::tui::testing::TuiDriver` | `tui` | ratatui `TestBackend` buffer | cells | `screen()`, `screen_contains`, `find`/`find_bounds` (cell-grid scan), `style_at`/`styled_row` |
+| `quadraui::gtk::testing::GtkDriver` | `gtk` | `cairo::ImageSurface` | pixels | `screen_contains`, `find`/`find_bounds` (text map recorded at paint time), `pixel(x, y)` |
+| `quadraui::macos::testing::MacDriver` | `macos`, on macOS | `macos::headless::BitmapSurface` (CGBitmapContext) | pixels | same as GTK |
+| `quadraui::win::testing::WinDriver` | `win`, on Windows | Direct2D `HeadlessSurface` | pixels | same as GTK |
+
+The shape of a driver test (a fragment: `PipelineApp` stands for any
+`AppLogic`):
+
+```rust,ignore
+let mut d = TuiDriver::new(PipelineApp::new(), 100, 30);
+let (x, y) = d.find("Go").unwrap();   // locate the painted action button
+d.click(x, y);                         // MouseDown in cell coords
+assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit-test→handle→render
+```
+
+`GtkDriver::new(app, 800, 480)`, `MacDriver::new(app, w, h)` and
+`WinDriver::new(app, w, h)` take the surface size in pixels;
+`ConformanceDriver::new_fixture(app, LogicalViewport::new(cols, rows))`
+sizes any of them from a cell viewport.
+
+- **No drift from production.** Each driver's `render`/`dispatch` call
+  the same `render_frame` / `dispatch_event` its live runner uses, so
+  the test path renders and pre-processes events (text selection,
+  Ctrl-C, widget routing through `AppLogic::frame_tree`) identically to
+  `<backend>::run`.
+- **Mouse is a `UiEvent` in backend coordinates** — no escape-sequence
+  math. `press`, `type_char`, `press_named`, `ctrl_char`, `click`,
+  `mouse_down`, `mouse_move`, `mouse_up` and `drag` are shared across
+  drivers through `testing::DriverInput`. `click` is a bare press with no
+  release on every driver except `WinDriver`, whose `click` also
+  releases; a test that needs the release calls `mouse_down` then
+  `mouse_up`. `TuiDriver` adds `double_click`, `middle_click`,
+  `right_click` and `click_with` (modifiers).
+- **Drags work too.** On TUI, `mouse_down`/`mouse_move`/`mouse_up`/`drag`
+  route through `TuiBackend::translate_injected` — the same
+  `apply_dispatch` + `DragState` layer `wait_events` uses — so a scripted
+  drag exercises the real selection/drag machinery. E.g. drag over a
+  registered text region → `TextSelectionChanged`, then `ctrl_char('c')`
+  → `TextCopied` (see `shell_runner_path_drag_and_ctrl_c_copies_text` in
+  `tests/tui_example_driver.rs`).
+- **Locating contract widgets.** Text-bearing targets: `find`. Sub-parts
+  with no unique text: `primitive::painted_sub_center`. `TuiDriver` also
+  offers `tab_center` / `tab_close_center` for a tab bar.
+
+**Limitation (`TuiDriver`):** it renders into a `TestBackend` buffer, so
+it does *not* exercise real ANSI/escape emission — terminal-protocol bugs
 (raw-mode setup, escape parsing, SGR mouse decoding; e.g. #293) are out
-of scope and need a pty-based smoke test instead — see Tier-3 below.
+of scope and need a pty-based smoke test instead — see Tier-3 below, and
+the `tui-vt100` observer under *Conformance tiers*.
+
+### Out of scope for the pixel drivers
+
+The pixel drivers paint offscreen; they never instantiate a real
+application window or talk to a compositor. Therefore:
+
+- **Toplevel-window-sizing bugs** (e.g. #437 "opens with tiny/broken
+  window") are out of reach — window geometry is negotiated with the
+  real window manager, which these drivers never touch.
+- **Real clipboard/paste** is out of reach — the headless surface has no
+  selection owner to talk to.
+- **Raw native event delivery** is out of reach — raw keycode
+  translation (`gdk_key_to_uievent` and its macOS/Win counterparts), IME
+  composition, and the native event-controller wiring are bypassed; the
+  drivers inject `UiEvent`s directly, the same unified boundary
+  `TuiDriver` uses.
+- **Terminal-protocol / real-GL rendering paths** likewise stay with the
+  live app.
+
+These belong to the live-app smoke tier (*Live-app headless smoke*,
+below) or a real-display check on the operator's hardware.
+
+### Cross-backend tests: shared bodies, per-backend adapters
+
+Tests should **not** be duplicated per backend. The split is hybrid —
+most of a test shares, a little is irreducibly backend-specific:
+
+| Layer | Shared? | Why |
+|---|---|---|
+| The `AppLogic` under test | yes — identical | backend-neutral by design |
+| The event script (`press`/`click`/`drag`) | yes — identical | `UiEvent` is the unified boundary |
+| Logical / state assertions | yes — identical | same app → same state on every backend |
+| Reading "the screen" | **no** | TUI = character-cell grid (string search); pixel backends = a text map recorded at paint time |
+| Coordinate units | **no** | TUI = cells (`line_height 1`); pixel backends = pixels (`line_height ~16`) |
+
+`quadraui::testing::ConformanceDriver` abstracts the two backend-specific
+rows. It is implemented by `TuiDriver`, `GtkDriver`, `MacDriver` and
+`WinDriver`, and has no feature gate of its own, so a test body written
+once as a generic fn runs against each (see *Testing a contract widget*,
+layer 4, for a worked example). Its surface: `new_fixture`, `press_named`,
+`type_char`, `type_text`, `ctrl_char`, `click_text`, `click_text_at`,
+`drag_text`, `scroll_at`, `screen_has`, `inventory`, `backend_caps`,
+`exited`.
+
+**Rules for shared bodies:**
+
+1. **Locate by semantics, never literal coordinates.** Use
+   `click_text("Go")` / `drag_text(a, b)` / `painted_sub_center`, not
+   `click(12.0, 3.0)` — each driver resolves text to its own native
+   position, so bodies stay unit-agnostic. A test that hard-codes
+   cell/pixel numbers will not port.
+2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
+   and the `FrameInventory` relations work on every backend.
+
+**Parity test:** run the same script on two drivers and assert they
+reach the same logical state — the strongest cross-backend guarantee.
+`tests/cross_backend_parity.rs` does this for `TuiDriver` and
+`GtkDriver` (and `MacDriver` on the macOS CI leg), and
+`tests/widget_contract_shell_view.rs` asserts that every driver
+publishes the same zone set.
+
+**Irreducible per-backend residue (keep separate, by design):** exact
+pixel colours, 1px borders, font rendering, double-width glyph handling.
+These genuinely differ — TUI keeps cell-style assertions; the pixel
+backends get pixel checks. Don't try to share these.
+
+### `FrameInventory`: the portable paint-inventory contract (quadraui#490)
+
+`quadraui::testing::FrameInventory` (`quadraui/src/testing/mod.rs`, no
+backend feature gate) is the backend-neutral answer to "what did this
+frame paint, and where":
+
+```rust,ignore
+pub struct TextRun { pub text: String, pub bounds: Rect }
+pub struct ZoneRec { pub id: WidgetId, pub bounds: Rect }
+pub struct FrameInventory { /* text_runs(), zones() */ }
+```
+
+`ConformanceDriver::inventory()` returns one per frame. `text_runs` is
+recovered from each backend's own paint output with no per-widget
+opt-in (TUI's wide-char-aware cell-grid scan; the pixel backends' text
+runs recorded as each `PaintSurface` text verb paints). `zones` holds
+every `Backend::register_zone` call the frame made. A contract widget
+gets zones without calling `register_zone` itself — `draw_dyn` and
+`draw_primitive` register them after painting:
+
+- an identified widget whose `Primitive::paint_zone` answers `Some` is
+  registered under its own id;
+- each sub-part a widget names with `Interactive::sub_region_name` is
+  registered under `"<widget id>:<name>"` (`ShellView`'s chrome becomes
+  `app-shell:status-bar`, `app-shell:sidebar-content`, …).
+
+`FrameInventory` carries a small relational assertion vocabulary — the
+structural fix for CLAUDE.md's no-hardcoded-coordinates rule, since
+every one of these is computed on the `Rect`s the inventory already
+reports, in the backend's own units, so a shared test body never writes
+a coordinate itself (a fragment; `driver` is any `ConformanceDriver`):
+
+```rust,ignore
+let inv = driver.inventory();
+inv.screen_has("EXPLORER");             // any text run contains this substring
+inv.absent("SOURCE CONTROL");           // no text run does
+inv.count("Settings");                  // how many runs do
+inv.left_of("E", "EXPLORER");           // a's right edge <= b's left edge
+inv.above("EXPLORER", "content");       // a's bottom edge <= b's top edge
+inv.same_row("E", "S");                 // vertical ranges overlap
+inv.inside("content", &WidgetId::new("app-shell:sidebar-content"));
+```
+
+**Backend checklist:** every backend driver that implements
+`ConformanceDriver` MUST implement `inventory()` and populate
+`text_runs` from its real paint output (not a stub), and forward every
+zone the frame registered.
 
 ## Tier-3 pty smoke (real terminal-protocol black box, quadraui#302)
 
@@ -280,255 +790,59 @@ cargo test -p quadraui --features tui,terminal --test tui_pty_smoke
   into the transcript") stay cross-platform and still run on
   windows-latest.
 
-## GtkDriver example-driver tests (end-to-end, in-process)
-
-`quadraui::gtk::testing::GtkDriver` is the GTK twin of `TuiDriver` (#301,
-GD-1..GD-3, #446-448): it drives a whole `AppLogic` impl — the same type
-the `gtk_*` examples instantiate — through the real
-event → `handle` → `render` path, against a headless
-`cairo::ImageSurface`. No `gtk::init`, no `Application`, no
-`GdkDisplay`, no Xvfb: deterministic and `cargo test --features
-gtk`-native, runs anywhere the `gtk4`/`cairo`/`pangocairo` crates link
-(incl. dellserver, no display server needed).
-
-```rust
-let mut d = GtkDriver::new(PipelineApp::new(), 800, 480);
-let (x, y) = d.find("Go").unwrap();   // locate the painted action button
-d.click(x, y);                         // MouseDown in pixel coords
-assert!(d.screen_contains("stage 3")); // click round-tripped paint→hit_test→handle→render
-```
-
-- **No drift from production.** `render`/`dispatch` call the same
-  `gtk::run::render_frame` / `dispatch_event` the live `quadraui::gtk::run`
-  runner uses, and `click`/`drag` route through the same
-  `dispatch_click` / `dispatch_mouse_drag` / `dispatch_mouse_up` the live
-  handlers use, so the test path behaves identically to production.
-- **Assertion API mirrors `TuiDriver`'s shape** — `find("text")` /
-  `screen_contains()` / `press_named()` / `type_char()` — backed by the
-  `(text, bounds)` map recorded at paint time (GD-2, #447) plus pixel
-  readback via `pixel(x, y)` for colour/geometry assertions Pango text
-  search can't express.
-- **Core smoke set + cross-backend parity** live in
-  `tests/gtk_example_driver.rs` (GD-3, #448) and
-  `tests/cross_backend_parity.rs` — the latter runs one scripted event
-  sequence through both `TuiDriver` and `GtkDriver` and asserts they
-  reach the same logical state.
-
-### Out of scope / limitations
-
-The offscreen driver rasterises the `draw_*` primitives through
-`GtkBackend::enter_frame_scope`; it does **not** instantiate the real
-`Application`/`ApplicationWindow` or talk to a compositor. Therefore:
-
-- **Toplevel-window-sizing bugs** (e.g. #437 "opens with tiny/broken
-  window") are out of its reach — window geometry is negotiated with the
-  real WM/compositor, which this driver never touches.
-- **Real clipboard/paste** is out of its reach — quadraui's GTK backend
-  uses `arboard`, which hits the X11/Wayland selection; the headless
-  surface has no selection owner to talk to.
-- **Raw GDK signal delivery** is out of its reach — raw keycode
-  translation (`gdk_key_to_uievent`), IME composition, and actual
-  `EventController` wiring are bypassed; `GtkDriver` injects `UiEvent`s
-  directly, the same unified boundary `TuiDriver` uses.
-- **Terminal-protocol / real-GL rendering paths** likewise stay with the
-  live app.
-
-These all belong to **GD-5 (#450)** — live-app headless smoke that runs
-the *real* window under Xvfb/Broadway — or a real-display oracle
-(precision/elitebook) for cases GD-5 still can't reach.
-
-### Cross-backend example tests: shared bodies, per-backend adapters
-
-Now that `GtkDriver` has landed (#301, GD-1..GD-3), example-driver tests
-should **not** be duplicated per backend. The split is hybrid — ~80%
-shares, ~20% is irreducibly backend-specific:
-
-| Layer | Shared? | Why |
-|---|---|---|
-| The `AppLogic` under test | yes — identical | backend-neutral by design |
-| The event script (`press`/`click`/`drag`) | yes — identical | `UiEvent` is the unified boundary |
-| Logical / state assertions | yes — identical | same app → same state on every backend |
-| Reading "the screen" | **no** | TUI = character-cell grid (string search); GTK = Cairo pixel surface (Pango text map) |
-| Coordinate units | **no** | TUI = cells (`line_height 1`); GTK = pixels (`line_height ~16`) |
-
-Abstract the two backend-specific rows behind a small trait, write each
-test body **once** as a generic fn, and run it against both drivers:
-
-```rust
-trait ExampleDriver {
-    fn press_named(&mut self, k: NamedKey);
-    fn type_char(&mut self, c: char);
-    fn click_text(&mut self, needle: &str);   // locate text → click center (native coords)
-    fn drag_text(&mut self, from: &str, to: &str);
-    fn screen_has(&self, needle: &str) -> bool;
-    fn exited(&self) -> bool;
-}
-
-fn check_pipeline_click<D: ExampleDriver>(mut d: D) {   // written ONCE
-    d.click_text("Go");
-    assert!(d.screen_has("stage 3"));
-}
-
-#[test] fn tui() { check_pipeline_click(TuiDriver::new(PipelineApp::new(), 100, 30)); }
-#[test] fn gtk() { check_pipeline_click(GtkDriver::new(PipelineApp::new(), 800, 480)); }
-```
-
-**Rules for shared bodies:**
-
-1. **Locate by semantics, never literal coordinates.** Use
-   `click_text("Go")` / `drag_text(a, b)`, not `click(12.0, 3.0)` — each
-   driver resolves text to its own native position (TUI scans the cell
-   grid; GTK queries the `(text, bounds)` map it records at paint time),
-   so bodies stay unit-agnostic. A test that hard-codes cell/pixel
-   numbers will not port.
-2. **Assert on logic/text, not pixels, in shared bodies.** `screen_has`
-   works on both (cell-grid search vs Pango text map).
-
-**Parity test (free bonus):** run the same script on both drivers and
-assert they reach the same logical state — the strongest cross-backend
-guarantee:
-
-```rust
-fn pipeline_parity<D: ExampleDriver>(mut d: D) -> Vec<bool> {
-    d.click_text("Go");
-    vec![d.screen_has("stage 3"), d.exited()]
-}
-assert_eq!(pipeline_parity(tui), pipeline_parity(gtk));
-```
-
-**Irreducible per-backend residue (keep separate, by design):** exact
-pixel colours, 1px borders, font rendering, double-width glyph handling.
-These genuinely differ — TUI keeps cell-style assertions; GTK gets
-pixel/Pango checks. Don't try to share these.
-
-**Realized in `tests/cross_backend_parity.rs`:** the `ExampleDriver`
-trait sketched above is implemented for both `TuiDriver` and
-`GtkDriver`, and `pipeline_parity_tui_and_gtk_agree_on_logical_state`
-runs one shared script body against both. Per-example TUI/GTK suites
-(`tests/tui_example_driver.rs`, `tests/gtk_example_driver.rs`) stay
-separate for now — only the cross-backend parity test currently uses
-the shared-body pattern; migrating the full per-example suites onto it
-is follow-up work, not required by #301.
-
-### `FrameInventory`: the portable paint-inventory contract (quadraui#490)
-
-Before #490, "what did you paint and where" was backend-specific and
-leaked platform types into test bodies: TUI drivers scanned the cell
-grid with `find`/`find_bounds`, GTK read a `(text, bounds)` map, macOS
-had nothing, and a test that wanted to relate two painted things
-("is X left of Y?", "is X inside the sidebar zone?") had no
-backend-neutral way to ask.
-
-[`quadraui::testing::FrameInventory`] (`quadraui/src/testing.rs`, no
-`tui`/`gtk`/`macos`/`win` feature gate) is that contract — the same
-shape `#322` proposes for quadraweb's id→rect map:
-
-```rust
-pub struct TextRun { pub text: String, pub bounds: Rect }
-pub struct ZoneRec { pub id: WidgetId, pub bounds: Rect }
-pub struct FrameInventory { pub text_runs: Vec<TextRun>, pub zones: Vec<ZoneRec> }
-```
-
-`ConformanceDriver::inventory()` returns one per frame. `text_runs` is
-recovered from each backend's existing paint output with no per-widget
-opt-in (TUI's wide-char-aware cell-grid scan; GTK's `painted_text` map,
-fed by every Pango draw via `gtk/painted_text.rs`'s choke point).
-`zones` is populated from [`Backend::register_zone`] calls made during
-render — currently `AppShell::render` registers one zone per
-activity-bar item (keyed by that panel's real `WidgetId`) plus one
-`app-shell:`-prefixed zone per shell-chrome region (`activity-bar`,
-`sidebar-header`, `sidebar-content`, `main-content`, `status-bar`,
-`command-line`, `divider`, `bottom-panel`, `title-bar`, `window`); other
-primitives haven't been wired to call `register_zone` yet and simply
-contribute no zone, never a wrong one.
-
-`FrameInventory` carries a small relational assertion vocabulary — the
-structural fix for CLAUDE.md's no-hardcoded-coordinates rule, since
-every one of these is computed on the `Rect`s the inventory already
-reports, in the backend's own units, so a shared test body never writes
-a coordinate itself:
-
-```rust
-let inv = driver.inventory();
-inv.screen_has("EXPLORER");             // any text run contains this substring
-inv.absent("SOURCE CONTROL");           // no text run does
-inv.count("Settings");                  // how many runs do
-inv.left_of("E", "EXPLORER");           // a's right edge <= b's left edge
-inv.above("EXPLORER", "content");       // a's bottom edge <= b's top edge
-inv.same_row("E", "S");                 // vertical ranges overlap
-inv.inside("content", &WidgetId::new("app-shell:sidebar-content"));
-```
-
-`left_of`/`above`/`inside` are proven to agree across `TuiDriver` and
-`GtkDriver` for the `AppShellDemo` shell_app fixture in
-`tests/cross_backend_parity.rs` — see
-`frame_inventory_relations_agree_tui_and_gtk`.
-
-**Backend checklist:** every backend driver that implements
-`ConformanceDriver` MUST implement `inventory()` and populate
-`text_runs` from its real paint output (not a stub). Populating `zones`
-is incremental (call `Backend::register_zone` from whichever composers/
-primitives you want zone-testable) but the field must exist on the wire
-from day one — declare it empty, never omit it, so callers never need a
-breaking change when a new zone source lands.
-
 ## Conformance tiers (C0–C4) and the scenario suite (quadraui#491)
 
-The conformance suite is Tier-4 generalized: **declarative** scenarios,
-run against **every** registered backend, producing a scenario × backend
-matrix. It complements — does not replace — the tiers above:
-`docs/SMELL_AUDIT_2026-07.md` §6.7 spells out the relationship (Tiers 1–3
-unchanged; the pty smoke #302 unchanged; `GtkDriver`/GD-5 division of
-labour unchanged).
+The conformance suite is **declarative** scenarios, run against **every**
+registered backend, producing a scenario × backend matrix. It
+complements — does not replace — the widget and example-driver tests
+above.
 
-**A new conformance fixture does not waive the per-example Tier-1
-obligation.** When a Tier-1 scenario's fixture is a brand-new `tui_*`
-example (CLAUDE.md's "Demos are mandatory for visual features" /
-"Every TUI example also ships an automated black-box test"), that example
-still needs its own `TuiDriver` cluster in `tests/tui_example_driver.rs` —
-same as any other new `tui_*` example, conformance scenario or not. The
-two mechanisms check different things: the Tier-1 driver test is a
-hand-written, backend-specific regression net over that one example's
-behaviour; the Tier-4 scenario is the same interaction expressed once and
-proven identical across every registered backend. Neither substitutes for
-the other. (`tui_modal_occlusion` / `ModalOcclusionDemo` — the fixture
-behind `dialog.blocks_click_through` — ships both: see the
-`modal_occlusion_*` tests in `tests/tui_example_driver.rs`.)
+**A new conformance fixture does not waive the per-example obligation.**
+When a scenario's fixture is a brand-new `tui_*` example (CLAUDE.md's
+"Demos are mandatory for visual features" / "Every TUI example also
+ships an automated black-box test"), that example still needs its own
+`TuiDriver` cluster in `tests/tui_example_driver.rs`. The two check
+different things: the driver test is a hand-written, backend-specific
+regression net over that one example's behaviour; the scenario is the
+same interaction expressed once and proven identical across every
+registered backend. Neither substitutes for the other.
+(`tui_modal_occlusion` / `ModalOcclusionDemo` — the fixture behind
+`dialog.blocks_click_through` — ships both: see the `modal_occlusion_*`
+tests in `tests/tui_example_driver.rs`.)
 
 ### The tiers (a new backend's burn-down checklist)
 
 - **C0 — Boot (day one).** Construct the backend headless;
-  `begin_frame`/`end_frame`; sane viewport; draw *every* primitive once
-  with a canned descriptor — no panic **and** non-empty `text_runs()` for
-  text-bearing primitives. This turns the silent no-op `Backend` defaults
-  into visible red/green immediately. *(Auto-generated per primitive —
-  quadraui#492.)* `win` has a column here too (quadraui#722), registered
-  burn-down rather than blocking — see *Burn-down columns* below, which now
-  covers both `c0_paint_smoke`'s per-primitive grid and
-  `conformance_matrix`'s per-scenario rows.
+  `begin_frame`/`end_frame`; sane viewport; draw every case in
+  `tests/conformance/c0.rs`'s `CASES` once with a canned descriptor — no
+  panic **and** an observable frame (non-empty `text_runs()` for a
+  text-bearing case, or a registered zone). This turns silent no-op
+  paint paths into visible red/green immediately.
+  <!-- TODO(0.12 final pass): after W9, re-read tests/conformance/c0.rs. Today CASES holds one entry per legacy Backend draw_* method and `cases_cover_every_draw_method_on_the_trait` enforces that; once the per-widget methods are gone the cases are `draw_dyn(<Type>)` and the coverage rule changes. Describe what CASES must cover then, and name the test that holds it. -->
 - **C1 — Interaction core (mandatory for "complete").** The Tier-1
   scenarios: click routing, keyboard focus, modal occlusion,
-  scroll-under-cursor, split relayout, text-selection drag + copy, tab
-  close, menu open/navigate/activate, palette type/pick, toast dismiss,
-  editor click-to-caret. **This is what ships today** — see the ten
-  scenario files under `tests/conformance/scenarios/`.
+  scroll-under-cursor, split relayout, tab close, menu
+  open/navigate/activate, palette type/pick, toast dismiss, status-bar
+  updates, viewport reflow — the scenario files under
+  `tests/conformance/scenarios/`.
 - **C2 — Event parity.** For each required `UiEvent` variant, a
   per-backend native-injection recipe proving it is emitted. Required
   (windowed backends — GTK/Win/macOS):
   Key/Char/MouseDown/Up/Moved/Scroll/DoubleClick/WindowResized/
   WindowClose/Accelerator/ClipboardPaste/TextCopied. TUI has no OS
   window, so `WindowClose` doesn't apply there — see
-  `quadraui/docs/decisions/DECISIONS.md` D-010. Optional (declare, don't fake):
-  FilesDropped, MouseEntered/Left, DpiChanged, native menu events. The
-  full required/optional-per-backend table, with current pass/fail per
-  cell, lives in `quadraui/docs/BACKEND.md`'s "UiEvent emission matrix".
-  `tests/conformance/c2.rs` (quadraui#501) is the mouse/key/scroll/
-  resize slice of this tier's harness on TUI+GTK; the rest of the
-  required list is tracked follow-up (see D-010's *Follow-ups*).
+  `quadraui/docs/decisions/DECISIONS.md` D-010. Optional (declare, don't
+  fake): FilesDropped, MouseEntered/Left, DpiChanged, native menu events.
+  The full required/optional-per-backend table lives in
+  `quadraui/docs/BACKEND.md`'s "UiEvent emission matrix".
+  `tests/conformance/c2.rs` is the mouse/key/scroll/resize slice of this
+  tier's harness on TUI+GTK. The widget-level half of event parity
+  (runtime vs direct `handle` vs a11y) is per widget — see the coverage
+  taxonomy.
 - **C3 — Platform services.** Clipboard round-trip (headless where
   possible), capability-honest dialogs and notifications.
 - **C4 — Native residue (never shared).** Exact colours, font rendering,
-  wide-glyph pixels, live-window smoke. GD-5 stays exactly as it is.
+  wide-glyph pixels, live-window smoke.
 
 ### Running it
 
@@ -539,14 +853,13 @@ cargo test -p quadraui --features gtk,tui  --test conformance -- --nocapture
 
 The Tier-1 matrix prints on every run and is also written to
 `$CARGO_TARGET_DIR/conformance-matrix.txt`; the Tier-0 grid
-(`c0_paint_smoke`) does the same to `$CARGO_TARGET_DIR/conformance-matrix-c0.txt`
-(quadraui#722) — two files, not one, because both tests can run
-concurrently in the same `cargo test` invocation and a shared path would
-let whichever finished last silently clobber the other's artifact. CI
-uploads both as artifacts from the `tui` and `gtk` jobs (plus a
-`win`-only rerun of each on the windows-latest leg — see the CI table
-above). For a backend that doesn't exist yet (Windows, macOS) **that
-artifact is the implementation checklist**.
+(`c0_paint_smoke`) goes to `$CARGO_TARGET_DIR/conformance-matrix-c0.txt`
+— two files, because both tests can run concurrently in the same
+`cargo test` invocation and a shared path would let whichever finished
+last clobber the other's artifact. CI uploads both from the `tui` and
+`gtk` jobs, plus the `win` tables from the windows-latest leg. For a
+backend under construction, that artifact is the implementation
+checklist.
 
 ```text
 Conformance matrix (scenario × backend)
@@ -559,45 +872,36 @@ dialog.blocks_click_through         1  pass  pass
 
 ### Burn-down columns: registered, reported, not gating (quadraui#708)
 
-A backend whose rasterisers are still landing needs a column *before* it
+A backend whose paint paths are still landing needs a column *before* it
 can pass one — otherwise "the artifact is the implementation checklist"
 is impossible to satisfy, because adding the column would red every PR on
 that platform's CI leg. `runner::Gating` separates the two decisions:
 
 - `BackendReg::register::<F>(name)` — **blocking.** A `FAIL` cell fails
-  `conformance_matrix`. The normal posture (`tui`, `tui-vt100`, `gtk`,
-  `macos`).
+  `conformance_matrix`. Every scenario-suite column (`tui`, `tui-vt100`,
+  `gtk`, `macos`, `win`) is registered this way.
 - `BackendReg::register_burn_down::<F>(name)` — **reported, not gating.**
   Cells render identically in the matrix and the detail block, the
   artifact still carries them, and a legend under the table names every
   non-gating column so a reader can never mistake one for a regression.
-  Today only `win`, which has no painted-text-run recording yet
-  (`WinDriver::find`/`find_bounds` are honest `None` stubs), so every
-  text-locating step reports "not painted".
+  A newly added backend starts here.
 
 Burn-down is self-expiring, not a permanent exemption: if a burn-down
 column runs at least one scenario and fails *none* of them,
 `conformance_matrix` fails with "promote it to `BackendReg::register`".
 An all-`skip` column doesn't count as having run — a backend that
 declares no capabilities can't earn promotion by never attempting
-anything. `every_asserted_zone_is_registered_by_every_backend` skips
-burn-down columns for the same reason: a backend with no shell chrome yet
-registers no zones, and that gap is already visible as its `FAIL` rows.
+anything.
 
-**`c0_paint_smoke` (quadraui#722) shares the same `runner::Gating` enum**,
-applied to its per-primitive grid instead of `conformance_matrix`'s
-per-scenario rows: each column in that test's local `Column` struct carries
-a `gating` field, `win`'s is `Gating::BurnDown`, and its `PANIC`/`FAIL`
-cells are printed — case names and all, via a "non-gating C0 gap(s)"
-line separate from the blocking gap list — but excluded from the
-assertion that fails the test. The same legend
-(`runner::burn_down_legend`) prints under this tier's table too, and the
-same self-expiring promotion check applies: a burn-down column with zero
-failing cases fails `c0_paint_smoke` until it's moved from
-`Gating::BurnDown` to `Gating::Blocking` in that test's `columns.push`
-calls. Unlike the scenario suite there is no capability-skip concept at
-this tier — every case in `c0::CASES` always runs — so "ran" is not part
-of that check, only "ever failed".
+**`c0_paint_smoke` shares the same `runner::Gating` enum**, applied to
+its per-case grid: each column in that test's `Column` list carries a
+`gating` field. `win` is `Gating::BurnDown` there today; its
+`PANIC`/`FAIL` cells print on a "non-gating C0 gap(s)" line separate from
+the blocking gap list and are excluded from the assertion. The same
+legend and the same self-expiring promotion check apply: a burn-down
+column with zero failing cases fails `c0_paint_smoke` until it is moved
+to `Gating::Blocking`. There is no capability-skip concept at this tier
+— every case always runs — so only "ever failed" counts.
 
 ### TUI: two observers, one row each (quadraui#555)
 
@@ -730,55 +1034,63 @@ Two gotchas when writing needles:
 
 ### Adding a backend = one driver impl + one registration line
 
-`tests/conformance.rs`:
+`tests/conformance.rs` (a fragment; `my::testing::MyDriver` stands for the
+new backend's driver):
 
-```rust
+```rust,ignore
 struct MyFactory;
 impl runner::DriverFactory for MyFactory {
     fn make<A: AppLogic + 'static>(app: A, vp: LogicalViewport) -> Box<dyn runner::DynDriver> {
         Box::new(my::testing::MyDriver::new_fixture(app, vp))
     }
 }
-const MY_CAPS: &[&str] = &["mouse", "scroll", "drag", "text_selection"];
 // … and, in `backends()`:
-regs.push(BackendReg::new("my", MY_CAPS, fixtures::build::<MyFactory>));
+regs.push(BackendReg::register_burn_down::<MyFactory>("my"));
 ```
 
 Everything else — the fixture registry, the step interpreter, the
 matrix — is backend-agnostic. `DynDriver` is the object-safe view of
 `ConformanceDriver` (which is `Sized`, so it can't be a trait object);
-one blanket impl covers every present and future driver.
+one blanket impl covers every present and future driver. The new
+backend's C0 column is one more `columns.push` in `c0_paint_smoke`.
 
 ### Capabilities: a skip must name what's missing
 
-Each backend declares a capability list. A scenario whose `requires`
-mentions a capability the backend hasn't declared is **skipped, with the
+A scenario's `requires` lists capabilities by `BackendCaps` field name
+(`mouse`, `scroll`, `drag`, `text_selection`, …). A scenario that
+requires a capability the backend doesn't declare is **skipped, with the
 missing capability printed in the matrix detail block**. A backend
-therefore cannot quietly not-run a scenario: either it declares the gap
-up front, or the scenario runs and fails. Silence is impossible.
+therefore cannot quietly not-run a scenario: either it declares the gap,
+or the scenario runs and fails.
+
+The capability list is not written in the test file. `DriverFactory::caps`
+builds a throwaway driver and reads `Backend::backend_caps()` off the real
+backend, so a registration can't claim a capability the backend doesn't
+declare. `every_requires_names_a_known_capability` keeps scenario files
+on the `BackendCaps` vocabulary.
 
 ### Zone-backed assertions: what is registered today
 
-`assert_inside` is the one step that does **not** work off painted text —
-it needs a `WidgetId`-keyed rect, which a paint site must volunteer by
-calling `Backend::register_zone` during the frame. That is opt-in per
-paint site, so the set of assertable zone ids is small and explicit.
+`assert_inside` is the one step that does **not** work off painted text
+— it needs a `WidgetId`-keyed rect, which the frame must register (see
+*`FrameInventory`* above for how a contract widget gets one). The set of
+assertable zone ids is therefore explicit:
 
-Registered today, by `AppShell::render` (via `register_chrome_zones`) and
-nothing else:
+| Zone id | Registered by | When |
+|---|---|---|
+| `<id>` | any identified widget whose `Primitive::paint_zone` answers `Some` | every frame it paints |
+| `<id>:<name>` | any widget that names a sub-part with `Interactive::sub_region_name` | every frame that sub-part exists |
+| `app-shell:window`, `app-shell:activity-bar`, `app-shell:main-content` | `ShellView` (id `app-shell`) | always |
+| `app-shell:title-bar`, `app-shell:sidebar-header`, `app-shell:sidebar-content`, `app-shell:divider`, `app-shell:bottom-panel`, `app-shell:command-line`, `app-shell:status-bar` | `ShellView` | when that region exists this frame |
+| the panel's own id, e.g. `panel:explorer` | the app shell, one per activity-bar item | every frame |
 
-| Zone id | Registered when |
-|---|---|
-| `app-shell:window`, `app-shell:activity-bar`, `app-shell:main-content` | always |
-| `app-shell:title-bar`, `app-shell:sidebar-header`, `app-shell:sidebar-content`, `app-shell:divider`, `app-shell:bottom-panel`, `app-shell:command-line`, `app-shell:status-bar` | when that region exists this frame |
-| the panel's own id, e.g. `panel:explorer` | one per activity-bar item |
+<!-- TODO(0.12 final pass): after W7 (#2958 deletes AppShell), confirm what registers the per-panel activity-row zones (`panel:explorer`, …) — today `AppShell::render` registers them by hand — and update the last row. -->
 
-Both `TuiDriver::inventory` and `GtkDriver::inventory` forward whatever
-the frame registered, so a zone available on one backend is available on
-both; `tests/cross_backend_parity.rs` asserts that for
-`app-shell:sidebar-content` specifically.
+Every driver forwards whatever the frame registered, so a zone available
+on one backend is available on all; `tests/widget_contract_shell_view.rs`
+asserts that the `app-shell:*` set agrees across drivers.
 
-**Naming a zone no paint site registers makes the step unsatisfiable, not
+**Naming a zone nothing registers makes the step unsatisfiable, not
 flaky.** `FrameInventory::inside` returns `false` for an unregistered
 zone exactly as it does for a run that landed outside a registered one,
 so the matrix alone can't tell the two apart. Two things close that gap:
@@ -786,94 +1098,60 @@ so the matrix alone can't tell the two apart. Two things close that gap:
 `tests/conformance.rs`) fails with "backend never registers this id" and
 a list of what *is* registered, and the `assert_inside` failure text
 itself distinguishes never-registered / never-painted / outside-the-rect.
-Before writing an `assert_inside` against a new primitive, wire its
-`register_zone` call first.
+Before writing an `assert_inside` against a new widget, give it a
+`paint_zone` or a `sub_region_name` first.
 
 ### Known coordinate-free gaps
 
-Two Tier-1 behaviours from the audit's C1 list can't be expressed
-coordinate-free yet, and are *not* faked with a literal:
+- **Split-divider drag.** A split divider has no text on the pixel
+  backends — it's a filled rect — and publishes no zone, so there is
+  nothing for `drag_text` to name. `split.direction_toggle_relayout` and
+  `split.resize_via_keyboard` cover split relayout relationally instead.
+  Unblocked by a divider zone plus a zone-anchored drag step.
+- **Editor click-to-caret** needs a caret-position read-back on
+  `ConformanceDriver`.
 
-- **Split-divider drag.** The `SplitTree` divider (not the shell's
-  sidebar divider, which *is* registered as `app-shell:divider`) has no
-  text on GTK — it's a filled rect — and no `split.rs` paint site calls
-  `register_zone`, so there is nothing for `drag_text` to name.
-  `split.direction_toggle_relayout` covers split *relayout* relationally
-  instead. Unblocked by registering split-divider zones and adding a
-  zone-anchored drag step.
-- **Editor click-to-caret** (`editor_col_at_x`) — needs a caret position
-  read-back on `ConformanceDriver`.
-
-Two related paint/hit-test rounding warts surfaced while writing these
-scenarios and are worth knowing about when a scenario mysteriously
-"clicks nothing" on TUI: `tui/split.rs` paints the divider at
-`round(divider_bounds.x)` while `SplitLayout::hit_test` uses the
-unrounded rect (the fix `tui/split_tree.rs` already got for #452), and
-a dialog whose total height is an odd number of lines centres on a
-half-line in an even-height viewport, so its painted button row and its
-hit region land one cell apart.
+<!-- TODO(0.12 final pass): after W5 (#2968 ports Split/SplitTree onto the contract), check whether the divider is now a named sub-region published as a zone; if so, rewrite the split-divider gap. -->
 
 ## Backend testability requirement
 
 Every backend MUST support headless paint-to-memory so tests don't
 need a real display, terminal, window manager, or font server.
 
-- TUI: `ratatui::Buffer` (in-memory char + style cells).
+- TUI: `ratatui` `TestBackend` buffer (in-memory char + style cells),
+  reached by widgets through `CellSurface`.
 - GTK: `cairo::ImageSurface::create(Format::ARGB32, w, h)` + Pango
   layout queries.
 - macOS: `quadraui::macos::headless::BitmapSurface` (CGBitmapContext +
-  pixel readback, top-left origin matching `QuadraView`). Integrates
-  with `MacBackend::enter_frame_scope`; the full in-window rasteriser
-  surface (chrome / content / MSV / containers / overlays) drives the
-  same code paths as the live runner.
-- Windows (when implemented): `ID2D1Bitmap` as offscreen render target.
+  pixel readback, top-left origin matching `QuadraView`).
+- Windows: `quadraui::win::testing::HeadlessSurface`, a GPU-free Direct2D
+  render target with pixel readback.
 
-New backends ship with their harness on day one. Once a backend has a
-`ConformanceDriver` impl, it MUST also implement
-[`FrameInventory`](#frameinventory-the-portable-paint-inventory-contract-quadraui490) —
-see the backend checklist above.
+A new backend ships with its harness on day one: a driver implementing
+`DriverInput` and `ConformanceDriver`, including `inventory()` (see the
+`FrameInventory` backend checklist above), and a column in both
+conformance tests.
 
 ## Backend `todo!()` gate (quadraui#923)
 
-`tests/backend_todo_gate.rs` guards against a specific latent-abort shape:
-an un-cfg-gated `todo!()`/`unimplemented!()` inside one of the four real
-per-platform `Backend` impls (`TuiBackend`, `GtkBackend`, `MacBackend`,
-`WinBackend`) that's reachable when that backend is compiled for its own
-native target. That already shipped once —
-`MacBackend::draw_minimap`/`minimap_layout`/`draw_image` had no `cfg` at
-all and aborted vimcode's macOS GUI on first paint (vimcode#896, fixed in
-`dbb3023`) — and a raw `todo!()` count can't tell that case apart from
-Win-GUI's dozens of legitimate `cfg`-gated stubs (there purely so
-`cargo check --features win` can type-check `WinBackend`'s trait
-completeness on Linux). Counting without classifying would be red on
-Win-GUI's stubs from day one, get muted, and miss the next macOS-shaped
-case exactly as the absence of this test did before #923.
+`tests/backend_todo_gate.rs` guards against a specific latent-abort
+shape: an un-cfg-gated `todo!()`/`unimplemented!()` inside one of the
+four real per-platform `Backend` impls (`TuiBackend`, `GtkBackend`,
+`MacBackend`, `WinBackend`) that is reachable when that backend is
+compiled for its own native target. That shipped once — three macOS
+methods had a bare `todo!()` and aborted vimcode's macOS GUI on first
+paint (vimcode#896, fixed in `dbb3023`). A raw `todo!()` count can't tell
+that case apart from Win-GUI's legitimate `cfg`-gated stubs (there so
+`cargo check --features win` can type-check `WinBackend` on Linux), so
+the test classifies each call site instead.
 
-**Per-backend dangerous (un-gated, reachable-on-native) count, measured by
-parsing each backend's source with `syn` rather than by line-adjacency**
-(a `#[cfg(...)]` binds to exactly one following statement or item — see
-the test's own module doc for the sibling-statement shape a proximity
-check gets wrong):
-
-| backend | dangerous (un-gated) `todo!()`/`unimplemented!()` |
-|---|---|
-| tui | 0 |
-| gtk | 0 |
-| macos | 0 |
-| win | **59** (`src/win/backend.rs`, tracked as quadraui#924 — see that file's `Backend` impl; none in `src/win/run.rs`, whose 2 stubs are gated by a `#[cfg(not(target_os = "windows"))]` on the enclosing `pub fn`) |
-
-Win-GUI's real total of `todo!()`/`unimplemented!()` call sites (ignoring
-doc-comment mentions) is 81, not the "83 legitimate stubs" #923 was
-originally filed against: 22 are genuinely excluded from a native Windows
-build (2 via a `#[cfg(...)]` directly on the macro call — `begin_frame`/
-`end_frame` — and 20 via a `#[cfg(...)]` on the whole enclosing `{ }` block,
-e.g. `minimap_layout`/`list_layout`), and the other 59 carry no cfg that
-excludes them and are reachable on Windows itself whenever `self.surface`
-is `None`. Fixing those 59 is quadraui#924's job, not #923's — this test
-ships a frozen baseline (`KNOWN_DANGEROUS_TODOS`) naming exactly those 59
-call sites so it passes today without #924 having landed, while still
-failing the instant a 60th un-gated stub appears anywhere in one of the
-four backends.
+It parses each backend's source with `syn` (a `#[cfg(...)]` binds to
+exactly one following statement or item — see the test's module doc for
+the sibling-statement shape a proximity check gets wrong) and counts the
+**dangerous** sites: un-gated and reachable on the backend's native
+target. The test prints the per-backend count on every run. Known Win-GUI
+debt is frozen in `KNOWN_DANGEROUS_TODOS`; any dangerous site not in that
+baseline fails the test.
 
 **Recognised `cfg` spellings** (anything else is refused as
 `Unclassifiable` — a hard test failure naming the exact attribute, never a
@@ -891,28 +1169,22 @@ silent pass in either direction):
 `cfg(all(...))`, `cfg(not(any(...)))`/`cfg(not(all(...)))`, bare
 `cfg(unix)`/`cfg(windows)`, a `target_os` comparison inside `src/gtk/` or
 `src/tui/` (no native `target_os` is defined for those — they ship
-cross-platform today), or a `cfg(...)` whose inner tokens don't parse as a
-`syn::Meta` at all. Any of these appearing in a real backend fails the
-test loudly rather than guessing which way it resolves.
+cross-platform), or a `cfg(...)` whose inner tokens don't parse as a
+`syn::Meta` at all.
 
 **Scope:** only `src/tui/`, `src/gtk/`, `src/macos/`, `src/win/` — the
-`impl Backend` blocks actually reachable from `quadraui::{tui,gtk,macos,win}::run`.
-`src/testing/mod.rs`'s `RecordingBackend` (a `pub`, always-compiled
-`Backend` mock for unit tests, never the backend an `AppLogic` is actually
-run against) and `compose/*`'s private `#[cfg(test)] mod tests` mocks are
-deliberately out of scope.
+`impl Backend` blocks reachable from `quadraui::{tui,gtk,macos,win}::run`.
+`src/testing/mod.rs`'s `RecordingBackend` (a `pub` `Backend` mock for unit
+tests) and private `#[cfg(test)]` mocks are out of scope.
 
 **Statement-position macros are covered too.** `syn` parses a
-semicolon-terminated (or brace-delimited) macro invocation used as an
-ordinary mid-block statement — `todo!("x"); more_code();` — as a distinct
-`Stmt::Macro` node, not the tail-expression `Stmt::Expr(Expr::Macro(...))`
-shape. The walker has a `visit_stmt_macro` override running the identical
-classification logic for that shape, so an idiomatic non-tail `todo!()`
-can't slip past the gate unclassified the way a `visit_expr`-only walker
-would miss it; see `backend_todo_gate.rs`'s `self_test` module for the
-pinned fixtures. (A per-match-arm `#[cfg(...)]` is the same class of gap in
-principle — no `visit_arm` override — but no backend uses that pattern
-today, so it's undetected-but-inert rather than a live blind spot.)
+semicolon-terminated macro used as a mid-block statement —
+`todo!("x"); more_code();` — as a `Stmt::Macro` node, not the
+tail-expression shape. The walker's `visit_stmt_macro` override runs the
+same classification for it; see `backend_todo_gate.rs`'s `self_test`
+module for the pinned fixtures. (A per-match-arm `#[cfg(...)]` is the
+same class of gap in principle — there is no `visit_arm` override — but
+no backend uses that pattern, so it is undetected-but-inert.)
 
 ## Live-app headless smoke (GD-5, quadraui#450)
 
@@ -1028,12 +1300,10 @@ window station even though it's genuine native code. That residual
 gap — not "is it Wine", but "is there a window and a human looking at
 it" — is exactly C4, and is what the checklist below covers.
 
-**Doctest exit 53 — resolved (2026-09-07).** The aside that used to sit
-here reported `cargo xwin test`'s **doctest** binaries failing with exit
-53 — the "missing vcruntime" signature of CLAUDE.md's trap #1 — even
-with `crt-static` set, and guessed that `rustdoc`'s harness doesn't
-inherit `RUSTFLAGS`. That guess was right, and the fix is one more env
-var: `rustdoc` compiles each doctest itself and reads **`RUSTDOCFLAGS`**,
+**Doctests need `RUSTDOCFLAGS` too.** `cargo xwin test`'s doctest
+binaries fail with exit 53 — the "missing vcruntime" signature of
+CLAUDE.md's trap #1 — when only `RUSTFLAGS` carries `crt-static`:
+`rustdoc` compiles each doctest itself and reads **`RUSTDOCFLAGS`**,
 not `RUSTFLAGS`. The full command, all three variables required:
 
 ```bash
@@ -1107,28 +1377,13 @@ RUSTFLAGS="-C target-feature=+crt-static" \
   cargo xwin run --target x86_64-pc-windows-msvc --example win_appshell_demo --features win
 ```
 
-1. **Theme colours actually applied.** `WinBackend::set_theme` is
-   wired (#724), but individual rasterisers are migrated
-   piecemeal, and the *majority* still aren't. Run
-   `grep -rln "Theme::default()" src/win/*.rs` yourself before relying
-   on any specific file list here — it goes stale fast and a wrong
-   worked example is worse than none. As of `680d7ce`, that grep
-   returns ~38 of the ~40 files in `src/win/`, including `tab_bar.rs`
-   and `status_bar.rs` (whose module doc says outright that
-   `WinBackend` has no live-theme wiring yet) — **those are not
-   migrated**, don't use them as the "known good" reference. The
-   rasterisers `WinBackend::draw_*` genuinely calls with
-   `&self.current_theme` (check `backend.rs`, not the per-file grep,
-   since a file can define both a themed production path and an
-   unthemed `#[cfg(test)]` fixture that also calls `Theme::default()`)
-   include `draw_text_input`, `draw_scrollbar`, `draw_command_line`,
-   `draw_terminal`, `draw_text_display`, `draw_drop_overlay`,
-   `draw_board`, `draw_minimap`, `draw_pipeline_view`,
-   `draw_command_center`, and `draw_diff_view`. Confirm chrome painted
-   by one of *those* (e.g. the text input caret/selection colours, or
-   the scrollbar thumb) visibly reflects a non-default theme; confirm
-   everything else — including the tab bar and status bar — is a
-   *known* gap, not a surprise.
+1. **Theme colours actually applied.** Every contract widget paints
+   with the theme `draw_dyn` reads from `Backend::theme()`, so after
+   `WinBackend::set_theme` the whole window should repaint in the new
+   colours. Switch to a non-default theme and confirm the tab bar,
+   status bar, activity bar, a text input's caret and selection, and a
+   scrollbar thumb all follow it. Anything still painting default
+   colours is a bug, not a known gap.
 2. **Font rendering and hinting.** Compare label and editor text at
    100% and 150% Windows display scaling (Settings → System → Display)
    against the same text on the `tui`/`gtk` backends run side by side.
@@ -1136,10 +1391,8 @@ RUSTFLAGS="-C target-feature=+crt-static" \
    no clipped descenders/ascenders, hinting that doesn't blur at
    small sizes.
 3. **Wide-glyph / CJK / emoji advance** (pairs with #703's shared
-   scale logic, `src/win/text.rs`). No dedicated `win_terminal`
-   example exists yet (`win`'s terminal rasteriser is
-   headless-tested only — `win::terminal::tests`), so use
-   `win_appshell_demo`'s editor pane: type or paste a line mixing
+   scale logic, `src/win/text.rs`). Use `win_appshell_demo`'s editor
+   pane: type or paste a line mixing
    ASCII with CJK (`" 1: 日本語.rs "`, the same fixture
    `tabbar.wide_label_text_fidelity` uses) and an emoji. Confirm each
    wide glyph occupies two cell-widths' worth of advance with no
@@ -1204,8 +1457,8 @@ toward "things that genuinely need eyes".
      confirm the status bar reports "Kept editing" / "Discarded"
      matching the click. Press `m` again and dismiss via Escape or the
      window's close box; confirm the status bar reports "Cancelled".
-  4. Since quadraui#965, TUI is **not** part of this manual-only gap
-     anymore: `show_message_dialog` drives a real in-canvas
+  4. TUI is **not** part of this manual-only gap:
+     `show_message_dialog` drives a real in-canvas
      `compose::MessageDialogController` through a nested draw-and-read
      loop (see `tui::services`'s module doc), and the `TuiDriver` tests
      in `tests/tui_example_driver.rs` cover the full round trip

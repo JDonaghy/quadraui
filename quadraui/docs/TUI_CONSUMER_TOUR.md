@@ -1,262 +1,267 @@
-# How vimcode's TUI consumes quadraui — a code tour
+# How a TUI app consumes quadraui — a code tour
 
-This document is a reading guide for understanding how the TUI backend
-consumes `quadraui` primitives, aimed at a reader who wants to
-understand the pattern before extending it (to GTK, Win-GUI, macOS, or
-a non-vimcode app).
+A reading guide for someone who wants to see how a quadraui widget gets
+from a struct in app code to cells on a terminal and back to an event in
+the app, before writing a widget or an app of their own. Every step
+points at real code in this repository: one widget, one example app, and
+the test that drives it.
 
-Built after Session 328's Phase B.4 chrome migration arc — every
-example below points at code that shipped during that arc, so the
-commits are small and readable in isolation.
-
----
-
-## What the contract actually is (D6 in one paragraph)
-
-A **primitive** (e.g. `StatusBar`, `Tooltip`, `ListView`) has:
-
-1. A **declarative struct** (e.g. `Tooltip { id, text, placement, … }`)
-   describing *what* should appear, with no coordinate information.
-2. A **`layout(...)` method** that takes a viewport + a measurement
-   closure and returns a fully-resolved `Layout` struct containing
-   every coordinate the backend needs to paint.
-3. A **`hit_test(x, y)` method** on the layout that resolves a click
-   to an event variant (e.g. `StatusBarHit::Segment(id)` or
-   `DialogHit::Button(id)`).
-
-Backends are **paint-only**: they receive `&Primitive + &Layout` and
-write pixels / cells into their native surface. They do **not** make
-layout decisions. This is Decision D6 (resolved 2026-04-22) —
-`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §9 D6 has the full
-rationale.
-
-The payoff: paint and click resolution derive from the same `Layout`
-data, so "paint position drifts from hit-test position" bugs (a
-recurring class in the pre-D6 era) are eliminated by construction.
+The terminal is the easiest place to read the pattern, but nothing in it
+is TUI-specific except the final paint call. On GTK, macOS and Windows
+the same widget, the same app code and the same routing run unchanged;
+only the surface the widget paints onto differs.
 
 ---
 
-## 1. Start with the contract: one primitive, end-to-end
+## The contract in one paragraph
 
-Pick the **hover popup → Tooltip** pair. Smallest complete loop.
+A **widget** is one Rust type with three parts:
 
-### The primitive itself
+1. A **declarative struct** (`StatusBar { id, left_segments, … }`,
+   `TabBar { id, tabs, … }`) that says *what* to show. The app rebuilds
+   it from its own state every frame.
+2. A **`Primitive` impl**: `layout(ctx, rect)` resolves every coordinate
+   once into a `Layout`, and `paint(layout, surface, env)` (pixel
+   backends) or `paint_cells(layout, cells, env)` (the terminal) draws
+   from that `Layout` and nothing else.
+3. An **`Interactive` impl**: which focus stops the widget has, which
+   named sub-parts it has (`sub_regions`), how it reacts to each
+   `RoutedEvent` (`handle`), what it remembers between events (`State`),
+   and which popups it has open (`popups`).
 
-- [`quadraui/src/primitives/tooltip.rs`](../src/primitives/tooltip.rs)
-  (~200 lines, readable in one sitting)
-  - `Tooltip` struct — the declarative description
-  - `TooltipMeasure` / `TooltipLayout` — the D6 resolved layout
-  - `Tooltip::layout(anchor, viewport, measure, margin) -> TooltipLayout`
-    — **the core contract**: given a world + a measurement, return
-    fully-resolved coordinates. No backend code here, no painting.
+<!-- TODO(0.12 final pass): after W9 (#2981), confirm src/tui/ holds no
+per-widget file and TuiBackend no draw_<widget> method (today: tui/tree.rs,
+tui/list.rs, tui/data_table.rs, tui/split.rs and others, plus the legacy
+Backend widget methods). -->
+Backends hold no widget code. The TUI backend hands a widget a
+`CellSurface` (a cell grid with glyph, style, border and cursor verbs);
+the pixel backends hand it a `PaintSurface` (fill, stroke, text and image
+verbs). Paint and hit-testing both read the same `Layout`, so a click
+cannot land somewhere other than where the widget painted.
 
-  > **#542 contract change:** `TooltipMeasure::new(width, height)`'s
-  > `height` is the tooltip's **total box height, border chrome
-  > included** — not a content-line count. On TUI, once
-  > `height >= 3`, [`crate::tui::draw_tooltip`](../src/tui/tooltip.rs)
-  > strokes a full 4-sided box (matching GTK, which has always stroked
-  > one) and only `height - 2` rows remain for content. A caller built
-  > against the pre-#542 contract that measures exactly its
-  > content-line count (as this tour's own §"How an engine state gets
-  > adapted" example historically did) needs `+ 2` added to `height`,
-  > or its last two content lines are silently dropped once it's 3+
-  > rows tall. See `TooltipMeasure`'s doc comment for the full contract.
-
-### How an engine state gets adapted into it
-
-- [`src/render.rs::hover_popup_to_quadraui_tooltip`](../../src/render.rs) —
-  converts engine-side `HoverPopup { text, anchor_line, anchor_col }`
-  into `(Tooltip, TooltipLayout)`. Pure data transform.
-
-### How the TUI paints it
-
-- [`src/tui_main/quadraui_tui.rs::draw_tooltip`](../../src/tui_main/quadraui_tui.rs) —
-  takes `&Tooltip + &TooltipLayout + &Theme`, writes cells into a
-  ratatui Buffer. Doesn't decide placement (the layout already has
-  that) — just rasterises.
-
-### Where it's wired
-
-- [`src/tui_main/render_impl.rs`](../../src/tui_main/render_impl.rs) —
-  search for `screen.hover` (around line 476). Three steps: build
-  viewport `Rect`, call adapter, call rasteriser. That's the whole
-  pattern.
-
-**Read these four files in order and you've seen the whole D6 contract once.**
+The trait definitions, with their full contracts, are in
+[`src/primitive.rs`](../src/primitive.rs) and
+[`src/interactive.rs`](../src/interactive.rs).
 
 ---
 
-## 2. Add click handling: the StatusBar pattern
+## 1. One widget: `StatusBar`
 
-**Why StatusBar first for clicks:** the primitive carries `action_id`
-per segment, and clicks route through `bar.resolve_click(col,
-bar_width)` instead of per-backend column math.
+[`src/primitives/status_bar.rs`](../src/primitives/status_bar.rs). Read
+it in this order:
 
-### The primitive
+- **The struct.** `StatusBar` and `StatusBarSegment`. A segment with an
+  `action_id` is clickable; one without is a label.
+- **`impl Primitive for StatusBar`.** `layout` branches once on
+  `ctx.units()`: on a cell grid each character is one cell, on a pixel
+  surface segment widths come from `ctx.text_width`, which measures
+  through the running backend's own font. Both branches return the same
+  `StatusBarPrimitiveLayout`. `paint_cells` and `paint` then draw from
+  it. Neither re-measures anything.
+- **Hover and press tint.** The painters read hover and press from the
+  `PaintEnv` (`env.hovered_sub(&self.id)`, `env.pressed_sub(&self.id)`),
+  not from a field on the struct. The runtime fills those in from the
+  pointer, so the app never threads hover state through its own model.
+- **`impl Interactive for StatusBar`.**
+  - `focus` returns `FocusSpec::None`: a status bar is reached by
+    pointer only.
+  - `sub_regions` names every visible segment, in bar-local coordinates,
+    as a `SubTarget`. This is what lets the runtime say *which segment*
+    the pointer is on, and what lets the painters above tint just that
+    one.
+  - `handle` is a small state machine over `StatusBarState`: a press arms
+    a segment and captures the pointer, a release over the same segment
+    returns `Handled::Event(StatusBarSegmentAction::SegmentClicked(id))`,
+    and a release anywhere else activates nothing.
+- **`impl WidgetAction for StatusBarSegmentAction`.** Turns the widget's
+  own action into the `UiEvent` the app receives:
+  `UiEvent::StatusBar(bar_id, StatusBarEvent::SegmentClicked { id })`.
 
-- [`quadraui/src/primitives/status_bar.rs`](../src/primitives/status_bar.rs)
-  — whole file worth reading. Pay attention to `resolve_click`:
-  **the primitive owns the hit math**.
-
-### The adapter
-
-- [`src/render.rs::debug_toolbar_to_quadraui_status_bar`](../../src/render.rs) —
-  each debug button = 2 segments (icon + dim hint) sharing an
-  `action_id = "debug:btn:N"`.
-- [`src/render.rs::debug_toolbar_action_index`](../../src/render.rs) —
-  decodes the `WidgetId` back to a `DEBUG_BUTTONS` index.
-
-### The rasteriser
-
-- [`src/tui_main/quadraui_tui.rs::draw_status_bar`](../../src/tui_main/quadraui_tui.rs) —
-  paints `layout.visible_segments`; that's it.
-
-### Click resolution
-
-- [`src/tui_main/mouse.rs`](../../src/tui_main/mouse.rs) — search for
-  `debug_toolbar_visible` (around line 1823). Build the bar, call
-  `bar.resolve_click(local_col, bar_w)`, decode the id, dispatch.
-  **Paint and hit-test derive from the same bar.** Drift bugs
-  impossible by construction.
-
-### Same pattern, second example
-
-Breadcrumb bar uses the same StatusBar pattern with different semantics
-(segments are path components; action_id `"bc:N"` for clickable
-segments, `None` for `" › "` separators):
-
-- [`src/render.rs::breadcrumbs_to_quadraui_status_bar`](../../src/render.rs)
-- [`src/tui_main/mouse.rs`](../../src/tui_main/mouse.rs) — search for
-  `breadcrumb click` (around line 2641).
+That is the whole widget. No backend module (`src/tui/`, `src/gtk/`,
+`src/macos/`, `src/win/`) has status-bar code of its own.
 
 ---
 
-## 3. Primitive extension: when the existing shape isn't enough
+## 2. Painting it: `Surface::Widget` and `draw_dyn`
 
-Real primitives grow when real consumers need something the original
-shape didn't cover. The extension pattern is always: struct gains a
-field, tests update, rasteriser gains a branch, adapters use it.
+An app paints widgets by pushing them into a `ScreenLayout` and drawing
+the frame. [`examples/hello.rs`](../examples/hello.rs) is the smallest
+complete case: its `render_content` builds a `StatusBar` from
+`self.keys_pressed`, pushes it as a `Surface::Widget` at the rect the
+shell computed, and calls `frame.draw(backend)`.
 
-### Example: Tooltip gains multi-line styled content
+`Surface::Widget` paints through `DrawsPrimitives::draw_dyn`
+([`src/backend.rs`](../src/backend.rs)), which for each widget:
 
-- **Commit `e6048d8`** — Tooltip gains `styled: Option<StyledText>`
-  for single-line styled spans (signature help needed the active
-  parameter highlighted in keyword color).
-- **Commit `e4ae90e`** — rename to `styled_lines: Option<Vec<StyledText>>`
-  for multi-line (diff peek needed per-line `+`/`-` coloring in the
-  hunk body).
+1. resolves `layout` with the backend's own metrics (row height, cell
+   width, text measurement);
+2. paints it, through `paint_cells` when the backend has a cell surface
+   (the TUI backend) or through `paint` inside a clip when it has a
+   pixel surface;
+3. for a widget with an id, records its rect and sub-regions for this
+   frame, publishes its `paint_zone` and its named sub-regions as
+   frame-inventory zones, hands it its persistent `State` from the
+   runtime's store, and queues any popups it has open.
 
-### Example: ListView gains bordered mode
-
-- **Commit `85841d2`** — `ListView.bordered: bool`. When `true`,
-  layout insets items by 1 cell each side and reserves rows 0 + N-1
-  for `╭─╮ ╰─╯` borders; title (when present) overlays the top
-  border. Tab switcher modal needs it; quickfix flat panel doesn't.
-
-**Read these commits to see how extensions stay small:** each is
-scoped to one primitive + its existing consumers + one new consumer.
-No cross-cutting changes.
-
----
-
-## 4. When the primitive model doesn't fit: the `hit_regions` pattern
-
-Not everything has to be a primitive. The **find/replace overlay** is
-the escape-hatch case: heterogeneous `[adornment…] [TextInput]
-[adornment…]` rows, 1–2 stacked inside a single bordered box. Nothing
-in the primitive set (Form, Dialog, StatusBar, Palette) fits cleanly,
-and a speculative new `Toolbar` primitive isn't justified yet (no
-second consumer).
-
-**The alternative:** the **data shape itself** is the cross-backend
-contract. `FindReplacePanel + FrHitRegion` live in the engine, every
-backend walks them for both painting and click resolution.
-
-- [`src/core/engine/mod.rs::compute_find_replace_hit_regions`](../../src/core/engine/mod.rs) —
-  engine owns the layout math (lines 1101–1211).
-- [`src/tui_main/quadraui_tui.rs::draw_find_replace`](../../src/tui_main/quadraui_tui.rs) —
-  walks `panel.hit_regions`, dispatches per `FindReplaceClickTarget`
-  variant to paint each region.
-- [`src/tui_main/mouse.rs`](../../src/tui_main/mouse.rs) — click routes
-  through the same `hit_regions` list via
-  `Engine::handle_find_replace_click(target)`.
-
-**The takeaway:** D6 is "one data structure owns layout for both
-paint and hit-test." A **quadraui primitive** is one *instance* of
-that pattern, but not the only valid shape. If the engine already has
-a portable layout struct that works across backends, that IS the
-contract.
+An app that wants the resolved layout back (to hit-test something itself)
+can call `backend.draw_dyn(rect, &widget, &())` directly; it returns the
+layout it painted as a `Box<dyn PrimitiveLayout>`. Recover the concrete
+type with `layout.downcast_ref::<MyLayout>()`, not `layout.as_any()`: the
+`as_any` call resolves on the `Box` itself and the downcast then fails
+silently. With the concrete widget type in hand,
+`backend.layout_primitive(rect, &widget)` returns the typed layout
+without painting. The third argument is a `PaintState`: `&()` paints
+with the live pointer state, and an explicit `InteractionState` pins
+hover and press, which is how a test paints a hovered widget without a
+mouse.
 
 ---
 
-## 5. The decision log (why things are the way they are)
+## 3. Routing input: `AppLogic::frame_tree`
 
-- [`quadraui/docs/decisions/DECISIONS.md`](decisions/DECISIONS.md) — primitive-distinctness
-  principles ("why ListView ≠ TreeView", "what belongs as Decoration
-  vs a separate field"). Read before adding a new primitive.
-- [`quadraui/docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](decisions/BACKEND_TRAIT_PROPOSAL.md)
-  §9 — D1–D7 resolved decisions with rationale. **D6** is the one
-  that drives every migration in this tour.
+Painting a widget does not make it clickable. An app opts a widget into
+input routing by returning it from `AppLogic::frame_tree`.
+[`examples/common/wide_tab_bar_demo.rs`](../examples/common/wide_tab_bar_demo.rs)
+is the reference: it paints a `TabBar` and a `StatusBar` in `render`, and
+returns the same `TabBar` from `frame_tree`:
+
+```rust,ignore
+// Excerpt from examples/common/wide_tab_bar_demo.rs, which builds with
+// the rest of the examples; not compilable on its own.
+fn frame_tree(&self, _area: ()) -> FrameTree {
+    let mut tree = FrameTree::new();
+    tree.push(Self::id(), self.strip.get(), Box::new(self.bar()));
+    tree
+}
+
+fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+    match event {
+        UiEvent::KeyPressed {
+            key: quadraui::Key::Char('q'),
+            ..
+        } => Reaction::Exit,
+        UiEvent::TabBar(_, TabBarEvent::TabActivated { index }) if index < 2 => {
+            self.active = index;
+            Reaction::Redraw
+        }
+        _ => Reaction::Continue,
+    }
+}
+```
+
+`frame_tree` gets no backend, so the demo stores the rect it painted the
+bar at in a `Cell` during `render` and reads it back here, rather than
+re-deriving a rect that could drift from the painted one.
+
+The runner calls `frame_tree` once per incoming event, and the routing
+engine (`route_widget_event` in [`src/runtime.rs`](../src/runtime.rs))
+does the rest:
+
+- **Mouse down:** hit-tests the tree, moves keyboard focus to the hit
+  widget if it has a focus stop (click to focus), and delivers a
+  `RoutedEvent::Pointer` in widget-local coordinates, with the
+  `SubTarget` under the pointer.
+- **Mouse move:** delivers `Enter`/`Leave` to whichever widgets the
+  pointer entered or left, or every move to the widget holding a pointer
+  capture.
+- **Mouse up:** goes to the widget holding the capture.
+- **Keys:** go to the focused widget.
+- **Open modal:** while one is open, nothing is routed to the frame's
+  widgets.
+
+Each widget's `State` lives in the runtime's `WidgetStateStore`, keyed by
+`WidgetId`, so it survives the descriptor being rebuilt every frame. A
+widget whose id drops out of the tree loses its state; if it comes back
+it starts from `State::default()`. Whatever `handle` returns as
+`Handled::Event` reaches the app's own `handle` as the `UiEvent` its
+`WidgetAction` produces. The app applies it to its model, and the next
+frame's descriptor shows the result.
+
+Tab and Shift+Tab cycle a `frame_tree` widget's focus stops only once the
+widget's id also appears in `AppLogic::extra_tab_stops`; see that
+method's documentation in [`src/runner.rs`](../src/runner.rs).
 
 ---
 
-## 6. Optional: one full-feature primitive end-to-end
+## 4. Popups
 
-If you want one example that shows **every** concept (layout,
-hit-test, scroll, per-item measurement, rendering options, tests),
-read [`quadraui/src/primitives/list.rs`](../src/primitives/list.rs)
-end-to-end. ~300 lines. Covers the full shape a mature primitive
-takes.
+A widget that opens something above the rest of the frame (a dropdown, a
+calendar) sets `Interactive::OPENS_POPUPS` and answers
+`Interactive::popups` from what it already knows, usually a descriptor
+field the app sets, such as `ComboBox::open`. The runtime keeps no popup
+state of its own:
+
+- `draw_dyn` queues each open popup, and the runner paints the queue
+  above the whole frame;
+- an event over a popup reaches its owner as `RoutedEvent::PopupEvent`,
+  resolved against the popup's own content;
+- a press outside the popup and its owner, or Escape, reaches the owner
+  as `RoutedEvent::PopupDismissed`, and the owner emits the event that
+  makes the app clear the field.
+
+Read [`src/popup.rs`](../src/popup.rs)'s module documentation, then
+`ComboBox`'s `popups` and `handle` in
+[`src/primitives/combo_box.rs`](../src/primitives/combo_box.rs).
+
+---
+
+## 5. Testing it
+
+`TuiDriver` ([`src/tui/testing.rs`](../src/tui/testing.rs)) runs a real
+`AppLogic` through the same `event → routing → handle → render` path the
+terminal runner uses, against an in-memory terminal.
+[`tests/tui_example_driver.rs`](../tests/tui_example_driver.rs) drives
+the demo above; search it for `wide_tab_bar_demo_`:
+
+- `wide_tab_bar_demo_clicking_a_tab_activates_it_through_the_routing_engine`
+  finds a tab's label on screen with `driver.find`, clicks it, and asserts
+  the status readout changed. No coordinate is hardcoded.
+- `wide_tab_bar_demo_right_then_enter_activates_the_next_tab` clicks to
+  focus, then presses Right and Enter. That exercises focus routing and
+  `TabBar`'s keyboard handling through the real engine.
+
+When a label alone cannot identify a target (every tab paints the same
+close glyph), `TuiDriver::tab_center` and `tab_close_center` look the
+part up by widget id in the frame's record of painted widgets.
+[`tests/widget_contract_combo_box.rs`](../tests/widget_contract_combo_box.rs)
+is the same kind of test for a widget with a popup.
+
+A widget's `handle` can also be unit-tested on its own with a small
+`EventHost` stand-in that records focus requests, redraws and emitted
+events; see the `MockHost` in the tests at the bottom of
+[`src/interactive.rs`](../src/interactive.rs). [`TESTING.md`](TESTING.md)
+covers the other tiers.
+
+---
+
+## 6. Writing your own widget
+
+A widget defined outside this crate works exactly like `StatusBar`:
+implement `Primitive` and `Interactive` (or `non_interactive!` for one
+with no behaviour), push it as a `Surface::Widget`, and return it from
+`frame_tree` if it takes input. It needs no change to any backend. The
+smallest complete example is the `Swatch` in the root `README.md`
+("Your own widget"); `src/primitive.rs`'s module documentation paints
+the same kind of widget onto a stand-in surface. The rules every widget
+follows, including the public-API lifecycle, are in
+[`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md).
 
 ---
 
 ## Suggested reading order
 
-Roughly 1–2 hours to genuinely understand:
+About an hour:
 
-1. [`quadraui/src/primitives/status_bar.rs`](../src/primitives/status_bar.rs)
-   — full file (the shortest complete example of a primitive with
-   clicks).
-2. `debug_toolbar_to_quadraui_status_bar` adapter +
-   `draw_status_bar` rasteriser + its click handler in `mouse.rs`
-   (see §2 above).
-3. [`quadraui/src/primitives/tooltip.rs`](../src/primitives/tooltip.rs)
-   + `hover_popup_to_quadraui_tooltip` adapter (see §1).
-4. D1–D7 in [`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`](decisions/BACKEND_TRAIT_PROPOSAL.md)
-   §9 — especially D6.
-5. `draw_find_replace` as the "escape hatch" case (see §4).
-
-## After the tour
-
-If you're porting a new backend (GTK / Win-GUI / macOS / web), start
-with one primitive. For each primitive in that backend:
-
-1. The **primitive** already exists — reuse verbatim.
-2. The **adapter** in `src/render.rs` already exists — reuse
-   verbatim.
-3. Write a **new rasteriser** `quadraui_{backend}::draw_{primitive}`
-   that takes `&Primitive + &Layout + &Theme + &mut dyn PaintSurface`
-   (the public paint-verb seam, issue #1101 — `src/paint_surface.rs`)
-   and paints it. Dimensions are in the backend's native unit (pixels for
-   GTK, not cells) — pass those through to the primitive's `layout()`
-   call via your measurement closure.
-4. Route clicks through the primitive's `hit_test(x, y)` method.
-
-**The adapter + primitive are platform-neutral and always shared.**
-Only the rasteriser + click-event plumbing are per-backend.
-
----
-
-## History
-
-- **Sessions 270–300:** Phase A primitives shipped (TreeView,
-  ListView, Form, Palette, StatusBar, TabBar, ActivityBar, Terminal,
-  TextDisplay).
-- **Sessions 320–327:** D6 contract resolved, all 9 existing
-  primitives gained `layout()` + `hit_test()`, 11 new Phase B.3
-  primitives landed (Tooltip, ContextMenu, Completions, Dialog,
-  Panel, Split, Modal, MenuBar, Toast, Spinner, ProgressBar).
-- **Session 328 (2026-04-23):** Phase B.4 chrome migration arc —
-  22 commits on develop migrating every major TUI overlay to a
-  quadraui primitive or shared hit-region data.
-  Session 328 entry for the per-migration commit list.
+1. [`examples/hello.rs`](../examples/hello.rs): a widget painted from app
+   state.
+2. [`src/primitives/status_bar.rs`](../src/primitives/status_bar.rs):
+   the `Primitive`, `Interactive` and `WidgetAction` impls (§1).
+3. `draw_dyn` in [`src/backend.rs`](../src/backend.rs) (§2).
+4. [`examples/common/wide_tab_bar_demo.rs`](../examples/common/wide_tab_bar_demo.rs)
+   and its tests in
+   [`tests/tui_example_driver.rs`](../tests/tui_example_driver.rs)
+   (§3, §5).
+5. [`src/popup.rs`](../src/popup.rs) and
+   [`src/primitives/combo_box.rs`](../src/primitives/combo_box.rs) (§4).
+6. [`decisions/DECISIONS.md`](decisions/DECISIONS.md) for why the
+   contract is shaped this way.

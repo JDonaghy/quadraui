@@ -1,201 +1,397 @@
 # Primitive Authoring Rules
 
-Read this when adding or changing a primitive.
+Read this when adding or changing a widget.
 
-1. **Declarative description first.** Add the struct + `Layout` +
-   `hit_test` to `quadraui/src/primitives/<name>.rs`. Tests for layout
-   correctness go at the bottom of that file as inline tests; they must
-   not pull in any backend feature.
-2. **One source of truth for layout.** Both rasterisers AND tests must
-   call the primitive's `layout(...)` — never re-derive bounds inline.
-   Where a backend needs additional metrics (like TUI's `cell_quantum`),
-   they go on `LayoutMetrics` so the primitive can apply them.
-3. **Both backends, same shape.** Add the rasteriser to
-   `quadraui/src/tui/<name>.rs` AND `quadraui/src/gtk/<name>.rs`. Even
-   if the GTK consumer hasn't been written yet, add a stub rasteriser
-   so the primitive's contract is honoured on every backend it claims
-   to support.
-4. **Paint/click round-trip harness.** Every primitive that has clicks
-   must have a paint/click round-trip test in its TUI rasteriser
-   (`quadraui/src/tui/<name>.rs::tests`). The pattern: paint into a
-   `ratatui::Buffer`, find painted glyphs, hit_test those exact
-   coordinates, assert paint and click identify the same region.
-   Examples to copy: `tui::multi_section_view::tests`,
-   `tui::tree::tests`. The harness must catch the bug class it's
-   designed for — verify by temporarily mutating the rasteriser to
-   break the contract; the harness should fail. Restore + commit only
-   when both sides round-trip cleanly.
-5. **Public layout helper.** Each backend exposes a public layout
-   helper (e.g. `tui_msv_layout`, `tui_tree_layout`) so consumers can
-   drive hit-testing without re-deriving metrics. The rasteriser uses
-   this same helper internally — paint and consumer-driven hit_test
-   consume one source of truth.
-6. **Test state-derived paint geometry.** Whenever a painter computes
-   a position from primitive state — scrollbar thumb position from
-   `(scroll_offset, content_rows, viewport_rows)`, focus ring from
-   `has_focus`, badge offset from text length, animation phase from
-   a tick counter — write a test that paints at a known state and
-   asserts the painted indicator lands where the formula predicts.
-   The paint/click harness covers coordinate-system drift; this rule
-   covers paint-formula bugs (e.g. "thumb hardcoded at top of gutter
-   instead of computed from scroll_offset"). Verify empirically by
-   mutating the formula and observing the test fail. See *Coverage
-   taxonomy* under *Testing* for the full bug-class breakdown.
-7. **Draw it through `Primitive`, not a new `Backend` method.** A new
-   widget implements `quadraui::primitive::Primitive` (+ `A11yPrimitive`)
-   and reaches every backend through
-   `quadraui::backend::DrawsPrimitives::draw_primitive` — see
-   `quadraui/src/primitive.rs`'s module doc and
-   `quadraui/tests/primitive_public_api.rs` for a worked third-party
-   example. `Backend` is sealed, and `tests/backend_method_ratchet.rs`
-   freezes its trait-body method count at a baseline that may only
-   shrink (quadraui#2608): a PR that adds a `Backend::draw_<name>` /
-   `<name>_layout` pair for a *new* widget fails that test and is a
-   review reject — implement `Primitive` instead. The pre-#2608
-   `ListView`/`DataTable`/`TreeView`/`TreeTable` bespoke `Backend`
-   pairs are grandfathered (they predate the ratchet and every
-   existing caller already goes through them); that grandfathering is
-   not an invitation to add a fifth. See "Adding a widget" below for
-   the full checklist a new widget ships with.
+## What a widget is
 
-   **Which `<name>_layout` shape to pick (issue #506) — for the
-   grandfathered primitives above, which still carry bespoke `Backend`
-   pairs; a new `Primitive` impl has no `Backend::<name>_layout` to
-   choose a shape for, since `Primitive::layout` already is that
-   method:**
+A widget is one Rust type with one implementation that every backend paints:
 
-   | Primitive class | Convention | Examples |
-   |---|---|---|
-   | **Content-in-rect** — backend paints inline inside a caller-supplied `rect` and can compute the same geometry with no live paint context | **Paired**: `draw_<name>(rect, ..)` + `<name>_layout(&self, rect, ..)`, same signature shape, same resolver underneath. | `data_table_layout`, `tree_layout`, `form_layout`, `list_layout`, `board_layout`, `terminal_layout`, `editor_layout` |
-   | **Overlay-with-caller-anchor** — host computes anchor/viewport/measure itself and calls the *primitive's own* `.layout(...)` directly; the backend only paints at the resolved bounds | **Draw-takes-layout**: `draw_<name>(&self, thing, layout)`. No `Backend::<name>_layout` — there's nothing backend-specific left to compute. | `Tooltip`, `ContextMenu`, `Completions`, `RichTextPopup`, `Dialog`, `Float` |
-   | **Interactive chrome** — freestanding widget at its own screen rect | **Paired**, same as content-in-rect. (Draw-returns-layout-only, with no no-paint twin, is the same convention minus the accessor a host needs to hit-test without a frame in progress — add the twin rather than leaving a primitive as the odd one out.) | `chart_layout`, `toolbar_layout`, `sidebar_panel_layout`, `board_layout`, `diff_view_layout` |
+- a **descriptor** — the struct an app builds each frame (`Button`, `ListView`,
+  `TreeView`). It holds what the app owns: content, selection, open/closed,
+  scroll position, disabled.
+- **`Primitive`** (`quadraui::primitive`, plus its `A11yPrimitive` supertrait)
+  — the paint half. `layout()` resolves every geometry decision once into
+  `Self::Layout`; `paint()` draws that layout through `&mut dyn PaintSurface`
+  on GTK, macOS and Win; `paint_cells()` draws it through
+  `&mut dyn CellSurface` on TUI.
+- **`Interactive`** (`quadraui::interactive`) — the behaviour half.
+  `handle()` turns a `RoutedEvent` into a semantic `Action` (which becomes a
+  `UiEvent`), using the same `Self::Layout` the paint used. A widget with no
+  behaviour uses `non_interactive!(Type)`.
 
-   A `<name>_layout` gets a **default trait body** only when the
-   geometry is a *provably uniform* pure function of
-   `Backend::char_width()` / `Backend::line_height()` (and primitive
-   state) — i.e. every backend's own `draw_<name>` already resolves the
-   same two values into the same formula (`terminal_layout`,
-   `editor_layout`, `diff_view_layout`). "The same two values" can
-   include a small backend-shaped accessor of the same shape as
-   `char_width()`/`line_height()` when the *formula* is still uniform
-   but a scalar it depends on genuinely isn't — `terminal_layout` also
-   calls `Backend::terminal_scrollbar_default_width()` to reserve the
-   scrollbar gutter's default width before dividing by `char_width()`,
-   because every backend's real `draw_terminal` reserves that gutter
-   with a backend-specific fallback (1 cell on TUI, 8px on GTK/macOS/Win)
-   before iterating cells — skip that reservation and the default body's
-   `grid_cols` silently over-reports by the gutter's width whenever a
-   caller omits an explicit scrollbar width (issue #506 review fix; see
-   `docs/decisions/DECISIONS.md` D-007's "`terminal_layout`'s scrollbar gap" note). If a backend supplies its own
-   sizing constants that aren't derivable from those two accessors
-   (`BoardMeasure`'s per-backend column/card pixel sizes, `ListView`'s
-   scrollbar reservation), there is no default — every backend
-   implements it explicitly, same as `draw_<name>` itself. A default
-   body still needs a from-scratch, per-backend-verified justification
-   in `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` (quadraui#492) —
-   it is exempt from that check's "silently defaulted" failure only
-   because the reason is written down, not because a default exists.
-   See `quadraui/docs/decisions/DECISIONS.md` D-007 for the full audit, the
-   off-trait-fn resolutions, and why `Palette` did **not** get a
-   `palette_layout` method despite fitting the content-in-rect row
-   above (a latent paint/layout drift, not a design gap — D-007's
-   "Palette: deferred, not missed").
-8. **Public API changes are versioned by deprecation, not by
-   announcement.** See rule 8 in full below — it is the one rule whose
-   failure mode lands in *other repos*.
-9. **A new `PlatformServices` capability states its TUI story and ships
-   a driver test proving it.** See rule 9 in full below — it is the rule
-   the Electron-parity push (`GOAL.md`) will lean on hardest, since that
-   is where most of the new capabilities land.
+<!-- TODO(0.12 final pass): this paragraph states rule 7's final state; see the
+marker under the rule list. -->
+Backends know no widget. A pixel backend implements `PaintSurface` (fill,
+stroke, text runs and text lines, images, clip); TUI implements `CellSurface`
+(cells, borders, cursor, inline graphics). `Backend` itself carries frame,
+font, input and platform-service methods. A leaf widget lives in
+`quadraui/src/primitives/<name>.rs`; a composite assembled from other widgets
+(a dialog, a picker, an app shell) lives in `quadraui/src/compose/`.
+
+## The rules
+
+1. **Declarative description first.** The descriptor, its `Layout` type and
+   any `hit_test` on that layout go in `primitives/<name>.rs`. Layout tests go
+   at the bottom of that file and must not need a backend feature.
+2. **One source of truth for layout.** `Primitive::layout` is the only place
+   geometry is computed. `paint`, `paint_cells`, `handle`, `sub_regions`,
+   `popups` and every test consume the `Layout` it returns. Backend metrics
+   reach it through `LayoutCtx` (`units()`, `line_height`, `char_width`,
+   `text_width()`, `style()`), never through a backend type. `layout()` is pure:
+   the same `ctx` and `rect` give the same layout, which is what lets a host
+   re-resolve it with `DrawsPrimitives::layout_primitive` to hit-test.
+3. **Every backend, one painter each.** Implement `paint` for the pixel
+   backends and `paint_cells` for TUI, both from the same `Layout`. Shared
+   painters live beside the descriptor (the built-in widgets use a
+   `native_surface_paint` module and a `cell_paint` module). Nothing is added
+   under `src/{tui,gtk,macos,win}`: if a painter needs something a surface
+   cannot do, add the verb to `PaintSurface` or `CellSurface` for every
+   backend. Leaving `paint_cells` as its default no-op means the widget does
+   not exist on TUI, which the *TUI is a first-class backend* rule in
+   `CLAUDE.md` forbids for anything user-facing.
+4. **A black-box paint/route test.** Every widget ships
+   `tests/widget_contract_<name>.rs`: a small `AppLogic` that paints the widget
+   as `Surface::Widget`, returns it from `frame_tree`, and drives it with
+   `TuiDriver` — click what is painted (found with `find()`, never a
+   hard-coded coordinate), press keys, and assert the `UiEvent` the app
+   receives and the screen that results. Verify the test catches its bug class
+   by breaking the painter or the `handle` arm it covers and watching it fail.
+   A widget whose look changes with hover or press also joins the
+   cross-backend `HoverBoard` (`tests/common/hover_board.rs`, driven by
+   `tests/hover_channel_{tui,gtk,macos,win}.rs`).
+5. **Behaviour lives in `Interactive`.** `handle` receives events already
+   resolved against the widget: `RoutedEvent::Pointer`/`Wheel` carry `local`
+   coordinates (origin at the widget's rect), and `Pointer` also carries the
+   `sub` part under the pointer. Declare tab order with `focus()` (`FocusSpec::None`, `Stop`, or
+   `Children` for per-row or per-cell stops). Name addressable parts with
+   `sub_regions()` (local rects, most specific first) and, where a driver or
+   structural test must see a part as a zone, `sub_region_name()`. Reach the
+   runtime only through `EventCx` (`request_focus`, `capture_pointer`,
+   `set_cursor`, `request_redraw`, `emit`). Report assistive-technology
+   actions with `a11y_actions()` and accept them as `RoutedEvent::Action`.
+6. **Test state-derived paint geometry.** Whenever a painter computes a
+   position from state — a scrollbar thumb from `(scroll_offset, content_rows,
+   viewport_rows)`, a focus ring from focus, a badge offset from text length,
+   an animation phase from a tick — write a test that paints at a known state
+   and asserts the indicator lands where the formula predicts. Rule 4 catches
+   paint and routing disagreeing; this catches the formula itself being wrong.
+   Verify by mutating the formula and watching the test fail.
+7. **Never a `Backend` method, never a per-backend file.** `Backend` is sealed
+   and in-tree only. `tests/backend_method_ratchet.rs` lets its method count
+   only shrink, and `tests/per_backend_file_ratchet.rs` lets the backend
+   directories' file and line counts only shrink. A diff that adds a
+   `draw_<name>`/`<name>_layout` method or a widget file under a backend
+   directory fails those tests and is a review reject. Implement `Primitive` +
+   `Interactive` instead; see "Writing a widget" below.
+8. **Public API changes are versioned by deprecation, not by announcement.**
+   See rule 8 in full below — it is the one rule whose failure lands in *other
+   repos*.
+9. **A new `PlatformServices` capability states its TUI story and ships a
+   driver test proving it.** See rule 9 in full below.
+
+<!-- TODO(0.12 final pass): after W9, confirm rule 7 holds without exception:
+`trait Backend` has no widget-named draw_*/ *_layout method left
+(backend_method_ratchet baseline 66, KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS
+empty or gone), and no widget file remains under src/{tui,gtk,macos,win}.
+Also confirm the built-in painter module names (`native_surface_paint`,
+`cell_paint`) cited in rule 3 are still the convention. -->
+
+## Paint state: hover, press and persistent state
+
+A widget reads everything that is not layout from the `PaintEnv` its paint
+receives:
+
+- `env.theme()` and `env.style()` — what to paint with.
+- `env.row_height` — this frame's resolved row pitch.
+- **Hover and press** — `env.is_hovered(&id)`, `env.is_pressed(&id)`,
+  `env.hovered_sub(&id)`, `env.pressed_sub(&id)`. The runtime tracks the
+  pointer against what was painted, so a widget adds no `hovered`/`pressed`
+  descriptor field and keeps no hover tracker. A composite that paints a child
+  under its own id hands the child `env.child_interaction(&parent, &child)`.
+- **Persistent state** — `env.widget_state_as::<MyState>()`: the widget's own
+  `Interactive::State`, which the runtime keeps by id in `WidgetStateStore`
+  between events. `None` until the widget has received an event; paint it as
+  `State::default()`.
+- `env.state` — the caller's per-call `PaintState`. Pass `&()` to paint with
+  the live pointer state; pass an `InteractionState` to pin hover/press (a
+  screenshot, a test).
+
+**Controlled mode.** State the app reads or sets — the selected row, whether a
+dropdown is open, a scroll offset the app restores — stays a descriptor field.
+The widget reports a change as an `Action`, and the app applies it to the
+descriptor it builds next frame. `Interactive::State` holds only what the app
+never needs to see: a drag in progress, a press origin, a typeahead buffer.
+
+## Popups
+
+A widget that opens a dropdown, calendar or submenu sets
+`const OPENS_POPUPS: bool = true` and answers `popups(&state, &layout)` with
+one `quadraui::Popup` per open popup, anchored in widget-local coordinates.
+Open is whatever that answer says: in controlled mode it reads a descriptor
+field. The runtime paints popups above the whole frame, hit-tests them before
+any widget, and delivers their events as `RoutedEvent::PopupEvent { popup,
+event }`; an outside press or Escape arrives as `RoutedEvent::PopupDismissed`.
+`ComboBox` and `DatePicker` are the references; `tests/widget_contract_popups.rs`
+is the black-box test.
+
+## Writing a widget
+
+A complete widget, as a crate outside quadraui writes it (needs the `tui`
+feature). Built-in widgets have the same shape with `crate::` paths:
+
+```rust
+use quadraui::tui::testing::TuiDriver;
+use quadraui::{
+    A11yInfo, A11yPrimitive, AppLogic, Backend, CellSurface, CellSurfaceStyle, EventCx, FocusSpec,
+    FrameTree, Handled, Interactive, Key, KeyEvent, LayoutCtx, MouseButton, NamedKey, PaintEnv,
+    PaintSurface, PointerKind, Primitive, Reaction, Rect, RoutedEvent, ScreenLayout, Surface,
+    UiEvent, WidgetAction, WidgetId,
+};
+
+/// A two-state chip. Controlled: the app owns `on` and flips it when the
+/// chip reports `UiEvent::SwitchToggled`.
+#[derive(Clone)]
+pub struct Chip {
+    pub id: WidgetId,
+    pub label: String,
+    pub on: bool,
+}
+
+/// Everything `paint`, `paint_cells` and `handle` need, resolved once.
+pub struct ChipLayout {
+    pub bounds: Rect,
+}
+
+pub enum ChipAction {
+    Toggled(bool),
+}
+
+impl WidgetAction for ChipAction {
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        match self {
+            ChipAction::Toggled(value) => UiEvent::SwitchToggled { widget: id, value },
+        }
+    }
+}
+
+impl A11yPrimitive for Chip {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+impl Primitive for Chip {
+    type Layout = ChipLayout;
+    type Event = ();
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> ChipLayout {
+        ChipLayout { bounds: rect }
+    }
+
+    // GTK, macOS, Win: one painter against the PaintSurface verbs.
+    fn paint(&self, layout: &ChipLayout, surface: &mut dyn PaintSurface, env: &PaintEnv) {
+        let theme = env.theme();
+        let bg = if self.on {
+            theme.selected_bg
+        } else if env.is_hovered(&self.id) {
+            theme.header_bg
+        } else {
+            theme.surface_bg
+        };
+        surface.surface_fill_rect(layout.bounds, bg);
+        surface.surface_draw_text_run(layout.bounds, &self.label, theme.foreground);
+    }
+
+    // TUI: the cell-grid painter.
+    fn paint_cells(&self, layout: &ChipLayout, cells: &mut dyn CellSurface, env: &PaintEnv) {
+        let theme = env.theme();
+        let style = CellSurfaceStyle {
+            fg: Some(theme.foreground),
+            bg: Some(theme.surface_bg),
+            reverse: env.is_hovered(&self.id),
+            ..Default::default()
+        };
+        let b = layout.bounds;
+        let mark = if self.on { "[x]" } else { "[ ]" };
+        cells.fill(b, style);
+        let text = format!("{mark} {}", self.label);
+        cells.put_str_clipped(b.x as u16, b.y as u16, &text, b.width as u16, style);
+    }
+}
+
+impl Interactive for Chip {
+    type State = ();
+    type Action = ChipAction;
+
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::Stop
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        _layout: &ChipLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChipAction> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                ..
+            } => {
+                cx.request_focus(None);
+                Handled::Event(ChipAction::Toggled(!self.on))
+            }
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Enter) | Key::Char(' '),
+                ..
+            }) => Handled::Event(ChipAction::Toggled(!self.on)),
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+// ── The host side: paint it, route to it, test it ──────────────────────
+
+const AREA: Rect = Rect::new(0.0, 0.0, 12.0, 1.0);
+
+struct App {
+    chip: Chip,
+}
+
+impl AppLogic for App {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect: AREA,
+            widget: Box::new(self.chip.clone()),
+        });
+        frame.draw(backend);
+    }
+
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.chip.id, AREA, Box::new(self.chip.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::SwitchToggled { widget, value } = event {
+            if widget == self.chip.id {
+                self.chip.on = value;
+            }
+        }
+        Reaction::Continue
+    }
+}
+
+#[test]
+fn clicking_the_chip_toggles_it() {
+    let chip = Chip {
+        id: WidgetId::new("wrap"),
+        label: "Wrap".into(),
+        on: false,
+    };
+    let mut driver = TuiDriver::new(App { chip }, 20, 2);
+    assert!(driver.screen_contains("[ ] Wrap"), "{}", driver.screen());
+
+    let (x, y) = driver.find("Wrap").unwrap();
+    driver.click(x, y);
+    assert!(driver.screen_contains("[x] Wrap"), "{}", driver.screen());
+}
+```
+
+`tests/primitive_public_api.rs` holds the same proof for a paint-only
+`Primitive` drawn with `DrawsPrimitives::draw_primitive`, and
+`tests/widget_contract_button.rs` is the shortest built-in example.
+
+## How a host paints, routes and tests a widget
+
+- **Paint.** Push `Surface::Widget { rect, widget: Box::new(w) }` onto a
+  `ScreenLayout` and call `draw(backend)`, or call
+  `backend.draw_dyn(rect, &w, &())` directly. Both resolve the layout with
+  this backend's metrics, clip to `rect` (widened by `Primitive::paint_bleed`
+  for a shadow or edge stroke), and call `paint` or `paint_cells`. A widget
+  the platform presents itself (the macOS menu bar) answers
+  `Primitive::native_presentation` and is not painted. `draw_primitive` paints
+  a bare `Primitive` with no `Interactive` impl; it records nothing for
+  routing.
+- **Route.** Return the same widgets from `AppLogic::frame_tree` (or derive
+  the tree with `ScreenLayout::into_frame_tree`). The runtime hit-tests the
+  tree, moves focus, captures the pointer, and calls `handle`; the resulting
+  `UiEvent` reaches `AppLogic::handle`. A click focuses a widget that has an
+  `Interactive::focus` stop. Tab and Shift+Tab cycle only through the
+  widgets whose ids and rects `AppLogic::extra_tab_stops` returns; while it
+  returns nothing, Tab reaches `AppLogic::handle` unclaimed.
+- **Observe.** Every identified widget painted through `draw_dyn` is recorded
+  for the frame: `primitive::painted_hit(x, y)` answers which widget and
+  sub-part is under a point, and `primitive::painted_sub_center` finds a
+  sub-part to click. A widget's `paint_zone` and named `sub_region_name`
+  parts appear as zones in `testing::FrameInventory`, which structural tests
+  assert on.
+- **Test.** `TuiDriver` runs on any host; `GtkDriver`, `MacDriver` and
+  `WinDriver` drive the same `AppLogic` on their backends. See rule 4.
 
 ## Adding a widget — the short checklist
 
-Rule 7 above is the "why" and the one hard constraint (no new `Backend`
-method). This is the "what ships in the PR", in order:
+Rule 7 is the hard constraint (no `Backend` method, no backend file). This is
+what ships in the PR:
 
-1. **`Primitive` impl.** `layout()` resolves every geometry decision up
-   front into a `Self::Layout` that bakes in the absolute area, per
-   rule 1's "declarative description first"; `paint()` issues the
-   drawing calls through `&mut dyn PaintSurface`.
-2. **`A11yPrimitive` impl.** `Primitive` requires it — report the
-   widget's accessibility info through the same `a11y` machinery every
-   built-in primitive uses, not a parallel opt-in.
-3. **TUI `paint_cells` override.** `PaintSurface` has no TUI
-   implementation today (`Backend::paint_surface` answers `None` on
-   `TuiBackend`), so `draw_primitive`'s default `paint()` path never
-   reaches a terminal. Override `Primitive::paint_cells` to paint into
-   the `ratatui::buffer::Buffer` the `CellSurface` `Backend::cell_surface`
-   hands back exposes via `CellSurface::ratatui_buffer` —
-   see `quadraui/tests/primitive_public_api.rs`'s `CellSwatch` for the
-   worked example. Skipping this is a *Cross-backend portability
-   commitment* violation ("TUI is a first-class backend") the same way
-   a missing `Backend::draw_<name>` used to be.
-4. **`Surface`/`FrameZone` variant**, if the widget is composed into
-   top-level screens alongside other primitives (most are) — until a
-   type-erased `Surface::Primitive(Box<dyn Primitive>)` variant exists,
-   this is a per-widget variant the same shape as "One primitive, one
-   canonical paint path" below asks for `Backend`-based primitives.
-5. **Gallery entry** in `quadraui-gallery` demonstrating the widget
-   painted through every backend it claims to support.
-6. **Tests**: layout tests on the descriptor (rule 1), a paint/click
-   round-trip test on the TUI `paint_cells` path (rule 4's harness
-   still applies — it's keyed on "has clicks", not on which trait
-   method paints), and state-derived paint geometry tests (rule 6)
-   where the widget has any.
-7. **Changelog fragment** — `changelog.d/<issue>.added.md` per
-   `changelog.d/README.md`'s format.
+1. **Descriptor + `Primitive` impl** in `primitives/<name>.rs` (or
+   `compose/` for a composite): `id()`, `layout()`, `paint()`,
+   `paint_cells()`, plus `measure()` if a container must size it to content
+   and `paint_zone()` if structural tests must see it as a zone.
+2. **`A11yPrimitive` impl** — report the widget through the same `a11y`
+   machinery every built-in widget uses.
+3. **`Interactive` impl**, or `non_interactive!(Name)` for a widget with no
+   behaviour.
+4. **No `Surface`/`FrameZone` variant.** The widget reaches the frame as
+   `Surface::Widget`.
+5. **A `widget_kinds!` entry** in `src/widget_kinds.rs` if Python or Node apps
+   build the widget, so the binding layer can decode it.
+6. **Gallery entry** in `quadraui-gallery` showing the widget on every
+   backend.
+7. **Tests:** layout tests on the descriptor (rule 1), the black-box contract
+   test (rule 4), and state-derived geometry tests (rule 6) where the widget
+   has any.
+8. **Changelog fragment** — `changelog.d/<issue>.added.md` per
+   `changelog.d/README.md`.
+
+<!-- TODO(0.12 final pass): after W8, confirm what a binding-exposed widget
+needs besides its `widget_kinds!` entry (wire_schema entry? regenerated
+.pyi/.d.ts via scripts/check_wire_types.sh?) and list it in step 5. -->
 
 ## Rule 8 — public-API lifecycle
 
-`quadraui` is publishable (`publish = false` was dropped in `quadraui#797`,
-`v0.1.0` was published to crates.io on 2026-10-07; D-019 states what a
-`0.x` release may change). Both in-house consumers still pin a git
-*revision* rather than a published version, so neither floats on `develop`'s
-tip. `coord-tui` — `JDonaghy/coord-tui`, a
-standalone repo since `claude-coordinator#2899` (2026-08-29) — pinned
-first, via `claude-coordinator#1973`. `vimcode` followed via
-`vimcode#691`, replacing its old path dependency with a git+rev pin the
-same shape as coord-tui's. A breaking change on `develop` reaches
-either consumer only when someone bumps its pin, in a reviewable diff
-that's the natural place to carry the migration — the urgency framing
-of "this breaks two repos the moment it merges" no longer applies. The
-deprecation-shim discipline below still matters, though: it's what
-keeps that eventual pin bump cheap. And pinning trades floating for a
-different hazard, **pin lag** — a pin can sit stale indefinitely with
-nothing forcing it to move; vimcode's was 44 commits behind quadraui's
-`develop` tip as of 2026-09-04 (`quadraui#782`). quadraui's CI does
-carry a `downstream` compile-truth job (#528) that overrides both pins
-to check every PR's quadraui against both consumers before merge, but
-its coord-tui leg is currently skipped for lack of a read token on that
-repo, so coord-tui breakage will *not* show up here. See the
-*Downstream consumers* section of `CLAUDE.md` for the declarations, the
-token, and the #476 post-mortem.
+`quadraui` is published on crates.io; D-019 in `docs/decisions/DECISIONS.md`
+states what a `0.x` release may change. Consumers and how each declares its
+dependency are listed in `CLAUDE.md`'s *Downstream consumers* section, along
+with the `downstream` CI job that compiles both against every PR.
 
-**What is breaking here vs. what isn't.** Consumers implement `ShellApp`
-and `AppLogic` — never `Backend`. So:
+**What is breaking here vs. what isn't.** Consumers implement `ShellApp`,
+`AppLogic`, `Primitive` and `Interactive` — never `Backend`. So:
 
 | Change | Breaks consumers? |
 |---|---|
-| New `Backend` method, no default (rule 7's intentional compile error) | **No** — in-tree backends only. Keep doing this. |
-| New required method on `ShellApp` / `AppLogic` | **Yes** — give it a default impl. |
+| New `Backend` method | **No** (in-tree only) — but never for a widget (rule 7). A platform capability only. |
+| New required method on `ShellApp` / `AppLogic` / `Primitive` / `Interactive` | **Yes** — give it a default impl. |
 | New field on a public struct a consumer constructs | **Yes** unless the struct is `#[non_exhaustive]` + built via `Default`/builder. |
 | New variant on a public enum a consumer matches | **Yes** unless the enum is `#[non_exhaustive]`. |
 | Rename / removal of any `pub` item with a consumer hit | **Yes.** |
 
-**`Backend` is `pub` but sealed — this is enforced, not just written down
-(quadraui#800).** Before this, `Backend` was a `pub` trait with 100+
-required methods and this table's "in-tree backends only" claim was
-prose an outsider had no way to verify short of trying it and getting
-burned by the next release. `Backend: sealed::Sealed` in `src/backend.rs`
-now makes that literally true: `sealed` is a `pub(crate)` module, so its
-`Sealed` trait can't be named from outside this crate, and `Backend`
-cannot be implemented downstream — see the "Sealed" section of
-`Backend`'s own rustdoc (including a `compile_fail` doctest proving an
-out-of-crate `impl Backend` is rejected) and `BACKEND.md`'s framing of
-"contribute a fifth in-tree backend" as the supported path for a target
-none of the four cover. Every one of the four in-tree backends (plus the
-in-tree `RecordingBackend`/`MockBackend` test doubles) implements
-`sealed::Sealed` alongside `Backend` — do the same for any new backend.
+**`Backend` is `pub` but sealed.** `Backend: sealed::Sealed` in
+`src/backend.rs`, and `sealed` is a `pub(crate)` module, so `Backend` cannot be
+implemented outside this crate — `Backend`'s rustdoc carries a `compile_fail`
+doctest proving it. `BACKEND.md` describes contributing a new in-tree backend
+as the supported path for a target the four do not cover. Every in-tree backend
+and test double (`RecordingBackend`, `MockBackend`) implements `sealed::Sealed`
+alongside `Backend`; do the same for a new one.
 
 **Measure before you cut.** Both consumers sit beside this checkout:
 
@@ -203,16 +399,15 @@ in-tree `RecordingBackend`/`MockBackend` test doubles) implements
 grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src
 ```
 
-Zero hits in both plus no in-tree use ⇒ remove it outright; that is what
-a dead-API pass is for. **Paste the grep output into the PR body** — the
-claim is cheap to assert and cheap to verify, so verify it. Note that
-`vimcode` is easy to forget: #476's commit message named coord-tui as
-"the only known" consumer and broke vimcode too.
+Zero hits in both plus no in-tree use ⇒ remove it outright. **Paste the grep
+output into the PR body.** Grep both: forgetting `vimcode` is the usual way a
+"safe" removal breaks a consumer.
 
 **Deprecation shims, in ascending cost.** All of these keep a consumer
-compiling, with a warning that names the fix:
+compiling, with a warning that names the fix. (Shapes only — the `/* … */`
+bodies are elided.)
 
-```rust
+```rust,ignore
 // Rename a type — the whole cost of a non-breaking rename.
 pub struct CardBadge { /* … */ }
 #[deprecated(since = "0.0.2", note = "renamed to `CardBadge`")]
@@ -246,387 +441,132 @@ pub fn with_machine(self, _machine: impl Into<String>) -> Self { self }
 - **PR 2** — delete the shims, once those migrations have merged.
   Reference them by number.
 
-**Both PRs get a `changelog.d/<issue>.<kind>.md` fragment** (repo root —
-see `changelog.d/README.md` for the format and why fragments, not a direct
-`CHANGELOG.md` edit): PR 1 adds a `deprecated`-kind fragment naming the old
-item, its replacement, and the PR-2 tracking issue; PR 2 adds a
-`removed`-kind fragment with that same wording. `scripts/release.py
-prepare` assembles both into `CHANGELOG.md` at release time — PR 1's under
-`### Deprecated`, PR 2's under `### Removed` — so a reader of the released
-`CHANGELOG.md` can still follow a deprecation from introduction to removal
-without pulling up either PR.
+**Both PRs get a `changelog.d/<issue>.<kind>.md` fragment** (repo root — see
+`changelog.d/README.md`): PR 1 a `deprecated` fragment naming the old item, its
+replacement and the PR-2 tracking issue; PR 2 a `removed` fragment with the same
+wording. `scripts/release.py prepare` assembles them into `CHANGELOG.md` at
+release time, so a reader can follow a deprecation from introduction to
+removal without opening either PR.
 
-**One breaking change per PR.** #476 removed a type, renamed a variant,
-deleted two struct fields and gutted a keymap in a single commit, so the
-consumer's migration was all-or-nothing with no partially-compiling
-state to bisect from. Split them.
+**One breaking change per PR.** A consumer migrating a batch of unrelated
+removals has no partially-compiling state to bisect from. Split them.
 
 **Every PR touching a `pub` item carries a `## Downstream impact`
 section** naming each consumer file that must move, or stating "no
-consumer hits" with the grep. A public-API PR without one should be sent
-back at review.
+consumer hits" with the grep. A public-API PR without one is sent back at
+review.
 
-## Rule 9 — `PlatformServices` honesty (issue #949)
+## Rule 9 — `PlatformServices` honesty
 
-`Backend`'s defaulted (rule-7-adjacent) methods are policed mechanically
-by `tests/conformance/caps.rs`'s `CAP_CONTRACTS` / `backends_declare_only_what_they_override`:
-declare a `BackendCaps` field and the matching override must exist, in
-both directions. `PlatformServices` had no equivalent — every one of its
-methods was on the honour system — and that gap produced a real,
-shipped bug: `TuiPlatformServices::open_url` was
-`fn open_url(&self, _url: &str) {}`, returning `()` with **no**
-`BackendCaps` entry, so an app calling it on TUI had no way to learn it
-did nothing. `GtkPlatformServices::send_notification` is also `{}`, but
-`BackendCaps::notifications` is honestly `false` there — same empty
-body, but a caller can check first. The difference between those two is
-the entire point of this rule.
-
-**The mechanism.** `tests/conformance/caps.rs` now also carries
-`PLATFORM_SERVICE_CONTRACTS` — one entry per `PlatformServices` method,
-parsed from `src/backend.rs` the same source-parsing way
-`defaulted_trait_methods()` reads `Backend`. Every method needs a
-`ServiceHonesty`:
+A platform capability that silently does nothing on some backend is a bug the
+app cannot detect. `tests/conformance/caps.rs` makes every capability state how
+absence is reported. `Backend`'s defaulted methods are policed by
+`CAP_CONTRACTS` / `backends_declare_only_what_they_override` (declare a
+`BackendCaps` field and the matching override must exist, in both
+directions). `PlatformServices` methods are policed by
+`PLATFORM_SERVICE_CONTRACTS`, parsed from `src/backend.rs`; every method needs
+a `ServiceHonesty`:
 
 | Honesty | When to use it | Example |
 |---|---|---|
 | `CapBacked(cap)` | The method's return type is already ambiguous (`Option<T>` — `None` on cancel vs. `None` on no-facility-at-all) and a `BackendCaps` field disambiguates it. | `show_message_dialog` / `native_dialogs` |
-| `ResultTwin(name)` | The method returns a bare `()` — there is nothing on the method itself that could report absence. Add a `<name>_result` twin returning `ServiceResult<...>` (D-009 seam 2, the same shape as `Clipboard::write_text`/`write_text_result`) and keep the old `()` method for source compatibility. | `open_url` / `open_url_result` |
+| `ResultTwin(name)` | The method returns a bare `()` — nothing on the method itself could report absence. Add a `<name>_result` twin returning `ServiceResult<...>` (the same shape as `Clipboard::write_text`/`write_text_result`) and keep the `()` method for source compatibility. | `open_url` / `open_url_result` |
 | `Delegates(trait)` | The method vends another trait object whose own methods carry their own honesty story. | `clipboard()` → `Clipboard` |
-| `AlwaysReal` | The method can never silently do nothing — a plain identifier, or a method whose return type is already fully typed and unambiguous with no cap needed. | `platform_name`, a `_result` twin itself |
+| `AlwaysReal` | The method can never silently do nothing — a plain identifier, or a fully typed, unambiguous return with no cap needed. | `platform_name`, a `_result` twin itself |
 
-Two tests make this a gate, not a suggestion:
+Two tests make this a gate:
 
-- `platform_service_contracts_cover_every_method` — a new
-  `PlatformServices` method with no `PLATFORM_SERVICE_CONTRACTS` entry
-  fails the build. No silent exemption by omission.
-- `every_bare_unit_service_method_has_a_typed_honesty_story` — a method
-  that returns bare `()` **must** be `CapBacked` or `ResultTwin`.
-  Declaring `AlwaysReal` or `Delegates` for a `()`-returning method is
-  exactly the `open_url` bug this rule exists to catch, reintroduced.
+- `platform_service_contracts_cover_every_method` — a new `PlatformServices`
+  method with no `PLATFORM_SERVICE_CONTRACTS` entry fails the build.
+- `every_bare_unit_service_method_has_a_typed_honesty_story` — a method that
+  returns bare `()` **must** be `CapBacked` or `ResultTwin`.
 
-**What this means when you add a capability.** Every new
-`PlatformServices` method (or new capability *family* — see
-`CLAUDE.md`'s Electron-parity scope) needs, in the same PR:
+**What this means when you add a capability.** Every new `PlatformServices`
+method (or new capability *family*) needs, in the same PR:
 
 1. **A `PLATFORM_SERVICE_CONTRACTS` entry** stating its honesty story —
-   pick `ResultTwin` for a fire-and-forget action, `CapBacked` for
-   something whose success/failure is otherwise ambiguous, or (per the
-   issue's guidance for a whole new capability *family* — tray, window
-   control, etc.) prefer vending `Option<&mut dyn SubService>` so
-   absence is structural and there is no cap flag to keep in sync at
-   all.
-2. **An explicit TUI story.** TUI has no browser, no OS notification
-   centre, no system tray — most new platform capabilities degrade to
-   "unsupported" there, and that degrade must be a documented, typed
-   answer (`Err(BackendError::Unsupported)` from a `_result` method, or
-   `None` gated by a `false` `BackendCaps` field), never a silent no-op.
+   `ResultTwin` for a fire-and-forget action, `CapBacked` for something whose
+   success or failure is otherwise ambiguous, or, for a whole new family (tray,
+   window control, …), vend `Option<&mut dyn SubService>` so absence is
+   structural and there is no cap flag to keep in sync.
+2. **An explicit TUI story.** Most platform capabilities have no terminal
+   equivalent, and that degrade must be a typed answer
+   (`Err(BackendError::Unsupported)` from a `_result` method, or `None` gated
+   by a `false` `BackendCaps` field), never a silent no-op.
 3. **A `tui_*` driver test asserting the degrade** — build the example's
    `AppLogic`, drive it through `TuiDriver`, and assert the typed
-   "unsupported" answer actually surfaces to the app. `examples/tui_file_dialog.rs`
-   + its driver tests in `tests/tui_example_driver.rs`
-   (`file_dialog_demo_open_reports_unsupported_on_tui` and siblings) are
-   the template: the demo exercises the exact contract ("always reports
-   unsupported"), and the driver test proves it end to end rather than
-   trusting the doc comment.
+   "unsupported" answer reaches the app. `examples/tui_platform_seams.rs` and
+   its `platform_seams_demo_*_reports_unsupported_on_tui` tests in
+   `tests/tui_example_driver.rs` are the template.
 
-## Coordinate frames for `*_layout` methods (issue #505)
+## Coordinate frames
 
-Every `Backend::<name>_layout` method — and its `draw_<name>` twin, where
-one returns hit-region data — returns its `hit_regions` / `bounds` in
-one of exactly two frames, and its doc comment states which one:
+The contract uses two frames, each fixed by the trait:
 
-- **LOCAL** — relative to the `rect` passed in; `(0, 0)` is `rect`'s
-  top-left corner. The caller subtracts `rect.x` / `rect.y` from an
-  absolute click coordinate before calling `hit_test`.
-- **ABSOLUTE** — shifted by `rect.x` / `rect.y` (target-surface
-  coordinates). The caller compares raw click coordinates against the
-  returned bounds with no further adjustment.
+- **`Self::Layout` is absolute.** `layout()` receives the widget's rect in the
+  surface's own coordinates and bakes that origin in, because `paint()` gets
+  no rect of its own. A `Layout`'s `hit_test`, if it has one, takes absolute
+  points.
+- **Everything `Interactive` exchanges with the runtime is widget-local**
+  (origin at the widget's rect): `RoutedEvent::Pointer`/`Wheel`'s `local`,
+  `sub_regions()` rects, and `Popup` anchors. The runtime translates; a widget
+  converts between the two only by adding or subtracting its rect's origin.
 
-**Which one a given primitive uses is a design choice made once, not a
-per-backend one.** In practice: primitives a parent composer paints
-*inline* and already tracks the origin for (`tree_layout`,
-`form_layout`, `data_table_layout`, `text_display_layout`,
-`status_bar_layout`, `activity_bar_layout`) are LOCAL. Primitives
-painted as a freestanding widget at their own screen rect, where the
-caller has no other reason to track that rect, are ABSOLUTE
-(`tab_bar_layout`, `menu_bar_layout`, `split_layout`,
-`split_tree_layout`, `toast_stack_layout`,
-`pipeline_view_layout`, `progress_layout`, `spinner_layout`,
-`command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`,
-`chart_layout`, `minimap_layout`, `msv_layout`, `text_input_layout`,
-`command_line_layout`).
-See `quadraui/docs/decisions/DECISIONS.md` D-005 for the full audit and why the
-split isn't collapsed to one frame everywhere.
+A cell-grid layout quantises its rect to whole cells before baking it in, so
+hit-testing compares against the cells actually painted, not a fractional rect
+a container handed down. Write a non-zero-origin test (`rect.x != 0` or
+`rect.y != 0`) for any widget that converts between the frames: at the origin
+a missing translation is invisible.
 
-**The rule this enforces is not "always LOCAL" — `docs/LESSONS.md`'s
-"Layout helpers must return coords in the same frame across backends"
-predates this audit and reads that way; treat this section as its
-successor.** The rule is: (1) the method's doc comment states its frame
-explicitly — **LOCAL** or **ABSOLUTE**, in those words, so grep finds
-every one — and (2) every backend implementation actually agrees with
-that statement and with its TUI/GTK/macOS siblings. A `*_layout` doc
-comment with neither word is an #505 regression.
+## One primitive, one canonical paint path
 
-**Every `*_layout` method needs a non-zero-origin regression test** on
-every backend it ships on (TUI + GTK always; macOS per #483
-availability) — `rect.x != 0` or `rect.y != 0`. `area = (0, 0)` is
-exactly the case where a LOCAL/ABSOLUTE mixup is invisible (adding or
-skipping `rect.x` is a no-op when `rect.x == 0`), which is why the
-historical `mac_tree_layout` bug (`docs/LESSONS.md`) shipped past
-tests that all used the origin.
+A widget has exactly one paint path: its own `paint`/`paint_cells`, reached
+through `draw_dyn` (directly or via `Surface::Widget`). Do not add a second
+route to the same pixels — a helper that paints a widget "the way it looks"
+without going through its `Primitive` impl, or a backend-specific shortcut.
+Two paths drift, and the compiler cannot see across them.
 
-### Converging on one convention, ABSOLUTE-only (issue #816)
+`ScreenLayout` + `Surface::Widget` is the path for a screen assembled from
+several widgets: it paints them in z-order and `into_frame_tree` routes to
+exactly what was painted. A direct `draw_dyn` call is right for a composite
+painting a child it owns, or a test painting one widget.
 
-The LOCAL/ABSOLUTE split above is the audited *current state*, not the
-target. quadraui#816 is converging every primitive onto: one `layout()`
-argument shape (`fn layout(&self, bounds: Rect, m: &Self::Measure) ->
-Self::Layout`, replacing the four in use today), one `hit_test()` shape
-(`fn hit_test(&self, p: Point) -> Self::Hit`, with a `Miss`/empty
-variant on every `Hit` — seven primitives have none today), and
-**ABSOLUTE coordinates everywhere** — once every primitive agrees, this
-table has nothing left to record and gets deleted.
+## Layout math lives in `primitives/`
 
-`quadraui/src/layout.rs` (new) is the shared infrastructure that
-per-primitive convergence PRs adopt one at a time:
+Everything that decides *what* to paint is shared code beside the descriptor:
+geometry constants, `status → glyph` and `status → colour` tables, which theme
+colour a hover/pressed/focused state resolves to, scroll-offset resolution
+(including keeping a selection visible), and reservations that hit-testing and
+paint must agree on (`needs_hscrollbar`-style). Pixel-layout helpers that need
+no native drawing handle go in `quadraui/src/primitives/layout_metrics.rs`;
+text widths come from `LayoutCtx::text_width` (or, in a shared helper that
+takes no `LayoutCtx`, `layout_metrics::TextMeasure`). A painter only issues
+`PaintSurface` or `CellSurface` calls against an already-resolved layout.
 
-- `Anchor` + `Side`/`ResolvedSide` — the "preferred side, flip on
-  overflow, pin to viewport edge as a last resort" resolution that
-  `Tooltip`, `Completions`, `ContextMenu`, and `RichTextPopup` each
-  reimplement today behind their own placement enum.
-- `visible_range_walk` + `VisibleItem` — the "visible items from a
-  scroll offset, clipping the last one to the remaining viewport"
-  walk that all 19 `Visible*{idx, bounds}` structs (`VisibleListItem`,
-  `VisibleTreeRow`, `VisibleTab`, ...) hand-roll today.
+**A fence is a debt, and it needs an owner.** If a file-overlap conflict blocks
+moving one piece of shared logic and you leave a duplicate in place:
 
-Landing `layout.rs` does not change any primitive's public API by
-itself — nothing in `primitives/` consumes it yet. Converting an
-existing primitive onto it (new `Visible*` alias, new placement type)
-is a rule-8 breaking change and lands as **its own PR per primitive**,
-with a `#[deprecated]` shim per the two-PR protocol above, so no
-consumer breaks in one commit — see #816 for the full split and its
-coordination with quadraui#785's Phase 2. Do not delete the LOCAL/
-ABSOLUTE table until every primitive listed in it has converged; a
-partially-converged table with rows removed early is worse than the
-current complete one.
+- name the issue that **unblocks** it, not just the issue that tracks it;
+- open a follow-up issue *at fence time* to remove the fence and link it in
+  the comment — a comment is not a work item;
+- state what the duplicate currently does differently, so the next reader can
+  tell a deliberate difference from drift.
 
-(Issue #1098 asked quadraui to finish this entire table's conversion in
-the same pass as an unrelated `Rect`-unit-contract fix. `docs/decisions/DECISIONS.md`
-D-016 declines that batching for the same one-primitive-per-PR reason
-stated above; the table above is unchanged by that decision and remains
-the tracker for each remaining conversion.)
-
-## One primitive, one canonical paint path (issue #456)
-
-`quadraui` has two ways to paint a primitive: `backend.draw_<name>(rect,
-&data)` directly, or `layout.push(Surface::<Name> { rect, .. })` +
-`layout.draw(backend)` via `quadraui::frame::ScreenLayout`. Nothing
-stops two backends of the same consumer app from picking different
-ones for the identical call site — and when they do, the two paint
-paths silently drift, because the compiler can't see across the split.
-That's exactly what happened in vimcode: the TUI palette painted via
-`b.draw_palette(...)`, the GTK palette via `Surface::Palette`, with
-every other line at both call sites identical (#456; contributed to
-vimcode#587).
-
-**`ScreenLayout` + `Surface` is the canonical path for a consumer
-assembling a top-level screen from multiple primitives** — it forces
-both backends through the same call site and its `zone_for` helper
-keeps the hit-map in lock-step with what was painted by construction
-(see `quadraui/src/frame.rs`'s module doc). `Backend::draw_<name>`
-stays public, non-deprecated, low-level API — `ScreenLayout::draw`
-calls it internally. As of #1099 every primitive with a `draw_*`
-method has a matching `Surface` variant, so this is no longer the
-*only* path for any primitive; `draw_*` stays directly reachable by
-design, for rasteriser tests and compose helpers that paint a single
-primitive outside a full-screen `ScreenLayout`. See
-`docs/decisions/DECISIONS.md` D-006 for the full audit.
-
-**Going forward:** when rule 7 above has you adding a `Backend::draw_<name>`
-method for a primitive that's composed into top-level screens (i.e. a
-consumer will paint it as one layer of a multi-primitive frame, not
-just as the sole content of its own pane), add its `Surface::<Name>` /
-`FrameZone::<Name>` variant and `ScreenLayout::zone_for` arm in the
-**same PR**. Skipping this is how the trait and `Surface` started drifting apart in
-the first place — 11 primitives had a trait method but no `Surface`
-variant as of the #456 audit (Board, DiffView, PipelineView, Toolbar,
-SidebarPanel, TextInput, Spinner, Progress, CommandCenter, DropOverlay,
-MessageList), grown to 14 by the #1099 audit (the same 11, plus Image,
-Minimap, SplitTree). **Issue #1099 closed that backlog**: every one of
-those 14 now has a `Surface`/`FrameZone` variant — see `frame.rs`'s
-module doc, "Closing the `Surface` coverage gap." This rule's job now
-really is just to stop the gap from reopening, not to describe a
-standing backlog.
-
-**When `Backend::draw_*` direct calls are still the right choice**, even
-for a primitive that does have a `Surface` variant: a rasteriser's own
-paint/click round-trip test (rule 4), a compose helper painting a
-primitive it fully owns, or any call site that has no need for the
-frame-level hit-map `ScreenLayout` produces. The rule is "assembling a
-multi-primitive screen goes through `Surface`," not "never call
-`Backend::draw_*` directly."
-
-## Shared pixel-layout math (#499)
-
-`gtk::tree::gtk_tree_layout` and `macos::tree::mac_tree_layout` used to
-be byte-identical apart from the function name and one comment — same
-magic constants (`line_height * 1.2` header pitch, `* 1.4` item pitch,
-`* 0.9` indent, `* 0.65` chevron glyph estimate), same body. The
-`MultiSectionView` body-measure match arms were the same story, and had
-already **drifted**: GTK measured real `MessageList` content height,
-macOS's copy returned `0.0` — a live macOS layout bug born of
-copy-paste, not a deliberate backend difference.
-
-**Rule: pixel-backend layout math that doesn't touch a native drawing
-handle belongs in `quadraui/src/primitives/layout_metrics.rs`, not in
-`gtk::<name>` / `macos::<name>` / `win::<name>`.** A function belongs
-there if it can be written as `(primitive, rect, line_height, ..) ->
-*Layout` / `*Measure` with no `cairo::Context`, `CGContextRef`,
-`pango::Layout`, `CTFont`, or `ID2D1RenderTarget` in its signature.
-Each backend's `<name>.rs` then keeps only:
-
-- a thin wrapper (`gtk_tree_layout`, `mac_tree_layout`, …) that calls
-  the shared fn — kept per-backend only so each rasteriser's public
-  layout-helper name matches rule 5 above, not because the body
-  differs;
-- the native paint code, which consumes the same `*Layout` /
-  `*Measure` the shared fn produced.
-
-**When a shared fn needs a real glyph width** (Form's per-item hit
-regions can't use a fixed-ratio estimate the way tree/MSV do), it takes
-`&dyn primitives::layout_metrics::TextMeasure` instead of a native font
-handle. Each backend supplies a private one-method adapter over its own
-live font/context — see `macos::form::CtFontMeasure` wrapping `CTFont` +
-`measure_text`. The shared fn never learns a native type exists.
-
-**Migrating a primitive's layout math is not the same PR as fixing a
-drift it exposes**, unless the drift *is* the primitive's whole reason
-for migrating (as MSV's `MessageList` fix was for #499) — see rule 8's
-"one breaking change per PR" discipline; the same "don't batch" logic
-applies to behavior changes uncovered mid-refactor. If sharing a
-function would change one backend's *current* output (see
-`layout_metrics::form_field_measure`'s doc on `FieldKind::TextArea` for
-a case where sharing was deliberately **not** done for this reason),
-leave that backend's existing behavior in place and note the gap in the
-shared fn's doc comment rather than silently changing it.
-
-**A file-overlap conflict on a fenced backend file (e.g. concurrent
-work on `gtk/backend.rs`) blocks that backend's migration, not the
-others.** Migrate every backend whose files are free; leave the
-blocked one's duplication in place with a comment pointing at the
-tracking issue, and land what's clean rather than waiting on the whole
-set. **Before using this escape hatch, read "A fence is a debt, and it
-needs an owner" below — it has already produced one shipped bug
-(#710).**
-
-## Primitive-first: a new primitive lands its layout shared, before any backend paints it (#481)
-
-The "Shared pixel-layout math" rule above tells you how to *migrate*
-duplication that already exists. This rule exists because migrating is
-not enough: **the lift rate has been lower than the copy rate.**
-
-### The measurement that produced this rule
-
-A function-level re-audit on 2026-09-03 (`develop` @ `7f00f73`) compared
-`gtk/` and `macos/` against the same measurement taken in July
-(`73172ff`) — contiguous byte-identical production runs of eight
-normalised lines or more:
-
-| | July `73172ff` | 2026-09-03 `7f00f73` |
-|---|---|---|
-| contiguous identical lines, gtk↔macos | 626 | **757** (+21%) |
-| whole functions identical | 113 | **219** |
-
-#498 and #499 **worked where they were applied** — `services.rs` 15→0,
-`backend.rs` 37→0, `tree.rs` 30→19, `multi_section_view.rs` 49→24, and
-every exhibit the July audit named is gone. That is roughly −90 lines.
-
-In the same window roughly **+220 lines of new duplication arrived**:
-`testing.rs` 0→87, `board.rs` 0→44, `diff_view.rs` 0→34,
-`activity_bar.rs` 0→24. macOS had no `board.rs`, `diff_view.rs` or
-`testing.rs` in July — each arrived as a copy of GTK's. The `Toolbar`
-button-measure formula now exists in **five** places and they agree by
-luck, not by construction.
-
-So the per-primitive lifts were correct and effective, and the number
-still went up, because nothing stopped the next primitive arriving as N
-copies.
-
-**Rule: a new primitive's layout, measurement and state-resolution land
-in `quadraui/src/primitives/` in the same PR that introduces it — before
-any backend paints it. A backend file may only add an executor.**
-
-An "executor" is code that takes a `*Layout` / `*Measure` the shared
-code produced and issues native drawing calls. If a backend file
-computes *what* to paint rather than *how* — which theme colour a
-hover/pressed/focused state resolves to, which glyph a status or badge
-maps to, where a row starts, whether a scrollbar is needed — that
-belongs in `primitives/`.
-
-Concretely, these all belong shared and none of them may be written a
-second time in a second backend:
-
-- `status → glyph` and `status → colour` tables (`pipeline_view`'s
-  status icons, `board`'s badges, `toast`'s severity background)
-- geometry constants (`*_BOARD_*_PX`, `TOAST_*`, and the ~40 others
-  currently duplicated with identical values across backends)
-- scroll-offset resolution, including keeping a selection visible
-- `needs_hscrollbar`-style reservations that hit-test and paint must
-  agree on
-
-### Porting a primitive to a new backend
-
-When you add backend N+1's copy of an existing primitive, you are not
-"porting" it — you are **splitting it**. Extract the shared half into
-`primitives/` first, reduce the existing backends to executors in that
-same PR, and then write the new backend's executor. Copying
-`gtk/<name>.rs` to `<newbackend>/<name>.rs` and editing the draw calls
-is how `board.rs`, `diff_view.rs` and `activity_bar.rs` became twins,
-and it is what a Windows or web backend will do to every remaining
-primitive unless this is enforced at review.
-
-### A fence is a debt, and it needs an owner
-
-The "Shared pixel-layout math" rule permits leaving a blocked backend's
-duplication in place behind a comment pointing at a tracking issue.
-**That escape hatch has already failed once.** `GtkBackend::form_layout`
-carried a comment reading *"fenced by concurrent #683 work … migrate
-this one once #683 lands. Tracking: #499."* #683 landed; nobody came
-back; GTK kept measuring `TextArea` as `row_h * visible_rows` while its
-own painter drew one row, so every row below a `TextArea` hit-tested to
-the `TextArea` (#710).
-
-If you fence a file:
-
-- name the issue that **unblocks** it, not just the issue that tracks
-  the migration — a reader needs to know what to watch for;
-- open a follow-up issue *at fence time* to remove the fence, and link
-  it in the comment. A comment is not a work item;
-- state what the duplication currently does differently, so the next
-  reader can tell a deliberate difference from drift.
-
-A fence whose blocker has closed is a bug waiting to be found, not
-technical debt being managed.
+A fence whose blocker has closed is a bug waiting to be found.
 
 ## Native-vs-painted menu convention
 
-`ContextMenu` has two display paths and apps pick by trigger, not by
-backend. The split is deliberate — it's what makes "feels native on
-Mac while staying portable" the default outcome.
+Apps pick a menu's display path by trigger, not by backend:
 
 | Trigger | Path | Why |
 |---|---|---|
-| `MouseDown { button: Right }` on a canvas / row / cell | `backend.show_context_menu(&menu, position)` | User-triggered system menu — gets the platform's fonts, accent colour, Dark Mode, VoiceOver, ⌘-shortcuts. macOS uses `NSMenu.popUpMenuPositioningItem` natively; TUI/GTK fall through to the painted overlay today (stash-and-paint default lands when a consumer asks). Activation arrives as `UiEvent::ContextMenuItemActivated(WidgetId)`; dismissal as `UiEvent::ContextMenuDismissed`. |
-| Left-click on a UI affordance that opens a menu-style dropdown (palette sub-menu, in-window action list) | `Backend::draw_context_menu` in the next render pass | App-controlled rendering, pixel-consistent across backends, positioned relative to a widget rather than the cursor. Use the `MenuSystem` compose helper. |
+| `MouseDown { button: Right }` on a canvas / row / cell | `compose::ContextMenuController::open` | Resolves the menu style: on macOS it shows a native `NSMenu` (`Backend::show_context_menu`), getting the platform's fonts, accent colour, Dark Mode, VoiceOver and ⌘-shortcuts; elsewhere it paints a `ContextMenu` and routes it. Activation arrives as `UiEvent::ContextMenuItemActivated(WidgetId)`, dismissal as `UiEvent::ContextMenuDismissed`. |
+| Left-click on an affordance that opens a dropdown (a combo box, a menu bar entry, a palette sub-menu) | The owning widget's `popups()` | App-controlled, pixel-consistent across backends, positioned relative to the widget rather than the cursor. The application menu bar is `AppMenu` (owned by `compose::MenuSystem`), which the macOS backend presents natively through `Primitive::native_presentation`. |
 
-## Primitive maturity levels
+## When a widget is shipped
 
-A primitive file in `primitives/` is not "shipped" until it has all
-three legs: (1) descriptor + layout + hit_test + layout tests, (2) TUI
-and GTK rasterisers with paint/click harnesses, (3) `Backend` trait
-methods. Primitives with only leg (1) are **descriptors** — their shape
-is real and tested, but consumers cannot adopt them yet because there's
-nothing to paint. As of 2026-05-03, all previously descriptor-only
-primitives have shipped with full rasteriser + Backend trait coverage.
-Don't delete descriptors — the layout + hit_test work is real and
-reusable. Do prioritise adding rasterisers for any descriptor that
-blocks a consumer's bespoke-paint elimination.
+A widget is shipped when it has the descriptor with layout tests, `Primitive`
+with both `paint` and `paint_cells`, `Interactive` (or `non_interactive!`),
+and its `tests/widget_contract_<name>.rs`. A descriptor without painters is a
+**descriptor** — its shape is real and tested, but apps cannot adopt it yet.
+Don't delete one; give it painters when an app needs it.

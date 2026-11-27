@@ -1,5 +1,11 @@
 # Consumer Patterns
 
+<!-- TODO(0.12 final pass): these recipes route clicks by hand through legacy
+Backend layout methods (`msv_layout`, `tree_layout`), which W6 (#2971 ports
+MultiSectionView) and W9 (#2981) remove. After W9, rewrite each recipe onto
+frame_tree routing or delete the doc, and drop its entry from
+docs/AGENT_REFERENCE.md. GUIDE.md, README.md and INSTALL.md no longer link here. -->
+
 Recipes for shaping common consumer integrations onto quadraui
 primitives. Each pattern lives next to a runnable example AND a
 consumer-state round-trip harness; new patterns are added here once

@@ -216,7 +216,7 @@ doesn't reflect yet), do the second paint **inline within the same
 
 ```rust
 .set_draw_func(move |_, cr, w, h| {
-    let do_paint = || { /* borrow engine, draw_editor */ };
+    let do_paint = || { /* borrow engine, paint the editor */ };
 
     do_paint();              // pass 1
     let measured = drain_measurements();
@@ -227,7 +227,7 @@ doesn't reflect yet), do the second paint **inline within the same
 });
 ```
 
-Cairo's pass-2 fill clears pass-1's pixels (because `draw_editor` paints
+Cairo's pass-2 fill clears pass-1's pixels (because the editor painter fills
 the background first), so the user sees only pass-2's output when GTK
 commits the frame. Converges in 2 passes if the algorithm is correct
 (pass 2's measurements match pass-2-applied state, no further change
