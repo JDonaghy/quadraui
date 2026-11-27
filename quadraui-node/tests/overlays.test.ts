@@ -372,7 +372,7 @@ function completionItems() {
   ];
 }
 
-test("showOverlay completions then clicking an item activates it", () => {
+test("showOverlay completions click selects and double-click activates", () => {
   const app = new QuiApp(40, 20);
   const received: unknown[] = [];
   app.setHandler((event: unknown) => received.push(event));
@@ -389,8 +389,16 @@ test("showOverlay completions then clicking an item activates it", () => {
   click(app, row, col);
 
   assert.deepEqual(received, [
-    { CompletionItemActivated: ["completions:editor", 1] },
+    { List: ["completions:editor", { SelectionChanged: { idx: 1 } }] },
   ]);
+  assert.ok(app.screenContains("filter"));
+
+  app.pushEvent({ DoubleClick: { position: { x: col, y: row } } });
+  app.run(1);
+
+  assert.deepEqual(received[received.length - 1], {
+    CompletionItemActivated: ["completions:editor", 1],
+  });
   assert.ok(!app.screenContains("filter"));
 });
 

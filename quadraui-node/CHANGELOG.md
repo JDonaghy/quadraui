@@ -101,6 +101,16 @@ fragment step for this package (that mechanism, and
 
 ### Changed
 
+- A `"completions"` overlay (`showOverlay("completions", ...)`) now routes
+  pointer input through core `Completions`' own event handling: a click
+  on a row reports `{ List: [id, { SelectionChanged: { idx: n } }] }` and
+  moves the highlight, and only a double-click reports
+  `{ CompletionItemActivated: [id, n] }` and closes the popup (a single
+  click used to activate). A press on the popup no longer moves focus to
+  it, so the editor underneath keeps receiving keys.
+- A wheel notch over an overflowing `"rich_text_popup"` overlay scrolls the
+  popup and reports `{ ScrollOffsetChanged: { widget: id, new_offset: n } }`
+  instead of reaching whatever is painted behind it.
 - `wire.d.ts` (#2979) is generated from a JSON Schema derived from the
   Rust wire types themselves, so every descriptor type is now named
   after its Rust type: the `Descriptor` suffix is gone (`ButtonDescriptor`

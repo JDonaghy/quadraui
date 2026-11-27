@@ -25,13 +25,13 @@ use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
-    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsHit,
-    CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
-    EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent,
+    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsLayout,
+    ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx,
+    EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent, ListViewEvent,
     MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
-    PointerShape, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RoutedEvent,
-    ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner,
-    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    PointerShape, Rect, RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis,
+    ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
+    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
     TreeTableNodeData, UiEvent, WidgetId,
 };
 
@@ -620,6 +620,56 @@ fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> b
         }
         _ => false,
     })
+}
+
+/// Whether `event` is a bare Escape press: the host's dismiss key for an
+/// imperative overlay, which the overlay widgets themselves leave unclaimed.
+fn is_escape(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            ..
+        }
+    )
+}
+
+/// The [`RoutedEvent`] an imperative overlay painted at `bounds` receives
+/// for `event`: a press, a double-click or a wheel notch landing inside
+/// it, in its own local space. `None` for anything else, which the
+/// overlay does not see.
+fn overlay_pointer_event(event: &UiEvent, bounds: Rect) -> Option<RoutedEvent> {
+    let local = |position: &Point| Point::new(position.x - bounds.x, position.y - bounds.y);
+    match event {
+        UiEvent::MouseDown {
+            button,
+            position,
+            modifiers,
+            ..
+        } if bounds.contains(*position) => Some(RoutedEvent::Pointer {
+            kind: PointerKind::Down(*button),
+            sub: None,
+            local: local(position),
+            mods: *modifiers,
+        }),
+        UiEvent::DoubleClick { position, .. } if bounds.contains(*position) => {
+            Some(RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                sub: None,
+                local: local(position),
+                mods: Modifiers::default(),
+            })
+        }
+        UiEvent::Scroll {
+            delta, position, ..
+        } if bounds.contains(*position) => Some(RoutedEvent::Wheel {
+            dx: delta.x,
+            dy: delta.y,
+            local: local(position),
+            mods: Modifiers::default(),
+        }),
+        _ => None,
+    }
 }
 
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
@@ -1570,6 +1620,13 @@ impl InteractionEngine {
             .take_while(|o| o.rank() <= rank)
             .count();
         self.overlays.insert(at, overlay);
+    }
+
+    /// Applies `f` to every open overlay: how the host writes a change an
+    /// imperative overlay's widget reported (a moved highlight, a scrolled
+    /// body) back onto the descriptor it owns.
+    fn update_overlay(&mut self, f: impl FnMut(&mut Overlay)) {
+        self.overlays.iter_mut().for_each(f);
     }
 
     /// Removes the first entry matching `pred` (there is at most one,
@@ -3125,68 +3182,90 @@ impl InteractionEngine {
         }
 
         if let Some((completions, cursor)) = self.find_completions() {
-            match event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_completions();
-                    return Some(Reaction::Redraw);
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.completions_layout(backend, &completions, cursor);
-                    match layout.hit_test(position.x, position.y) {
-                        CompletionsHit::Item(idx) => {
-                            self.dismiss_completions();
-                            return Some(Reaction::Redraw.merge(sink.dispatch(
-                                &UiEvent::CompletionItemActivated(completions.id, idx),
-                                None,
-                            )));
+            if is_escape(event) {
+                self.dismiss_completions();
+                return Some(Reaction::Redraw);
+            }
+            let bounds = self
+                .completions_layout(backend, &completions, cursor)
+                .bounds;
+            if let Some(routed) = overlay_pointer_event(event, bounds) {
+                let id = completions.id;
+                let widget: Rc<dyn DynWidget> = Rc::new(completions);
+                let outcome =
+                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
+                let mut reaction = outcome.reaction;
+                match outcome.event {
+                    Some(event @ UiEvent::CompletionItemActivated(..)) => {
+                        self.dismiss_completions();
+                        reaction = reaction
+                            .merge(Reaction::Redraw)
+                            .merge(sink.dispatch(&event, None));
+                    }
+                    Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. })) => {
+                        self.dismiss_completions();
+                        reaction = reaction.merge(Reaction::Redraw);
+                    }
+                    Some(event) => {
+                        if let UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) = &event {
+                            self.update_overlay(|o| match o {
+                                Overlay::Completions(c, _) => c.selected_idx = *idx,
+                                _ => {}
+                            });
+                            reaction = reaction.merge(Reaction::Redraw);
                         }
-                        CompletionsHit::Inert => return Some(Reaction::Continue),
-                        CompletionsHit::Empty => {
+                        reaction = reaction.merge(sink.dispatch(&event, None));
+                    }
+                    None if outcome.consumed => {}
+                    None => {
+                        if matches!(event, UiEvent::MouseDown { .. }) {
                             self.dismiss_completions();
-                            return Some(Reaction::Redraw);
+                            reaction = reaction.merge(Reaction::Redraw);
+                        } else {
+                            return None;
                         }
                     }
                 }
-                _ => {}
+                return Some(reaction);
+            }
+            if let UiEvent::MouseDown { .. } = event {
+                self.dismiss_completions();
+                return Some(Reaction::Redraw);
             }
         }
 
         if let Some((popup, anchor)) = self.find_rich_text_popup() {
-            match event {
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::Escape),
-                    ..
-                } => {
-                    self.dismiss_rich_text_popup();
-                    return Some(Reaction::Redraw);
-                }
-                UiEvent::MouseDown { position, .. } => {
-                    let layout = self.rich_text_popup_layout(backend, &popup, anchor);
-                    match layout.hit_test(position.x, position.y) {
-                        RichTextPopupHit::Link(idx) => {
-                            let url = popup
-                                .links
-                                .get(idx)
-                                .map(|l| l.url.clone())
-                                .unwrap_or_default();
-                            return Some(Reaction::Redraw.merge(
-                                sink.dispatch(&UiEvent::RichTextLinkClicked(popup.id, url), None),
-                            ));
+            if is_escape(event) {
+                self.dismiss_rich_text_popup();
+                return Some(Reaction::Redraw);
+            }
+            let bounds = self.rich_text_popup_layout(backend, &popup, anchor).bounds;
+            if let Some(routed) = overlay_pointer_event(event, bounds) {
+                let id = popup.id;
+                let widget: Rc<dyn DynWidget> = Rc::new(popup);
+                let outcome =
+                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
+                let mut reaction = outcome.reaction;
+                match outcome.event {
+                    Some(event) => {
+                        if let UiEvent::ScrollOffsetChanged { new_offset, .. } = &event {
+                            self.update_overlay(|o| match o {
+                                Overlay::RichTextPopup(p, _) => p.scroll_top = *new_offset,
+                                _ => {}
+                            });
+                            reaction = reaction.merge(Reaction::Redraw);
                         }
-                        RichTextPopupHit::Outside => {
-                            self.dismiss_rich_text_popup();
-                            return Some(Reaction::Redraw);
-                        }
-                        RichTextPopupHit::Char(..)
-                        | RichTextPopupHit::ScrollbarTrack
-                        | RichTextPopupHit::ScrollbarThumb
-                        | RichTextPopupHit::Body => return Some(Reaction::Continue),
+                        reaction = reaction.merge(sink.dispatch(&event, None));
                     }
+                    None if outcome.consumed => {}
+                    None if matches!(event, UiEvent::MouseDown { .. }) => {}
+                    None => return None,
                 }
-                _ => {}
+                return Some(reaction);
+            }
+            if let UiEvent::MouseDown { .. } = event {
+                self.dismiss_rich_text_popup();
+                return Some(Reaction::Redraw);
             }
         }
 
@@ -3671,6 +3750,36 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
+        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, true)
+    }
+
+    /// [`Self::dyn_widget_dispatch`] for a widget that is not part of the
+    /// focus tree: an imperative overlay (completions, a rich-text popup)
+    /// floats over the focused editor and must not take focus from it, so
+    /// its `request_focus` intent is dropped.
+    fn overlay_widget_dispatch(
+        &self,
+        id: WidgetId,
+        widget: &Rc<dyn DynWidget>,
+        area: Rect,
+        routed: RoutedEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dyn_widget_dispatch_with_focus(
+        &self,
+        id: WidgetId,
+        widget: &Rc<dyn DynWidget>,
+        area: Rect,
+        routed: RoutedEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+        take_focus: bool,
+    ) -> DynWidgetClickOutcome {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
         // measurer, its style and the paint state the widget painted
@@ -3712,7 +3821,7 @@ impl InteractionEngine {
         };
 
         let mut outcome = DynWidgetClickOutcome::default();
-        if let Some((focus_id, sub)) = intents.focus_request {
+        if let Some((focus_id, sub)) = intents.focus_request.filter(|_| take_focus) {
             *self.dyn_widget_focus_sub.borrow_mut() = Some((focus_id, sub));
             if backend.set_focus(Some(focus_id)) {
                 let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
@@ -9817,6 +9926,147 @@ mod tests {
             app.engine.dismiss_rich_text_popup(),
             "the lower-ranked rich-text popup must still be open — Escape \
              only ever closes the topmost overlay"
+        );
+    }
+
+    fn overlay_driver() -> TuiDriver<MinimalLogic> {
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        TuiDriver::new(logic, 40, 20)
+    }
+
+    fn overlay_events(driver: &TuiDriver<MinimalLogic>) -> Vec<UiEvent> {
+        driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect()
+    }
+
+    fn two_completions() -> quadraui::Completions {
+        serde_json::from_value(serde_json::json!({
+            "id": "completions",
+            "selected_idx": 0,
+            "items": [
+                {"label": {"spans": [{"text": "map", "fg": null, "bg": null}]}},
+                {"label": {"spans": [{"text": "filter", "fg": null, "bg": null}]}},
+            ],
+        }))
+        .expect("completions decode")
+    }
+
+    /// A press on a completion row goes through `Completions`' own
+    /// `Interactive::handle`: it moves the highlight (written back onto
+    /// the overlay the host owns) without taking focus from whatever the
+    /// popup floats over, and only a double-click accepts.
+    #[test]
+    fn a_completions_overlay_routes_presses_through_its_own_handle() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_completions(two_completions(), Point::new(2.0, 2.0));
+        driver.render();
+
+        let (x, y) = driver.find("filter").expect("the second item paints");
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        });
+        let id = WidgetId::new("completions");
+        assert_eq!(
+            overlay_events(&driver),
+            vec![UiEvent::List(
+                id,
+                quadraui::ListViewEvent::SelectionChanged { idx: 1 }
+            )]
+        );
+        assert_eq!(
+            driver
+                .app()
+                .engine
+                .find_completions()
+                .map(|(c, _)| c.selected_idx),
+            Some(1)
+        );
+
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        });
+        assert_eq!(
+            overlay_events(&driver).last(),
+            Some(&UiEvent::CompletionItemActivated(id, 1))
+        );
+        assert!(driver.app().engine.find_completions().is_none());
+    }
+
+    /// A wheel notch over an overflowing rich-text popup scrolls the popup
+    /// through its own `Interactive::handle` (reported as
+    /// `ScrollOffsetChanged` and written back onto the overlay) instead of
+    /// falling through to whatever is painted behind it.
+    #[test]
+    fn a_wheel_over_a_rich_text_popup_scrolls_the_popup() {
+        let lines: Vec<quadraui::StyledText> = (0..12)
+            .map(|i| {
+                serde_json::from_value(serde_json::json!({
+                    "spans": [{"text": format!("line {i}"), "fg": null, "bg": null}]
+                }))
+                .expect("line decodes")
+            })
+            .collect();
+        let popup = quadraui::RichTextPopup {
+            id: WidgetId::new("popup"),
+            line_text: (0..12).map(|i| format!("line {i}")).collect(),
+            lines,
+            line_scales: vec![],
+            scroll_top: 0,
+            max_visible_rows: 3,
+            has_focus: false,
+            selection: None,
+            links: vec![],
+            focused_link: None,
+            placement: Default::default(),
+            padding: 1.0,
+            fg: None,
+            bg: None,
+            font_role: Default::default(),
+        };
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine.show_rich_text_popup(popup, Point::new(2.0, 2.0));
+        driver.render();
+
+        let (x, y) = driver.find("line 1").expect("the popup body paints");
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+        let scrolled: Vec<UiEvent> = overlay_events(&driver)
+            .into_iter()
+            .filter(|e| matches!(e, UiEvent::ScrollOffsetChanged { .. }))
+            .collect();
+        assert_eq!(scrolled.len(), 1, "{:?}", overlay_events(&driver));
+        let UiEvent::ScrollOffsetChanged { widget, new_offset } = scrolled[0] else {
+            unreachable!()
+        };
+        assert_eq!(widget, WidgetId::new("popup"));
+        assert!(new_offset > 0);
+        assert_eq!(
+            driver
+                .app()
+                .engine
+                .find_rich_text_popup()
+                .map(|(p, _)| p.scroll_top),
+            Some(new_offset)
         );
     }
 
