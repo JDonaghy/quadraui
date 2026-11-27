@@ -1510,7 +1510,7 @@ mod tests {
 
     // ── Consumer-state round-trip harness — SC panel ─────────────────────
     //
-    // Per-issue #2: the SC panel consumer shape adds a
+    // The SC panel consumer shape adds a
     // `SectionAux::Input` commit-message editor on section 0, plus
     // collapsible Tree sections. The contracts the harness verifies:
     //

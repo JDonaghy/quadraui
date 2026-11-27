@@ -266,9 +266,11 @@ mod tests {
         );
     }
 
-    /// A `Tree` section paints its own scrollbar; the MSV gutter beside it stays background.
+    /// An overflowing `Tree` section shows one scrollbar: the section's
+    /// gutter paints it, and the tree's rows run up to the gutter without
+    /// a scrollbar of their own.
     #[test]
-    fn tree_section_paints_only_its_own_scrollbar_not_a_second_gutter_column() {
+    fn tree_section_paints_one_scrollbar_in_the_section_gutter() {
         let mut view = two_section_view();
         view.sections[0] = tree_section("alpha", 50);
         let (surface, layout) = paint_via_backend(&view);
@@ -281,11 +283,16 @@ mod tests {
             let (r, g, b, _) = surface.pixel(x as u32, y);
             (r, g, b)
         };
-        assert_ne!(rgb(s0.body_bounds.x + s0.body_bounds.width - 2.0), bg);
-        assert_eq!(
+        assert_ne!(
             rgb(sb.x + sb.width / 2.0),
             bg,
-            "second scrollbar column painted"
+            "the gutter paints the scrollbar"
+        );
+        let body_right = s0.body_bounds.x + s0.body_bounds.width;
+        assert_eq!(
+            rgb(body_right - 2.0),
+            rgb(body_right - 30.0),
+            "no second scrollbar at the tree's right edge"
         );
     }
 

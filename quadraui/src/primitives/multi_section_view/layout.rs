@@ -574,7 +574,7 @@ fn body_overflows(s: &Section, content: f32, body_main: f32) -> bool {
 /// `Empty`, `Custom`); the layout falls back to a single
 /// combined-Thumb hit region for those.
 ///
-/// Per #9: the primitive introspects the body enum directly rather
+/// The primitive introspects the body enum directly rather
 /// than threading a host-supplied scroll measure through every
 /// `MultiSectionView::layout` call. The scroll state already lives
 /// on the inner primitive — there's no second source of truth.
