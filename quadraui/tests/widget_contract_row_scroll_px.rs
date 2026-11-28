@@ -43,6 +43,8 @@ fn list_view() -> ListView {
             .collect(),
         selected_idx: 0,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         has_focus: false,
         bordered: false,
         h_scroll: 0,
@@ -70,6 +72,8 @@ fn tree_view() -> TreeView {
         selection_mode: SelectionMode::Single,
         selected_path: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         style: TreeStyle {
             show_scrollbar: false,
             ..TreeStyle::default()
@@ -94,6 +98,8 @@ fn data_table() -> DataTable {
             .collect(),
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: false,
         show_scrollbar: false,

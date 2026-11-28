@@ -75,6 +75,8 @@ use serde::{Deserialize, Serialize};
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
 ///     scroll_offset: 0,
+///     items_window: None,
+///     scroll_px: None,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
 /// };
@@ -82,7 +84,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeView {
     pub id: WidgetId,
@@ -95,6 +97,17 @@ pub struct TreeView {
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
     #[serde(default)]
     pub scroll_offset: usize,
+    /// The loaded slice's place in the real collection — see
+    /// [`crate::behaviour::row_window`]. `None`: the payload is the whole
+    /// collection. When set, `scroll_offset`, the selection and every row
+    /// index in this widget's events are absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
+    /// Pixel-precise scroll position; wins over `scroll_offset` when set.
+    /// Combines with a caller's [`crate::primitive::PaintState::scroll_px`],
+    /// which wins over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_px: Option<f32>,
     pub style: TreeStyle,
     /// Whether this tree currently holds keyboard focus. Gates the
     /// focused row's highlight (`Theme::selected_bg` vs. the unfocused
@@ -1375,6 +1388,8 @@ pub(crate) mod native_surface_paint {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: true,
             }
@@ -3278,6 +3293,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         };
@@ -3347,6 +3364,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: scroll,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -3732,6 +3751,8 @@ mod primitive_parity_tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0, 0]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -3869,6 +3890,8 @@ mod interactive_tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }

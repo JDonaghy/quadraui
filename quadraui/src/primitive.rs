@@ -1305,6 +1305,26 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         layout: &dyn PrimitiveLayout,
     ) -> Vec<crate::popup::Popup>;
 
+    /// Content this widget needs loaded — see
+    /// [`Interactive::data_requested`]. A `state` or `layout` of the wrong
+    /// type answers `None`.
+    fn data_requested(
+        &self,
+        state: &mut dyn std::any::Any,
+        layout: &dyn PrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let _ = (state, layout);
+        None
+    }
+
+    /// This widget's interaction-state summary — see
+    /// [`Interactive::state_summary`]. A `state` of the wrong type
+    /// answers the summary of `State::default()`.
+    fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {
+        let _ = state;
+        crate::interactive::StateSummary::default()
+    }
+
     /// Clone this widget's content into a serializable [`OwnedContent`]
     /// for [`crate::frame::OwnedFrame::from_layout`]. Default:
     /// [`OwnedContent::Opaque`] — correct for a widget with no
@@ -1445,6 +1465,27 @@ where
         match state.and_then(|s| s.downcast_ref::<W::State>()) {
             Some(state) => Interactive::popups(self, state, layout),
             None => Interactive::popups(self, &W::State::default(), layout),
+        }
+    }
+
+    fn data_requested(
+        &self,
+        state: &mut dyn std::any::Any,
+        layout: &dyn PrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let (Some(state), Some(layout)) = (
+            state.downcast_mut::<W::State>(),
+            layout.downcast_ref::<W::Layout>(),
+        ) else {
+            return None;
+        };
+        Interactive::data_requested(self, state, layout)
+    }
+
+    fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {
+        match state.and_then(|s| s.downcast_ref::<W::State>()) {
+            Some(state) => Interactive::state_summary(self, state),
+            None => Interactive::state_summary(self, &W::State::default()),
         }
     }
 
@@ -1600,6 +1641,14 @@ where
 
     fn popups(&self, state: &W::State, layout: &W::Layout) -> Vec<crate::popup::Popup> {
         self.widget.popups(state, layout)
+    }
+
+    fn data_requested(&self, state: &mut W::State, layout: &W::Layout) -> Option<crate::UiEvent> {
+        self.widget.data_requested(state, layout)
+    }
+
+    fn state_summary(&self, state: &W::State) -> crate::interactive::StateSummary {
+        self.widget.state_summary(state)
     }
 }
 

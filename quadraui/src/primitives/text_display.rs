@@ -69,6 +69,12 @@ pub struct TextDisplay {
     /// Index of the first visible line. `0` = top.
     #[serde(default)]
     pub scroll_offset: usize,
+    /// The loaded slice's place in the real collection — see
+    /// [`crate::behaviour::row_window`]. `None`: the payload is the whole
+    /// collection. When set, `scroll_offset`, the selection and every row
+    /// index in this widget's events are absolute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
     /// When true, backends auto-scroll to keep the latest line visible.
     /// Toggled off when the user scrolls upward, re-enabled when they
     /// scroll back to the bottom.
@@ -390,6 +396,54 @@ pub struct TextDisplayLayout {
 }
 
 impl TextDisplayLayout {
+    /// Re-size the scrollbar thumb (and its track hit regions) for a
+    /// collection of `total` lines scrolled to line `offset` — a windowed
+    /// display's real extent, which its band layout cannot see.
+    pub fn set_scroll_extent(&mut self, total: usize, offset: usize, min_thumb: f32) {
+        let Some(gutter) = self.scrollbar_bounds else {
+            return;
+        };
+        self.hit_regions.retain(|(_, hit)| {
+            !matches!(
+                hit,
+                TextDisplayHit::ScrollbarThumb
+                    | TextDisplayHit::ScrollbarTrackBefore
+                    | TextDisplayHit::ScrollbarTrackAfter
+            )
+        });
+        let (thumb_start, thumb_len) = crate::primitives::scrollbar::fit_thumb(
+            offset as f32,
+            total as f32,
+            self.visible_lines.len() as f32,
+            gutter.height,
+            min_thumb,
+        );
+        if thumb_len <= 0.0 {
+            self.thumb_bounds = None;
+            return;
+        }
+        let x = gutter.x;
+        let w = gutter.width;
+        let thumb = Rect::new(x, gutter.y + thumb_start, w, thumb_len);
+        let before = Rect::new(x, gutter.y, w, thumb_start);
+        let after = Rect::new(
+            x,
+            thumb.y + thumb_len,
+            w,
+            (gutter.height - thumb_start - thumb_len).max(0.0),
+        );
+        let mut regions = vec![(thumb, TextDisplayHit::ScrollbarThumb)];
+        if before.height > 0.0 {
+            regions.push((before, TextDisplayHit::ScrollbarTrackBefore));
+        }
+        if after.height > 0.0 {
+            regions.push((after, TextDisplayHit::ScrollbarTrackAfter));
+        }
+        regions.append(&mut self.hit_regions);
+        self.hit_regions = regions;
+        self.thumb_bounds = Some(thumb);
+    }
+
     pub fn hit_test(&self, x: f32, y: f32) -> TextDisplayHit {
         for (rect, hit) in &self.hit_regions {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
@@ -600,6 +654,7 @@ impl TextDisplay {
             id,
             lines: Vec::new(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -710,6 +765,21 @@ mod native_surface_paint {
         theme: &Theme,
         line_height: f32,
         char_width: f32,
+    ) {
+        paint_with_thumb(display, rect, surface, theme, line_height, char_width, None);
+    }
+
+    /// [`paint`], with the scrollbar thumb taken from `thumb` when it is
+    /// `Some` — a windowed display's thumb, sized from the real extent
+    /// rather than the band `display` holds.
+    pub(crate) fn paint_with_thumb(
+        display: &TextDisplay,
+        rect: Rect,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        line_height: f32,
+        char_width: f32,
+        thumb: Option<Option<Rect>>,
     ) {
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return;
@@ -846,7 +916,7 @@ mod native_surface_paint {
                     theme.scrollbar_track,
                 );
             }
-            if let Some(thumb) = layout.thumb_bounds {
+            if let Some(thumb) = thumb.unwrap_or(layout.thumb_bounds) {
                 let inset = 2.0;
                 surface.surface_fill_rect(
                     Rect::new(
@@ -946,6 +1016,7 @@ mod native_surface_paint {
                 id: WidgetId::new("td"),
                 lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
                 scroll_offset: 0,
+                items_window: None,
                 auto_scroll: false,
                 max_lines: 0,
                 has_focus: false,
@@ -1185,6 +1256,7 @@ pub fn cell_layout(display: &TextDisplay, area: Rect) -> TextDisplayPrimitiveLay
             area,
             body,
             layout: display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(1.0)),
+            window: None,
         };
     }
     let line_end = if display.show_scrollbar {
@@ -1201,7 +1273,12 @@ pub fn cell_layout(display: &TextDisplay, area: Rect) -> TextDisplayPrimitiveLay
     } else {
         display.layout(body.width, body.height, measure)
     };
-    TextDisplayPrimitiveLayout { area, body, layout }
+    TextDisplayPrimitiveLayout {
+        area,
+        body,
+        layout,
+        window: None,
+    }
 }
 
 /// Resolve this display's layout in **pixel** units, with the calling
@@ -1221,6 +1298,7 @@ pub fn pixel_layout(
             area,
             body,
             layout: display.layout(0.0, 0.0, |_| TextDisplayLineMeasure::new(row_h)),
+            window: None,
         };
     }
     let body_width = if display.show_scrollbar {
@@ -1243,7 +1321,12 @@ pub fn pixel_layout(
     } else {
         display.layout(area.width, body.height, measure)
     };
-    TextDisplayPrimitiveLayout { area, body, layout }
+    TextDisplayPrimitiveLayout {
+        area,
+        body,
+        layout,
+        window: None,
+    }
 }
 
 /// The display-cell column budget [`pixel_layout`] wraps against for a
@@ -1505,8 +1588,15 @@ pub struct TextDisplayPrimitiveLayout {
     pub area: Rect,
     /// The body strip inside [`Self::area`], below any title row.
     pub body: Rect,
-    /// The resolved display layout, in body-local coordinates.
+    /// The resolved display layout, in body-local coordinates. For a
+    /// windowed display its line indices are band-relative — see
+    /// [`Self::window`].
     pub layout: TextDisplayLayout,
+    /// The band a windowed display ([`TextDisplay::items_window`]) was
+    /// laid out through, `None` for an unwindowed one. [`Self::layout`]'s
+    /// line indices are relative to its band; [`Self::abs_line`] maps them
+    /// back.
+    pub window: Option<Box<crate::behaviour::row_window::WindowedLayout<TextDisplay>>>,
 }
 
 impl TextDisplayPrimitiveLayout {
@@ -1521,7 +1611,23 @@ impl TextDisplayPrimitiveLayout {
     /// line count, floored at one so a viewport too short for a single
     /// line still scrolls.
     pub fn page(&self) -> usize {
-        self.layout.visible_lines.len().max(1)
+        match &self.window {
+            Some(w) => w.viewport_rows.max(1),
+            None => self.layout.visible_lines.len().max(1),
+        }
+    }
+
+    /// The absolute line index of [`Self::layout`]'s line `idx`.
+    pub fn abs_line(&self, idx: usize) -> usize {
+        match &self.window {
+            Some(w) => w.to_abs(idx),
+            None => idx,
+        }
+    }
+
+    /// The absolute scroll offset on screen.
+    pub fn resolved_offset(&self) -> usize {
+        self.abs_line(self.layout.resolved_scroll_offset)
     }
 }
 
@@ -1566,13 +1672,94 @@ impl crate::primitive::Primitive for TextDisplay {
     /// same one the editor-font surface this paints through reports. Row
     /// hit-testing and the painted rows therefore stay on one grid even
     /// when the chrome and editor fonts have different heights.
+    ///
+    /// The display resolves through its own state first ([`Self::live`]),
+    /// and a windowed one ([`TextDisplay::items_window`]) lays out only the
+    /// band its viewport shows — see [`crate::behaviour::row_window`].
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextDisplayPrimitiveLayout {
-        match ctx.units() {
+        let scroll = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state
+                .and_then(|s| s.downcast_ref::<TextDisplayState>())
+                .map(|s| s.scroll.get(&self.scroll_offset))
+        });
+        let live = self.live_at(scroll);
+        let base = |td: &TextDisplay| match ctx.units() {
             crate::primitive::Units::Cells => {
-                cell_layout(self, crate::primitive::cell_grid_rect(rect))
+                cell_layout(td, crate::primitive::cell_grid_rect(rect))
             }
-            _ => pixel_layout(self, rect, ctx.editor_line_height(), ctx.char_width),
-        }
+            _ => pixel_layout(td, rect, ctx.editor_line_height(), ctx.char_width),
+        };
+        let Some(window) = live.items_window else {
+            return base(&live);
+        };
+        use crate::behaviour::row_window;
+        let (row_h, min_thumb) = match ctx.units() {
+            crate::primitive::Units::Cells => (1.0, 1.0),
+            _ => (ctx.editor_line_height().max(1.0), PIXEL_MIN_THUMB),
+        };
+        let body_h = body_rect(&live, rect, row_h).height;
+        let band_rows = row_window::band_rows_for(body_h, row_h);
+        let loaded = live.lines.len();
+        let total = window.row_count(loaded);
+        let viewport_rows = (body_h / row_h).floor().max(0.0) as usize;
+        // Auto-scroll anchors the band at the tail, so the display's own
+        // "last line visible" resolution lands on the real last line.
+        let band_start = if live.auto_scroll {
+            total.saturating_sub(band_rows.max(1))
+        } else {
+            live.scroll_offset
+        };
+        let band = row_window::band(window, loaded, band_start, band_rows);
+        let band_td = TextDisplay {
+            lines: row_window::materialise(&live.lines, window, band, |_| TextDisplayLine {
+                spans: Vec::new(),
+                decoration: Decoration::default(),
+                timestamp: None,
+            }),
+            scroll_offset: 0,
+            items_window: None,
+            ..live.as_ref().clone()
+        };
+        let mut layout = base(&band_td);
+        let offset = band.absolute(layout.layout.resolved_scroll_offset);
+        layout
+            .layout
+            .set_scroll_extent(total, offset, min_thumb);
+        layout.window = Some(Box::new(row_window::WindowedLayout {
+            band,
+            total,
+            loaded: (window.start, loaded),
+            scroll: offset,
+            viewport_rows,
+            scroll_px: None,
+            live: Box::new(band_td),
+        }));
+        layout
+    }
+
+    /// The display's body text, minus the scrollbar gutter, as a
+    /// selectable region, so drag-select and copy work against it. Its
+    /// `lines` stay empty: a wrapped line occupies a different number of
+    /// rows under each backend's wrap width, so no backend-portable
+    /// flattening of `lines` matches what every backend painted — a TUI
+    /// copy reads the painted cells instead, and a pixel backend copies
+    /// nothing rather than the wrong text.
+    fn text_region(&self, layout: &TextDisplayPrimitiveLayout) -> Option<crate::dispatch::TextRegion> {
+        let gutter_width = layout
+            .layout
+            .scrollbar_bounds
+            .map(|g| g.width)
+            .unwrap_or(0.0);
+        Some(crate::dispatch::TextRegion {
+            id: self.id,
+            bounds: Rect::new(
+                layout.body.x,
+                layout.body.y,
+                (layout.body.width - gutter_width).max(0.0),
+                layout.body.height,
+            ),
+            lines: Vec::new(),
+        })
     }
 
     /// The shared pixel painter — the same one every pixel backend's
@@ -1592,7 +1779,21 @@ impl crate::primitive::Primitive for TextDisplay {
         {
             let line_height = surface.surface_line_height();
             let char_width = surface.surface_char_width();
-            native_surface_paint::paint(self, layout.area, surface, theme, line_height, char_width);
+            let state = env.widget_state_as::<TextDisplayState>();
+            let live = self.live(state);
+            let (painted, thumb) = match &layout.window {
+                Some(w) => (w.live.as_ref(), Some(layout.layout.thumb_bounds)),
+                None => (live.as_ref(), None),
+            };
+            native_surface_paint::paint_with_thumb(
+                painted,
+                layout.area,
+                surface,
+                theme,
+                line_height,
+                char_width,
+                thumb,
+            );
         }
         #[cfg(not(any(
             feature = "gtk",
@@ -1618,22 +1819,31 @@ impl crate::primitive::Primitive for TextDisplay {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, layout, cells, theme);
+        let live = self.live(env.widget_state_as::<TextDisplayState>());
+        let painted = match &layout.window {
+            Some(w) => w.live.as_ref(),
+            None => live.as_ref(),
+        };
+        cell_paint::paint(painted, layout, cells, theme);
     }
 }
 
 /// [`crate::interactive::Interactive::State`] for [`TextDisplay`]:
-/// whether a scrollbar-thumb drag is in progress.
-///
-/// The scroll offset itself is **not** here — it is
-/// [`TextDisplay::scroll_offset`] on the descriptor, which the app owns
-/// and updates from [`TextDisplayEvent::Scrolled`], the same contract
-/// [`TextDisplayLayout::resolved_scroll_offset`] already documents.
+/// whether a scrollbar-thumb drag is in progress, and the scroll offset
+/// the display resolves to when the app does not echo
+/// [`TextDisplayEvent::Scrolled`] back into [`TextDisplay::scroll_offset`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextDisplayState {
     /// `true` between a press on the scrollbar thumb and its release.
     pub dragging_thumb: bool,
+    /// The scroll offset the last scroll landed on, against the
+    /// descriptor's [`TextDisplay::scroll_offset`] — see
+    /// [`crate::behaviour::row_window::HostLatch`].
+    pub scroll: crate::behaviour::row_window::HostLatch<usize>,
+    /// Repeat suppression for a windowed display's
+    /// [`crate::UiEvent::RowsRequested`].
+    pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
 }
 
 impl crate::interactive::WidgetAction for TextDisplayEvent {
@@ -1646,24 +1856,50 @@ impl crate::interactive::WidgetAction for TextDisplayEvent {
 }
 
 impl TextDisplay {
+    /// How many lines the real collection has: the window's total when
+    /// [`Self::items_window`] is set, else [`Self::lines`]' length.
+    pub fn row_count(&self) -> usize {
+        match self.items_window {
+            Some(w) => w.row_count(self.lines.len()),
+            None => self.lines.len(),
+        }
+    }
+
+    /// This display with its state's latched scroll offset applied — the
+    /// descriptor it lays out and paints as.
+    pub fn live(&self, state: Option<&TextDisplayState>) -> std::borrow::Cow<'_, Self> {
+        self.live_at(state.map(|s| s.scroll.get(&self.scroll_offset)))
+    }
+
+    fn live_at(&self, scroll: Option<usize>) -> std::borrow::Cow<'_, Self> {
+        match scroll {
+            Some(scroll) if scroll != self.scroll_offset => std::borrow::Cow::Owned(Self {
+                scroll_offset: scroll,
+                ..self.clone()
+            }),
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
+
     /// The scroll offset currently on screen — what the layout resolved,
     /// which auto-scroll may have moved past the descriptor's own
     /// [`Self::scroll_offset`].
     fn resolved_offset(&self, layout: &TextDisplayPrimitiveLayout) -> usize {
-        layout.layout.resolved_scroll_offset
+        layout.resolved_offset()
     }
 
     /// The largest offset that still shows content — one page back from
     /// the end of the buffer.
     fn max_offset(&self, layout: &TextDisplayPrimitiveLayout) -> usize {
-        self.lines.len().saturating_sub(layout.page())
+        self.row_count().saturating_sub(layout.page())
     }
 
     /// Report a scroll to `target`, clamped, as
     /// [`TextDisplayEvent::Scrolled`] — or [`Handled::Consumed`] when it
-    /// wouldn't move.
+    /// wouldn't move — and latch it as this display's own offset.
     fn scroll_to(
         &self,
+        state: &mut TextDisplayState,
         layout: &TextDisplayPrimitiveLayout,
         target: usize,
     ) -> Handled<TextDisplayEvent> {
@@ -1671,6 +1907,7 @@ impl TextDisplay {
         if new_offset == self.resolved_offset(layout) {
             Handled::Consumed
         } else {
+            state.scroll.set(&self.scroll_offset, new_offset);
             Handled::Event(TextDisplayEvent::Scrolled { new_offset })
         }
     }
@@ -1678,6 +1915,7 @@ impl TextDisplay {
     /// Scroll `delta` lines from the offset currently on screen.
     fn scroll_by(
         &self,
+        state: &mut TextDisplayState,
         layout: &TextDisplayPrimitiveLayout,
         delta: isize,
     ) -> Handled<TextDisplayEvent> {
@@ -1687,7 +1925,7 @@ impl TextDisplay {
         } else {
             current.saturating_add(delta as usize)
         };
-        self.scroll_to(layout, target)
+        self.scroll_to(state, layout, target)
     }
 
     /// The offset a drag or track click at absolute `y` asks for: the
@@ -1714,7 +1952,7 @@ impl crate::interactive::Interactive for TextDisplay {
     /// [`crate::interactive::FocusSpec::None`] for an empty buffer —
     /// there is nothing to scroll.
     fn focus(&self) -> crate::interactive::FocusSpec {
-        if self.lines.is_empty() {
+        if self.row_count() == 0 {
             crate::interactive::FocusSpec::None
         } else {
             crate::interactive::FocusSpec::Stop
@@ -1744,7 +1982,7 @@ impl crate::interactive::Interactive for TextDisplay {
         out.extend(layout.layout.visible_lines.iter().map(|vis| {
             (
                 local(vis.bounds),
-                crate::interactive::SubTarget(SUB_LINE_BASE + vis.line_idx as u64),
+                crate::interactive::SubTarget(SUB_LINE_BASE + layout.abs_line(vis.line_idx) as u64),
             )
         }));
         out
@@ -1753,7 +1991,7 @@ impl crate::interactive::Interactive for TextDisplay {
     /// A screen reader can focus the pane and scroll it a step either
     /// way.
     fn a11y_actions(&self, _state: &TextDisplayState) -> Vec<crate::a11y::A11yAction> {
-        if self.lines.is_empty() {
+        if self.row_count() == 0 {
             Vec::new()
         } else {
             vec![
@@ -1785,20 +2023,22 @@ impl crate::interactive::Interactive for TextDisplay {
         let page = layout.page();
         match event {
             RoutedEvent::Key(key) => match key.key {
-                Key::Named(NamedKey::Up) => self.scroll_by(layout, -1),
-                Key::Named(NamedKey::Down) => self.scroll_by(layout, 1),
-                Key::Named(NamedKey::PageUp) => self.scroll_by(layout, -(page as isize)),
-                Key::Named(NamedKey::PageDown) => self.scroll_by(layout, page as isize),
+                Key::Named(NamedKey::Up) => self.scroll_by(state, layout, -1),
+                Key::Named(NamedKey::Down) => self.scroll_by(state, layout, 1),
+                Key::Named(NamedKey::PageUp) => self.scroll_by(state, layout, -(page as isize)),
+                Key::Named(NamedKey::PageDown) => self.scroll_by(state, layout, page as isize),
                 Key::Named(NamedKey::Home) => self.scroll_to(
+                    state,
                     layout,
                     ensure_visible(self.resolved_offset(layout), page, 0),
                 ),
                 Key::Named(NamedKey::End) => self.scroll_to(
+                    state,
                     layout,
                     ensure_visible(
                         self.resolved_offset(layout),
                         page,
-                        self.lines.len().saturating_sub(1),
+                        self.row_count().saturating_sub(1),
                     ),
                 ),
                 _ => Handled::Event(TextDisplayEvent::KeyPressed {
@@ -1809,7 +2049,7 @@ impl crate::interactive::Interactive for TextDisplay {
             RoutedEvent::Wheel { dy, .. } => {
                 match crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0) {
                     0 => Handled::Ignored,
-                    rows => self.scroll_by(layout, rows),
+                    rows => self.scroll_by(state, layout, rows),
                 }
             }
             RoutedEvent::Pointer {
@@ -1826,9 +2066,9 @@ impl crate::interactive::Interactive for TextDisplay {
                         Handled::Consumed
                     }
                     TextDisplayHit::ScrollbarTrackBefore => {
-                        self.scroll_by(layout, -(page as isize))
+                        self.scroll_by(state, layout, -(page as isize))
                     }
-                    TextDisplayHit::ScrollbarTrackAfter => self.scroll_by(layout, page as isize),
+                    TextDisplayHit::ScrollbarTrackAfter => self.scroll_by(state, layout, page as isize),
                     _ => Handled::Consumed,
                 }
             }
@@ -1838,7 +2078,7 @@ impl crate::interactive::Interactive for TextDisplay {
                 ..
             } if state.dragging_thumb => {
                 let y = layout.area.y + local.y;
-                self.scroll_to(layout, self.offset_for_track_y(layout, y))
+                self.scroll_to(state, layout, self.offset_for_track_y(layout, y))
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::Up(crate::event::MouseButton::Left),
@@ -1852,13 +2092,34 @@ impl crate::interactive::Interactive for TextDisplay {
                 cx.request_focus(None);
                 Handled::Consumed
             }
-            RoutedEvent::Action(crate::a11y::A11yAction::ScrollUp) => self.scroll_by(layout, -1),
-            RoutedEvent::Action(crate::a11y::A11yAction::ScrollDown) => self.scroll_by(layout, 1),
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollUp) => self.scroll_by(state, layout, -1),
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollDown) => self.scroll_by(state, layout, 1),
             _ => Handled::Ignored,
         }
     }
-}
 
+    /// A windowed display asks for the lines around its viewport once it
+    /// scrolls outside the loaded slice — see
+    /// [`crate::behaviour::row_window::RowsRequestLatch`].
+    fn data_requested(
+        &self,
+        state: &mut TextDisplayState,
+        layout: &TextDisplayPrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let window = layout.window.as_ref()?;
+        state.rows_requested.request(
+            self.id,
+            window.window(),
+            window.loaded.1,
+            window.scroll,
+            window.viewport_rows,
+        )
+    }
+
+    fn state_summary(&self, state: &TextDisplayState) -> crate::interactive::StateSummary {
+        crate::interactive::StateSummary::scroll(state.scroll.get(&self.scroll_offset))
+    }
+}
 /// [`crate::interactive::SubTarget`] for the scrollbar gutter — see
 /// [`crate::interactive::Interactive::sub_regions`].
 const SUB_SCROLLBAR: u64 = 0;
@@ -1927,6 +2188,7 @@ mod interactive_tests {
                 .map(|i| plain_line(&format!("L{i:02}")))
                 .collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: true,
@@ -2254,6 +2516,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: vec![line("alpha"), line("beta"), line("gamma")],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2295,6 +2558,7 @@ mod cell_paint_tests {
                 timestamp: None,
             }],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2319,6 +2583,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: (0..10).map(|i| line(&format!("line{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -2347,6 +2612,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: vec![line("x")],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2370,6 +2636,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2414,6 +2681,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2433,6 +2701,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: (0..20).map(|i| line(&format!("line{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2455,6 +2724,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: vec![line("abcdefghijklmnopqrstuvwxyz")],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2499,6 +2769,7 @@ mod cell_paint_tests {
                 .map(|i| line(&format!("L{i:02}")))
                 .collect(),
             scroll_offset: 10,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2537,6 +2808,7 @@ mod cell_paint_tests {
                 .map(|i| line(&format!("L{i:02}")))
                 .collect(),
             scroll_offset: new_offset,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2574,6 +2846,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: vec![line("the quick brown fox")],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2611,6 +2884,7 @@ mod cell_paint_tests {
                 line("short"),
             ],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2651,6 +2925,7 @@ mod cell_paint_tests {
             id: WidgetId::new("td"),
             lines: vec![line("alpha"), line("beta")],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -2692,6 +2967,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| line(&format!("line{i}"))).collect(),
             scroll_offset: scroll,
+            items_window: None,
             auto_scroll: auto,
             max_lines: 0,
             has_focus: false,
@@ -2896,6 +3172,7 @@ mod tests {
                 },
             ],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 1000,
             has_focus: true,
@@ -2942,6 +3219,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines,
             scroll_offset: scroll,
+            items_window: None,
             auto_scroll: auto,
             max_lines: 0,
             has_focus: true,

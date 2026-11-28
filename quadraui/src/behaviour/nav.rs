@@ -103,6 +103,26 @@ impl FlatNav {
         enabled.get(new_pos as usize).copied()
     }
 
+    /// [`Self::mv`] over a list whose every item is enabled, in constant
+    /// time and space — for a windowed collection whose `len` is its real
+    /// total, which may be far too long to enumerate.
+    pub fn mv_all(len: usize, current: Option<usize>, key: NavKey, wrap: bool) -> Option<usize> {
+        if len == 0 {
+            return None;
+        }
+        let last = (len - 1) as isize;
+        let pos = current.filter(|&c| c < len);
+        let new_pos = match key {
+            NavKey::Home => 0,
+            NavKey::End => last,
+            NavKey::Up => Self::step(pos, -1, last, wrap),
+            NavKey::Down => Self::step(pos, 1, last, wrap),
+            NavKey::PageUp(n) => Self::step(pos, -(n.max(1) as isize), last, wrap),
+            NavKey::PageDown(n) => Self::step(pos, n.max(1) as isize, last, wrap),
+        };
+        Some(new_pos as usize)
+    }
+
     /// Move `pos` (an index into the filtered `enabled` list, not the raw
     /// list) by `delta`, clamped to `[0, last]` or wrapped, per `wrap`.
     /// `pos == None` (no current selection) seeds at either end,
@@ -605,6 +625,35 @@ pub enum TreeKey {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mv_all_agrees_with_mv_over_an_all_enabled_list() {
+        let keys = [
+            NavKey::Up,
+            NavKey::Down,
+            NavKey::Home,
+            NavKey::End,
+            NavKey::PageUp(3),
+            NavKey::PageDown(3),
+        ];
+        for len in 0..6 {
+            for current in [None, Some(0), Some(2), Some(5), Some(9)] {
+                for key in keys {
+                    for wrap in [false, true] {
+                        assert_eq!(
+                            FlatNav::mv_all(len, current, key, wrap),
+                            FlatNav::mv(len, current, key, wrap, |_| true),
+                            "len {len} current {current:?} key {key:?} wrap {wrap}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            FlatNav::mv_all(10_000_000_000, Some(5), NavKey::End, false),
+            Some(9_999_999_999)
+        );
+    }
+
     use super::*;
 
     // ── NavKey ─────────────────────────────────────────────────────────

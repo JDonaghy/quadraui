@@ -2840,6 +2840,7 @@ pub fn text_display_from_lines(id: WidgetId, lines: Vec<String>) -> TextDisplay 
             })
             .collect(),
         scroll_offset: 0,
+        items_window: None,
         auto_scroll: false,
         max_lines: 0,
         has_focus: false,
@@ -3401,6 +3402,8 @@ mod tests {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path,
             scroll_offset,
+            items_window: None,
+            scroll_px: None,
             style: Default::default(),
             has_focus: false,
         };
@@ -3821,6 +3824,8 @@ mod tests {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: Default::default(),
             has_focus: false,
         };
@@ -5140,6 +5145,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path,
             scroll_offset,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -5159,6 +5166,8 @@ mod tests {
                 .collect(),
             selected_idx,
             scroll_offset,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -5188,6 +5197,8 @@ mod tests {
                 .collect(),
             selected_idx,
             scroll_offset,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

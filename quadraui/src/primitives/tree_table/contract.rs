@@ -73,6 +73,9 @@ impl TreeTablePrimitiveLayout {
             layout: self.layout.table.clone(),
             scroll_offset: self.scroll_offset,
             total_rows: self.total_rows,
+            window: None,
+            vscrollbar: None,
+            vscrollbar_layout: None,
         }
     }
 
@@ -884,6 +887,8 @@ mod tests {
                     .collect(),
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: true,
                 show_scrollbar: true,

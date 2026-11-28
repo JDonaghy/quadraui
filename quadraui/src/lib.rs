@@ -611,6 +611,7 @@ pub use a11y::{
     A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,
     A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange, FocusSource,
 };
+pub use behaviour::row_window::ItemsWindow;
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
 pub use focus::{FocusAddress, FocusTree};

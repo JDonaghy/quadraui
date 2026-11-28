@@ -925,6 +925,19 @@ pub enum UiEvent {
         new_offset: usize,
     },
 
+    /// A windowed list, tree, table or text display (one whose descriptor
+    /// sets `items_window`) scrolled or moved its cursor outside the rows
+    /// it has loaded: re-render widget `id` with `items_window.start =
+    /// start` and the `count` rows from there. `count` is bounded by a
+    /// few viewports, never by the collection's total.
+    ///
+    /// Routing: emitted by the widget, after the input that moved it.
+    RowsRequested {
+        id: WidgetId,
+        start: usize,
+        count: usize,
+    },
+
     /// A standalone [`crate::Scrollbar`] widget resolved a gesture —
     /// thumb drag, track page, or wheel — to a new thumb position,
     /// expressed as `fraction` of the thumb's available travel

@@ -317,6 +317,8 @@ mod tests {
                 .collect(),
             selected_idx: selected,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: false,
             bordered: false,
             h_scroll: 0,

@@ -501,6 +501,87 @@ pub trait Interactive: Primitive {
         let _ = (state, layout);
         Vec::new()
     }
+
+    /// Content this widget needs loaded before `layout` can paint fully —
+    /// a windowed collection's [`UiEvent::RowsRequested`], a sheet's
+    /// `CellGridEvent::CellsRequested`.
+    ///
+    /// A host calls it after every input the widget handled (any outcome
+    /// but a bare [`Handled::Ignored`]), against a layout taken from the
+    /// state [`Self::handle`] just wrote, and delivers the answer like any
+    /// other event. `None` when everything visible is loaded, or when this
+    /// exact request was already made. Default: `None`.
+    fn data_requested(&self, state: &mut Self::State, layout: &Self::Layout) -> Option<UiEvent> {
+        let _ = (state, layout);
+        None
+    }
+
+    /// A host-facing summary of the interaction state this widget keeps —
+    /// the selection, scroll position, active tab or expanded rows it
+    /// resolves for the next frame — for a binding that reports a widget's
+    /// state back to its app. Default: an empty summary.
+    fn state_summary(&self, state: &Self::State) -> StateSummary {
+        let _ = state;
+        StateSummary::default()
+    }
+}
+
+/// What [`Interactive::state_summary`] reports: each field is `Some` only
+/// for a widget that keeps that kind of state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[non_exhaustive]
+pub struct StateSummary {
+    /// A tree's resolved selected row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_path: Option<crate::types::TreePath>,
+    /// A list's or table's resolved selected row (absolute when
+    /// windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_idx: Option<usize>,
+    /// The resolved scroll row (absolute when windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_offset: Option<usize>,
+    /// A tab bar's resolved active tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tab: Option<usize>,
+    /// A tree's expanded branches, when it resolves expansion itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<Vec<crate::types::TreePath>>,
+}
+
+impl StateSummary {
+    /// A summary with only `scroll_offset` set.
+    pub fn scroll(scroll_offset: usize) -> Self {
+        Self {
+            scroll_offset: Some(scroll_offset),
+            ..Self::default()
+        }
+    }
+
+    /// This summary with `selected_idx` set.
+    pub fn with_selected_idx(mut self, idx: Option<usize>) -> Self {
+        self.selected_idx = idx;
+        self
+    }
+
+    /// This summary with `selected_path` set.
+    pub fn with_selected_path(mut self, path: Option<crate::types::TreePath>) -> Self {
+        self.selected_path = path;
+        self
+    }
+
+    /// This summary with `active_tab` set.
+    pub fn with_active_tab(mut self, active: Option<usize>) -> Self {
+        self.active_tab = active;
+        self
+    }
+
+    /// This summary with `expanded` set.
+    pub fn with_expanded(mut self, expanded: Option<Vec<crate::types::TreePath>>) -> Self {
+        self.expanded = expanded;
+        self
+    }
 }
 
 /// Implement [`Interactive`] for a [`Primitive`] with no behaviour at all

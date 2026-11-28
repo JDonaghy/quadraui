@@ -202,6 +202,8 @@ shows the parts the counter does not. `ListView` and `ListItem` have no
             items: items.collect(),
             selected_idx: self.selected,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: false,
             bordered: false,
             h_scroll: 0,
