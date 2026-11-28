@@ -55,33 +55,20 @@ pub enum PaintedHit {
         area: Rect,
         widget: Rc<dyn DynWidget>,
     },
-    /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
-    /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
-    /// excludes the scrollbar gutter `crate::render::paint_layout`'s
-    /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
-    /// into its (culled, offset) content, same ordering as
-    /// [`Self::Split`]'s own divider hit — a descendant content hit
-    /// (pushed after, so checked first in reverse order) wins over this
-    /// one. Content scrolled out of view never gets its own
-    /// [`PaintedHit`] at all (culled before painting), so there is nothing
-    /// for this entry to mask; it exists so a click or wheel landing on
-    /// empty space inside the viewport (nothing painted under the pointer)
-    /// still resolves to the `Scroll` itself, via [`HitDetail::ScrollBody`].
-    /// `axis`/`content_len`/`offset` are the same values
-    /// [`crate::render::paint_scroll`] fed its own [`quadraui::ScrollView`]
-    /// this frame — read back by the engine's wheel/page-key/drag handling
-    /// to resolve a new offset without re-measuring the content. `scrollbar`
-    /// is `None` when the content fits without scrolling; its `track` is
-    /// an absolute rect, outside `viewport` (reserved alongside it, not
-    /// inside it), and is narrowed by [`clip_hits_to_viewport`] — a
-    /// `Scroll` nested inside another `Scroll`'s viewport needs its own
-    /// track clipped to the OUTER viewport too. `children` is one [`ScrollChildHit`] per direct
-    /// [`crate::layout::LayoutNode::Leaf`] child when this scroll's
-    /// content is a `Column`/`Row` matching its own axis — read by the
-    /// engine to scroll a child that just received focus fully into view.
-    /// Empty for `Atomic` content or a non-`Leaf` direct child (a nested
-    /// `Row`/`Column`/`Split`/…), where that scroll-into-view isn't
-    /// implemented yet.
+    /// A [`crate::layout::LayoutNode::Scroll`]'s viewport in the ABSOLUTE
+    /// frame, excluding the scrollbar gutter. Pushed before its (culled,
+    /// offset) content, so a descendant hit wins; it exists so a click or
+    /// wheel on empty space inside the viewport still resolves to the
+    /// `Scroll` ([`HitDetail::ScrollBody`]). `axis`/`content_len`/`offset`
+    /// are what [`crate::render::paint_scroll`] fed its
+    /// [`quadraui::ScrollView`] this frame, read back by wheel/page/drag
+    /// handling. `scrollbar` is `None` when the content fits; its absolute
+    /// `track` sits outside `viewport` and is narrowed by
+    /// [`clip_hits_to_viewport`], so a nested `Scroll`'s track is clipped to
+    /// the outer viewport too. `children` has one
+    /// [`ScrollChildHit`] per direct `Leaf` child of matching-axis
+    /// `Column`/`Row` content, for scrolling a newly focused child into
+    /// view; it is empty for `Atomic` content or non-`Leaf` children.
     Scroll {
         id: WidgetId,
         viewport: Rect,
@@ -109,37 +96,18 @@ pub struct ScrollChildHit {
 }
 
 /// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
-/// own descendant content, painted inside `viewport` between its
-/// `Backend::push_clip(viewport)`/`pop_clip` pair — with `viewport`
-/// itself, dropping an entry whose bounds don't overlap it at all.
+/// descendant content, painted inside `viewport`'s clip — with `viewport`,
+/// dropping an entry that does not overlap it. A descendant's bounds can
+/// otherwise reach past the viewport (negative-origin rects on pixel
+/// backends, `Atomic` content sized to the full `content_len`), and since
+/// [`hit_test_painted`] checks in reverse paint order, such a hit would
+/// mask a sibling painted earlier at that spot.
 ///
-/// Without this, a descendant's own recorded bounds can reach past
-/// `viewport` on a backend whose `Rect` carries a negative-origin main
-/// axis correctly (every non-cell-grid one — see
-/// [`crate::render::scroll_content_slots`]'s own `cell_grid` doc, which
-/// already clips a cell-grid backend's bounds before they're ever
-/// painted, making this pass a no-op there), or on any backend whose
-/// `ScrollSlots::Atomic` content is sized to the scroll's full
-/// `content_len` rather than clamped to one viewport's worth (the common
-/// case — see `scroll_content_slots`'s own doc). Checked in reverse paint
-/// order by [`hit_test_painted`], a hit whose bounds leak past its own
-/// scroll's viewport can otherwise mask a sibling painted earlier at that
-/// same screen position (e.g. a button above a scroll whose own
-/// oversized content reaches back up over it) — this keeps every
-/// descendant's bounds inside the viewport it was actually painted into,
-/// so a point outside it never resolves to that scroll's content and a
-/// sibling painted before the scroll keeps its own clicks.
-///
-/// Only the hit kinds whose containment test lives in a plain field this
-/// module can reach are narrowed, via [`primary_bounds_mut`]:
-/// [`PaintedHit::Widget`]'s `area` and a nested [`PaintedHit::Scroll`]'s
-/// own `viewport`. A nested scroll's `scrollbar.track` (checked by
-/// [`hit_test_painted`] ahead of its viewport) is narrowed alongside it,
-/// directly, never dropping the surrounding `Scroll` entry even when the
-/// track itself ends up with no overlap. The chrome-layout kinds
-/// (`Split`/`SplitTree`) carry several independent
-/// sub-region rects apiece with no single outer bounds to narrow, and
-/// aren't realistic `Scroll` content — left as-is.
+/// Narrowed via [`primary_bounds_mut`]: [`PaintedHit::Widget`]'s `area`,
+/// a nested [`PaintedHit::Scroll`]'s `viewport`, and that scroll's absolute
+/// `scrollbar.track` (narrowed in place, never dropping the entry).
+/// `Split`/`SplitTree` carry several sub-rects with no single outer bound
+/// and are left as-is.
 pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
     let mut i = start;
     while i < hits.len() {

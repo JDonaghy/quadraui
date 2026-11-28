@@ -2111,6 +2111,12 @@ impl Interactive for Form {
         }
     }
 
+    /// No host ring: the form highlights its own focused field, and a
+    /// ring around the whole form would sit on its rows.
+    fn focus_ring(&self, _layout: &FormPrimitiveLayout) -> crate::interactive::FocusIndicator {
+        crate::interactive::FocusIndicator::Own
+    }
+
     /// Routes every event to the one behaviour implementation above:
     /// a press through [`click_field`], a drag through
     /// [`slider_drag_to`], a wheel notch through

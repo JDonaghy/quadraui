@@ -935,9 +935,12 @@ impl DoubleClickDetector {
         }
     }
 
-    /// Process a batch of translated events. Replaces `MouseDown` with
-    /// `DoubleClick` when the same button clicks at the same position
-    /// within the time window.
+    /// Process a batch of translated events. Replaces a left-button
+    /// `MouseDown` with `DoubleClick { button: Left, .. }` when it lands at
+    /// the same position as the previous left press within the time
+    /// window. Other buttons never fold: two quick right-clicks are two
+    /// context-menu requests, and a right press between two left presses
+    /// breaks the pair.
     pub fn process(&mut self, events: &mut [UiEvent]) {
         let now = Instant::now();
         for ev in events.iter_mut() {
@@ -945,6 +948,10 @@ impl DoubleClickDetector {
                 button, position, ..
             } = ev
             {
+                if *button != MouseButton::Left {
+                    self.last_click_time = None;
+                    continue;
+                }
                 let is_double = self
                     .last_click_time
                     .map(|t| now.duration_since(t) < Duration::from_millis(DOUBLE_CLICK_MS))
@@ -956,6 +963,7 @@ impl DoubleClickDetector {
                 if is_double {
                     *ev = UiEvent::DoubleClick {
                         widget: None,
+                        button: *button,
                         position: *position,
                     };
                     self.last_click_time = None;
@@ -2387,9 +2395,13 @@ mod tests {
     // ── DoubleClickDetector tests ────────────────────────────────────
 
     fn mouse_down(x: f32, y: f32) -> UiEvent {
+        button_down(MouseButton::Left, x, y)
+    }
+
+    fn button_down(button: MouseButton, x: f32, y: f32) -> UiEvent {
         UiEvent::MouseDown {
             widget: None,
-            button: MouseButton::Left,
+            button,
             position: Point::new(x, y),
             modifiers: Modifiers::default(),
         }
@@ -2405,8 +2417,52 @@ mod tests {
         let mut events = vec![mouse_down(5.0, 3.0)];
         det.process(&mut events);
         assert!(
-            matches!(events[0], UiEvent::DoubleClick { .. }),
-            "second click at same position should be DoubleClick"
+            matches!(
+                events[0],
+                UiEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            ),
+            "second click at same position should be a left DoubleClick, got {:?}",
+            events[0]
+        );
+    }
+
+    #[test]
+    fn two_quick_right_clicks_stay_two_presses() {
+        let mut det = DoubleClickDetector::new();
+        for _ in 0..2 {
+            let mut events = vec![button_down(MouseButton::Right, 5.0, 3.0)];
+            det.process(&mut events);
+            assert!(
+                matches!(
+                    events[0],
+                    UiEvent::MouseDown {
+                        button: MouseButton::Right,
+                        ..
+                    }
+                ),
+                "a right press must never fold, got {:?}",
+                events[0]
+            );
+        }
+    }
+
+    #[test]
+    fn a_right_press_between_two_left_presses_breaks_the_pair() {
+        let mut det = DoubleClickDetector::new();
+        let mut events = vec![
+            mouse_down(5.0, 3.0),
+            button_down(MouseButton::Right, 5.0, 3.0),
+            mouse_down(5.0, 3.0),
+        ];
+        det.process(&mut events);
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, UiEvent::DoubleClick { .. })),
+            "{events:?}"
         );
     }
 

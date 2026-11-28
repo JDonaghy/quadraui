@@ -44,6 +44,11 @@ from .nodes import Node
 __all__ = ["App", "WIRE_VERSION", "key_name"]
 
 
+# The `User` payload `App.quit()` posts when it is called outside a dispatch,
+# so the next step's handler call sees it and ends the run.
+QUIT_WAKE = "quadraui.app:quit"
+
+
 # Mirrors `quadraui_binding_core::WIRE_VERSION` -- every tree
 # this layer renders carries it as a `"wire_version"` sibling key (see
 # `_render_once`), so the host's own version gate
@@ -103,7 +108,8 @@ def _walk(
         }
         if value.callbacks:
             registry[node_id] = value.callbacks
-        return value.build(node_id, children_wire)
+        wire = value.build(node_id, children_wire)
+        return {**wire, **value.layout} if value.layout else wire
     if isinstance(value, dict):
         return value
     raise TypeError(f"not a renderable node: {value!r}")
@@ -148,6 +154,39 @@ def key_name(event: Any) -> Optional[str]:
     return None
 
 
+def _key_pressed(event: Any) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """The `KeyPressed` payload out of a key event in either shape `key_name`
+    accepts, and whether it arrived bare (`True`) or focus-scoped inside a
+    focused widget's own event (`False`). `(None, False)` for anything else."""
+    if not isinstance(event, dict):
+        return None, False
+    if "KeyPressed" in event:
+        return event["KeyPressed"], True
+    for inner in event.values():
+        if isinstance(inner, (list, tuple)) and len(inner) == 2:
+            activation = inner[1]
+            if isinstance(activation, dict) and "KeyPressed" in activation:
+                return activation["KeyPressed"], False
+    return None, False
+
+
+def _is_quit_key(event: Any) -> bool:
+    """Ctrl-C in any key shape that reaches the app (a focused text field
+    consumes it, so it never arrives); `q` or Escape only as a bare `KeyPressed`,
+    which no focused widget claimed (a focused widget's keys arrive wrapped
+    in its own event, and a focused text field turns `q` into an edit)."""
+    payload, bare = _key_pressed(event)
+    if payload is None:
+        return False
+    name = _raw_key_name(payload.get("key"))
+    modifiers = payload.get("modifiers") or {}
+    if modifiers.get("ctrl") and name in ("c", "C"):
+        return True
+    if not bare or any(modifiers.get(m) for m in ("ctrl", "alt", "cmd")):
+        return False
+    return name in ("q", "Escape")
+
+
 _ACTIVATE_KEY_NAMES = ("Enter", " ")
 
 
@@ -180,21 +219,29 @@ def _accepts_positional_ctx(fn: Callable[..., Any]) -> bool:
 # every typed leaf node constructor's own `on_*` keyword documents.
 _CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]]]] = {
     "Tree": {
-        "RowClicked": ("on_row_click", lambda p: (p["path"],)),
+        "RowClicked": ("on_click", lambda p: (p["path"], p["button"])),
         "RowToggleExpand": ("on_toggle_expand", lambda p: (p["path"],)),
         "RowDoubleClicked": ("on_activate", lambda p: (p["path"],)),
         "SelectionChanged": ("on_select", lambda p: (p["path"],)),
+        "SelectionSet": ("on_selection", lambda p: (p["paths"],)),
+        "ContextMenuRequested": ("on_context_menu", lambda p: (p["path"], p["position"])),
     },
     "DataTable": {
         "RowDoubleClicked": ("on_activate", lambda p: (p["idx"],)),
         "RowActivated": ("on_activate", lambda p: (p["idx"],)),
         "RowSelected": ("on_select", lambda p: (p["idx"],)),
         "HeaderClicked": ("on_header_click", lambda p: (p["col"],)),
+        "SelectionSet": ("on_selection", lambda p: (p["indices"],)),
+        "ContextMenuRequested": ("on_context_menu", lambda p: (p["idx"], p["position"])),
+        "RowClicked": ("on_click", lambda p: (p["idx"], p["button"])),
     },
     "List": {
         "SelectionChanged": ("on_select", lambda p: (p["idx"],)),
         "ItemDoubleClicked": ("on_activate", lambda p: (p["idx"],)),
         "ItemActivated": ("on_activate", lambda p: (p["idx"],)),
+        "SelectionSet": ("on_selection", lambda p: (p["indices"],)),
+        "ContextMenuRequested": ("on_context_menu", lambda p: (p["idx"], p["position"])),
+        "ItemClicked": ("on_click", lambda p: (p["idx"], p["button"])),
     },
     "TabBar": {
         "TabClosed": ("on_close", lambda p: (p["index"],)),
@@ -235,11 +282,22 @@ class App:
     trees, with events dispatched to the `on_*` callbacks those trees
     carried on their last render rather than a hand-written `handle`.
 
+    `width`/`height` are the cell grid a headless run (a test, `step()`,
+    `screen()`) renders into, 80x24 by default; `run_tui()` and
+    `run_native()` size to the real terminal or window instead.
+
     `on_event`, if given, is still called for every event this layer's own
     dispatch doesn't claim (a global key, an unrecognized shape, ...) --
     the escape hatch a keyboard-driven app (arrow keys moving a cursor with
     no single widget "owning" them) still needs; see `key_name` for
     pulling a key name out of whatever shape it arrived in.
+
+    `quit()` ends the run from anywhere: a node callback, `on_event`, an
+    `async` task, or top-level code. `q` or Escape quit unless the focused
+    widget takes the key, and Ctrl-C quits unless a focused text field
+    takes it (a list that reports Ctrl-C still quits); `on_event` sees those keys
+    first and keeps the app running by returning `True`. Pass
+    `quit_keys=False` to turn the default quit keys off.
 
     `strict` and `on_unknown_key` set the underlying `QuiApp`'s
     unknown-optional-wire-key policy for every `view()` render -- see
@@ -268,11 +326,12 @@ class App:
 
     def __init__(
         self,
-        width: int,
-        height: int,
+        width: int = 80,
+        height: int = 24,
         *,
         view: Callable[..., Any],
-        on_event: Optional[Callable[[Any], None]] = None,
+        on_event: Optional[Callable[[Any], Any]] = None,
+        quit_keys: bool = True,
         strict: bool = False,
         on_unknown_key: Optional[Callable[[str, str], None]] = None,
     ) -> None:
@@ -280,6 +339,9 @@ class App:
 
         self._view = view
         self._on_event = on_event
+        self._quit_keys = quit_keys
+        self._quit_requested = False
+        self._dispatching = False
         self._registry: Dict[str, Dict[str, Callable[..., None]]] = {}
         self._component_states: Dict[Any, Dict[str, Any]] = {}
         self._focused_id: Optional[str] = None
@@ -308,7 +370,16 @@ class App:
         # give. A handle taken once here stays valid for the app's lifetime.
         self._waker = self.qui.waker()
 
-    def set_on_event(self, on_event: Optional[Callable[[Any], None]]) -> None:
+    def quit(self) -> None:
+        """Ends the run: the current `step()` (or the next one, when this is
+        called outside a dispatch) returns `False`, and `run_tui()`/
+        `run_native()` restore the terminal or close the window and return.
+        Safe from any callback, including one running inside `step()`."""
+        self._quit_requested = True
+        if not self._dispatching:
+            self._waker.post(QUIT_WAKE)
+
+    def set_on_event(self, on_event: Optional[Callable[[Any], Any]]) -> None:
         """Replaces the global `on_event` fallback given at construction (or
         clears it, with `None`) -- the public way to compose/swap the
         escape-hatch handler after the fact, instead of assigning the
@@ -545,7 +616,20 @@ class App:
             wire = {**wire, "wire_version": WIRE_VERSION}
         return wire
 
-    def _handle(self, event: Any) -> None:
+    def _handle(self, event: Any) -> Optional[bool]:
+        """`QuiApp`'s handler: `False` (end the run) once `quit()` was called
+        or a default quit key arrived, `None` (keep running) otherwise."""
+        self._dispatching = True
+        try:
+            self._handle_event(event)
+        finally:
+            self._dispatching = False
+        return False if self._quit_requested else None
+
+    def _handle_event(self, event: Any) -> None:
+        if isinstance(event, dict) and event.get("User") == QUIT_WAKE:
+            self._quit_requested = True
+            return
         if isinstance(event, dict) and event.get("User") == _hr.HOT_RELOAD_WAKE and self._watcher is not None:
             self.reload_if_changed()
             return
@@ -553,8 +637,9 @@ class App:
             self._focused_id = event["FocusChanged"]
         if self._dispatch(event):
             return
-        if self._on_event is not None:
-            self._on_event(event)
+        claimed = self._on_event(event) if self._on_event is not None else None
+        if claimed is not True and self._quit_keys and _is_quit_key(event):
+            self._quit_requested = True
 
     def _dispatch_button_clicked(self, event: Dict[str, Any]) -> bool:
         """The `{"Form": [id, {"ButtonClicked": ...}]}` half of `_dispatch`:

@@ -2037,6 +2037,7 @@ pub(crate) mod cell_paint {
                     theme,
                     false,
                     false,
+                    button.focused,
                 );
                 continue;
             }

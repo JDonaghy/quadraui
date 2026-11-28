@@ -617,6 +617,7 @@ impl AppLogic for FindReplaceFixtureApp {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
         let rect = panel.anchored_rect(backend, Rect::new(0.0, 0.0, W as f32, H as f32));
         let _ = backend.draw_dyn(rect, &panel, &());

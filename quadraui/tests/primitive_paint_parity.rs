@@ -137,6 +137,8 @@ fn sample_tree() -> TreeView {
 
 fn sample_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("pods"),
         columns: vec![
             Column {

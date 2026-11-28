@@ -2,19 +2,20 @@
 //!
 //! Draws a border-only box (rounded corners, matching `dialog::draw_dialog`'s
 //! glyph set) around whichever widget [`crate::focus::FocusTree`]
-//! currently reports as focused. Unlike `draw_dialog`'s bordered box, this
-//! never clears its interior: it only overwrites the four edge cells,
-//! reading each one's *existing* background before repainting its
-//! glyph/foreground so the focused widget's own content keeps showing
-//! through underneath the ring.
+//! currently reports as focused.
 //!
-//! A one-row-tall `rect` (e.g. a `Form` `ButtonRow`/`ToggleGroup` item —
-//! see `primitives::form::contract`'s "Item-level keyboard focus" doc
-//! section) has no interior left for side walls once a top border is
-//! drawn, so the box would consume the entire row and erase its label.
-//! [`draw_focus_ring`] special-cases that height with an underline
-//! instead — decorating the row's existing content rather than
-//! overwriting it with border glyphs.
+//! The ring never covers the focused widget's content. It is drawn only
+//! in the padding: an edge cell whose glyph is blank takes the ring glyph
+//! (keeping the background already under it), and an edge cell holding a
+//! glyph keeps it, so a label that runs into the ring's path stays
+//! readable — a list row reads `╭─Write the README───╮` rather than losing
+//! its first row to the border.
+//!
+//! A one-row-tall `rect` (a button's `[ Label ]`, or a `Form`
+//! `ButtonRow`/`ToggleGroup` item — see `primitives::form::contract`'s
+//! "Item-level keyboard focus" doc section) has no padding row above or
+//! below it, so [`draw_focus_ring`] underlines that row instead,
+//! decorating its existing glyphs rather than replacing them.
 
 use crate::cell_surface::{CellModifier, CellStyle, CellSurface};
 use crate::theme::Theme;
@@ -38,43 +39,38 @@ pub fn draw_focus_ring(surface: &mut dyn CellSurface, rect: Rect, theme: &Theme)
         return;
     }
 
-    // Each ring cell keeps the background already under it.
-    let ring = |surface: &mut dyn CellSurface, cx: u16, cy: u16, ch: char| {
-        let style = CellStyle {
-            fg: Some(fg),
-            bg: surface.get(cx, cy).and_then(|(_, under)| under.bg),
-            ..CellStyle::default()
-        };
-        surface.put_char(cx, cy, ch, style);
+    let is_blank = |surface: &dyn CellSurface, cx: u16, cy: u16| {
+        matches!(surface.get(cx, cy), Some((' ' | '\0', _)))
     };
-
-    // Top border.
-    for col in 0..w {
-        let ch = if col == 0 {
-            '╭'
-        } else if col == w - 1 {
-            '╮'
-        } else {
-            '─'
-        };
-        ring(surface, x + col, y, ch);
-    }
-    // Bottom border (distinct row only when h > 1 — otherwise this would
-    // repaint the same row the top border just wrote).
-    if h > 1 {
-        for col in 0..w {
-            let ch = if col == 0 {
-                '╰'
-            } else if col == w - 1 {
-                '╯'
-            } else {
-                '─'
+    // A ring cell takes its glyph only where the cell is blank, keeping
+    // the background already under it.
+    let ring = |surface: &mut dyn CellSurface, cx: u16, cy: u16, ch: char| {
+        if let Some((' ' | '\0', under)) = surface.get(cx, cy) {
+            let style = CellStyle {
+                fg: Some(fg),
+                bg: under.bg,
+                ..CellStyle::default()
             };
-            ring(surface, x + col, y + h - 1, ch);
+            surface.put_char(cx, cy, ch, style);
         }
-    }
-    // Left/right borders for interior rows.
-    for row in (y + 1)..(y + h.saturating_sub(1)) {
+    };
+    // A horizontal edge steps around the whole run of text on its row, so
+    // the blanks between words stay blank: `╭─Write the README───╮`.
+    let edge = |surface: &mut dyn CellSurface, row: u16, ends: (char, char)| {
+        let text: Vec<u16> = (0..w).filter(|&c| !is_blank(surface, x + c, row)).collect();
+        let run = text.first().zip(text.last());
+        for col in (0..w).filter(|c| !run.is_some_and(|(a, b)| (a..=b).contains(&c))) {
+            let ch = match col {
+                0 => ends.0,
+                c if c == w - 1 => ends.1,
+                _ => '─',
+            };
+            ring(surface, x + col, row, ch);
+        }
+    };
+    edge(surface, y, ('╭', '╮'));
+    edge(surface, y + h - 1, ('╰', '╯'));
+    for row in (y + 1)..(y + h - 1) {
         ring(surface, x, row, '│');
         ring(surface, x + w - 1, row, '│');
     }
@@ -99,11 +95,15 @@ mod tests {
     }
 
     fn filled_buffer(w: u16, h: u16, bg: RatatuiColor) -> Buffer {
+        filled_with(w, h, bg, 'x')
+    }
+
+    fn filled_with(w: u16, h: u16, bg: RatatuiColor, ch: char) -> Buffer {
         let mut buf = Buffer::empty(RRect::new(0, 0, w, h));
         for y in 0..h {
             for x in 0..w {
                 let mut cell = Cell::default();
-                cell.set_char('x').set_bg(bg);
+                cell.set_char(ch).set_bg(bg);
                 buf[(x, y)] = cell;
             }
         }
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn draws_corners_and_edges() {
         let theme = Theme::default();
-        let mut buf = filled_buffer(10, 5, RatatuiColor::Black);
+        let mut buf = filled_with(10, 5, RatatuiColor::Black, ' ');
         ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
 
         assert_eq!(buf[(1, 1)].symbol(), "╭");
@@ -149,13 +149,53 @@ mod tests {
     fn preserves_existing_background() {
         let theme = Theme::default();
         let bg = RatatuiColor::Rgb(10, 20, 30);
-        let mut buf = filled_buffer(10, 5, bg);
+        let mut buf = filled_with(10, 5, bg, ' ');
+        buf[(3, 2)].set_char('x');
         ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
 
+        assert_eq!(buf[(1, 1)].symbol(), "╭");
         assert_eq!(buf[(1, 1)].bg, bg, "ring cells must keep the existing bg");
         // Interior (non-border) cells are untouched entirely.
         assert_eq!(buf[(3, 2)].symbol(), "x");
         assert_eq!(buf[(3, 2)].bg, bg);
+    }
+
+    /// The ring is drawn in the padding only: an edge cell already
+    /// holding a glyph keeps it, glyph and colours alike, so a focused
+    /// control's label is never replaced by a border glyph.
+    #[test]
+    fn never_covers_a_glyph_on_its_path() {
+        let theme = Theme::default();
+        let bg = RatatuiColor::Rgb(10, 20, 30);
+        let mut buf = filled_with(10, 5, bg, ' ');
+        // A label on the ring's left wall and one on its top edge.
+        buf[(1, 2)].set_char('[').set_fg(RatatuiColor::Red);
+        buf[(3, 1)].set_char('W');
+        ring(&mut buf, RRect::new(1, 1, 5, 3), &theme);
+
+        assert_eq!(buf[(1, 2)].symbol(), "[");
+        assert_eq!(buf[(1, 2)].fg, RatatuiColor::Red);
+        assert_eq!(buf[(3, 1)].symbol(), "W");
+        // The blank cells either side still carry the ring.
+        assert_eq!(buf[(2, 1)].symbol(), "─");
+        assert_eq!(buf[(5, 2)].symbol(), "│");
+    }
+
+    /// A horizontal edge running into a row of text leaves the whole run
+    /// alone, the blanks between its words included.
+    #[test]
+    fn an_edge_steps_around_a_run_of_words() {
+        let theme = Theme::default();
+        let mut buf = filled_with(12, 3, RatatuiColor::Black, ' ');
+        for (i, ch) in "ab cd".chars().enumerate() {
+            buf[(2 + i as u16, 0)].set_char(ch);
+        }
+        ring(&mut buf, RRect::new(0, 0, 12, 3), &theme);
+
+        let row: String = (0..12u16)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect();
+        assert_eq!(row, "╭─ab cd────╮");
     }
 
     #[test]
@@ -179,6 +219,9 @@ mod tests {
         use crate::tui::cell_surface::oracle;
 
         let theme = Theme::default();
+        // Blank padding with a glyph every third column, so the golden
+        // shows the ring both drawn in the padding and stepping around
+        // content on its path.
         let prefill = |s: &mut dyn CellSurface| {
             let (w, h) = s.size();
             for y in 0..h {
@@ -187,7 +230,8 @@ mod tests {
                         crate::Color::rgb(200, 200, 200),
                         crate::Color::rgb(10, 20 + x as u8, 30 + y as u8),
                     );
-                    s.put_char(x, y, 'x', style);
+                    let ch = if x % 3 == 0 { 'x' } else { ' ' };
+                    s.put_char(x, y, ch, style);
                 }
             }
         };

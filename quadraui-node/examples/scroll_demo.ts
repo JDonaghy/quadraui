@@ -20,7 +20,7 @@
 // position across frames; see `ScrollOptions`' own doc for the controlled
 // alternative (pinning `offset` from app state on every render).
 
-const { App, Button, Column, Scroll, keyName } = require("../js/app/index.ts");
+const { App, Button, Column, Scroll, keyName } = require("@quadraui/node/app");
 
 import type { Renderable } from "../js/app/index";
 

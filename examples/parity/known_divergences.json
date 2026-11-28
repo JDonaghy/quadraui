@@ -2,24 +2,10 @@
   "about": "Recorded places where the Rust version renders differently from Python/Node. scripts/parity_check.py allows a difference only inside an entry's region (and in the fired updates only when `events` is true), only at the listed steps, and fails if a listed step stops differing there, so a fix forces the entry to be removed. Steps count from 0 (the first paint); step N is the frame after script.json's Nth input.",
   "divergences": [
     {
-      "id": "form-focus-ring",
-      "lang": "rust",
-      "steps": [1, 2, 3, 5, 6],
-      "region": [0, 0, 40, 3],
-      "reason": "While the form holds focus, the Rust runner paints Backend::draw_focus_ring around the whole Form rect, which covers the field (the typed text is hidden). The Python/Node engine paints no ring on a Form and relies on the form's own focused-row highlight."
-    },
-    {
-      "id": "button-pressed-after-release",
-      "lang": "rust",
-      "steps": [4, 7, 10],
-      "region": [0, 7, 40, 1],
-      "reason": "After a click is released over a Button, Rust paints it with Theme::button_pressed_bg (#60aaf0, blend 0.26) while Python/Node paint Theme::button_hover_bg (#58a6f0, blend 0.14). The pressed state outlives the mouse-up on the Rust path."
-    },
-    {
       "id": "controlled-list-ignores-arrow-keys",
       "lang": "rust",
-      "steps": [9],
-      "region": [0, 9, 40, 1],
+      "steps": [19],
+      "region": [0, 8, 40, 1],
       "events": true,
       "reason": "Down on a focused List whose selection the app pins (selected != 0) moves the selection and fires SelectionChanged in Rust. In Python/Node the pinned selection latches as controlled, the key is not routed to on_select/onSelect, and nothing changes."
     }

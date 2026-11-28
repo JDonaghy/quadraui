@@ -117,7 +117,7 @@ impl LayoutContent {
         tab_stops_from_hits(&self.hits.borrow())
     }
 
-    /// Routes `event` into the subtree, exactly as the main tree's own
+    /// Routes `event` into the subtree as the main tree's
     /// `event -> hit -> semantic` dispatch would: a positioned
     /// `MouseDown`/`DoubleClick` click-focuses the leaf it landed on
     /// (mirroring [`InteractionEngine::handle`]'s own click-to-focus
@@ -150,13 +150,12 @@ impl LayoutContent {
             UiEvent::MouseDown { position, .. } | UiEvent::DoubleClick { position, .. } => {
                 let position = *position;
                 let double_click = matches!(event, UiEvent::DoubleClick { .. });
-                let modifiers = match event {
-                    UiEvent::MouseDown { modifiers, .. } => *modifiers,
-                    _ => Modifiers::default(),
-                };
-                let button = match event {
-                    UiEvent::MouseDown { button, .. } => *button,
-                    _ => MouseButton::default(),
+                let (modifiers, button) = match event {
+                    UiEvent::MouseDown {
+                        modifiers, button, ..
+                    } => (*modifiers, *button),
+                    UiEvent::DoubleClick { button, .. } => (Modifiers::default(), *button),
+                    _ => (Modifiers::default(), MouseButton::default()),
                 };
                 let (id, detail, is_focusable) = {
                     let hits = self.hits.borrow();
@@ -308,15 +307,11 @@ fn stops_around_focused_children(
     stops
 }
 
-/// A plain Tab/Shift-Tab on a focused generic leaf with per-child focus
-/// stops whose focused child — the one it last requested focus for — is
-/// its last (or first): focus leaves the leaf for the next (or previous)
-/// stop in `hits`' tab order, rather than the leaf wrapping round its own
-/// children. The leaf [`stops_around_focused_children`] leaves out while it
-/// holds focus rejoins the cycle here. Returns the newly focused stop and
-/// the reaction to the move; `None` for any other event, a leaf not at
-/// either end of its children, or when there is nowhere else to go — the
-/// key then goes to the leaf itself.
+/// A plain Tab/Shift-Tab on a focused leaf whose focused child is its last
+/// (or first) stop ([`quadraui::FocusSpec::child_at_edge`]): focus moves to
+/// the next (or previous) stop in `hits`' tab order instead of wrapping
+/// inside the leaf. Returns the new stop and the reaction; `None` (the key
+/// goes to the leaf) otherwise.
 fn tab_past_child_stops(
     hits: &[PaintedHit],
     focused: Option<quadraui::FocusAddress>,
@@ -338,16 +333,7 @@ fn tab_past_child_stops(
     let forward = matches!(named, NamedKey::Tab) && !modifiers.shift;
     let (focused, sub) = focused?;
     let (_, widget) = dyn_widget_hit(hits, focused)?;
-    let quadraui::FocusSpec::Children(stops) = widget.focus() else {
-        return None;
-    };
-    let pos = stops.iter().position(|stop| Some(stop.sub) == sub)?;
-    let at_end = if forward {
-        pos + 1 >= stops.len()
-    } else {
-        pos == 0
-    };
-    if !at_end {
+    if !widget.focus().child_at_edge(sub, forward) {
         return None;
     }
     let next = next_stop_after(hits, focused, forward)?;
@@ -2224,8 +2210,8 @@ impl InteractionEngine {
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
     /// `Split`/`SplitTree` are chrome around other content, not focusable
     /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
-    /// pointer-only header contributes none; `TextDisplay` is always one (scroll/copy need
-    /// keyboard focus the same way a `Tree`/`List` does); every other
+    /// pointer-only header contributes none; a `TextDisplay` is one only
+    /// when it shows a scrollbar for the keyboard to drive; every other
     /// variant yields its id and bounding `Rect`.
     ///
     /// Returns empty while a form dialog is open, regardless of what the
@@ -2594,13 +2580,9 @@ impl InteractionEngine {
                     _ => None,
                 });
                 if let Some(content) = layout_content {
-                    // `LayoutContent::dispatch`'s own `None` means
-                    // "nothing in the subtree claimed this" — an Escape
-                    // the popover itself owns, or a key with no meaning
-                    // for the focused leaf. A positioned event that
-                    // landed inside the popover is still claimed either
-                    // way: it visually hit the popover, so the tree
-                    // painted underneath must never see it.
+                    // `None`: nothing in the popover claimed it. A
+                    // positioned event inside the popover is claimed
+                    // anyway, so the tree underneath never sees it.
                     match content.dispatch(event, self, backend, sink) {
                         Some(result) => return Some(result),
                         None if inside == Some(true) => return Some(Reaction::Continue),
@@ -2610,13 +2592,9 @@ impl InteractionEngine {
             }
         }
 
-        // Float does NOT claim mouse clicks here: its content is painted
-        // by the host, not this engine (see `Self::show_float`'s doc), so
-        // a click anywhere near it has to keep flowing through the
-        // normal hit-map routing below for that content to ever receive
-        // it. A non-focusable hint float never steals Escape either, same
-        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
-        // draws.
+        // A host-painted float claims no clicks (they reach its content
+        // through the hit map below), and only a focusable one claims
+        // Escape ([`quadraui::ModalStack::top_focusable`]).
         let float_claims_escape = self
             .overlays
             .iter()
@@ -2636,17 +2614,7 @@ impl InteractionEngine {
         None
     }
 
-    /// The full `event -> hit -> semantic` orchestration: menu-bar/
-    /// context-menu routing, divider/scrollbar drag arming and translation,
-    /// click-to-focus, focus-scoped key/paste routing, and the raw ->
-    /// semantic event substitution, ending in exactly one call to `sink`
-    /// (two, for a `MouseDown`/`DoubleClick` that also changes focus) with
-    /// the fully-resolved event. Mirrors a binding's own `AppLogic::handle`
-    /// body one-for-one; the binding itself need only check whether its own
-    /// handler is registered before calling this (so that an app with no
-    /// handler at all skips every bit of state this engine would otherwise
-    /// touch) and supply `sink`.
-    /// Persists the handful of events [`Self::widget_state`] tracks    /// Persists the one event [`Self::widget_state`] tracks
+    /// Persists the one event [`Self::widget_state`] tracks
     /// uncontrolled-by-default, regardless of what `sink` goes on to do
     /// with it: a divider drag's resolved ratio
     /// ([`crate::host::resolve_split_ratio`]'s own counterpart). Never
@@ -3168,7 +3136,26 @@ impl InteractionEngine {
         } else {
             quadraui::Reaction::Continue
         };
-        pointer.merge(self.route(event, backend, sink))
+        // Focus pushed onto a widget with per-child stops (a form) enters
+        // its first child, as Tab into it does.
+        let enters = match &event {
+            UiEvent::FocusChanged(Some(id)) if backend.focus_tree().focused_id() != Some(id) => {
+                dyn_widget_hit(&self.hit_map.borrow(), *id).is_some_and(
+                    |(_, w)| matches!(w.focus(), quadraui::FocusSpec::Children(s) if !s.is_empty()),
+                )
+            }
+            _ => false,
+        };
+        let reaction = pointer.merge(self.route(event, backend, sink));
+        if !enters {
+            return reaction;
+        }
+        let tab = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        reaction.merge(self.route(tab, backend, sink))
     }
 
     fn route(
@@ -3179,28 +3166,16 @@ impl InteractionEngine {
     ) -> quadraui::Reaction {
         use quadraui::Reaction;
 
-        // Set when a tooltip auto-dismisses below — merged into the final
-        // `Reaction` (and threaded through `continue_or_tooltip_redraw`
-        // for the handful of early `return`s further down whose own
-        // outcome is "nothing changed") so the redraw that takes the
-        // tooltip off screen always happens, regardless of which path
-        // through this function the event takes.
+        // A tooltip auto-dismissed below: every return path redraws
+        // (`continue_or_tooltip_redraw`) so it leaves the screen.
         let mut tooltip_dismissed = false;
 
-        // The reaction a focused generic widget produced for a key it let
-        // travel on (`Handled::Ignored`) while still asking for a repaint —
-        // a script-defined widget whose script consumed the key does this
-        // so the app sees the key press too. Merged into the final
-        // `Reaction` below, the same way `tooltip_dismissed` is, so the
-        // widget's repainted state shows even when `sink.dispatch` itself
-        // leaves `event` unhandled.
+        // The repaint a focused generic widget asked for on a key it still
+        // let travel on (`Handled::Ignored`), merged into the final result.
         let mut widget_key_reaction = Reaction::Continue;
 
-        // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
-        // valid drop target, below — merged into the final `Reaction` the
-        // same way `widget_key_reaction` is. `drag_started_reaction`/
-        // `drag_over_reaction` are its arm/continue counterparts, set
-        // further down once `hit`/the `MouseMoved` branch are reached.
+        // An armed `Self::gesture_drag` dropping, starting and moving over
+        // a target, merged into the final result.
         let mut gesture_reaction = Reaction::Continue;
         let mut drag_started_reaction = Reaction::Continue;
         let mut drag_over_reaction = Reaction::Continue;
@@ -3263,14 +3238,8 @@ impl InteractionEngine {
             }
         }
 
-        // A tooltip is non-interactive chrome, not a modal-input state
-        // machine — it never claims a click/key for itself, so this is a
-        // side effect rather than an early return. Clearing it here (on
-        // every `MouseDown`/`KeyPressed`, before anything else below gets
-        // a chance to consume the event) is what "route dismissal" means
-        // for a primitive with [`quadraui::Backend::draw_tooltip`]'s "no
-        // hit data returned" contract: the next interaction anywhere always hides
-        // it, same as a native tooltip's hover-out behaviour.
+        // Any press or key hides a tooltip, before anything can consume the
+        // event, without claiming it: a tooltip is non-interactive chrome.
         if matches!(
             event,
             UiEvent::MouseDown { .. } | UiEvent::KeyPressed { .. }
@@ -3284,16 +3253,15 @@ impl InteractionEngine {
             tooltip_dismissed = true;
         }
 
-        // A directly-dispatched `UiEvent::FocusChanged` — e.g. a binding's
-        // own Tab-cycling, which calls `AppLogic::handle` (hence this
-        // engine, once the binding's own `handle` forwards to it) straight
-        // through with the new focus, never going through the
-        // click-to-focus bookkeeping further down — gets the same
-        // "scroll a child only partly inside its `Scroll` fully into
-        // view" side effect that bookkeeping already applies to a
-        // click-driven focus change.
+        // A directly-dispatched `UiEvent::FocusChanged` (Tab-cycling, a test
+        // harness's `focus(id)`) moves keyboard focus to the widget it names,
+        // so the keys that follow reach it, and scrolls a child only partly
+        // inside its `Scroll` into view, as a click-driven focus change does.
         let mut scroll_into_view_reaction = Reaction::Continue;
         if let UiEvent::FocusChanged(Some(id)) = &event {
+            if backend.focus_tree().focused_id() != Some(id) {
+                backend.set_focus(Some(*id));
+            }
             scroll_into_view_reaction = self.scroll_focused_child_into_view(*id, sink);
             if matches!(scroll_into_view_reaction, Reaction::Exit) {
                 return scroll_into_view_reaction;
@@ -3312,26 +3280,15 @@ impl InteractionEngine {
         }
         let popup_reaction = popup_routing.reaction();
 
-        // One shared pass over `Self::overlays`, topmost (highest
-        // `Overlay::rank`) first — toast (claims a `MouseDown` landing on
-        // its own dismiss/action region only), then dialog (claims
-        // everything), then completions/rich-text-popup (each claims
-        // Escape and a `MouseDown`), then float (claims Escape only when
-        // focusable) — collapsing what used to be five hand-written
-        // per-kind precedence blocks into [`Self::dispatch_overlays`].
-        // `None` means nothing in the stack claimed `event`; the
-        // menu-bar/context-menu routing below (and everything after it)
-        // runs exactly as if none of this existed.
+        // `Self::overlays`, topmost first: a toast claims presses on its own
+        // regions, a dialog everything, completions/rich-text popups Escape
+        // and presses, a focusable float Escape. `None`: none claimed it.
         if let Some(reaction) = self.dispatch_overlays(&event, backend, sink) {
             return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
 
-        // A context-menu popup owns a full modal-input state machine that
-        // must see every event before the rest of this function's own
-        // routing — matching `ContextMenuController::handle`'s own doc
-        // ("call this before other UI routing"). It reports `Ignored`
-        // immediately when nothing of its own is open, so this is safe
-        // to run unconditionally.
+        // An open context menu sees every event before other routing
+        // (`ContextMenuController::handle`); with none open it ignores it.
         match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
                 // Activation/dismissal already closed the popup in
@@ -3407,19 +3364,14 @@ impl InteractionEngine {
             }
         }
 
-        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf no longer
-        // needs a bespoke claim loop here: it now decodes as a
-        // `crate::layout::LeafDescriptor::Widget`, so it hits
+        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf decodes
+        // as a `crate::layout::LeafDescriptor::Widget`, so it hits
         // `HitDetail::WidgetBody` through the generic hit-test pipeline
         // below, the same as every other `WIDGET_KINDS` member —
         // [`Self::dispatch_dyn_widget_click`] (and, through it,
         // [`Self::dyn_widget_dispatch`]'s own focus-request handling)
-        // covers click-to-focus generically. No `UiEvent::Scroll` arm
-        // either: [`CellGrid::handle`][quadraui::interactive::Interactive::handle]
-        // has no `RoutedEvent::Wheel` arm of its own yet (always
-        // `Handled::Ignored`), same gap the deleted
-        // [`CellGridController`]-based wheel block already documented as
-        // a no-op.
+        // covers click-to-focus generically, and its wheel scrolling
+        // arrives through the generic widget wheel dispatch above.
         //
         // A move with the left button held continues whichever
         // [`crate::widget_kinds::WIDGET_KINDS`] leaf's own in-progress
@@ -3754,9 +3706,7 @@ impl InteractionEngine {
                 UiEvent::MouseDown {
                     modifiers, button, ..
                 } => Some((*modifiers, false, *button)),
-                UiEvent::DoubleClick { .. } => {
-                    Some((Modifiers::default(), true, MouseButton::default()))
-                }
+                UiEvent::DoubleClick { button, .. } => Some((Modifiers::default(), true, *button)),
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
@@ -7285,13 +7235,12 @@ mod tests {
 
         driver.app().sink.borrow_mut().dispatched.clear();
 
-        // A double-click on the same button must activate it only once:
-        // `Button::handle` only matches `PointerKind::Down` on the main
-        // tree, ignoring `PointerKind::DoubleClick` outright, so this
-        // subtree's own click arm must not fire `ButtonActivated` for a
-        // `DoubleClick` either.
+        // The second press of a quick pair reaches the button as the
+        // `DoubleClick` it folded into, which a button with no double-click
+        // meaning takes as one more press: exactly one more activation.
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(
                 submit_rect.x + submit_rect.width * 0.5,
                 submit_rect.y + submit_rect.height * 0.5,
@@ -7299,13 +7248,13 @@ mod tests {
         });
         {
             let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                !dispatched
-                    .iter()
-                    .any(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. })),
-                "a double-click on the popover button must not emit a \
-                 second ButtonActivated: {:?}",
-                dispatched
+            let activations = dispatched
+                .iter()
+                .filter(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. }))
+                .count();
+            assert_eq!(
+                activations, 1,
+                "a double-click on the popover button is one more press: {dispatched:?}"
             );
         }
 
@@ -7959,6 +7908,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         assert_eq!(
@@ -8067,6 +8017,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         driver.dispatch(UiEvent::Scroll {
@@ -8338,6 +8289,8 @@ mod tests {
         use quadraui::{Column, ColumnWidth, DataRow, StyledText};
 
         let data_table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 Column {

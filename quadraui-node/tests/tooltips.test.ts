@@ -38,7 +38,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // Small values are fine -- nothing here waits in real time, so the clock
 // jumps straight to whatever absolute millisecond each test needs.

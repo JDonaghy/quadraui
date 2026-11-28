@@ -7,28 +7,24 @@ native addon.
 
 > **Status: run it from a clone today.** `@quadraui/node` is first
 > published to npm with quadraui 0.12
-> ([#3079](https://github.com/JDonaghy/quadraui/issues/3079)). Even
-> installed from a local path, its `app` and JSX entry points do not load
-> from `node_modules` yet
-> ([#2801](https://github.com/JDonaghy/quadraui/issues/2801)): under `tsx`,
-> `require("@quadraui/node/app")` returns an empty object and you get
-> `TypeError: App is not a constructor`, and plain Node cannot load the JSX
-> runtime (`SyntaxError: Unexpected token 'export'`). So this page runs
-> your app through the clone's own loader, which CI uses.
-> [From npm](#from-npm-after-012) shows the intended setup for when both
-> land.
+> ([#3079](https://github.com/JDonaghy/quadraui/issues/3079)). Until then
+> this page runs your app through the clone's own loader, which CI uses.
+> [From npm](#from-npm-after-012) shows the setup for an installed package;
+> CI already runs it against `npm pack` tarballs of the clone.
 
 ## 1. Get quadraui
 
 ```sh
 git clone https://github.com/JDonaghy/quadraui
-cd quadraui/quadraui-node && npm ci && npm run build:debug && cd ..
+cd quadraui/quadraui-node && npm ci && npm run build:debug && npm run build:dist && cd ..
 ```
 
 `npm ci` installs the exact locked versions without touching
 `package-lock.json`. npm 11 may warn that esbuild's install script was
 blocked by `allow-scripts`; the loader works anyway, so you can ignore it.
-`build:debug` compiles the native addon (it needs a Rust toolchain).
+`build:debug` compiles the native addon (it needs a Rust toolchain), and
+`build:dist` compiles the package's TypeScript to `dist/`, where its
+entry points live.
 
 ## 2. Write the app
 
@@ -38,7 +34,7 @@ from the README, and CI runs and type-checks this exact file
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+import { App } from "@quadraui/node/app";
 
 class Counter {
   count = 0;
@@ -46,26 +42,19 @@ class Counter {
   view() {
     return (
       <column>
-        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
-        <row>
+        <text id="count">Count: {this.count}</text>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>
       </column>
     );
   }
-
-  onKey(event: unknown, quit: () => void) {
-    if (keyName(event) === "q") quit();
-  }
 }
 
 if (require.main === module) {
   const counter = new Counter();
-  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
-  const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => counter.view() }).runTui(); // q quits; or .runNative("Counter"): same Counter
 }
 module.exports = { Counter };
 ```
@@ -77,31 +66,40 @@ The three parts:
   and runs again after every event, so a changed `count` shows up without
   `setState` or a redraw call.
 - **Update** is the handlers: `onClick` on an element, and `onEvent` for
-  input no single widget owns, such as the `q` key.
+  input no single widget owns, such as a global shortcut.
 
 Lowercase tags are quadraui's built-in widgets, typed from the same
-generated schema as the Rust side, so a misspelled prop fails `tsc`. The
-`App` class itself comes in through `require` and is untyped (`any`) for
-now, because the app layer's runtime exports are CommonJS assignments
-(#2801).
+generated schema as the Rust side, so an editor or `tsc` flags a misspelled
+prop or a wrong argument to `App`. `run_tui.ts` (step 3) strips the types
+without checking them; to type-check your own file, give it the
+`tsconfig.json` under [From npm](#from-npm-after-012).
+
+The file is CommonJS, the module style Node's `require` loads: `import`
+brings in quadraui, `require.main === module` starts the app only when the
+file itself is run (not when a test loads it), and `module.exports` is what
+a test imports.
 
 Some details the sample does not explain:
 
-- **Text.** A `<textDisplay>` takes a list of lines, each a list of styled
-  spans. `fg: null, bg: null` means the theme's colours; the type requires
-  both keys.
-- **`new App(30, 5, ...)`** is the size in character cells (columns, rows)
-  for a headless run, such as the test in step 5. A live `runTui()` fills
-  the terminal and `runNative()` opens a window, and both ignore it.
-- **Quitting.** `app.stopLive()` throws if it runs inside an event
-  handler, and the run loop's next step throws unless `live.stop()` runs
-  too. So `quit()` defers both with `setImmediate`. It is declared after
-  `app` because it needs `live` and `app`; the handler only calls it
-  later. An `App.quit()` that is safe to call from a handler is proposed.
-- **Layout.** `<column>` and `<row>` split their space equally between
-  their children, so in a full-size terminal the label takes the top half
-  and each button half the width. Per-child sizes are not exposed yet
-  ([Layout](../concepts/layout.md)).
+- **Text.** `<text>` is one line of plain text, sized to its content. For
+  colours, use a `<textDisplay>`: it takes a list of lines, each a list of
+  styled spans with optional `fg` and `bg`.
+- **`new App(...)`** takes an optional size in character cells, `new
+  App(30, 5, { view })`, for a headless run such as the test in step 5; it
+  defaults to 80x24. A live `runTui()` fills the terminal and `runNative()`
+  opens a window, and both ignore it.
+- **Layout.** `<column>` and `<row>` split their space equally between the
+  children that do not ask for a size. Only `<text>` asks for its content
+  size by default, so the label takes one row; every other element,
+  `<form>` and `<list>` included, takes an equal share unless you give it
+  a size. `<row size="content">` gives the buttons their natural height,
+  and they share its width; a one-line `<form>` wants `size="content"`
+  too. Any element takes `size` (pixels as a number, `"30%"`, `"2fr"` or
+  `"content"`) and `min`/`max` ([Layout](../concepts/layout.md)).
+- **Quitting.** `q` and Escape quit unless the focused widget takes the
+  key (a text field types `q`, a list keeps it), and Ctrl-C quits unless
+  a focused text field takes it. Call `app.quit()` from any handler to
+  quit yourself, and pass `quitKeys: false` to turn the keys off.
 
 ## 3. Run it in the terminal
 
@@ -122,7 +120,7 @@ it fails or hangs when input is piped or comes from `script`.
 
 ## 4. Run it in a native window
 
-Change `app.runTui()` to `app.runNative("Counter")`, and build the addon
+Change `.runTui()` to `.runNative("Counter")`, and build the addon
 with a native backend (`libgtk-4-dev` is needed on Linux):
 
 ```sh
@@ -148,16 +146,33 @@ const { harness } = require(SUBPATHS["@quadraui/node/testing"]);
 const counter = new Counter();
 const h = harness(new App(30, 5, { view: () => counter.view() }));
 if (!h.contains("Count: 0")) throw new Error(h.screen());
-// `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-// DoubleClick, which a Button does not treat as a second activation (see
-// examples/hero/README.md, "Gaps").
-for (const label of ["+", "-", "+"]) h.clickText(label);
+for (const label of ["+", "+"]) h.clickText(label);
+if (!h.contains("Count: 2")) throw new Error(h.screen());
+h.clickText("-");
 console.log(h.screen());
 if (!h.contains("Count: 1")) throw new Error(h.screen());
 ```
 
-In a file you run with `run_tui.ts`, the same two modules are plain
-`require("@quadraui/node/app")` and `require("@quadraui/node/testing")`.
+A test of your own app is a file of its own, run the same way
+(`node examples/hero/node/run_tui.ts ~/counter/counter.test.tsx`), with
+plain imports. This one is `examples/hero/node/counter.test.tsx`:
+
+<!-- sample: examples/hero/node/counter.test.tsx -->
+```tsx
+import { App } from "@quadraui/node/app";
+import { harness } from "@quadraui/node/testing";
+
+const { Counter } = require("./counter.tsx");
+
+const counter = new Counter();
+const h = harness(new App(30, 5, { view: () => counter.view() }));
+h.clickText("+");
+h.clickText("+");
+h.clickText("-");
+if (!h.contains("Count: 1")) throw new Error(h.screen());
+console.log("ok");
+```
+
 The harness methods you will use most:
 
 | Method | Does |
@@ -170,12 +185,18 @@ The harness methods you will use most:
 | `screen()`, `screenLines()` | The frame as text. |
 | `find({ id, role, text })` | A widget, to read or act on (`.click()`, `.focus()`, `.row(...)`). |
 
-**Two clicks on the same spot count once.** Clicks less than 400 ms and
-1.5 cells apart fold into a double-click, and a button ignores the second
-half of one. This is why the test clicks `+ - +` rather than `+ + -`. To
-press the same button twice, click it once (which also focuses it) and
-then `h.press("Enter")`. A user clicking quickly in a live app hits the
-same limit today.
+**Typing into a field.** Keys go to the focused widget, and a click moves
+focus to what it lands on, so after `clickText("-")` typed keys reach the
+`-` button. To type into a form, focus it first: `find({ id: "form"
+}).focus()` puts focus on its first field, and clicking a field's label
+(`clickText("New")`) focuses that field. A field's own id names the field
+inside the form, not a widget, so `find({ id: "draft" })` finds nothing.
+
+**Two quick clicks are two clicks.** Clicks less than 400 ms and 1.5
+cells apart fold into a double-click, which a list, table or tree row
+treats as "open"; a button, or any widget with no double-click meaning,
+sees both presses, so the two quick `+` clicks above count twice. Only the
+left button folds: two quick right-clicks are two context-menu requests.
 
 ## 6. Next: a text field and a list
 
@@ -186,7 +207,12 @@ a status bar. From `examples/parity/node/todo.tsx`:
 
 <!-- sample: examples/parity/node/todo.tsx -->
 ```tsx
-const item = (text: string) => ({ text: { spans: [{ text, fg: null, bg: null }] } });
+import { App, TextInputField } from "@quadraui/node/app";
+
+const item = (text: string) => ({ text: { spans: [{ text }] } });
+const grey = { r: 220, g: 220, b: 220, a: 255 };
+const navy = { r: 40, g: 40, b: 60, a: 255 };
+const segment = (text: string) => ({ text: ` ${text} `, fg: grey, bg: navy });
 ```
 
 <!-- sample: examples/parity/node/todo.tsx -->
@@ -195,7 +221,7 @@ const item = (text: string) => ({ text: { spans: [{ text, fg: null, bg: null }] 
     const draft = TextInputField("New", this.draft, { id: "draft", onChange: (t: string) => this.edit(t), onSubmit: () => this.add() });
     return (
       <column>
-        <form id="form" fields={[draft]} />
+        <form id="form" size="content" fields={[draft]} />
         <list id="todos" items={this.todos.map(item)} onSelect={(i) => this.select(i)} />
         <row>
           <button id="add" label="Add" onClick={() => this.add()} />
@@ -212,7 +238,11 @@ const item = (text: string) => ({ text: { spans: [{ text, fg: null, bg: null }] 
 - A text field is a `TextInputField(label, value, options)` from
   `@quadraui/node/app`, placed in a `<form>`'s `fields`. `onChange(text)`
   gets the whole new value after each keystroke; `onSubmit(text)` fires on
-  Enter.
+  Enter. `size="content"` keeps the one-line form one line tall.
+- `segment` is the file's own helper: a status-bar segment is `{ text, fg,
+  bg }`.
+- Tab leaves the form after its last field, for the list and then the
+  buttons; clicking a button moves focus to it, away from the field.
 - `onSelect(index)` gets the selected row's index. Pass `selected` to pin
   the selection yourself ([State](../concepts/state.md)).
 - The file's `log` records each update for the parity check; your app does
@@ -229,21 +259,23 @@ array:
 | `<column>...</column>` | `Column([...children], { gap, padding })` |
 | `<row>...</row>` | `Row([...children], { gap, padding })` |
 | `<button id="b" label="Go" onClick={f} />` | `Button("Go", { id: "b", onClick: f })` |
+| `<text id="t">Hello</text>` | `Text("Hello", { id: "t" })` |
 | `<textDisplay id="t" lines={lines} />` | `TextDisplay(lines, { id: "t" })` |
 | `<list id="l" items={items} onSelect={f} />` | `List(items, { id: "l", onSelect: f })` |
 | `<form id="f" fields={fields} />` | `Form(fields, { id: "f" })` |
 | `<statusBar id="s" leftSegments={l} rightSegments={r} />` | `StatusBar(l, r, { id: "s" })` |
 
-Because `require` gives these as `any`, a React-style props object is not
-caught: `Button({ id, label })` builds a button with no id, and
-`Column({ children })` throws `items is not iterable`. A whole app in this
-style is `quadraui-node/examples/sample_app.ts`.
+The node constructors take positional arguments, not a React-style props
+object: `Button("+", { id: "inc", onClick })` and `Column([a, b])`, and
+`tsc` rejects `Button({ id, label })`. A whole app in this style is
+`quadraui-node/examples/sample_app.ts`.
 
 ## From npm (after 0.12)
 
-Once `@quadraui/node` is on npm and #2801 has landed, a project of your
-own will look like this. It does not run yet; see the status note at the
-top.
+Once `@quadraui/node` is on npm, a project of your own looks like this.
+Until then, `npm pack` in the clone's `quadraui-node/` (and in
+`quadraui-node/npm/<your platform>/`, with the built `.node` file copied
+in) gives you tarballs to `npm install` instead.
 
 ```sh
 mkdir counter && cd counter && npm init -y
@@ -255,7 +287,7 @@ npm install --save-dev tsx typescript @types/node
 {
   "compilerOptions": {
     "strict": true,
-    "module": "commonjs",
+    "module": "node16",
     "target": "es2020",
     "types": ["node"],
     "jsx": "react-jsx",
@@ -264,8 +296,11 @@ npm install --save-dev tsx typescript @types/node
 }
 ```
 
-`@types/node` and `"types": ["node"]` are what let `tsc` see `require`,
-`module` and `setImmediate`. Then `npx tsx counter.tsx` runs the app.
+`"module": "node16"` (or `"nodenext"`, or `"bundler"` with a bundler) is
+what makes `tsc` read the package's `exports` map, so
+`@quadraui/node/app` and the JSX runtime resolve with their types.
+`@types/node` and `"types": ["node"]` let `tsc` see `require.main` and
+`module`. Then `npx tsx counter.tsx` runs the app.
 
 ## More
 

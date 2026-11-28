@@ -18,9 +18,6 @@
 // doc), so a plain mutable object is all the "redraw on mutation" story
 // needs -- there is nothing to intercept a write for, unlike a framework
 // that only repaints when told a value changed.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives.
 
 import type { Renderable } from "./nodes";
 
@@ -39,7 +36,7 @@ export type ComponentState = Record<string, unknown>;
  * components can reorder (state should follow the item, not the slot it
  * happened to render into this frame).
  */
-class Component {
+export class Component {
   key: unknown;
 
   constructor(key?: unknown) {
@@ -54,4 +51,3 @@ class Component {
     throw new Error("Component subclasses must override view()");
   }
 }
-exports.Component = Component;

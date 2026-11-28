@@ -9423,6 +9423,7 @@ def handle(event):
 
             let click = UiEvent::DoubleClick {
                 widget: None,
+                button: quadraui::MouseButton::Left,
                 position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
             };
             let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
@@ -9553,6 +9554,7 @@ def handle(event):
 
             let click = UiEvent::DoubleClick {
                 widget: None,
+                button: quadraui::MouseButton::Left,
                 position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
             };
             let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
@@ -9731,6 +9733,115 @@ def handle(event):
                 .extract()
                 .expect("idx must be an int");
             assert_eq!(idx, 0, "the activated item's own index must be reported");
+        });
+    }
+
+    /// A Ctrl-click on a list item is a multi-select gesture: the shared
+    /// selection core turns it into `ListViewEvent::SelectionSet` with the
+    /// clicked item added to the selection, so Python receives the
+    /// selection rather than a raw `MouseDown` to work it out from.
+    /// Click-to-focus still runs ahead of it, the same as a plain click.
+    #[test]
+    fn ctrl_click_over_a_list_item_reports_the_grown_selection() {
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"
+received = []
+
+def render():
+    return {'list': {
+        'id': 'list:main',
+        'items': [
+            {'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]}}
+            for label in ['Alpha', 'Beta']
+        ],
+        'selected_idx': 0,
+    }}
+
+def handle(event):
+    received.append(event)
+",
+                Some(&locals),
+                Some(&locals),
+            )
+            .expect("python source must execute");
+            let render: Py<PyAny> = locals
+                .get_item("render")
+                .expect("dict lookup")
+                .expect("render must be defined")
+                .unbind();
+            let handle: Py<PyAny> = locals
+                .get_item("handle")
+                .expect("dict lookup")
+                .expect("handle must be defined")
+                .unbind();
+
+            let mut app = QuiApp::new(40, 10, Some(handle), Some(render), false, None)
+                .expect("valid dimensions");
+            assert!(
+                app.screen_contains("Beta").expect("render must not raise"),
+                "the second item must be painted"
+            );
+            let bounds = app
+                .driver
+                .find_bounds("Beta")
+                .expect("second item's label must be on screen");
+
+            let click = UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            };
+            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
+            let click_dict = click_any
+                .cast::<PyDict>()
+                .expect("MouseDown must pythonize to a dict");
+            app.push_event(click_dict).expect("valid event shape");
+            app.step().expect("no handler/render error");
+
+            let received = locals
+                .get_item("received")
+                .expect("dict lookup")
+                .expect("received must be defined");
+            let received_list = received.cast::<PyList>().expect("received must be a list");
+            assert_eq!(
+                received_list.len(),
+                2,
+                "the click must still emit a FocusChanged ahead of the List event"
+            );
+
+            let event = received_list.get_item(1).expect("second item");
+            let list: (String, Py<PyAny>) = event
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict")
+                .get_item("List")
+                .expect("dict lookup")
+                .unwrap_or_else(|| {
+                    panic!("a Ctrl-click must report a List event, got {received_list:?}")
+                })
+                .extract()
+                .expect("List payload must be (id, event)");
+            assert_eq!(list.0, "list:main");
+            let inner = list
+                .1
+                .bind(py)
+                .cast::<PyDict>()
+                .expect("ListViewEvent must be a dict")
+                .clone();
+            let indices: Vec<usize> = inner
+                .get_item("SelectionSet")
+                .expect("dict lookup")
+                .unwrap_or_else(|| panic!("a Ctrl-click must report SelectionSet, got {inner:?}"))
+                .get_item("indices")
+                .expect("indices key must be present")
+                .extract()
+                .expect("indices must be a list of ints");
+            assert_eq!(indices, vec![0, 1], "Ctrl adds Beta to the selected Alpha");
         });
     }
 

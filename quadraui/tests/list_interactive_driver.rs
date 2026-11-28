@@ -106,7 +106,7 @@ impl AppLogic for ListDriverApp {
                 }
             }
             ListViewEvent::ItemActivated { idx } => self.activated.push(*idx),
-            ListViewEvent::ItemDoubleClicked { .. } | ListViewEvent::KeyPressed { .. } => {}
+            _ => {}
         }
         Reaction::Redraw
     }

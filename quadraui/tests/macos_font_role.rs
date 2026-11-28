@@ -312,6 +312,8 @@ fn draw_diff_view_paints_in_editor_font() {
 fn draw_data_table_paints_in_chrome_font() {
     assert_paints_in_chrome_font("DataTable", |b, area| {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: id("data-table"),
             columns: vec![Column {
                 title: "col".to_string(),

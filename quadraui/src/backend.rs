@@ -2714,6 +2714,7 @@ pub trait DrawsPrimitives: Backend {
                     .filter(|sub| w.sub_region_name(*sub).is_none())
                     .collect()
             });
+            let focus_ring = w.focus_ring(recorded.as_ref()).resolve(rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
                 id: *id,
                 rect,
@@ -2721,6 +2722,7 @@ pub trait DrawsPrimitives: Backend {
                 sub_regions,
                 hover_targets,
                 paint_state: crate::primitive::PaintStateSnapshot::of(state),
+                focus_ring,
             });
         }
         layout

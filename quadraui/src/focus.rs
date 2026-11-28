@@ -263,9 +263,10 @@ impl FocusTree {
     /// [`crate::interactive::Interactive`] widgets at all (see the type
     /// doc's "Modal trapping" section). Every stop is addressed
     /// `(id, None)` — the flat shape carries no [`SubTarget`] to
-    /// preserve. If the previously-focused address is still present in
-    /// the rebuilt order, focus (and its focus-visible state) is
-    /// preserved; otherwise focus is cleared.
+    /// preserve. If the previously-focused widget is still present in
+    /// the rebuilt order, focus (its sub-target and focus-visible state
+    /// included) is preserved, and the next [`Self::focus_next`] steps on
+    /// from that widget's stop; otherwise focus is cleared.
     pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
         let rebuilt: Vec<FocusTreeStop> = stops
             .iter()
@@ -277,7 +278,7 @@ impl FocusTree {
         let keep_focus = self
             .focused
             .as_ref()
-            .is_some_and(|cur| rebuilt.iter().any(|stop| &stop.address == cur));
+            .is_some_and(|cur| rebuilt.iter().any(|stop| stop.address.0 == cur.0));
         self.stops = rebuilt;
         if !keep_focus {
             self.focused = None;
@@ -398,6 +399,7 @@ impl FocusTree {
                     .stops
                     .iter()
                     .position(|stop| &stop.address == cur)
+                    .or_else(|| self.stops.iter().position(|stop| stop.address.0 == cur.0))
                     .unwrap_or(0);
                 cycle_index(idx, dir, len)
             }
@@ -938,6 +940,20 @@ mod tests {
                 Some(&(a, None)),
                 "focus follows the id, not position"
             );
+        }
+
+        /// A widget focused on one of its own children keeps its place in
+        /// the flat order: the next Tab moves on to the stop after it.
+        #[test]
+        fn sync_tab_order_steps_on_from_a_child_focused_widget() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.set_focus(Some((a, Some(SubTarget(1)))));
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            assert_eq!(tree.focused(), Some(&(a, Some(SubTarget(1)))));
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(b, None)));
         }
 
         #[test]

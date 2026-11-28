@@ -30,6 +30,8 @@ fn col(title: &str, width: ColumnWidth, align: ColumnAlign) -> Column {
 
 fn make_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("test"),
         columns: vec![
             col("Name", ColumnWidth::Flex(2.0), ColumnAlign::Left),

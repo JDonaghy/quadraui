@@ -14,7 +14,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 function treeRows(count: number) {
   const rows = [];
@@ -82,7 +82,7 @@ test("a 500-row tree with no scroll/selection fields scrolls to keep the cursor 
   }
   app.run(40);
 
-  // The click selected row 0, so 40 Downs land on row index 40.
+  // The click selects row 0, and each of the 40 Downs moves by one.
   const state = app.widgetState("fm:tree");
   assert.ok(state, "the tree must have resolved widget state after navigation");
   assert.deepEqual(state.selectedPath, [40]);

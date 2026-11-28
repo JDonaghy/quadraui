@@ -40,11 +40,11 @@ use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::A11yAction;
-use crate::event::{Key, MouseButton, NamedKey};
+use crate::event::{Key, MouseButton, NamedKey, Point};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-use crate::types::SelectionGesture;
+use crate::types::{SelectionGesture, SelectionMode};
 use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
@@ -2978,6 +2978,16 @@ impl ListView {
         }
     }
 
+    /// How Ctrl/Cmd and Shift grow this list's selection: always a
+    /// multi-selection, except over a windowed list, whose selection set
+    /// could span the whole (unbounded) collection.
+    fn selection_mode(&self) -> SelectionMode {
+        match self.items_window {
+            Some(_) => SelectionMode::Single,
+            None => SelectionMode::Multi,
+        }
+    }
+
     /// The `(selected_idx, scroll_offset)` `state` resolves this
     /// descriptor to: the widget's own cursor and scroll while the
     /// descriptor still says what it said when the widget last moved (or
@@ -3163,6 +3173,16 @@ impl ListView {
                 None => Handled::Ignored,
             };
         }
+        let cursor = (self.row_count() > 0).then(|| self.current_idx(state));
+        if let Some(indices) = state.selection.key(
+            self.selection_mode(),
+            key,
+            *modifiers,
+            cursor,
+            self.items.len(),
+        ) {
+            return Handled::Event(ListViewEvent::SelectionSet { indices });
+        }
         match key {
             Key::Named(NamedKey::Enter) | Key::Char(' ') => {
                 if self.row_count() == 0 {
@@ -3171,22 +3191,6 @@ impl ListView {
                     Handled::Event(ListViewEvent::ItemActivated {
                         idx: self.current_idx(state),
                     })
-                }
-            }
-            Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
-                // Selecting every row of a windowed list would allocate the
-                // whole (unbounded) total.
-                if self.items.is_empty() || self.items_window.is_some() {
-                    Handled::Ignored
-                } else {
-                    let indices: Vec<usize> = (0..self.items.len()).collect();
-                    let last = self.items.len() - 1;
-                    state.selection.selected = indices.clone();
-                    state.selection.anchor = Some(last);
-                    state.cursor = Some(last);
-                    state.selected.set(&self.selected_idx, last);
-                    state.cursor_echo = indices.first().copied();
-                    Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
             }
             _ => {
@@ -3202,48 +3206,51 @@ impl ListView {
         }
     }
 
-    /// `PointerKind::Down(MouseButton::Left)` — hit-tests `local` and
-    /// selects the row it landed on, honouring `mods`' own
-    /// [`SelectionGesture`] the same way a keyboard range-extension does
-    /// (see [`Self::navigate`]). A hit on the title row requests focus
-    /// (so clicking a bordered list's header still focuses it) but is
-    /// otherwise non-actionable, per [`ListViewHit`]'s own doc; a hit on
-    /// the empty tail below the last item is ignored outright.
+    /// `PointerKind::Down(button)` at absolute `position` — hit-tests it
+    /// and resolves the press on the item it landed on through
+    /// [`crate::SelectionCore::press`]: a left press selects it (Ctrl/Cmd
+    /// and Shift grow a multi-selection, per [`Self::selection_mode`]), a
+    /// right press asks for its context menu, any other button reports
+    /// [`ListViewEvent::ItemClicked`]. A left press on the title row
+    /// requests focus (so clicking a bordered list's header still focuses
+    /// it) but is otherwise non-actionable, per [`ListViewHit`]'s own doc;
+    /// a hit on the empty tail below the last item is ignored outright.
     fn handle_mouse_down(
         &self,
         state: &mut ListViewState,
-        hit: ListViewHit,
+        position: Point,
+        button: MouseButton,
         mods: &Modifiers,
         layout: &ListViewPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
+        let left = button == MouseButton::Left;
+        let hit = layout.hit_test_abs_local(position.x - layout.area.x, position.y - layout.area.y);
         let idx = match hit {
             ListViewHit::Item(idx) => idx,
-            ListViewHit::Title => {
+            ListViewHit::Title if left => {
                 cx.request_focus(None);
                 return Handled::Ignored;
             }
-            ListViewHit::Empty => return Handled::Ignored,
+            ListViewHit::Title | ListViewHit::Empty => return Handled::Ignored,
         };
+        if !left {
+            let press = state
+                .selection
+                .press(self.selection_mode(), None, idx, button, *mods);
+            return Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position));
+        }
         cx.request_focus(None);
         let current = self.current_idx(state);
-        let gesture = match self.items_window {
-            // See `navigate`: no multi-selection over a windowed list.
-            Some(_) => SelectionGesture::Replace,
-            None => SelectionGesture::from_modifiers(*mods),
-        };
-        let indices = state.selection.on_gesture(Some(current), idx, gesture);
+        let press = state
+            .selection
+            .press(self.selection_mode(), Some(current), idx, button, *mods);
         self.record_move(state, idx, layout);
-        match gesture {
-            SelectionGesture::Replace => {
-                state.cursor_echo = Some(idx);
-                Handled::Event(ListViewEvent::SelectionChanged { idx })
-            }
-            SelectionGesture::Toggle | SelectionGesture::Range => {
-                state.cursor_echo = indices.first().copied();
-                Handled::Event(ListViewEvent::SelectionSet { indices })
-            }
-        }
+        state.cursor_echo = match &press {
+            crate::RowPress::Set(indices) => indices.first().copied(),
+            _ => Some(idx),
+        };
+        Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position))
     }
 }
 
@@ -3321,21 +3328,24 @@ impl Interactive for ListView {
     ) -> Handled<ListViewEvent> {
         match event {
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
+                kind: PointerKind::Down(button),
                 local,
                 mods,
                 ..
             } => {
                 let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                let position = Point::new(x, y);
                 if let Some(sb) = layout
                     .vscrollbar
                     .as_ref()
-                    .filter(|sb| sb.track.contains(crate::event::Point::new(x, y)))
+                    .filter(|sb| sb.track.contains(position))
                 {
+                    if *button != MouseButton::Left {
+                        return Handled::Ignored;
+                    }
                     return self.handle_scrollbar_press(state, &sb.clone(), y, layout, cx);
                 }
-                let hit = layout.hit_test_abs_local(local.x, local.y);
-                self.handle_mouse_down(state, hit, mods, layout, cx)
+                self.handle_mouse_down(state, position, *button, mods, layout, cx)
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::Move,
@@ -3994,6 +4004,7 @@ mod interactive_tests {
             selection: crate::types::SelectionCore {
                 selected: vec![0],
                 anchor: Some(0),
+                ..Default::default()
             },
             cursor: Some(0),
             cursor_echo: Some(0),
@@ -4069,7 +4080,7 @@ mod interactive_tests {
 }
 
 /// Events a `ListView` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
@@ -4096,6 +4107,44 @@ pub enum ListViewEvent {
     /// sorted, de-duplicated selection, not just the row that changed —
     /// see [`crate::types::apply_selection_gesture`].
     SelectionSet { indices: Vec<usize> },
+    /// The user asked for item `idx`'s context menu (right-click);
+    /// `position` is where, in the coordinates the list was laid out in.
+    ContextMenuRequested {
+        idx: usize,
+        position: crate::event::Point,
+    },
+    /// Item `idx` was pressed with a button other than the primary and
+    /// secondary ones — middle, `X1`/`X2` or a backend-specific button.
+    /// See [`crate::DataTableEvent::RowClicked`].
+    ItemClicked {
+        idx: usize,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
+}
+
+impl ListViewEvent {
+    /// The event a press on item `idx`, resolved by
+    /// [`crate::SelectionCore::press`], reports — the list counterpart of
+    /// [`crate::DataTableEvent::from_row_press`].
+    pub fn from_row_press(
+        press: crate::RowPress,
+        idx: usize,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+    ) -> Self {
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::SelectionChanged { idx },
+            RowPress::Set(indices) => Self::SelectionSet { indices },
+            RowPress::ContextMenu => Self::ContextMenuRequested { idx, position },
+            RowPress::Click(button) => Self::ItemClicked {
+                idx,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 #[cfg(test)]

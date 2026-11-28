@@ -18,7 +18,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("@quadraui/node");
 
 /** A bespoke layout validation failure: `DecodeFailedError`, still an `InvalidDescriptorError`. */
 function isDecodeFailed(err: unknown): boolean {

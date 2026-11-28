@@ -57,6 +57,8 @@ fn build_table(nrows: usize, ncols: usize) -> DataTable {
         })
         .collect();
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("bench-data-table"),
         columns,
         rows,

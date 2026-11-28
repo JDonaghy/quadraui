@@ -142,7 +142,7 @@ fn surface_widget_text_display_paints_its_scrollbar_gutter_and_thumb() {
 
 #[test]
 fn page_down_scrolls_a_viewport_and_repaints_the_next_lines() {
-    let mut driver = TuiDriver::new(DisplayApp::new(20, false), COLS, ROWS);
+    let mut driver = TuiDriver::new(DisplayApp::new(20, true), COLS, ROWS);
     focus_the_pane(&mut driver);
 
     driver.press_named(NamedKey::PageDown);
@@ -154,7 +154,7 @@ fn page_down_scrolls_a_viewport_and_repaints_the_next_lines() {
 
 #[test]
 fn the_arrow_keys_scroll_one_line_at_a_time() {
-    let mut driver = TuiDriver::new(DisplayApp::new(20, false), COLS, ROWS);
+    let mut driver = TuiDriver::new(DisplayApp::new(20, true), COLS, ROWS);
     focus_the_pane(&mut driver);
 
     driver.press_named(NamedKey::Down);
@@ -166,7 +166,7 @@ fn the_arrow_keys_scroll_one_line_at_a_time() {
 
 #[test]
 fn end_scrolls_to_the_last_page_and_home_back_to_the_top() {
-    let mut driver = TuiDriver::new(DisplayApp::new(20, false), COLS, ROWS);
+    let mut driver = TuiDriver::new(DisplayApp::new(20, true), COLS, ROWS);
     focus_the_pane(&mut driver);
 
     driver.press_named(NamedKey::End);
@@ -179,7 +179,7 @@ fn end_scrolls_to_the_last_page_and_home_back_to_the_top() {
 
 #[test]
 fn an_unhandled_key_reaches_the_app_as_a_key_passthrough() {
-    let mut driver = TuiDriver::new(DisplayApp::new(3, false), COLS, ROWS);
+    let mut driver = TuiDriver::new(DisplayApp::new(3, true), COLS, ROWS);
     focus_the_pane(&mut driver);
 
     driver.type_char('?');
@@ -200,4 +200,21 @@ fn clicking_the_scrollbar_track_below_the_thumb_pages_down() {
     driver.click(gutter_x, AREA.y + AREA.height - 1.0);
 
     assert_eq!(driver.app().offsets, vec![5]);
+}
+
+/// A pane with no scrollbar is plain text: it takes no keyboard focus, so
+/// the keys that scroll a focused pane do nothing.
+#[test]
+fn a_pane_without_a_scrollbar_is_not_a_keyboard_stop() {
+    let mut driver = TuiDriver::new(DisplayApp::new(20, false), COLS, ROWS);
+    focus_the_pane(&mut driver);
+
+    driver.press_named(NamedKey::PageDown);
+
+    assert!(
+        driver.app().offsets.is_empty(),
+        "{:?}",
+        driver.app().offsets
+    );
+    assert!(driver.screen_contains("L00"), "{}", driver.screen());
 }

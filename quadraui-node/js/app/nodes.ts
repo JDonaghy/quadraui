@@ -12,12 +12,6 @@
 // than left as `unknown`/a bare object -- a malformed one is still rejected
 // only at the native extension's own decode step, but a caller's own editor
 // catches a typo before that.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives: this package's
-// `"type": "commonjs"` makes top-level runtime `export` syntax a hard parse
-// error under Node's native TypeScript support. `export interface`/
-// `export type` are exempt -- erasable, no runtime value.
 
 import type {
   ButtonIconPosition,
@@ -32,8 +26,11 @@ import type {
   LabelPosition,
   LayoutScrollPayload,
   ListItem as ListItemDescriptor,
+  MouseButton,
   PaddingValue,
+  Point,
   RowAlign,
+  SectionSize,
   SelectionMode,
   StatusBarSegment,
   StyledText,
@@ -115,9 +112,65 @@ export interface Node {
    * the way it looks up any other widget id.
    */
   extraCallbacks?(resolvedId: string): Readonly<Record<string, Readonly<Record<string, AnyCallback>>>>;
+  /** The `size`/`min`/`max` sibling keys this node carries as a `Column`/`Row` child (see {@link LayoutOptions}), merged into the built object. */
+  layout?: Readonly<Record<string, unknown>>;
 }
 
 type AnyCallback = (...args: unknown[]) => void;
+
+/**
+ * How much of its parent `Column`/`Row` a child takes along the stack's main
+ * axis: a `number` is a fixed size in portable pixels (a TUI cell is 8 px
+ * wide and 16 px tall, so `size: 32` is two rows of a `Column` on TUI),
+ * `"30%"` a share of the parent, `"2fr"` a weight shared out of what is
+ * left, `"content"` the child's natural size, and omitted an equal share of
+ * what is left. A raw wire `SectionSize` (`{Weight: 2}`, `"Content"`) passes
+ * through unchanged.
+ */
+export type SizeSpec = number | "content" | `${number}%` | `${number}fr` | SectionSize;
+
+/**
+ * Per-child sizing every node constructor except `Slider` (whose `min`/`max`
+ * are its value range) accepts: `size` (a {@link SizeSpec}) and a
+ * `min`/`max` clamp on the resolved size, in the same portable pixels.
+ */
+export interface LayoutOptions {
+  size?: SizeSpec;
+  min?: number;
+  max?: number;
+}
+
+/** {@link SizeSpec} -> the wire `SectionSize` the stack solver reads. */
+function sizeWire(size: SizeSpec): SectionSize {
+  if (typeof size === "number") {
+    if (!Number.isInteger(size) || size < 0) {
+      throw new TypeError(`size must be a whole number of pixels, not ${size}`);
+    }
+    return { Fixed: size };
+  }
+  if (typeof size === "object" && size !== null) {
+    return size;
+  }
+  if (typeof size === "string") {
+    const text = size.trim();
+    if (text === "Content" || text === "EqualShare") return text;
+    if (text === "content") return "Content";
+    const percent = /^(\d+(?:\.\d+)?)%$/.exec(text);
+    if (percent) return { Percent: Number(percent[1]) / 100 };
+    const weight = /^(\d+(?:\.\d+)?)fr$/.exec(text);
+    if (weight) return { Weight: Number(weight[1]) };
+  }
+  throw new TypeError(`size must be a number, "N%", "Nfr", "content" or a wire SectionSize, not ${JSON.stringify(size)}`);
+}
+
+/** Records `options`' own `size`/`min`/`max` on `node` as a `Column`/`Row` child. */
+function sized(node: Node, options: LayoutOptions): Node {
+  const layout: Record<string, unknown> = {};
+  if (options.size !== undefined) layout.size = sizeWire(options.size);
+  if (options.min !== undefined) layout.min = options.min;
+  if (options.max !== undefined) layout.max = options.max;
+  return Object.keys(layout).length === 0 ? node : { ...node, layout };
+}
 
 function callbacksFrom(named: Record<string, AnyCallback | undefined>): Record<string, AnyCallback> {
   const result: Record<string, AnyCallback> = {};
@@ -131,7 +184,7 @@ function callbacksFrom(named: Record<string, AnyCallback | undefined>): Record<s
 
 // --- composition: split / column / row / sidebarPanel / scroll / tabs -----
 
-export interface SplitOptions {
+export interface SplitOptions extends LayoutOptions {
   id?: string;
   orientation?: "horizontal" | "vertical";
   ratio?: number;
@@ -145,7 +198,7 @@ export interface SplitOptions {
  * a user drag then persists in the framework's own widget-state store with
  * no state this layer needs to track; see `QuiApp.widgetState`'s own doc.
  */
-function Split(first: Renderable, second: Renderable, options: SplitOptions = {}): Node {
+export function Split(first: Renderable, second: Renderable, options: SplitOptions = {}): Node {
   const { id = null, orientation = "horizontal", ratio = 0.5, firstMin, secondMin } = options;
 
   function build(nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -161,11 +214,10 @@ function Split(first: Renderable, second: Renderable, options: SplitOptions = {}
     return { split: payload };
   }
 
-  return { kind: "split", id, callbacks: {}, children: { first, second }, build };
+  return sized({ kind: "split", id, callbacks: {}, children: { first, second }, build }, options);
 }
-exports.Split = Split;
 
-export interface ColumnOptions {
+export interface ColumnOptions extends LayoutOptions {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
@@ -178,7 +230,7 @@ export interface ColumnOptions {
  * since an options object (this constructor's own `padding`/`margin`/
  * `gap`) can't follow a rest parameter.
  */
-function Column(items: Renderable[], options: ColumnOptions = {}): Node {
+export function Column(items: Renderable[], options: ColumnOptions = {}): Node {
   const { padding, margin, gap } = options;
 
   function build(_nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -189,18 +241,17 @@ function Column(items: Renderable[], options: ColumnOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "column", id: null, callbacks: {}, children: { items: [...items] }, build };
+  return sized({ kind: "column", id: null, callbacks: {}, children: { items: [...items] }, build }, options);
 }
-exports.Column = Column;
 
-export interface RowOptions {
+export interface RowOptions extends LayoutOptions {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
 }
 
 /** A horizontal stack -- {@link Column}'s sibling, same unaddressable shape. */
-function Row(items: Renderable[], options: RowOptions = {}): Node {
+export function Row(items: Renderable[], options: RowOptions = {}): Node {
   const { padding, margin, gap } = options;
 
   function build(_nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -211,11 +262,10 @@ function Row(items: Renderable[], options: RowOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "row", id: null, callbacks: {}, children: { items: [...items] }, build };
+  return sized({ kind: "row", id: null, callbacks: {}, children: { items: [...items] }, build }, options);
 }
-exports.Row = Row;
 
-export interface SidebarPanelOptions {
+export interface SidebarPanelOptions extends LayoutOptions {
   id?: string;
   toolbar?: ToolbarDescriptor;
   toolbarHeight?: number;
@@ -226,7 +276,7 @@ export interface SidebarPanelOptions {
  * `ToolbarDescriptor` (build one with {@link Toolbar}), not a child `Node`:
  * it paints above `content` but isn't itself a layout-tree child.
  */
-function SidebarPanel(content: Renderable, options: SidebarPanelOptions = {}): Node {
+export function SidebarPanel(content: Renderable, options: SidebarPanelOptions = {}): Node {
   const { id = null, toolbar, toolbarHeight } = options;
 
   function build(nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -236,11 +286,10 @@ function SidebarPanel(content: Renderable, options: SidebarPanelOptions = {}): N
     return { sidebar_panel: payload };
   }
 
-  return { kind: "sidebar_panel", id, callbacks: {}, children: { content }, build };
+  return sized({ kind: "sidebar_panel", id, callbacks: {}, children: { content }, build }, options);
 }
-exports.SidebarPanel = SidebarPanel;
 
-export interface ScrollOptions {
+export interface ScrollOptions extends LayoutOptions {
   id?: string;
   axis?: LayoutScrollPayload["axis"];
   offset?: LayoutScrollPayload["offset"];
@@ -259,7 +308,7 @@ export interface ScrollOptions {
  * before `content` is measured/painted; there's no `gap` -- a scroll has
  * only one content subtree, nothing to space it from.
  */
-function Scroll(content: Renderable, options: ScrollOptions = {}): Node {
+export function Scroll(content: Renderable, options: ScrollOptions = {}): Node {
   const { id = null, axis, offset, padding, margin } = options;
 
   function build(nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -272,9 +321,8 @@ function Scroll(content: Renderable, options: ScrollOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "scroll", id, callbacks: {}, children: { content }, build };
+  return sized({ kind: "scroll", id, callbacks: {}, children: { content }, build }, options);
 }
-exports.Scroll = Scroll;
 
 interface TabSpec {
   content: Renderable;
@@ -298,13 +346,12 @@ export interface TabOptions {
  * omitted -- stable across re-render as long as this tab's position among
  * its siblings doesn't change, the same rule `Node`'s own auto-id follows.
  */
-function Tab(content: Renderable, options: TabOptions): TabSpec {
+export function Tab(content: Renderable, options: TabOptions): TabSpec {
   const { title, id, closable, isDirty, isPreview } = options;
   return { content, title, id, closable, isDirty, isPreview };
 }
-exports.Tab = Tab;
 
-export interface TabsOptions {
+export interface TabsOptions extends LayoutOptions {
   id?: string;
   closable?: boolean;
   /**
@@ -337,7 +384,7 @@ export interface TabsOptions {
  * for how it is looked up. `onClose` fires on the tab's own `TabClosed`;
  * this node never removes the tab itself -- the caller still owns `tabs`.
  */
-function Tabs(tabs: TabSpec[], options: TabsOptions = {}): Node {
+export function Tabs(tabs: TabSpec[], options: TabsOptions = {}): Node {
   const { id = null, closable, activeIndex, rightSegments, activeAccent, compact, onClose, onActivate } = options;
 
   function build(nodeId: string, children: Record<string, unknown>): Record<string, unknown> {
@@ -364,9 +411,8 @@ function Tabs(tabs: TabSpec[], options: TabsOptions = {}): Node {
 
   const callbacks = callbacksFrom({ on_close: onClose as AnyCallback | undefined, on_activate: onActivate as AnyCallback | undefined });
   const children = { tabs: tabs.map((spec) => spec.content) };
-  return { kind: "tabs", id, callbacks, children, build };
+  return sized({ kind: "tabs", id, callbacks, children, build }, options);
 }
-exports.Tabs = Tabs;
 
 // --- leaves -----------------------------------------------------------------
 
@@ -378,36 +424,44 @@ const DEFAULT_TREE_STYLE: TreeStyle = {
   chevron_collapsed: "▸",
 };
 
-export interface TreeOptions {
+export interface TreeOptions extends LayoutOptions {
   id?: string;
   selectionMode?: SelectionMode;
   selectedPath?: TreePath;
   hasFocus?: boolean;
   style?: TreeStyle;
-  onRowClick?: (path: TreePath) => void;
+  onClick?: (path: TreePath, button: MouseButton) => void;
   onToggleExpand?: (path: TreePath) => void;
   onActivate?: (path: TreePath) => void;
   onSelect?: (path: TreePath) => void;
+  onSelection?: (paths: TreePath[]) => void;
+  onContextMenu?: (path: TreePath, position: Point) => void;
 }
 
 /**
- * A `TreeRowDescriptor` list. `onRowClick` fires on `RowClicked` (a row
- * body click -- select it); `onToggleExpand` on `RowToggleExpand` (the
- * chevron); `onActivate` on `RowDoubleClicked`; `onSelect` on
- * `SelectionChanged`. Scroll is framework-owned; nothing here ever needs to
- * read or write it.
+ * A `TreeRowDescriptor` list. `onClick(path, button)` fires on
+ * `RowClicked` (a row body press with any button but the right one;
+ * `button` is `"Left"`, `"Middle"`, `"X1"`, ... as for `List` and
+ * `Table`); `onToggleExpand` on `RowToggleExpand` (the chevron);
+ * `onActivate` on `RowDoubleClicked`; `onSelect` on `SelectionChanged`;
+ * `onSelection(paths)` on `SelectionSet` (with `selectionMode: "Multi"`, a
+ * Ctrl/Cmd or Shift click); `onContextMenu(path, position)` on
+ * `ContextMenuRequested` (a right-click). Scroll is framework-owned;
+ * nothing here ever needs to read or write it.
  */
-function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
+export function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
   const {
     id = null,
     selectionMode = "Single",
     selectedPath,
     hasFocus = false,
     style,
-    onRowClick,
+    onClick,
     onToggleExpand,
     onActivate,
     onSelect,
+    onSelection,
+    onContextMenu,
   } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -415,7 +469,7 @@ function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
       id: nodeId,
       rows,
       selection_mode: selectionMode,
-      selected_path: selectedPath ?? [],
+      selected_path: selectedPath ?? null,
       has_focus: hasFocus,
       style: style ?? DEFAULT_TREE_STYLE,
     };
@@ -423,20 +477,27 @@ function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({
-    on_row_click: onRowClick as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
     on_toggle_expand: onToggleExpand as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
   });
-  return { kind: "tree", id, callbacks, children: {}, build };
+  return sized({ kind: "tree", id, callbacks, children: {}, build }, options);
 }
-exports.Tree = Tree;
 
-export interface TableOptions {
+export interface TableOptions extends LayoutOptions {
   id?: string;
+  selectionMode?: SelectionMode;
+  /** The multi-selection to paint -- usually `onSelection`'s last set. */
+  selectedIndices?: number[];
   onActivate?: (idx: number) => void;
   onSelect?: (idx: number) => void;
   onHeaderClick?: (col: number) => void;
+  onSelection?: (indices: number[]) => void;
+  onContextMenu?: (idx: number, position: Point) => void;
+  onClick?: (idx: number, button: MouseButton) => void;
 }
 
 /**
@@ -444,24 +505,45 @@ export interface TableOptions {
  * or `RowActivated` (a mouse double-click and an Enter-to-activate both
  * mean "open this row"); `onSelect` on `RowSelected`; `onHeaderClick` on
  * `HeaderClicked`.
+ *
+ * With `selectionMode: "Multi"`, Ctrl/Cmd and Shift clicks, Shift+Up/Down,
+ * Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection and fire
+ * `onSelection(indices)` (`SelectionSet`); pass the set back as
+ * `selectedIndices` to paint it. `onContextMenu(idx, position)` fires on a
+ * right-click (`ContextMenuRequested`), and `onClick(idx, button)` on a
+ * middle or back/forward press (`RowClicked`).
  */
-function Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options: TableOptions = {}): Node {
-  const { id = null, onActivate, onSelect, onHeaderClick } = options;
+export function Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options: TableOptions = {}): Node {
+  const {
+    id = null,
+    selectionMode = "Single",
+    selectedIndices,
+    onActivate,
+    onSelect,
+    onHeaderClick,
+    onSelection,
+    onContextMenu,
+    onClick,
+  } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
-    return { id: nodeId, data_table: { id: nodeId, columns, rows } };
+    const table: Record<string, unknown> = { id: nodeId, columns, rows, selection_mode: selectionMode };
+    if (selectedIndices !== undefined) table.selected_indices = selectedIndices;
+    return { id: nodeId, data_table: table };
   }
 
   const callbacks = callbacksFrom({
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,
     on_header_click: onHeaderClick as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
   });
-  return { kind: "data_table", id, callbacks, children: {}, build };
+  return sized({ kind: "data_table", id, callbacks, children: {}, build }, options);
 }
-exports.Table = Table;
 
-export interface ListOptions {
+export interface ListOptions extends LayoutOptions {
   id?: string;
   /**
    * The row index to render as selected -- defaults to `0`, the same as
@@ -478,6 +560,9 @@ export interface ListOptions {
   bordered?: boolean;
   onSelect?: (idx: number) => void;
   onActivate?: (idx: number) => void;
+  onSelection?: (indices: number[]) => void;
+  onContextMenu?: (idx: number, position: Point) => void;
+  onClick?: (idx: number, button: MouseButton) => void;
 }
 
 /**
@@ -485,12 +570,26 @@ export interface ListOptions {
  * click, or `j`/`k` moving the keyboard selection); `onActivate` fires on
  * either `ItemDoubleClicked` (a mouse double-click) or `ItemActivated`
  * (Enter while a row holds the selection) -- the same "open this row"
- * pairing {@link Table}'s own `onActivate` documents. `KeyPressed`/
- * `SelectionSet` on a `List` are not routed to either callback and fall
- * through to `onEvent` instead.
+ * pairing {@link Table}'s own `onActivate` documents. `onSelection(indices)`
+ * fires on `SelectionSet` (a Ctrl/Cmd or Shift click, Ctrl/Cmd+A,
+ * Ctrl+Space/Insert), `onContextMenu(idx, position)` on a right-click
+ * (`ContextMenuRequested`) and `onClick(idx, button)` on a middle or
+ * back/forward press (`ItemClicked`). `KeyPressed` falls through to
+ * `onEvent`.
  */
-function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
-  const { id = null, selected, title, hasFocus = false, bordered, onSelect, onActivate } = options;
+export function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
+  const {
+    id = null,
+    selected,
+    title,
+    hasFocus = false,
+    bordered,
+    onSelect,
+    onActivate,
+    onSelection,
+    onContextMenu,
+    onClick,
+  } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
     const payload: Record<string, unknown> = {
@@ -507,10 +606,12 @@ function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
   const callbacks = callbacksFrom({
     on_select: onSelect as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
   });
-  return { kind: "list", id, callbacks, children: {}, build };
+  return sized({ kind: "list", id, callbacks, children: {}, build }, options);
 }
-exports.List = List;
 
 // --- forms / form fields -----------------------------------------------
 
@@ -594,7 +695,7 @@ export interface TextInputFieldOptions extends FormFieldCommonOptions {
 }
 
 /** A `FieldKind::TextInput` field: a single-line editable value with its own label. */
-function TextInputField(label: string | StyledText, value: string, options: TextInputFieldOptions = {}): FormFieldSpec {
+export function TextInputField(label: string | StyledText, value: string, options: TextInputFieldOptions = {}): FormFieldSpec {
   const { id = null, placeholder, cursor, selectionAnchor, onChange, onSubmit, ...common } = options;
 
   function build(fieldId: string): Record<string, unknown> {
@@ -611,7 +712,6 @@ function TextInputField(label: string | StyledText, value: string, options: Text
   });
   return { id, callbacks, build };
 }
-exports.TextInputField = TextInputField;
 
 export interface PasswordFieldOptions extends FormFieldCommonOptions {
   placeholder?: string;
@@ -624,7 +724,7 @@ export interface PasswordFieldOptions extends FormFieldCommonOptions {
 }
 
 /** A `FieldKind::PasswordInput` field -- {@link TextInputField}'s masked sibling. */
-function PasswordField(label: string | StyledText, value: string, options: PasswordFieldOptions = {}): FormFieldSpec {
+export function PasswordField(label: string | StyledText, value: string, options: PasswordFieldOptions = {}): FormFieldSpec {
   const { id = null, placeholder, cursor, maskChar, onChange, onSubmit, ...common } = options;
 
   function build(fieldId: string): Record<string, unknown> {
@@ -641,7 +741,6 @@ function PasswordField(label: string | StyledText, value: string, options: Passw
   });
   return { id, callbacks, build };
 }
-exports.PasswordField = PasswordField;
 
 export interface TextAreaFieldOptions extends FormFieldCommonOptions {
   placeholder?: string;
@@ -657,7 +756,7 @@ export interface TextAreaFieldOptions extends FormFieldCommonOptions {
  * focused `TextArea` instead of committing, so it never emits
  * `FormEvent::TextInputCommitted`.
  */
-function TextAreaField(label: string | StyledText, value: string, options: TextAreaFieldOptions = {}): FormFieldSpec {
+export function TextAreaField(label: string | StyledText, value: string, options: TextAreaFieldOptions = {}): FormFieldSpec {
   const { id = null, placeholder, cursor, visibleRows, onChange, ...common } = options;
 
   function build(fieldId: string): Record<string, unknown> {
@@ -671,7 +770,6 @@ function TextAreaField(label: string | StyledText, value: string, options: TextA
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
   return { id, callbacks, build };
 }
-exports.TextAreaField = TextAreaField;
 
 export interface ToggleFieldOptions extends FormFieldCommonOptions {
   /** Fires on `FormEvent::ToggleChanged`. */
@@ -679,7 +777,7 @@ export interface ToggleFieldOptions extends FormFieldCommonOptions {
 }
 
 /** A `FieldKind::Toggle` field -- an on/off field, the Form-embedded sibling of the standalone {@link Checkbox} leaf. */
-function ToggleField(label: string | StyledText, value: boolean, options: ToggleFieldOptions = {}): FormFieldSpec {
+export function ToggleField(label: string | StyledText, value: boolean, options: ToggleFieldOptions = {}): FormFieldSpec {
   const { id = null, onChange, ...common } = options;
 
   function build(fieldId: string): Record<string, unknown> {
@@ -689,7 +787,6 @@ function ToggleField(label: string | StyledText, value: boolean, options: Toggle
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
   return { id, callbacks, build };
 }
-exports.ToggleField = ToggleField;
 
 export interface SliderFieldOptions extends FormFieldCommonOptions {
   step?: number;
@@ -698,7 +795,7 @@ export interface SliderFieldOptions extends FormFieldCommonOptions {
 }
 
 /** A `FieldKind::Slider` field. */
-function SliderField(
+export function SliderField(
   label: string | StyledText,
   value: number,
   min: number,
@@ -716,7 +813,6 @@ function SliderField(
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
   return { id, callbacks, build };
 }
-exports.SliderField = SliderField;
 
 export interface DropdownFieldOptions extends FormFieldCommonOptions {
   /** Fires on `FormEvent::DropdownChanged`. */
@@ -724,7 +820,7 @@ export interface DropdownFieldOptions extends FormFieldCommonOptions {
 }
 
 /** A `FieldKind::Dropdown` field -- a closed-options "select" field. */
-function DropdownField(
+export function DropdownField(
   label: string | StyledText,
   choices: StyledText[],
   selectedIdx: number,
@@ -739,14 +835,13 @@ function DropdownField(
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
   return { id, callbacks, build };
 }
-exports.DropdownField = DropdownField;
 
 /** Resolves field `i`'s own wire id: its own explicit id, or `${formId}:field:${i}` -- {@link Tabs}' own `${nodeId}:tab:${i}` auto-id, restated for a field. */
 function formFieldId(formId: string, spec: FormFieldSpec, index: number): string {
   return spec.id ?? `${formId}:field:${index}`;
 }
 
-export interface FormOptions {
+export interface FormOptions extends LayoutOptions {
   id?: string;
   focusedField?: WidgetId | null;
   scrollOffset?: number;
@@ -768,7 +863,7 @@ export interface FormOptions {
  * since nothing on the wire targets the form as a whole the way a field
  * change does.
  */
-function Form(fields: FormFieldSpec[], options: FormOptions = {}): Node {
+export function Form(fields: FormFieldSpec[], options: FormOptions = {}): Node {
   const {
     id = null,
     focusedField,
@@ -807,9 +902,8 @@ function Form(fields: FormFieldSpec[], options: FormOptions = {}): Node {
     return result;
   }
 
-  return { kind: "form", id, callbacks: {}, children: {}, build, extraCallbacks };
+  return sized({ kind: "form", id, callbacks: {}, children: {}, build, extraCallbacks }, options);
 }
-exports.Form = Form;
 
 // --- standalone leaves matching a Form field kind -----------------------
 //
@@ -827,7 +921,7 @@ exports.Form = Form;
 // multi-line editor; `Switch`), not a `FieldKind::TextInput`/
 // `FieldKind::Toggle` payload -- out of scope for this additive pass.
 
-export interface CheckboxOptions {
+export interface CheckboxOptions extends LayoutOptions {
   id?: string;
   disabled?: boolean;
   focused?: boolean;
@@ -836,7 +930,7 @@ export interface CheckboxOptions {
 }
 
 /** A `Checkbox` leaf. */
-function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
+export function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
   const { id = null, disabled, focused, onChange } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -847,9 +941,8 @@ function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "checkbox", id, callbacks, children: {}, build };
+  return sized({ kind: "checkbox", id, callbacks, children: {}, build }, options);
 }
-exports.Checkbox = Checkbox;
 
 export interface SliderOptions {
   id?: string;
@@ -861,7 +954,7 @@ export interface SliderOptions {
 }
 
 /** A `Slider` leaf. */
-function Slider(value: number, min: number, max: number, options: SliderOptions = {}): Node {
+export function Slider(value: number, min: number, max: number, options: SliderOptions = {}): Node {
   const { id = null, step, disabled, focused, onChange } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -875,9 +968,8 @@ function Slider(value: number, min: number, max: number, options: SliderOptions 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
   return { kind: "slider", id, callbacks, children: {}, build };
 }
-exports.Slider = Slider;
 
-export interface SelectOptions {
+export interface SelectOptions extends LayoutOptions {
   id?: string;
   selectedIdx?: number;
   disabled?: boolean;
@@ -887,7 +979,7 @@ export interface SelectOptions {
 }
 
 /** A `Select` leaf -- the standalone sibling of {@link DropdownField}. */
-function Select(choices: string[], options: SelectOptions = {}): Node {
+export function Select(choices: string[], options: SelectOptions = {}): Node {
   const { id = null, selectedIdx, disabled, focused, onChange } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -899,11 +991,10 @@ function Select(choices: string[], options: SelectOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "select", id, callbacks, children: {}, build };
+  return sized({ kind: "select", id, callbacks, children: {}, build }, options);
 }
-exports.Select = Select;
 
-export interface PasswordOptions {
+export interface PasswordOptions extends LayoutOptions {
   id?: string;
   cursor?: number | null;
   hasFocus?: boolean;
@@ -915,7 +1006,7 @@ export interface PasswordOptions {
 }
 
 /** A `PasswordInput` leaf -- the standalone sibling of {@link PasswordField}. */
-function Password(value: string, options: PasswordOptions = {}): Node {
+export function Password(value: string, options: PasswordOptions = {}): Node {
   const { id = null, cursor, hasFocus, maskChar, onChange, onSubmit } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -930,11 +1021,10 @@ function Password(value: string, options: PasswordOptions = {}): Node {
     on_change: onChange as AnyCallback | undefined,
     on_submit: onSubmit as AnyCallback | undefined,
   });
-  return { kind: "password", id, callbacks, children: {}, build };
+  return sized({ kind: "password", id, callbacks, children: {}, build }, options);
 }
-exports.Password = Password;
 
-export interface TextAreaOptions {
+export interface TextAreaOptions extends LayoutOptions {
   id?: string;
   placeholder?: string | null;
   cursor?: number | null;
@@ -945,7 +1035,7 @@ export interface TextAreaOptions {
 }
 
 /** A `TextArea` leaf -- the standalone sibling of {@link TextAreaField}; see that field's own doc for why there is no `onSubmit`. */
-function TextArea(value: string, options: TextAreaOptions = {}): Node {
+export function TextArea(value: string, options: TextAreaOptions = {}): Node {
   const { id = null, placeholder, cursor, hasFocus, visibleRows, onChange } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -958,17 +1048,16 @@ function TextArea(value: string, options: TextAreaOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "textarea", id, callbacks, children: {}, build };
+  return sized({ kind: "textarea", id, callbacks, children: {}, build }, options);
 }
-exports.TextArea = TextArea;
 
-export interface StatusBarOptions {
+export interface StatusBarOptions extends LayoutOptions {
   id?: string;
   onSegmentClick?: (segmentId: WidgetId) => void;
 }
 
 /** A `StatusBar`. `onSegmentClick` fires on `SegmentClicked`, with that segment's own `id`. */
-function StatusBar(
+export function StatusBar(
   leftSegments: StatusBarSegment[],
   rightSegments: StatusBarSegment[],
   options: StatusBarOptions = {},
@@ -983,27 +1072,44 @@ function StatusBar(
   }
 
   const callbacks = callbacksFrom({ on_segment_click: onSegmentClick as AnyCallback | undefined });
-  return { kind: "status_bar", id, callbacks, children: {}, build };
+  return sized({ kind: "status_bar", id, callbacks, children: {}, build }, options);
 }
-exports.StatusBar = StatusBar;
 
-export interface TextDisplayOptions {
+export interface TextDisplayOptions extends LayoutOptions {
   id?: string;
+  /** Paint a scrollbar and make the pane a Tab stop the keyboard can scroll. */
+  showScrollbar?: boolean;
 }
 
-/** A `TextDisplay` leaf -- plain read-only text. */
-function TextDisplay(lines: TextDisplayLineDescriptor[], options: TextDisplayOptions = {}): Node {
-  const { id = null } = options;
+/**
+ * A `TextDisplay` leaf -- plain read-only text. It is not a Tab stop;
+ * `showScrollbar: true` paints a scrollbar and makes the pane a Tab stop
+ * the keyboard can scroll, as in Rust.
+ */
+export function TextDisplay(lines: TextDisplayLineDescriptor[], options: TextDisplayOptions = {}): Node {
+  const { id = null, showScrollbar = false } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
-    return { id: nodeId, text_display: { id: nodeId, lines } };
+    const payload: Record<string, unknown> = { id: nodeId, lines };
+    if (showScrollbar) payload.show_scrollbar = true;
+    return { id: nodeId, text_display: payload };
   }
 
-  return { kind: "text_display", id, callbacks: {}, children: {}, build };
+  return sized({ kind: "text_display", id, callbacks: {}, children: {}, build }, options);
 }
-exports.TextDisplay = TextDisplay;
 
-export interface ButtonOptions {
+/**
+ * Plain text: a {@link TextDisplay} with one unstyled line per
+ * `\n`-separated line of `text`. Sized to its content by default, so a
+ * label in a `Column` takes one row rather than an equal share; pass
+ * `size: "EqualShare"` for an equal share instead.
+ */
+export function Text(text: string, options: TextDisplayOptions = {}): Node {
+  const lines = text.split("\n").map((line) => ({ spans: [{ text: line }] }));
+  return TextDisplay(lines, { size: "content", ...options });
+}
+
+export interface ButtonOptions extends LayoutOptions {
   id?: string;
   onClick?: () => void;
   variant?: ButtonVariant;
@@ -1023,7 +1129,7 @@ export interface ButtonOptions {
  * `focused` without the engine's own focus tree agreeing -- from a raw
  * `Enter`/`Space` `KeyPressed`.
  */
-function Button(label: string, options: ButtonOptions = {}): Node {
+export function Button(label: string, options: ButtonOptions = {}): Node {
   const { id = null, onClick, variant, icon, iconPosition, tooltip, focused, disabled } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -1038,9 +1144,8 @@ function Button(label: string, options: ButtonOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_click: onClick as AnyCallback | undefined });
-  return { kind: "button", id, callbacks, children: {}, build };
+  return sized({ kind: "button", id, callbacks, children: {}, build }, options);
 }
-exports.Button = Button;
 
 let toolbarAutoIds = 0;
 
@@ -1064,8 +1169,7 @@ export interface ToolbarOptions {
  * once, e.g. as a module-level constant reused every frame); give an
  * explicit `id` if constructing a fresh one inside `view()` itself.
  */
-function Toolbar(buttons: ToolbarButtonDescriptor[], options: ToolbarOptions = {}): ToolbarDescriptor {
+export function Toolbar(buttons: ToolbarButtonDescriptor[], options: ToolbarOptions = {}): ToolbarDescriptor {
   const resolvedId = options.id ?? `auto:toolbar:${toolbarAutoIds++}`;
   return { id: resolvedId, buttons };
 }
-exports.Toolbar = Toolbar;

@@ -494,13 +494,10 @@ impl<A: AppLogic> TuiDriver<A> {
         DriverInput::drag(self, x0, y0, x1, y1)
     }
 
-    /// Deliver a [`UiEvent::DoubleClick`] at `(x, y)` directly — the same
-    /// event `TuiBackend`'s `DoubleClickDetector` would eventually
-    /// synthesise from two close-together `MouseDown`s, but produced here
-    /// with no dependence on wall-clock timing. A test that
-    /// fired two `click()`s and relied on the 400ms/1.5-cell detector
-    /// window was a race against real time — flaky under load, identical
-    /// on the 1st and 1000th call here since no clock is consulted.
+    /// Deliver a left [`UiEvent::DoubleClick`] at `(x, y)` directly — what
+    /// `TuiBackend`'s `DoubleClickDetector` synthesises from two quick
+    /// left presses, with no dependence on wall-clock timing (two
+    /// `click()`s race the detector's 400ms window under load).
     ///
     /// Still routed through [`Self::dispatch`] (backend translation +
     /// `dispatch_event`), not straight to `app.handle`, so it sees the
@@ -512,6 +509,7 @@ impl<A: AppLogic> TuiDriver<A> {
     pub fn double_click(&mut self, x: f32, y: f32) -> Reaction {
         self.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: crate::MouseButton::Left,
             position: Point::new(x, y),
         })
     }
@@ -1405,6 +1403,7 @@ mod tests {
                 recorded[0],
                 UiEvent::DoubleClick {
                     widget: None,
+                    button: crate::MouseButton::Left,
                     position: Point::new(3.0, 2.0),
                 },
                 "call {i}: expected a single DoubleClick with no prior MouseDown"

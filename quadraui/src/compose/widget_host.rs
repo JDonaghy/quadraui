@@ -18,7 +18,7 @@ use crate::interactive::{
 };
 use crate::primitive::Units;
 use crate::types::WidgetId;
-use crate::{MouseButton, PointerShape};
+use crate::PointerShape;
 
 /// What one [`drive_ui_event`] call produced: the widget's own answer
 /// plus every [`UiEvent`] it handed to [`EventCx::emit`] along the way,
@@ -366,8 +366,10 @@ pub fn routed_event(
             *position,
             crate::Modifiers::default(),
         )),
-        UiEvent::DoubleClick { position, .. } => Some(pointer(
-            PointerKind::DoubleClick(MouseButton::Left),
+        UiEvent::DoubleClick {
+            position, button, ..
+        } => Some(pointer(
+            PointerKind::DoubleClick(*button),
             *position,
             crate::Modifiers::default(),
         )),

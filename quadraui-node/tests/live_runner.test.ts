@@ -16,7 +16,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { QuiApp, pump, run } = require("../js/index.ts");
+const { QuiApp, pump, run } = require("@quadraui/node");
 
 /**
  * Races `promise` against a bounded timer, rejecting with `message` if
@@ -284,7 +284,7 @@ function runDetachedScript(body: string): { stdout: string; status: number | nul
 }
 
 test("startTui raises without a real tty and leaves the headless app usable", () => {
-  const indexPath = require.resolve("../js/index.ts");
+  const indexPath = require.resolve("@quadraui/node");
   const body = `
     const { QuiApp } = require(${JSON.stringify(indexPath)});
     const app = new QuiApp(10, 10);
@@ -305,7 +305,7 @@ test("startTui raises without a real tty and leaves the headless app usable", ()
 });
 
 test("startTui accepts mouse: false and fails the same way without a real tty", () => {
-  const indexPath = require.resolve("../js/index.ts");
+  const indexPath = require.resolve("@quadraui/node");
   const body = `
     const { QuiApp } = require(${JSON.stringify(indexPath)});
     const app = new QuiApp(10, 10);
@@ -322,7 +322,7 @@ test("startTui accepts mouse: false and fails the same way without a real tty", 
 });
 
 {
-  const { QuiApp, NoNativeBackendError } = require("../js/index.ts");
+  const { QuiApp, NoNativeBackendError } = require("@quadraui/node");
   // `QuiApp.nativeBackend()` reports which native feature (if any) this
   // build was compiled with -- see that method's own doc. With one
   // enabled, `startNative` takes a real backend's own arm instead of the

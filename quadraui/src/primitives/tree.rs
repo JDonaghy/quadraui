@@ -3238,33 +3238,34 @@ impl TreeView {
         }
     }
 
-    /// Left press on a row body: plain click selects, Ctrl/Cmd and
-    /// Shift grow a multi-selection when the descriptor allows one.
+    /// A press of `button` on a row body, resolved by
+    /// [`crate::SelectionCore::press`]: a left click selects, Ctrl/Cmd and
+    /// Shift grow a multi-selection when the descriptor allows one, a
+    /// right click asks for the context menu and any other button reports
+    /// [`TreeEvent::RowClicked`] with that button.
     fn handle_row_press(
         &self,
         state: &mut TreeViewState,
         idx: usize,
+        button: crate::event::MouseButton,
         mods: Modifiers,
+        position: crate::event::Point,
     ) -> Handled<TreeEvent> {
-        use crate::types::SelectionGesture;
         let path = self.rows[idx].path.clone();
-        let gesture = SelectionGesture::from_modifiers(mods);
-        if self.selection_mode == SelectionMode::Multi && gesture != SelectionGesture::Replace {
-            let current = state.nav.selected_row_index(&self.rows).unwrap_or(idx);
-            let indices = state.selection.on_gesture(Some(current), idx, gesture);
-            state.nav.set_selected_path(Some(path));
-            return Handled::Event(TreeEvent::SelectionSet {
-                paths: selected_paths_for_indices(&self.rows, &indices),
-            });
-        }
-        state
+        let current = state.nav.selected_row_index(&self.rows).or(Some(idx));
+        let press = state
             .selection
-            .on_gesture(None, idx, crate::types::SelectionGesture::Replace);
-        state.nav.set_selected_path(Some(path.clone()));
-        Handled::Event(TreeEvent::RowClicked {
+            .press(self.selection_mode, current, idx, button, mods);
+        if button == crate::event::MouseButton::Left {
+            state.nav.set_selected_path(Some(path.clone()));
+        }
+        Handled::Event(TreeEvent::from_row_press(
+            press,
             path,
-            modifiers: mods,
-        })
+            mods,
+            position,
+            |indices| selected_paths_for_indices(&self.rows, indices),
+        ))
     }
 
     /// Left press on the scrollbar track: the thumb starts a captured
@@ -3520,7 +3521,13 @@ impl TreeView {
                     return self.handle_windowed_press(state, layout.hit_test(x, y), layout, *mods);
                 }
                 match layout.hit_test(x, y) {
-                    TreeViewHit::Row(idx) => self.handle_row_press(state, idx, *mods),
+                    TreeViewHit::Row(idx) => self.handle_row_press(
+                        state,
+                        idx,
+                        MouseButton::Left,
+                        *mods,
+                        crate::event::Point::new(x, y),
+                    ),
                     TreeViewHit::Chevron(idx) => Handled::Event(TreeEvent::RowToggleExpand {
                         path: self.rows[idx].path.clone(),
                     }),
@@ -3528,17 +3535,41 @@ impl TreeView {
                 }
             }
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Right),
+                kind: PointerKind::Down(button),
                 local,
+                mods,
                 ..
             } => {
                 let (x, y) = abs(local);
-                match self.hit_row(layout, x, y) {
-                    Some(row) => Handled::Event(TreeEvent::ContextMenuRequested {
-                        path: row.path.clone(),
-                        position: crate::event::Point::new(x, y),
-                    }),
-                    None => Handled::Ignored,
+                let position = crate::event::Point::new(x, y);
+                if self.items_window.is_some() {
+                    // A windowed tree has no multi-selection, so the press
+                    // only names its loaded row.
+                    return match self.hit_row(layout, x, y) {
+                        Some(row) => {
+                            let press = state.selection.press(
+                                SelectionMode::Single,
+                                None,
+                                0,
+                                *button,
+                                *mods,
+                            );
+                            Handled::Event(TreeEvent::from_row_press(
+                                press,
+                                row.path.clone(),
+                                *mods,
+                                position,
+                                |_| Vec::new(),
+                            ))
+                        }
+                        None => Handled::Ignored,
+                    };
+                }
+                match layout.hit_test(x, y) {
+                    TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
+                        self.handle_row_press(state, idx, *button, *mods, position)
+                    }
+                    TreeViewHit::Empty => Handled::Ignored,
                 }
             }
             RoutedEvent::Pointer {
@@ -3707,6 +3738,7 @@ impl TreeView {
         state.nav.set_selected_path(Some(path.clone()));
         Handled::Event(TreeEvent::RowClicked {
             path,
+            button: crate::event::MouseButton::Left,
             modifiers: mods,
         })
     }
@@ -3800,9 +3832,12 @@ fn apply_rename_op(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeEvent {
-    /// Single-click (or Enter on the keyboard) on a row.
+    /// A press on a row with any button but the secondary (right) one,
+    /// which asks for [`Self::ContextMenuRequested`] instead. `button`
+    /// tells a plain (left) click from a middle or `X1`/`X2` one.
     RowClicked {
         path: TreePath,
+        button: crate::event::MouseButton,
         modifiers: Modifiers,
     },
     /// Double-click on a row (typically "open" / "activate").
@@ -3856,6 +3891,39 @@ pub enum TreeEvent {
         path: TreePath,
         position: crate::event::Point,
     },
+}
+
+impl TreeEvent {
+    /// The event a press on the row at `path`, resolved by
+    /// [`crate::SelectionCore::press`], reports. `paths` maps a
+    /// multi-selection's row indices back to their paths (see
+    /// [`selected_paths_for_indices`]); `position` is the press point.
+    pub fn from_row_press(
+        press: crate::RowPress,
+        path: TreePath,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+        paths: impl FnOnce(&[usize]) -> Vec<TreePath>,
+    ) -> Self {
+        use crate::event::MouseButton;
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::RowClicked {
+                path,
+                button: MouseButton::Left,
+                modifiers,
+            },
+            RowPress::Set(indices) => Self::SelectionSet {
+                paths: paths(&indices),
+            },
+            RowPress::ContextMenu => Self::ContextMenuRequested { path, position },
+            RowPress::Click(button) => Self::RowClicked {
+                path,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 /// Maps flattened-row indices (as produced by

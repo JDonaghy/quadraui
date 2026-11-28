@@ -10,7 +10,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 const {
   App,
   Button,
@@ -24,8 +24,8 @@ const {
   Toolbar,
   Tree,
   keyName,
-} = require("../js/app/index.ts");
-const { Harness, WidgetNotFoundError, harness } = require("../js/testing.ts");
+} = require("@quadraui/node/app");
+const { Harness, WidgetNotFoundError, harness } = require("@quadraui/node/testing");
 
 function line(text: string) {
   return { spans: [{ text, fg: null, bg: null }] };
@@ -72,7 +72,7 @@ class Demo {
         {
           id: "d:tree",
           selectedPath: [0],
-          onRowClick: (path: number[]) => this.log.push(["click", path]),
+          onClick: (path: number[]) => this.log.push(["click", path]),
           onSelect: (path: number[]) => this.log.push(["select", path]),
           onActivate: (path: number[]) => this.log.push(["activate", path]),
           onToggleExpand: (path: number[]) => this.log.push(["toggle", path]),

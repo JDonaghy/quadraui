@@ -169,6 +169,8 @@ impl NavRow for TreeTableNode {
 /// };
 ///
 /// let table = DataTable {
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 ///     id: WidgetId::new("tree_table:files"),
 ///     columns: vec![Column {
 ///         title: "Name".to_string(),
@@ -519,6 +521,14 @@ pub enum TreeTableEvent {
         path: TreePath,
         position: crate::event::Point,
     },
+    /// Row `idx` was pressed with a button other than the primary and
+    /// secondary ones. See [`crate::DataTableEvent::RowClicked`].
+    RowClicked {
+        idx: usize,
+        path: TreePath,
+        button: crate::event::MouseButton,
+        modifiers: Modifiers,
+    },
 }
 
 impl TreeTableEvent {
@@ -851,6 +861,8 @@ pub(crate) mod native_surface_paint {
 
         fn table(labels: &[&str]) -> DataTable {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("tt"),
                 columns: vec![Column {
                     title: "Name".into(),
@@ -1156,6 +1168,8 @@ mod tests {
 
     fn table(rows: usize) -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tt"),
             columns: vec![
                 Column {
@@ -1334,6 +1348,8 @@ mod tests {
     /// time until column 0 clears it.
     fn narrow_tree_table() -> TreeTable {
         let dt = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tt:narrow"),
             columns: vec![
                 Column {
@@ -1506,6 +1522,8 @@ mod primitive_parity_tests {
 
     fn sample_tree_table() -> TreeTable {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("files"),
             columns: vec![Column {
                 title: "Name".to_string(),

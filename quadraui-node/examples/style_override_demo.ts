@@ -22,7 +22,7 @@
 //
 //     node examples/style_override_demo.ts
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const WIDTH = 32;
 const HEIGHT = 1;

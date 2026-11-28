@@ -22,41 +22,51 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./jsx-runtime": "./js/jsx-runtime.ts",
-    "./jsx-dev-runtime": "./js/jsx-dev-runtime.ts",
-    "./testing": "./js/testing.ts",
-    "./wire": {
-      "types": "./js/wire.d.ts"
+    "./app": {
+      "types": "./dist/app/index.d.ts",
+      "default": "./dist/app/index.js"
     },
-    "./app": "./js/app/index.ts",
-    "./app/*": "./js/app/*.ts",
-    "./js/*": "./js/*"
+    "./app/*": {
+      "types": "./dist/app/*.d.ts",
+      "default": "./dist/app/*.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
+    "./jsx-runtime": {
+      "types": "./dist/jsx-runtime.d.ts",
+      "default": "./dist/jsx-runtime.js"
+    },
+    "./jsx-dev-runtime": {
+      "types": "./dist/jsx-dev-runtime.d.ts",
+      "default": "./dist/jsx-dev-runtime.js"
+    },
+    "./wire": {
+      "types": "./dist/wire.d.ts"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE",
     "dist/",
-    "js/index.ts",
-    "js/testing.ts",
-    "js/wire.d.ts",
-    "js/jsx-runtime.ts",
-    "js/jsx-dev-runtime.ts",
-    "js/app/*.ts",
     "index.js",
-    "index.d.ts",
-    "*.node"
+    "index.d.ts"
   ],
   "scripts": {
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "artifacts": "napi artifacts",
-    "build:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc --module commonjs --target es2020 --moduleResolution node --skipLibCheck --outDir dist --rootDir js js/index.ts && node -e \"require('fs').copyFileSync('js/index.d.ts','dist/index.d.ts');require('fs').copyFileSync('js/wire.d.ts','dist/wire.d.ts')\"",
+    "build:dist": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('fs').copyFileSync('js/wire.d.ts','dist/wire.d.ts')\"",
     "prepack": "npm run build:dist",
     "test": "node --test tests/*.test.ts",
     "typecheck:jsx": "tsc -p tsconfig.jsx.json",
     "typecheck:examples": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node examples/*.ts",
-    "typecheck:dist-types": "tsc --strict --noEmit --module commonjs --target es2020 --moduleResolution node --skipLibCheck --types node js/index.d.ts"
+    "typecheck:dist-types": "tsc --strict --noEmit --module node16 --moduleResolution node16 --types node dist/index.d.ts dist/app/index.d.ts dist/testing.d.ts dist/jsx-runtime.d.ts dist/jsx-dev-runtime.d.ts",
+    "pretest": "npm run build:dist",
+    "smoke:pack": "node scripts/pack_smoke.ts"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3",

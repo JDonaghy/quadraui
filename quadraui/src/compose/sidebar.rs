@@ -1728,6 +1728,7 @@ mod contract {
             let ev = h.last(
                 &UiEvent::DoubleClick {
                     widget: None,
+                    button: crate::MouseButton::Left,
                     position: Point::new(body.x + 3.0, body.y + 2.0),
                 },
                 RECT,

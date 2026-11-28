@@ -103,6 +103,8 @@ impl WindowApp {
             }),
             Kind::Table => Box::new(DataTable {
                 id: self.id,
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 columns: vec![Column {
                     title: "Name".into(),
                     width: Default::default(),

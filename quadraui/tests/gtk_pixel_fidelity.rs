@@ -198,6 +198,8 @@ const CELL: &str = "日本";
 
 fn wide_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("fidelity:table"),
         columns: vec![
             Column {
@@ -435,6 +437,7 @@ fn panel() -> FindReplacePanel {
         replace_one_glyph: "R1".into(),
         replace_all_glyph: "R*".into(),
         hit_regions,
+        hidden_toggles: Vec::new(),
     }
 }
 
