@@ -17,8 +17,8 @@ use quadraui::{
     WidgetAction, WidgetId,
 };
 use quadraui_binding_core::{
-    decode_layout_node, paint_layout, resolve_layout_node, EventSink, HitDetail,
-    InteractionEngine, LayoutNode, PaintedHit,
+    decode_layout_node, paint_layout, resolve_layout_node, EventSink, HitDetail, InteractionEngine,
+    LayoutNode, PaintedHit,
 };
 
 const KIND: &str = "outside_counter";

@@ -1317,6 +1317,21 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         None
     }
 
+    /// Record what `layout` resolved into this widget's state — see
+    /// [`Interactive::settle`]. A `state` or `layout` of the wrong type
+    /// answers `false`.
+    fn settle(&self, state: &mut dyn std::any::Any, layout: &dyn PrimitiveLayout) -> bool {
+        let _ = (state, layout);
+        false
+    }
+
+    /// Follow an event the host delivered for this widget — see
+    /// [`Interactive::follow_event`]. A `state` of the wrong type is left
+    /// alone.
+    fn follow_event(&self, state: &mut dyn std::any::Any, event: &crate::UiEvent) {
+        let _ = (state, event);
+    }
+
     /// This widget's interaction-state summary — see
     /// [`Interactive::state_summary`]. A `state` of the wrong type
     /// answers the summary of `State::default()`.
@@ -1482,6 +1497,22 @@ where
         Interactive::data_requested(self, state, layout)
     }
 
+    fn settle(&self, state: &mut dyn std::any::Any, layout: &dyn PrimitiveLayout) -> bool {
+        let (Some(state), Some(layout)) = (
+            state.downcast_mut::<W::State>(),
+            layout.downcast_ref::<W::Layout>(),
+        ) else {
+            return false;
+        };
+        Interactive::settle(self, state, layout)
+    }
+
+    fn follow_event(&self, state: &mut dyn std::any::Any, event: &crate::UiEvent) {
+        if let Some(state) = state.downcast_mut::<W::State>() {
+            Interactive::follow_event(self, state, event);
+        }
+    }
+
     fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {
         match state.and_then(|s| s.downcast_ref::<W::State>()) {
             Some(state) => Interactive::state_summary(self, state),
@@ -1645,6 +1676,14 @@ where
 
     fn data_requested(&self, state: &mut W::State, layout: &W::Layout) -> Option<crate::UiEvent> {
         self.widget.data_requested(state, layout)
+    }
+
+    fn settle(&self, state: &mut W::State, layout: &W::Layout) -> bool {
+        self.widget.settle(state, layout)
+    }
+
+    fn follow_event(&self, state: &mut W::State, event: &crate::UiEvent) {
+        self.widget.follow_event(state, event)
     }
 
     fn state_summary(&self, state: &W::State) -> crate::interactive::StateSummary {

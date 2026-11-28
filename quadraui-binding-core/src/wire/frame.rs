@@ -76,9 +76,9 @@ pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
 pub(super) fn unknown_node_kind_key(value: &Value) -> Option<&str> {
     let obj = value.as_object()?;
     let widget_kinds = widget_leaf_kinds();
-    let has_recognized_kind = obj.keys().any(|k| {
-        LAYOUT_NODE_KEYS.contains(&k.as_str()) || widget_kinds.contains(&k.as_str())
-    });
+    let has_recognized_kind = obj
+        .keys()
+        .any(|k| LAYOUT_NODE_KEYS.contains(&k.as_str()) || widget_kinds.contains(&k.as_str()));
     if has_recognized_kind {
         return None;
     }

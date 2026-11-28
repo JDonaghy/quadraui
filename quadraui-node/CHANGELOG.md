@@ -101,6 +101,47 @@ fragment step for this package (that mechanism, and
 
 ### Changed
 
+- Every widget leaf -- `list`, `tree`, `data_table`, `text_display` and
+  `tab_bar` included -- is a generic widget driven by its core widget's own
+  state and input handling (#2977), with these visible changes:
+  - A list, tree, table or text display keeps its own selection, scroll and
+    (tree) expansion, and a windowed one asks for rows itself. A descriptor
+    value wins only when it changed since the widget last saw it: an app
+    that resends the same `scroll_offset`/`selected_idx` every frame leaves
+    the widget uncontrolled, and one that sends a new value moves it.
+    Before, any non-zero `scroll_offset` pinned the scroll.
+  - A click on a list item, tree row or table row is the widget's own
+    event (`SelectionChanged`, `RowClicked`, `RowSelected`, ...), and a
+    click on a tree row selects it. The raw `MouseDown`/`DoubleClick` with
+    a per-kind `"hit"` (`tree_row`, `list_item`, `data_table_row`,
+    `text_display_line`, ...) is gone: a pointer event on a widget carries
+    `"hit": {"kind": "widget_body"}`, and so does an event a widget emits
+    from a key.
+  - A focused tree's Up/Down/Home/End/PageUp/PageDown report `Tree
+    SelectionChanged` (nothing for a windowed tree's unloaded row) instead
+    of a tree-scoped `KeyPressed`; a table's Up/Down come from `DataTable`'s
+    own key handling; a Ctrl/Shift click on a list reports `List
+    SelectionSet`; the tree wheel reports `Tree ScrollChanged` instead of
+    `ScrollOffsetChanged`.
+  - A focused text display claims its own PageUp/PageDown/Home/End, so an
+    enclosing `scroll` container no longer pages for them.
+  - `widget_state(id)` answers for a widget painted this frame under its
+    leaf id or its own descriptor id, from the state the widget keeps; a
+    tree with branch rows reports `expanded` (`[]` when none is open). The
+    returned keys are unchanged.
+  - A `TabActivated`/`TabClosed`/`RowToggleExpand` the app dispatches for a
+    painted tab bar or tree moves that widget's state as a click would, and
+    a tree whose app moves `selected_path` scrolls the new selection into
+    view.
+  - A tab group's content pane follows the tab its strip activated, and a
+    leaf hidden in an unselected tab or scrolled out of a `scroll`
+    container keeps its widget state until it shows again.
+  - The schema types `ListViewLeaf`, `TreeViewLeaf`, `DataTableLeaf`,
+    `TextDisplayLeaf` and `RowsRequestedEvent` are gone from `wire.d.ts`
+    (their descriptors carry `items_window`/`scroll_px` themselves, and
+    `RowsRequested` is a `UiEvent`), as are the per-kind `HitDetail`
+    variants; `RowsRequested`'s wire dict is unchanged.
+
 - `RowsRequested` is now a core `UiEvent` variant, so the typed `UiEvent`
   union in `wire.d.ts` includes `{"RowsRequested": {"id", "start", "count"}}`
   — the same dict a windowed `list`/`tree`/`data_table`/`text_display`
@@ -294,6 +335,14 @@ fragment step for this package (that mechanism, and
   grid, one column narrower than before).
 
 ### Removed
+
+- From `wire.d.ts` (#2977): `ListViewLeaf`, `TreeViewLeaf`,
+  `DataTableLeaf`, `TextDisplayLeaf`, `RowsRequestedEvent`, and the
+  `HitDetail` variants `tree_row`, `tree_chevron`, `list_title`,
+  `list_item`, `data_table_header`, `data_table_header_divider`,
+  `data_table_row`, `data_table_footer`, `text_display_line`,
+  `text_display_scrollbar_*` and `tree_scrollbar_*`. A widget leaf's
+  pointer event carries `widget_body`; see Changed.
 
 - The `"extra_body"` hit detail (#2977). Every widget leaf is a generic
   widget now and reports `"widget_body"`; no leaf produced `"extra_body"`

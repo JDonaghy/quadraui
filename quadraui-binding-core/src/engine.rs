@@ -20,12 +20,12 @@ use quadraui::primitive::DynWidget;
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu,
-    ContextMenuItem, ContextMenuPlacement, Dialog, EventCx, EventHost, Float,
-    FloatLayout, FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers,
-    MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup,
-    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
-    TooltipMeasure, TreeEvent, UiEvent, WidgetId,
+    Backend, CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
+    ContextMenuPlacement, Dialog, EventCx, EventHost, Float, FloatLayout, FloatMeasure, FormEvent,
+    Key, ListViewEvent, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
+    PointerShape, Rect, RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis,
+    ScrollViewEvent, TabBarEvent, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout,
+    Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -499,7 +499,6 @@ pub trait EventSink {
         let _ = event;
         quadraui::Reaction::Continue
     }
-
 }
 
 /// One entry in [`InteractionEngine::overlays`]/// One entry in [`InteractionEngine::overlays`] — every anchored popup/
@@ -1379,47 +1378,54 @@ impl InteractionEngine {
     }
 
     /// The [`quadraui::interactive::StateSummary`] the generic widget
-    /// painted this frame under state key `id` reports for its own state,
-    /// or `None` when no painted widget keeps its state under `id`.
-    pub fn widget_state_summary(&self, id: WidgetId) -> Option<quadraui::interactive::StateSummary> {
-        let widget = self.hit_map.borrow().iter().find_map(|hit| match hit {
+    /// painted this frame under `id` (its own id, or the id of the leaf it
+    /// painted in) reports for its own state, or `None` when no painted
+    /// widget answers to `id`.
+    pub fn widget_state_summary(
+        &self,
+        id: WidgetId,
+    ) -> Option<quadraui::interactive::StateSummary> {
+        let (key, widget) = self.hit_map.borrow().iter().find_map(|hit| match hit {
             PaintedHit::Widget {
                 id: leaf, widget, ..
-            } if dyn_state_key(*leaf, widget.as_ref()) == id => Some(Rc::clone(widget)),
+            } => {
+                let key = dyn_state_key(*leaf, widget.as_ref());
+                (key == id || *leaf == id).then(|| (key, Rc::clone(widget)))
+            }
             _ => None,
         })?;
         Some(
             self.widget_states
-                .with(|states| widget.state_summary(states.get(&id))),
+                .with(|states| widget.state_summary(states.get(&key))),
         )
     }
 
     /// Makes tab `index` the active tab of the tab bar painted this frame
-    /// under state key `id` (a `"tab_bar"` leaf or a tab group's strip),
-    /// the way a click on that tab would: the bar's own
-    /// [`quadraui::primitives::tab_bar::TabBarState`] keeps it until the
-    /// app sends a different active tab. A no-op when no tab bar painted
-    /// under `id`.
+    /// under id `id` (a `"tab_bar"` leaf or a tab group's strip), the way a
+    /// click on that tab would — see [`Self::follow_widget_event`].
     pub fn activate_tab(&self, id: WidgetId, index: usize) {
-        let painted = self.hit_map.borrow().iter().find_map(|hit| match hit {
-            PaintedHit::Widget {
-                id: leaf, widget, ..
-            } if dyn_state_key(*leaf, widget.as_ref()) == id => Some(Rc::clone(widget)),
-            _ => None,
-        });
-        let Some(widget) = painted else {
-            return;
-        };
-        let Some(bar) = widget.downcast_ref::<quadraui::TabBar>() else {
-            return;
-        };
-        let descriptor = bar.descriptor_active();
+        self.follow_widget_event(&UiEvent::TabBar(id, TabBarEvent::TabActivated { index }));
+    }
+
+    /// Hands `event` — one the app (or a test harness) delivered rather
+    /// than a widget emitting it — to every widget painted this frame
+    /// through [`DynWidget::follow_event`], so a widget it names updates
+    /// its uncontrolled state as if it had produced the event itself.
+    fn follow_widget_event(&self, event: &UiEvent) {
+        let painted: Vec<(WidgetId, Rc<dyn DynWidget>)> = self
+            .hit_map
+            .borrow()
+            .iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Widget { id, widget, .. } => {
+                    Some((dyn_state_key(*id, widget.as_ref()), Rc::clone(widget)))
+                }
+                _ => None,
+            })
+            .collect();
         self.widget_states.with(|states| {
-            if let Some(state) = states
-                .state_for(id, widget.as_ref())
-                .downcast_mut::<quadraui::primitives::tab_bar::TabBarState>()
-            {
-                state.active.set(&descriptor, Some(index));
+            for (key, widget) in &painted {
+                widget.follow_event(states.state_for(*key, widget.as_ref()), event);
             }
         });
     }
@@ -2635,7 +2641,10 @@ impl InteractionEngine {
                 apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
                 Reaction::Redraw
             }
-            UiEvent::TabBar(_, TabBarEvent::TabActivated { .. } | TabBarEvent::TabClosed { .. })
+            UiEvent::TabBar(
+                _,
+                TabBarEvent::TabActivated { .. } | TabBarEvent::TabClosed { .. },
+            )
             | UiEvent::Tree(_, TreeEvent::RowToggleExpand { .. }) => Reaction::Redraw,
             _ => Reaction::Continue,
         }
@@ -3706,6 +3715,9 @@ impl InteractionEngine {
         let mut attach_hit = hit.is_some() && !scroll_translated;
         // Set by the `HitDetail::WidgetBody` arm below.
         let mut widget_click_reaction = Reaction::Continue;
+        // Whether `event` is now an event a widget emitted rather than the
+        // one this call was handed — see `Self::follow_widget_event`.
+        let mut from_widget = false;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
                 UiEvent::MouseDown {
@@ -3737,6 +3749,7 @@ impl InteractionEngine {
                         if let Some(replacement) = outcome.event {
                             event = replacement;
                             attach_hit = false;
+                            from_widget = true;
                         } else if outcome.consumed {
                             attach_hit = false;
                         }
@@ -3824,6 +3837,20 @@ impl InteractionEngine {
             }
         }
 
+        let raw_input = matches!(
+            event,
+            UiEvent::MouseMoved { .. }
+                | UiEvent::MouseDown { .. }
+                | UiEvent::MouseUp { .. }
+                | UiEvent::DoubleClick { .. }
+                | UiEvent::Scroll { .. }
+                | UiEvent::KeyPressed { .. }
+                | UiEvent::CharTyped(_)
+                | UiEvent::ClipboardPaste(_)
+        );
+        if !from_widget && !raw_input {
+            self.follow_widget_event(&event);
+        }
         let persisted_state = self.persist_widget_state(&event);
 
         let hit_detail = if attach_hit {
@@ -3947,13 +3974,15 @@ mod tests {
     use quadraui::primitive::DynWidget;
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, DataTable, Key, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split,
-        StyledSpan, StyledText, TabBar, TabBarEvent, TextDisplay, TextDisplayLine, TextInput,
-        ToolbarEvent, UiEvent, WidgetId,
+        AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, DataTable, Key, Modifiers,
+        MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split, StyledSpan,
+        StyledText, TabBar, TabBarEvent, TextDisplay, TextDisplayLine, TextInput, ToolbarEvent,
+        UiEvent, WidgetId,
     };
 
     use super::{style_token, theme_token, viewport_rect, EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
+    use crate::drag::DragGestureWireEvent;
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
         render_overlays, resolve_layout_node, resolve_layout_tabs_active, resolve_split_ratio,
@@ -3962,7 +3991,6 @@ mod tests {
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutSplit, LayoutSplitTree,
         LayoutTabEntry, LayoutTabs, LeafDescriptor,
     };
-    use crate::drag::DragGestureWireEvent;
     use crate::render::{draw_bands, paint_layout};
     use quadraui::Spacing;
 
@@ -4008,11 +4036,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("button".to_string(), Rc::new(self.button.clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
         }
@@ -4043,11 +4067,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("form".to_string(), Rc::new(self.form.clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             crate::host::render_overlays(&self.engine, backend, hits);
         }
 
@@ -4081,11 +4101,7 @@ mod tests {
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("form".to_string(), Rc::new(self.form.clone()));
             widgets.insert("button".to_string(), Rc::new(self.button.clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             crate::host::render_overlays(&self.engine, backend, hits);
         }
 
@@ -5571,11 +5587,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("command_center".to_string(), Rc::new(self.cc.clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
         }
@@ -6320,11 +6332,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("terminal".to_string(), Rc::new(self.term.clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
         }
@@ -6488,11 +6496,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert(self.kind.to_string(), self.widget.clone());
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
         }
@@ -8270,7 +8274,14 @@ mod tests {
             let mut hits = Vec::new();
             draw_bands(
                 backend,
-                &{ let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new(); w.insert("data_table".to_string(), Rc::new((&self.data_table).clone()) as Rc<dyn DynWidget>); w },
+                &{
+                    let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+                    w.insert(
+                        "data_table".to_string(),
+                        Rc::new((&self.data_table).clone()) as Rc<dyn DynWidget>,
+                    );
+                    w
+                },
                 &mut hits,
             );
             self.engine.set_hits(hits);
@@ -8470,7 +8481,14 @@ mod tests {
             let mut hits = Vec::new();
             draw_bands(
                 backend,
-                &{ let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new(); w.insert("list".to_string(), Rc::new((&self.list).clone()) as Rc<dyn DynWidget>); w },
+                &{
+                    let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+                    w.insert(
+                        "list".to_string(),
+                        Rc::new((&self.list).clone()) as Rc<dyn DynWidget>,
+                    );
+                    w
+                },
                 &mut hits,
             );
             self.engine.set_hits(hits);
@@ -9026,11 +9044,7 @@ mod tests {
                 "toolbar".to_string(),
                 std::rc::Rc::new(self.toolbar.clone()) as std::rc::Rc<dyn DynWidget>,
             );
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -9226,11 +9240,7 @@ mod tests {
             let mut hits = Vec::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("menu_bar".to_string(), Rc::new(self.menu.borrow().clone()));
-            draw_bands(
-                backend,
-                &widgets,
-                &mut hits,
-            );
+            draw_bands(backend, &widgets, &mut hits);
             crate::host::render_overlays(&self.engine, backend, hits);
         }
 
@@ -11019,7 +11029,6 @@ mod tests {
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
-
 
     /// Builds a `button_count`-button vertical-axis `Scroll` (`offset` as
     /// given — `None` for uncontrolled) and drives it through a 10-row

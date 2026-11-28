@@ -2775,7 +2775,10 @@ impl crate::primitive::Primitive for DataTable {
         avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
         let _ = avail;
-        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
     }
 
     /// The table resolves through its own state first

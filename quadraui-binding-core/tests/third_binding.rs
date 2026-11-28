@@ -28,9 +28,9 @@ use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{AppLogic, Backend, FormEvent, Reaction, Rect, UiEvent, WidgetId};
 use quadraui_binding_core::{
-    apply_deferred_action, decode_layout_node, decode_overlay, paint_layout,
-    render_overlays, resolve_layout_node, widget_leaf_kinds, BindingHost, EventSink,
-    HitDetail, InteractionEngine, LayoutNode,
+    apply_deferred_action, decode_layout_node, decode_overlay, paint_layout, render_overlays,
+    resolve_layout_node, widget_leaf_kinds, BindingHost, EventSink, HitDetail, InteractionEngine,
+    LayoutNode,
 };
 
 const HOST_KIND: &str = "host_toggle";

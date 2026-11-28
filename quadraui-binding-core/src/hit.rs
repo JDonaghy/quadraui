@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::{
-    Point, PressZone, Rect, ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout,
-    UiEvent, WidgetId,
+    Point, PressZone, Rect, ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, UiEvent,
+    WidgetId,
 };
 
 use quadraui::primitive::DynWidget;

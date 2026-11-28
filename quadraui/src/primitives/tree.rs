@@ -2556,7 +2556,10 @@ impl crate::primitive::Primitive for TreeView {
         avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
         let _ = avail;
-        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
     }
 
     fn capture(&self) -> crate::frame::OwnedContent {
@@ -2786,6 +2789,12 @@ pub struct TreeViewState {
     /// Repeat suppression for a windowed tree's
     /// [`crate::UiEvent::RowsRequested`].
     pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_path` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<Option<TreePath>>,
 }
 
 #[cfg(any(
@@ -2901,27 +2910,36 @@ impl TreeView {
         if scroll != self.scroll_offset {
             state.scroll.set(&desc.scroll_offset, scroll);
         }
-        if let (Handled::Event(TreeEvent::RowToggleExpand { path }), None) =
-            (out, desc.items_window)
-        {
-            if let Some(Some(desc_expanded)) = desc
-                .rows
-                .iter()
-                .find(|row| &row.path == path)
-                .map(|row| row.is_expanded)
-            {
-                let latch = state.expanded.entry(path.clone()).or_default();
-                let current = latch.get(&desc_expanded);
-                latch.set(&desc_expanded, !current);
-            }
-            let branches: std::collections::BTreeSet<&TreePath> = desc
-                .rows
-                .iter()
-                .filter(|row| row.is_expanded.is_some())
-                .map(|row| &row.path)
-                .collect();
-            state.expanded.retain(|path, _| branches.contains(path));
+        if let Handled::Event(TreeEvent::RowToggleExpand { path }) = out {
+            desc.toggle_expanded(state, path);
         }
+    }
+
+    /// Flip branch `path`'s expansion in `state`, against this
+    /// descriptor's own `is_expanded` for it, and drop the latches of
+    /// paths that are no longer branches. A windowed tree's rows are
+    /// flattened by the app, so it keeps no expansion of its own.
+    fn toggle_expanded(&self, state: &mut TreeViewState, path: &TreePath) {
+        if self.items_window.is_some() {
+            return;
+        }
+        if let Some(Some(desc_expanded)) = self
+            .rows
+            .iter()
+            .find(|row| &row.path == path)
+            .map(|row| row.is_expanded)
+        {
+            let latch = state.expanded.entry(path.clone()).or_default();
+            let current = latch.get(&desc_expanded);
+            latch.set(&desc_expanded, !current);
+        }
+        let branches: std::collections::BTreeSet<&TreePath> = self
+            .rows
+            .iter()
+            .filter(|row| row.is_expanded.is_some())
+            .map(|row| &row.path)
+            .collect();
+        state.expanded.retain(|path, _| branches.contains(path));
     }
 
     /// One windowed-tree navigation key: the cursor moves over the real
@@ -3318,9 +3336,51 @@ impl crate::interactive::Interactive for TreeView {
         )
     }
 
+    /// A selection the app moved (a new descriptor `selected_path`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the tree's own keys moved does — so an app that owns the selection
+    /// but leaves the scroll to the tree keeps its selection visible.
+    fn settle(&self, state: &mut TreeViewState, layout: &TreeViewPrimitiveLayout) -> bool {
+        if self.items_window.is_some()
+            || state.followed_selection.as_ref() == Some(&self.selected_path)
+        {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_path.clone());
+        let Some(path) = &self.selected_path else {
+            return false;
+        };
+        if state.selected.get(&self.selected_path).as_ref() != Some(path) {
+            return false;
+        }
+        let live = self.live(Some(state));
+        let Some(row) = live.rows.iter().position(|r| &r.path == path) else {
+            return false;
+        };
+        let scroll = live.scroll_offset;
+        let follow = crate::behaviour::scroll::ensure_visible(scroll, layout.viewport_rows, row);
+        if follow == scroll {
+            return false;
+        }
+        state.scroll.set(&self.scroll_offset, follow);
+        true
+    }
+
+    /// A `RowToggleExpand` for this tree the host delivered on the app's
+    /// behalf toggles that branch exactly as a chevron click would.
+    fn follow_event(&self, state: &mut TreeViewState, event: &crate::UiEvent) {
+        if let crate::UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) = event {
+            if *id == self.id {
+                self.toggle_expanded(state, path);
+            }
+        }
+    }
+
     fn state_summary(&self, state: &TreeViewState) -> crate::interactive::StateSummary {
         let live = self.live(Some(state));
-        let expanded = (!state.expanded.is_empty()).then(|| {
+        let resolves_expansion =
+            self.items_window.is_none() && self.rows.iter().any(|row| row.is_expanded.is_some());
+        let expanded = resolves_expansion.then(|| {
             live.rows
                 .iter()
                 .filter(|row| row.is_expanded == Some(true))

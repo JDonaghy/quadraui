@@ -176,14 +176,13 @@ use quadraui_binding_core::{
     is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
     merge_overrides, paint_layout, pointer_shape, record_pending_error,
     remove_as_default_protocol_client, render_overlays, resolve_app_path, resolve_layout_node,
-    set_as_default_protocol_client,
-    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     update_apply_on_quit, update_check_for_update, update_download_and_stage,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
     ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
-    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, ServiceError,
-    StyleContext, UpdateInfoWire, WindowCloseHandling,
+    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, ServiceError, StyleContext,
+    UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{

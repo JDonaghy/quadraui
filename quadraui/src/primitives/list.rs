@@ -2685,7 +2685,10 @@ impl crate::primitive::Primitive for ListView {
         avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
         let _ = avail;
-        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
     }
 
     /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so

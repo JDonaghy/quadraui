@@ -10,8 +10,8 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, ListView, Rect, ScrollAxis, ScrollView, SectionSize, Split, SplitDirection,
-    Style, TabBar, TabChrome, TextDisplay, Theme, TreeView, WidgetId,
+    Backend, Button, DataTable, ListView, Rect, ScrollAxis, ScrollView, SectionSize, Split,
+    SplitDirection, Style, TabBar, TabChrome, TextDisplay, Theme, TreeView, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -351,11 +351,7 @@ pub fn paint_layout(
         LayoutNode::SidebarPanel(sidebar_node) => {
             let panel = &sidebar_node.sidebar_panel;
             let content_bounds = paint_sidebar_panel(backend, area, panel, hits);
-            paint_layout(
-                backend,
-                content_bounds,
-                &sidebar_node.content,
-                hits);
+            paint_layout(backend, content_bounds, &sidebar_node.content, hits);
         }
         LayoutNode::SplitTree(split_tree) => {
             let layout = backend.draw_primitive(area, &split_tree.tree);
@@ -3227,7 +3223,6 @@ mod tests {
 
     // ── virtualised `items_window` decode + `rows_requested_for_window` ──
 
-
     /// A `"text_display"` leaf `id` holding one line per entry of `texts`.
     fn text_display_leaf(id: &str, texts: &[&str]) -> LayoutNode {
         let mut td = TextDisplay::new(WidgetId::new(id));
@@ -3260,7 +3255,9 @@ mod tests {
     fn painted_text_displays(hits: &[PaintedHit]) -> Vec<(String, Rect)> {
         hits.iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Widget { id, area, widget } if widget.downcast_ref::<TextDisplay>().is_some() => {
+                PaintedHit::Widget { id, area, widget }
+                    if widget.downcast_ref::<TextDisplay>().is_some() =>
+                {
                     Some((id.as_str().to_string(), *area))
                 }
                 _ => None,

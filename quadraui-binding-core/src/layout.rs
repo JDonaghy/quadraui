@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use quadraui::{
-    Align, CellOverflow, Color, Justify, Rect, ScrollAxis, SectionSize,
-    SidebarPanel, Spacing, Split, SplitTree, Style, TabBar, Theme, };
+    Align, CellOverflow, Color, Justify, Rect, ScrollAxis, SectionSize, SidebarPanel, Spacing,
+    Split, SplitTree, Style, TabBar, Theme,
+};
 
 use quadraui::layout::{grid_cell_rects, GridTrack};
 use quadraui::primitive::DynWidget;

@@ -516,6 +516,28 @@ pub trait Interactive: Primitive {
         None
     }
 
+    /// Record what laying the widget out just resolved into its own state,
+    /// before it paints — a selection the app moved scrolled into view.
+    /// The host calls it for every frame it paints the widget, after
+    /// `layout`, and lays the widget out again when it answers `true`
+    /// (it changed `state`). Default: nothing to record.
+    fn settle(&self, state: &mut Self::State, layout: &Self::Layout) -> bool {
+        let _ = (state, layout);
+        false
+    }
+
+    /// An event that names this widget which its host delivered on the
+    /// app's behalf rather than this widget emitting it — an app or a test
+    /// harness dispatching a `TabActivated` for a tab bar, say. A widget
+    /// whose state is uncontrolled by default follows it as if it had
+    /// produced the event itself, so the next frame shows the activated
+    /// tab without the app echoing it onto the descriptor. A host calls
+    /// this for every painted widget; each ignores an event that does not
+    /// name it. Default: ignore it.
+    fn follow_event(&self, state: &mut Self::State, event: &UiEvent) {
+        let _ = (state, event);
+    }
+
     /// A host-facing summary of the interaction state this widget keeps —
     /// the selection, scroll position, active tab or expanded rows it
     /// resolves for the next frame — for a binding that reports a widget's

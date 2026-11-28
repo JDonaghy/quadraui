@@ -3734,6 +3734,20 @@ impl Interactive for TabBar {
         }
     }
 
+    /// A `TabActivated`/`TabClosed` for this bar the host delivered on the
+    /// app's behalf moves the active tab exactly as a click would.
+    fn follow_event(&self, state: &mut TabBarState, event: &crate::UiEvent) {
+        match event {
+            crate::UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) if *id == self.id => {
+                state.activate(self, *index);
+            }
+            crate::UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) if *id == self.id => {
+                state.close(*index);
+            }
+            _ => {}
+        }
+    }
+
     fn state_summary(&self, state: &TabBarState) -> crate::interactive::StateSummary {
         crate::interactive::StateSummary::default()
             .with_active_tab(self.resolved_active(Some(state)))

@@ -35,8 +35,9 @@ use quadraui::compose::HoverTooltipTracker;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
-    mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, Decoration, Key, Modifiers, MouseButton, Reaction, Split, SplitMeasure, Style,
-    StyledSpan, TextDisplay, TextDisplayLine, Theme, Tooltip, UiEvent, WidgetId,
+    mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, Decoration, Key,
+    Modifiers, MouseButton, Reaction, Split, SplitMeasure, Style, StyledSpan, TextDisplay,
+    TextDisplayLine, Theme, Tooltip, UiEvent, WidgetId,
 };
 
 use crate::engine::InteractionEngine;
@@ -685,14 +686,8 @@ pub fn resolve_layout_node(
             let draw_area = shrink_main_axis(inner, horizontal, gap);
             let mut layout = native_split.layout(draw_area, SplitMeasure::new(line_height));
             apply_split_gap(&mut layout, horizontal, gap);
-            resolve_layout_node(engine,
-                backend,
-                layout.first_bounds,
-                &mut split.first);
-            resolve_layout_node(engine,
-                backend,
-                layout.second_bounds,
-                &mut split.second);
+            resolve_layout_node(engine, backend, layout.first_bounds, &mut split.first);
+            resolve_layout_node(engine, backend, layout.second_bounds, &mut split.second);
         }
         LayoutNode::Tabs(tabs) => {
             resolve_layout_tabs_active(engine, tabs);
@@ -713,20 +708,14 @@ pub fn resolve_layout_node(
             // scroll, ratios and active tabs.
             for (index, entry) in tabs.entries.iter_mut().enumerate() {
                 if index == selected {
-                    resolve_layout_node(engine,
-                        backend,
-                        content_rect,
-                        &mut entry.content);
+                    resolve_layout_node(engine, backend, content_rect, &mut entry.content);
                 } else {
                     keep_subtree_state_alive(engine, &entry.content);
                 }
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            resolve_layout_node(engine,
-                backend,
-                area,
-                &mut sidebar_node.content);
+            resolve_layout_node(engine, backend, area, &mut sidebar_node.content);
         }
         LayoutNode::SplitTree(split_tree) => {
             for leaf in &mut split_tree.leaves {
@@ -777,10 +766,7 @@ pub fn resolve_layout_node(
                     {
                         for (child, slot) in container.children.iter_mut().zip(slots) {
                             if slot.visible {
-                                resolve_layout_node(engine,
-                                    backend,
-                                    slot.rect,
-                                    &mut child.node);
+                                resolve_layout_node(engine, backend, slot.rect, &mut child.node);
                             } else {
                                 keep_subtree_state_alive(engine, &child.node);
                             }
@@ -789,10 +775,7 @@ pub fn resolve_layout_node(
                 }
                 ScrollSlots::Atomic(rect, visible) => {
                     if visible {
-                        resolve_layout_node(engine,
-                            backend,
-                            rect,
-                            &mut scroll_node.content);
+                        resolve_layout_node(engine, backend, rect, &mut scroll_node.content);
                     } else {
                         keep_subtree_state_alive(engine, &scroll_node.content);
                     }
@@ -914,7 +897,10 @@ pub struct WidgetStateSnapshot {
 /// widget painted this frame keeps state under `id` nor a split ratio is
 /// stored for it. Never mutates any state — a snapshot is a
 /// side-effect-free read.
-pub fn widget_state_snapshot(engine: &InteractionEngine, id: WidgetId) -> Option<WidgetStateSnapshot> {
+pub fn widget_state_snapshot(
+    engine: &InteractionEngine,
+    id: WidgetId,
+) -> Option<WidgetStateSnapshot> {
     let summary = engine.widget_state_summary(id);
     let ratio = engine
         .widget_state()
@@ -2052,10 +2038,9 @@ mod tests {
         // runs (see that function's own doc) -- so the widget-state store
         // already reflects it immediately, with no need to inspect what
         // `RecordingSink` (a no-op here) did with the dispatched event.
-        let dragged_ratio =
-            widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
-                .and_then(|snapshot| snapshot.ratio)
-                .expect("the drag must have persisted a split_ratio for id");
+        let dragged_ratio = widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
+            .and_then(|snapshot| snapshot.ratio)
+            .expect("the drag must have persisted a split_ratio for id");
         assert_ne!(
             dragged_ratio, 0.5,
             "the drag must have actually moved the ratio away from its starting 0.5"
@@ -2079,9 +2064,8 @@ mod tests {
             "the dragged ratio must survive a render whose descriptor still says 0.5: got {resolved_ratio}, expected {dragged_ratio}"
         );
 
-        let snapshot =
-            widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
-                .expect("the split's id must have resolved state");
+        let snapshot = widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
+            .expect("the split's id must have resolved state");
         assert!(
             (snapshot.ratio.expect("ratio must be set") - dragged_ratio).abs() < 0.001,
             "the snapshot must report the same dragged ratio back to app code"
@@ -3291,8 +3275,6 @@ mod tests {
 
     // ─── Container state ───────────────────────────────────────────────
 
-
-
     fn test_split(ratio: f32) -> Split {
         Split {
             id: WidgetId::new("host-test:split"),
@@ -3506,5 +3488,4 @@ mod tests {
         assert_eq!(snapshot.ratio, Some(0.7));
         assert_eq!(snapshot.summary.selected_path, None);
     }
-
 }

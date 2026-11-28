@@ -477,26 +477,6 @@ export interface DataTableGlyphs {
   sort_descending?: Icon | null;
 }
 
-export interface DataTableLeaf {
-  bordered?: boolean; // Reserve a 1-cell/pixel margin on every edge of the table's viewport for a decorative frame, mirroring `crate::primitives::list::ListView::bordered` and `crate::types::TreeStyle::bordered`.
-  column_overrides?: (number | null)[]; // Per-column width overrides from user drag.
-  columns: Column[];
-  footer?: DataRow | null; // Optional pinned summary/totals row, laid out against the same resolved columns as the body.
-  glyphs?: DataTableGlyphs | null; // Sort-direction glyph overrides for the header — see `DataTableGlyphs`.
-  h_scroll?: number; // Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
-  has_focus?: boolean;
-  id: WidgetId;
-  items_window?: ItemsWindow | null;
-  min_total_width?: number | null; // Minimum total width for all columns.
-  rows: DataRow[];
-  scroll_offset?: number;
-  scroll_px?: number;
-  selected_idx?: number | null;
-  show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
-  sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
-  striped?: boolean; // Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
-}
-
 /** How a `CalendarDate` renders as text. */
 export type DateFormat = "Iso8601" | "UsSlash" | "EuSlash";
 
@@ -831,7 +811,7 @@ export type HeaderHit = ("Chevron" | "TitleArea") | _HeaderHitDict;
 export type HelpOverlayAction = "Opened" | "Closed";
 
 /** The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself. */
-export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 /** `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first. */
 export type Icon = _Icon1 | _Icon2;
@@ -957,7 +937,7 @@ export interface LayoutLeafNode {
   command_center?: CommandCenter;
   command_line?: CommandLine;
   context_menu?: ContextMenu;
-  data_table?: DataTable | DataTableLeaf;
+  data_table?: DataTable;
   date_picker?: DatePicker;
   diff_view?: DiffView;
   draggable?: boolean | null;
@@ -968,7 +948,7 @@ export interface LayoutLeafNode {
   icon_grid?: IconGrid;
   id: string;
   image?: Image;
-  list?: ListView | ListViewLeaf;
+  list?: ListView;
   markdown?: Markdown;
   max?: number | null;
   menu_bar?: AppMenu;
@@ -994,12 +974,12 @@ export interface LayoutLeafNode {
   switch?: Switch;
   tab_bar?: TabBar;
   terminal?: Terminal;
-  text_display?: TextDisplay | TextDisplayLeaf;
+  text_display?: TextDisplay;
   text_field?: TextField;
   text_input?: TextInput;
   textarea?: TextArea;
   toolbar?: Toolbar;
-  tree?: TreeView | TreeViewLeaf;
+  tree?: TreeView;
   tree_table?: TreeTable;
   tree_table_controller?: TreeTableControllerDescriptor;
   wire_version?: number | null;
@@ -1171,22 +1151,6 @@ export interface ListView {
 
 /** Events a `ListView` emits back to the app. */
 export type ListViewEvent = { SelectionChanged: _ListViewEventSelectionChanged; } | { ItemActivated: _ListViewEventItemActivated; } | { ItemDoubleClicked: _ListViewEventItemDoubleClicked; } | { KeyPressed: _ListViewEventKeyPressed; } | { SelectionSet: _ListViewEventSelectionSet; };
-
-export interface ListViewLeaf {
-  bordered?: boolean; // When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list and inset items by 1 cell on each side.
-  h_scroll?: number; // Horizontal scroll offset in **display cells** (terminal columns — a CJK/emoji glyph counts as 2, matching `crate::text_util::char_cell_width`), not characters.
-  has_focus?: boolean; // Whether this list currently holds keyboard focus.
-  id: WidgetId;
-  items: ListItem[];
-  items_window?: ItemsWindow | null;
-  max_content_width?: number | null; // Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
-  scroll_offset?: number;
-  scroll_px?: number;
-  selected_idx: number;
-  show_v_scrollbar?: boolean; // When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
-  striped?: boolean; // Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
-  title?: StyledText | null; // Optional header row shown above the items.
-}
 
 /** A scrollable, read-only markdown viewer. */
 export interface Markdown {
@@ -1472,7 +1436,7 @@ export interface RenderFrameDict {
   command_center?: CommandCenter | null;
   command_line?: CommandLine | null;
   context_menu?: ContextMenu | null;
-  data_table?: (DataTable | DataTableLeaf) | null;
+  data_table?: DataTable | null;
   date_picker?: DatePicker | null;
   diff_view?: DiffView | null;
   editor?: Editor | null;
@@ -1480,7 +1444,7 @@ export interface RenderFrameDict {
   form?: Form | null;
   icon_grid?: IconGrid | null;
   image?: Image | null;
-  list?: (ListView | ListViewLeaf) | null;
+  list?: ListView | null;
   markdown?: Markdown | null;
   menu_bar?: AppMenu | null;
   message_list?: MessageList | null;
@@ -1501,12 +1465,12 @@ export interface RenderFrameDict {
   switch?: Switch | null;
   tab_bar?: TabBar | null;
   terminal?: Terminal | null;
-  text_display?: (TextDisplay | TextDisplayLeaf) | null;
+  text_display?: TextDisplay | null;
   text_field?: TextField | null;
   text_input?: TextInput | null;
   textarea?: TextArea | null;
   toolbar?: Toolbar | null;
-  tree?: (TreeView | TreeViewLeaf) | null;
+  tree?: TreeView | null;
   tree_table?: TreeTable | null;
   tree_table_controller?: TreeTableControllerDescriptor | null;
   wire_version?: number;
@@ -1517,13 +1481,6 @@ export type RenderOutput = LayoutNode | RenderFrameDict;
 
 /** How an item-bearing `FieldKind`'s items (`ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`) pack within their row's available width — the space between `items_start_x` (from the field's `FormFieldMeasure`) and the row's right edge. Set on `FormSpacing::row_align` as the form-wide default, or on `FormField::row_align` to override a single field. */
 export type RowAlign = "Start" | "Center" | "End" | "Stretch";
-
-/** The `{id, start, count}` a binding should ask its app's render callback for next, computed by `rows_requested_for_window` once scrolling moves outside the slice an `ItemsWindow` says is currently loaded. */
-export interface RowsRequestedEvent {
-  count: number;
-  id: WidgetId;
-  start: number;
-}
 
 /** Orientation of a scrollbar. */
 export type ScrollAxis = "Vertical" | "Horizontal";
@@ -1987,18 +1944,6 @@ export interface TextDisplay {
 /** Events a `TextDisplay` emits back to the app. */
 export type TextDisplayEvent = { Scrolled: _TextDisplayEventScrolled; } | { AutoScrollToggled: _TextDisplayEventAutoScrollToggled; } | { Copied: _TextDisplayEventCopied; } | { KeyPressed: _TextDisplayEventKeyPressed; };
 
-export interface TextDisplayLeaf {
-  auto_scroll?: boolean; // When true, backends auto-scroll to keep the latest line visible.
-  has_focus?: boolean;
-  id: WidgetId;
-  items_window?: ItemsWindow | null;
-  lines: TextDisplayLine[];
-  max_lines?: number; // Maximum lines to retain in the ring buffer.
-  scroll_offset?: number; // Index of the first visible line.
-  show_scrollbar?: boolean; // When true, a vertical scrollbar is rendered at the trailing edge of the viewport.
-  title?: StyledText | null; // Optional title row painted above the body.
-}
-
 /** One line in a `TextDisplay`. Carries styled spans plus an optional decoration tag (Error/Warning/Muted/Header) for log-level styling and an optional left-aligned timestamp string the backend renders in a dim colour. */
 export interface TextDisplayLine {
   decoration?: Decoration;
@@ -2175,18 +2120,6 @@ export interface TreeView {
   style: TreeStyle;
 }
 
-export interface TreeViewLeaf {
-  has_focus?: boolean; // Whether this tree currently holds keyboard focus.
-  id: WidgetId;
-  items_window?: ItemsWindow | null;
-  rows: TreeRow[]; // Pre-flattened, pre-expanded rows in visual order.
-  scroll_offset?: number; // How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
-  scroll_px?: number;
-  selected_path?: number[] | null;
-  selection_mode: SelectionMode;
-  style: TreeStyle;
-}
-
 /** Everything a user (or platform) can do that an app might care about. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;
 
@@ -2218,14 +2151,14 @@ export type WidgetId = string;
 /** Every leaf widget kind key a layout-tree leaf node may carry. */
 export type WidgetKind = "activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart" | "checkbox" | "combo_box" | "command_center" | "command_line" | "context_menu" | "data_table" | "date_picker" | "diff_view" | "editor" | "find_replace" | "form" | "icon_grid" | "image" | "list" | "markdown" | "menu_bar" | "message_list" | "minimap" | "multi_section_view" | "number_input" | "palette" | "password" | "pipeline_view" | "progress" | "radio_group" | "scripted_widget" | "scroll_view" | "scrollbar" | "select" | "slider" | "spinner" | "status_bar" | "switch" | "tab_bar" | "terminal" | "text_display" | "text_field" | "text_input" | "textarea" | "toolbar" | "tree" | "tree_table" | "tree_table_controller";
 
-/** A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once. */
+/** What a binding's `widget_state(id)` reports for one id: the `quadraui::interactive::StateSummary` the widget painted under `id` keeps in its own state (selection, scroll, active tab, expansion), plus a `Split`'s divider ratio, which the host keeps. */
 export interface WidgetStateSnapshot {
-  active_tab?: number | null; // A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
-  expanded?: number[][] | null; // A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
+  active_tab?: number | null; // A tab bar's resolved active tab.
+  expanded?: number[][] | null; // A tree's expanded branches, when it resolves expansion itself.
   ratio?: number | null; // A `Split`'s stored divider ratio, if `id` is one being tracked by `resolve_split_ratio`.
-  scroll_offset?: number | null; // A `Tree`/`List`/`DataTable`'s stored scroll offset, alongside whichever of `selected_path`/`selected_idx` applies.
-  selected_idx?: number | null; // A `List`/`DataTable`'s stored cursor row, if `id` is one being tracked by `resolve_list_cursor`/`resolve_data_table_cursor`.
-  selected_path?: number[] | null; // A `Tree`'s stored cursor row, if `id` is a tree being tracked by `resolve_tree_cursor`.
+  scroll_offset?: number | null; // The resolved scroll row (absolute when windowed).
+  selected_idx?: number | null; // A list's or table's resolved selected row (absolute when windowed).
+  selected_path?: number[] | null; // A tree's resolved selected row.
 }
 
 /** What the workspace just did. Returned from every mutating entry point so the host can react without diffing the workspace. */
@@ -2795,50 +2728,22 @@ export interface _FormEventToolbarButtonClicked {
 
 export type _HeaderHitDict = { Action: string; };
 
-export interface _HitDetailDataTableFooter {
-  kind: "data_table_footer";
-}
-
-export interface _HitDetailDataTableHeader {
-  col: number;
-  kind: "data_table_header";
-}
-
-export interface _HitDetailDataTableHeaderDivider {
-  col: number;
-  kind: "data_table_header_divider";
-}
-
-export interface _HitDetailDataTableRow {
-  kind: "data_table_row";
-  row: number;
-}
-
-export interface _HitDetailListItem {
-  index: number;
-  kind: "list_item";
-}
-
-export interface _HitDetailListTitle {
-  kind: "list_title";
-}
-
 /** Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets. */
 export interface _HitDetailScrollBody {
   kind: "scroll_body";
 }
 
-/** Landed on a `Scroll`'s own scrollbar thumb — mirrors `Self::TreeScrollbarThumb`. */
+/** Landed on a `Scroll`'s own scrollbar thumb; arms a drag. */
 export interface _HitDetailScrollScrollbarThumb {
   kind: "scroll_scrollbar_thumb";
 }
 
-/** Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone) — mirrors `Self::TreeScrollbarTrackAfter`. */
+/** Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone). */
 export interface _HitDetailScrollScrollbarTrackAfter {
   kind: "scroll_scrollbar_track_after";
 }
 
-/** Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone) — mirrors `Self::TreeScrollbarTrackBefore`. */
+/** Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone). */
 export interface _HitDetailScrollScrollbarTrackBefore {
   kind: "scroll_scrollbar_track_before";
 }
@@ -2859,48 +2764,6 @@ export interface _HitDetailSplitSecondPane {
 export interface _HitDetailSplitTreeDivider {
   kind: "split_tree_divider";
   split_index: number;
-}
-
-export interface _HitDetailTextDisplayLine {
-  kind: "text_display_line";
-  line: number;
-}
-
-export interface _HitDetailTextDisplayScrollbarThumb {
-  kind: "text_display_scrollbar_thumb";
-}
-
-export interface _HitDetailTextDisplayScrollbarTrackAfter {
-  kind: "text_display_scrollbar_track_after";
-}
-
-export interface _HitDetailTextDisplayScrollbarTrackBefore {
-  kind: "text_display_scrollbar_track_before";
-}
-
-export interface _HitDetailTreeChevron {
-  kind: "tree_chevron";
-  row: number;
-}
-
-export interface _HitDetailTreeRow {
-  kind: "tree_row";
-  row: number;
-}
-
-/** Landed on a tree's vertical scrollbar thumb. Arms a drag in the binding's own event handler (mirroring `SplitDivider`'s `ActiveDrag`); never reaches `semantic_event_for_hit`. */
-export interface _HitDetailTreeScrollbarThumb {
-  kind: "tree_scrollbar_thumb";
-}
-
-/** Landed after the thumb on a tree's vertical scrollbar track (page-down zone). Handled directly in the binding's own event handler, same as `TreeScrollbarTrackBefore`. */
-export interface _HitDetailTreeScrollbarTrackAfter {
-  kind: "tree_scrollbar_track_after";
-}
-
-/** Landed before the thumb on a tree's vertical scrollbar track (page-up zone). Handled directly in the binding's own event handler, which replaces the raw click with `UiEvent::ScrollOffsetChanged` — never reaches `semantic_event_for_hit`. */
-export interface _HitDetailTreeScrollbarTrackBefore {
-  kind: "tree_scrollbar_track_before";
 }
 
 /** Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to. */

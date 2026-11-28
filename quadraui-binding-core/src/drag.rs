@@ -16,8 +16,7 @@ use std::collections::HashMap;
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
-    Point, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout,
-    SplitTreeLayout, WidgetId,
+    Point, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, WidgetId,
 };
 
 use crate::hit::{hit_test_painted, HitDetail, PaintedHit};
