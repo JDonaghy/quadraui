@@ -4495,6 +4495,45 @@ mod interactive_tests {
         (handled, host)
     }
 
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection, and the scroll it records
+    /// is what the tree resolves next.
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        let mut tree = tree(30);
+        tree.selected_path = Some(vec![20]);
+        let mut state = TreeViewState::default();
+        let layout = layout_for(&tree, 5.0);
+        assert!(Interactive::settle(&tree, &mut state, &layout));
+        let scroll = tree.live(Some(&state)).scroll_offset;
+        assert!(
+            scroll <= 20 && 20 < scroll + layout.viewport_rows,
+            "{scroll}"
+        );
+        // The same selection again records nothing more.
+        assert!(!Interactive::settle(&tree, &mut state, &layout));
+    }
+
+    /// A `RowToggleExpand` the host delivers on the app's behalf expands
+    /// the branch it names, and one naming another tree is ignored.
+    #[test]
+    fn follow_event_toggles_the_named_branch_only_for_this_tree() {
+        let tree = tree(3);
+        let mut state = TreeViewState::default();
+        let toggle = |id: &str| {
+            crate::UiEvent::Tree(
+                WidgetId::new(id),
+                TreeEvent::RowToggleExpand { path: vec![0] },
+            )
+        };
+        Interactive::follow_event(&tree, &mut state, &toggle("tree:other"));
+        assert_eq!(tree.live(Some(&state)).rows[0].is_expanded, Some(false));
+        Interactive::follow_event(&tree, &mut state, &toggle("tree:unit"));
+        assert_eq!(tree.live(Some(&state)).rows[0].is_expanded, Some(true));
+        let summary = Interactive::state_summary(&tree, &state);
+        assert_eq!(summary.expanded, Some(vec![vec![0]]));
+    }
+
     fn key(named: NamedKey) -> RoutedEvent {
         RoutedEvent::Key(crate::interactive::KeyEvent {
             key: Key::Named(named),

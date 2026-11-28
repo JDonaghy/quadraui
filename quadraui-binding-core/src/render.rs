@@ -689,13 +689,12 @@ fn offset_windowed_leaf_scrolled_to_offset(
             scroll_offset: row,
             ..tree.clone()
         })
-    } else if let Some(table) = widget.downcast_ref::<DataTable>() {
+    } else {
+        let table = widget.downcast_ref::<DataTable>()?;
         Rc::new(DataTable {
             scroll_offset: row,
             ..table.clone()
         })
-    } else {
-        return None;
     };
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),

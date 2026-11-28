@@ -8275,7 +8275,7 @@ mod tests {
                     let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
                     w.insert(
                         "data_table".to_string(),
-                        Rc::new((&self.data_table).clone()) as Rc<dyn DynWidget>,
+                        Rc::new(self.data_table.clone()) as Rc<dyn DynWidget>,
                     );
                     w
                 },
@@ -8482,7 +8482,7 @@ mod tests {
                     let mut w: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
                     w.insert(
                         "list".to_string(),
-                        Rc::new((&self.list).clone()) as Rc<dyn DynWidget>,
+                        Rc::new(self.list.clone()) as Rc<dyn DynWidget>,
                     );
                     w
                 },

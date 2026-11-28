@@ -3789,6 +3789,28 @@ mod interactive_tests {
         }
     }
 
+    /// A `TabActivated`/`TabClosed` the host delivers on the app's behalf
+    /// moves the active tab as a click would, and one naming another bar
+    /// is ignored.
+    #[test]
+    fn follow_event_activates_and_closes_only_for_this_bar() {
+        let b = bar(&["a", "b", "c"], 1);
+        let mut state = TabBarState::default();
+        let other = crate::UiEvent::TabBar(
+            WidgetId::new("elsewhere"),
+            TabBarEvent::TabActivated { index: 0 },
+        );
+        crate::interactive::Interactive::follow_event(&b, &mut state, &other);
+        assert_eq!(b.resolved_active(Some(&state)), Some(1));
+        let activated = crate::UiEvent::TabBar(b.id, TabBarEvent::TabActivated { index: 2 });
+        crate::interactive::Interactive::follow_event(&b, &mut state, &activated);
+        assert_eq!(b.resolved_active(Some(&state)), Some(2));
+        let closed = crate::UiEvent::TabBar(b.id, TabBarEvent::TabClosed { index: 0 });
+        crate::interactive::Interactive::follow_event(&b, &mut state, &closed);
+        let after_close = bar(&["b", "c"], 0);
+        assert_eq!(after_close.resolved_active(Some(&state)), Some(1));
+    }
+
     #[test]
     fn an_activation_the_app_never_echoes_still_resolves_and_shifts_on_close() {
         let b = bar(&["a", "b", "c"], 0);
