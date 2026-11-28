@@ -183,6 +183,7 @@ impl Host {
         widget_host::drive(&widget, id, &mut self.state, &routed, &layout, ctx.units()).handled
     }
 
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     /// Route `event` through the widget as `backend` paints it at
     /// `rect`.
     fn handle(
@@ -198,10 +199,12 @@ impl Host {
             .handle_event(&mut self.state, event, backend, rect)
     }
 
+    #[cfg(any(feature = "tui", feature = "gtk"))]
     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
         self.widget().draw(&self.state, backend, rect);
     }
 
+    #[cfg(feature = "tui")]
     fn field_rect(&self, id: WidgetId, backend: &dyn Backend, rect: Rect) -> Option<Rect> {
         self.form.as_ref()?;
         self.widget()

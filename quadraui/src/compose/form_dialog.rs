@@ -299,8 +299,11 @@ impl FormDialog {
     /// [`Self::painted`] over `backend`'s viewport, through the widget's
     /// own [`Interactive`] against `state`.
     ///
-    /// A press outside the modal is [`Handled::Consumed`]: the dialog is
-    /// modal. A reported [`FormEvent::FocusChanged`] is applied to
+    /// A Tab/Shift-Tab the widget leaves to its host walks its child
+    /// stops here the way the runtime's focus tree does
+    /// ([`crate::focus::step_child_stop`]). A press outside the modal is
+    /// [`Handled::Consumed`]: the dialog is modal. A reported
+    /// [`FormEvent::FocusChanged`] is applied to
     /// [`Self::form`] here as well as returned, since the dialog is a
     /// self-contained modal.
     pub fn handle_event(
@@ -317,6 +320,25 @@ impl FormDialog {
         };
         let units = crate::backend::primitive_layout_ctx(backend).units();
         let driven = widget_host::drive(&*self, self.id, state, &routed, &layout, units);
+        let driven = match (&driven.handled, self.tab_step(&routed)) {
+            (Handled::Ignored, Some(delta)) => {
+                match self
+                    .current_stop(state)
+                    .and_then(|stop| crate::focus::step_child_stop(&self.focus(), stop, delta))
+                {
+                    Some(next) => widget_host::drive(
+                        &*self,
+                        self.id,
+                        state,
+                        &RoutedEvent::FocusIn(Some(next)),
+                        &layout,
+                        units,
+                    ),
+                    None => driven,
+                }
+            }
+            _ => driven,
+        };
         let handled = match (driven.handled, &routed) {
             (
                 Handled::Ignored,
@@ -347,6 +369,14 @@ impl FormDialog {
             .or_else(|| self.buttons.iter().find(|b| b.is_default))
             .or_else(|| self.buttons.last())
             .map(|b| b.id)
+    }
+
+    /// `Some(±1)` for a routed Tab/Shift-Tab ([`crate::focus::tab_step`]).
+    fn tab_step(&self, event: &RoutedEvent) -> Option<isize> {
+        match event {
+            RoutedEvent::Key(key) => crate::focus::tab_step(&key.key, &key.modifiers),
+            _ => None,
+        }
     }
 
     /// The form's focus stops, in Tab order.
@@ -414,9 +444,30 @@ impl FormDialog {
         }
     }
 
-    /// Step keyboard focus `delta` stops along the one cyclic order this
-    /// widget's [`Interactive::focus`] declares: the form's fields, then
-    /// the buttons.
+    /// The focus stop keyboard focus is on: a field's stop while the form
+    /// holds it, a button's stop after the form's while one does.
+    fn current_stop(&self, state: &FormDialogState) -> Option<SubTarget> {
+        let stops = self.form_stops();
+        match state.focused_button {
+            Some(i) => Some(SubTarget((stops.len() + i) as u64)),
+            None => self
+                .live_form(state)
+                .and_then(|f| f.focused_field)
+                .and_then(|id| stops.iter().position(|s| *s == id))
+                .map(|i| SubTarget(i as u64)),
+        }
+    }
+
+    /// Tab/Shift-Tab along the one cyclic order this widget's
+    /// [`Interactive::focus`] declares: the form's fields, then the
+    /// buttons. A step inside the form is the form's own field
+    /// traversal. A step from one stop to the next is left
+    /// [`Handled::Ignored`] for the host's focus tree, which walks this
+    /// widget's child stops ([`crate::focus::step_child_stop`]) and
+    /// delivers [`RoutedEvent::FocusIn`] for the stop it lands on. The
+    /// two wraps — past the last button onto the first field, and back
+    /// past the first field onto the last button — are this modal's own,
+    /// since the focus tree never wraps inside a widget.
     fn step_focus(
         &self,
         state: &mut FormDialogState,
@@ -445,6 +496,9 @@ impl FormDialog {
                 if self.buttons.is_empty() {
                     return Handled::Ignored;
                 }
+                if delta > 0 && current.is_some() {
+                    return self.leave_to_focus_tree(state, cx);
+                }
                 let idx = if delta > 0 { 0 } else { self.buttons.len() - 1 };
                 self.focus_button(state, idx, cx);
                 Handled::Consumed
@@ -454,13 +508,29 @@ impl FormDialog {
                 if n == 0 {
                     return Handled::Ignored;
                 }
-                if (delta > 0 && i + 1 >= n) || (delta < 0 && i == 0) {
+                if delta > 0 && i + 1 >= n {
                     return self.enter_form(state, delta, cx);
                 }
-                self.focus_button(state, (i as isize + delta) as usize, cx);
-                Handled::Consumed
+                if delta < 0 && i == 0 && self.form_stops().is_empty() {
+                    return self.enter_form(state, delta, cx);
+                }
+                self.leave_to_focus_tree(state, cx)
             }
         }
+    }
+
+    /// Leave a Tab step to the host's focus tree, first naming the stop
+    /// focus is on so the tree steps from it even when focus reached this
+    /// widget as a whole.
+    fn leave_to_focus_tree(
+        &self,
+        state: &FormDialogState,
+        cx: &mut EventCx,
+    ) -> Handled<FormDialogAction> {
+        if let Some(stop) = self.current_stop(state) {
+            cx.request_focus(Some(stop));
+        }
+        Handled::Ignored
     }
 
     /// Hand `event` to the embedded form — its scrollbar, then the form's
@@ -728,6 +798,7 @@ impl Interactive for FormDialog {
                 let idx = sub.0 as usize;
                 if let Some(id) = stops.get(idx) {
                     state.focused_button = None;
+                    state.form.focused_field = Some(*id);
                     Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged {
                         id: *id,
                     }))
