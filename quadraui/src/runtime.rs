@@ -831,23 +831,13 @@ fn resolve_tree_popups<B>(backend: &B, tree: &mut FrameTree)
 where
     B: crate::Backend,
 {
-    let viewport = crate::backend::viewport_rect(backend.viewport());
-    let mut roots = Vec::new();
-    for node in tree.nodes().iter().filter(|n| n.widget.opens_popups()) {
-        let layout = crate::backend::layout_like_paint(backend, node.widget.as_ref(), node.rect);
-        let popups = crate::widget_state::with_widget_state_ref(Some(&node.id), |state| {
-            node.widget.popups(state, layout.as_ref())
-        });
-        for popup in popups {
-            roots.push(crate::popup::OpenPopup::resolve(
-                node.id, node.rect, popup, viewport,
-            ));
-        }
-    }
-    if roots.is_empty() {
-        return;
-    }
-    for popup in crate::popup::with_nested_popups(backend, roots) {
+    let popups = crate::popup::resolve_open_popups(
+        backend,
+        tree.nodes()
+            .iter()
+            .map(|node| (node.id, node.rect, node.widget.as_ref())),
+    );
+    for popup in popups {
         tree.push_popup(popup);
     }
 }
@@ -863,25 +853,9 @@ enum PopupRoute {
     Continue(Reaction),
 }
 
-/// Route `event` against `tree`'s open popups, before any node sees it.
-///
-/// - A press, release, double-click or wheel over a popup reaches the
-///   popup's owner as [`RoutedEvent::PopupEvent`] and is claimed whatever
-///   the owner answers: nothing under a popup receives an event that
-///   landed on it.
-/// - A press outside every popup dismisses each popup that allows it
-///   ([`crate::popup::PopupDismiss::outside_click`]) and whose owner the
-///   press also missed — the owner's own press handling covers a click on
-///   itself. The owners receive [`RoutedEvent::PopupDismissed`], and the
-///   press then routes on as usual.
-/// - Escape dismisses the topmost popup that allows it
-///   ([`crate::popup::PopupDismiss::escape`]) and is claimed.
-/// - A move over a popup reaches its owner as a `PopupEvent` and is never
-///   claimed, like every move; [`route_widget_hover`] treats the pointer
-///   as over no node.
-///
-/// While a widget holds the pointer capture, pointer events skip popups
-/// entirely and go to the captured widget.
+/// Route `event` against `tree`'s open popups, before any node sees it —
+/// [`crate::popup::route_popup_event`] decides who hears what, and each
+/// owner still in `tree` receives its routed event.
 fn route_popup_event<B, A>(
     event: &UiEvent,
     backend: &mut B,
@@ -893,205 +867,25 @@ where
     A: AppLogic,
 {
     let captured = backend.widget_routing_mut().and_then(|r| r.captured);
-    let pointer = |kind: PointerKind, position: Point, mods: Modifiers| {
-        move |popup: &crate::popup::OpenPopup, sub: Option<crate::interactive::SubTarget>| {
-            RoutedEvent::Pointer {
-                kind,
-                sub,
-                local: local_point(position, popup.rect),
-                mods,
-            }
-        }
-    };
-    match event {
-        UiEvent::MouseDown {
-            position,
-            button,
-            modifiers,
-            ..
-        } if captured.is_none() => match tree.popup_at(*position) {
-            Some(popup) => PopupRoute::Claimed(deliver_to_popup(
-                popup,
-                *position,
-                pointer(PointerKind::Down(*button), *position, *modifiers),
-                backend,
-                app,
-                tree,
-            )),
-            None => PopupRoute::Continue(dismiss_outside(*position, backend, app, tree)),
-        },
-        UiEvent::MouseUp {
-            position, button, ..
-        } if captured.is_none() => match tree.popup_at(*position) {
-            Some(popup) => PopupRoute::Claimed(deliver_to_popup(
-                popup,
-                *position,
-                pointer(PointerKind::Up(*button), *position, Modifiers::default()),
-                backend,
-                app,
-                tree,
-            )),
-            None => PopupRoute::Continue(Reaction::Continue),
-        },
-        UiEvent::DoubleClick { position, .. } if captured.is_none() => {
-            match tree.popup_at(*position) {
-                Some(popup) => PopupRoute::Claimed(deliver_to_popup(
-                    popup,
-                    *position,
-                    pointer(
-                        PointerKind::DoubleClick(MouseButton::Left),
-                        *position,
-                        Modifiers::default(),
-                    ),
-                    backend,
-                    app,
-                    tree,
-                )),
-                None => PopupRoute::Continue(Reaction::Continue),
-            }
-        }
-        UiEvent::MouseMoved { position, .. } if captured.is_none() => {
-            match tree.popup_at(*position) {
-                Some(popup) => PopupRoute::Continue(deliver_to_popup(
-                    popup,
-                    *position,
-                    pointer(PointerKind::Move, *position, Modifiers::default()),
-                    backend,
-                    app,
-                    tree,
-                )),
-                None => PopupRoute::Continue(Reaction::Continue),
-            }
-        }
-        UiEvent::Scroll {
-            position, delta, ..
-        } => match tree.popup_at(*position) {
-            Some(popup) => {
-                let (dx, dy, at) = (delta.x, delta.y, *position);
-                PopupRoute::Claimed(deliver_to_popup(
-                    popup,
-                    at,
-                    move |popup: &crate::popup::OpenPopup, _sub| RoutedEvent::Wheel {
-                        dx,
-                        dy,
-                        local: local_point(at, popup.rect),
-                        mods: Modifiers::default(),
-                    },
-                    backend,
-                    app,
-                    tree,
-                ))
-            }
-            None => PopupRoute::Continue(Reaction::Continue),
-        },
-        UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Escape),
-            ..
-        } => match tree.popups().iter().rev().find(|p| p.dismiss.escape) {
-            Some(popup) => PopupRoute::Claimed(dismiss_popup(
-                popup,
-                crate::popup::DismissReason::Escape,
-                backend,
-                app,
-                tree,
-            )),
-            None => PopupRoute::Continue(Reaction::Continue),
-        },
-        _ => PopupRoute::Continue(Reaction::Continue),
-    }
-}
-
-/// Deliver an event that landed on `popup` at `position` to the popup's
-/// owner as [`RoutedEvent::PopupEvent`], built by `make` from the popup
-/// and the sub-target its content names under `position`. A popup
-/// swallows what lands on it, so an owner's `Ignored` still claims the
-/// event; the answer's `Reaction` is kept either way.
-fn deliver_to_popup<B, A>(
-    popup: &crate::popup::OpenPopup,
-    position: Point,
-    make: impl FnOnce(&crate::popup::OpenPopup, Option<crate::interactive::SubTarget>) -> RoutedEvent,
-    backend: &mut B,
-    app: &mut A,
-    tree: &FrameTree,
-) -> EventOutcome
-where
-    B: PreprocessBackend + crate::Backend,
-    A: AppLogic,
-{
-    let Some(owner) = tree.find(&popup.owner) else {
-        return EventOutcome::Continue;
-    };
-    let content_layout =
-        crate::backend::layout_like_paint(backend, popup.content.as_ref(), popup.rect);
-    let local = local_point(position, popup.rect);
-    let sub = popup
-        .content
-        .sub_regions(content_layout.as_ref())
-        .into_iter()
-        .find(|(r, _)| r.contains(local))
-        .map(|(_, sub)| sub);
-    let routed = RoutedEvent::PopupEvent {
-        popup: popup.key,
-        event: Box::new(make(popup, sub)),
-    };
-    dispatch_widget_routed_event(popup.owner, owner, &routed, backend, app).reaction()
-}
-
-/// Tell `popup`'s owner the runtime dismissed it, for `reason`.
-fn dismiss_popup<B, A>(
-    popup: &crate::popup::OpenPopup,
-    reason: crate::popup::DismissReason,
-    backend: &mut B,
-    app: &mut A,
-    tree: &FrameTree,
-) -> EventOutcome
-where
-    B: PreprocessBackend + crate::Backend,
-    A: AppLogic,
-{
-    let Some(owner) = tree.find(&popup.owner) else {
-        return EventOutcome::Continue;
-    };
-    let routed = RoutedEvent::PopupDismissed {
-        popup: popup.key,
-        reason,
-    };
-    dispatch_widget_routed_event(popup.owner, owner, &routed, backend, app).reaction()
-}
-
-/// A press at `position` landed on no popup: dismiss, topmost first,
-/// every popup that allows an outside-press dismissal and whose owner the
-/// press also missed.
-fn dismiss_outside<B, A>(
-    position: Point,
-    backend: &mut B,
-    app: &mut A,
-    tree: &FrameTree,
-) -> Reaction
-where
-    B: PreprocessBackend + crate::Backend,
-    A: AppLogic,
-{
+    let routing = crate::popup::route_popup_event(
+        event,
+        &*backend,
+        tree.popups(),
+        captured.is_some(),
+        |owner, position| tree.find(owner).is_some_and(|n| n.rect.contains(position)),
+    );
     let mut reaction = Reaction::Continue;
-    for popup in tree.popups().iter().rev() {
-        if !popup.dismiss.outside_click {
-            continue;
+    for (owner, routed) in routing.deliveries {
+        if let Some(node) = tree.find(&owner) {
+            reaction = reaction
+                .merge(dispatch_widget_routed_event(owner, node, &routed, backend, app).reaction());
         }
-        let on_owner = tree
-            .find(&popup.owner)
-            .is_some_and(|owner| owner.rect.contains(position));
-        if on_owner {
-            continue;
-        }
-        reaction = reaction.merge(dismiss_popup(
-            popup,
-            crate::popup::DismissReason::OutsideClick,
-            backend,
-            app,
-            tree,
-        ));
     }
-    reaction
+    if routing.claimed {
+        PopupRoute::Claimed(reaction)
+    } else {
+        PopupRoute::Continue(reaction)
+    }
 }
 
 /// `MouseDown` arm of [`route_widget_event`]: hit-test, click-to-focus,

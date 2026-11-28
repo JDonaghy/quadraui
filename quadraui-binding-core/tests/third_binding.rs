@@ -110,8 +110,48 @@ impl AppLogic for HostApp {
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        self.engine
-            .handle(event, backend, &mut *self.sink.borrow_mut())
+        let seen = self.sink.borrow().events.len();
+        let reaction = self
+            .engine
+            .handle(event, backend, &mut *self.sink.borrow_mut());
+        let changes: Vec<_> = self.sink.borrow().events[seen..]
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::AppMenu(_, quadraui::AppMenuEvent::Changed(view)) => Some(view.clone()),
+                _ => None,
+            })
+            .collect();
+        for view in changes {
+            echo_menu_view(&mut self.view, &view);
+        }
+        reaction
+    }
+}
+
+/// Writes an application menu's reported view back onto every
+/// `"menu_bar"` descriptor in `view`, the way a scripting host's own state
+/// update would: the open menu and its highlights are the app's to keep.
+fn echo_menu_view(view: &mut serde_json::Value, menu: &quadraui::AppMenuView) {
+    match view {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(bar)) = map.get_mut("menu_bar") {
+                let serde_json::Value::Object(fields) =
+                    serde_json::to_value(menu).expect("the view serialises")
+                else {
+                    unreachable!("a view serialises to an object");
+                };
+                bar.extend(fields);
+            }
+            for child in map.values_mut() {
+                echo_menu_view(child, menu);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                echo_menu_view(item, menu);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -338,4 +378,93 @@ fn paint_with_widget_state_restores_the_threads_own_store() {
     );
     assert!(quadraui::with_widget_states(|states| states.contains(&id)));
     quadraui::with_widget_states(|states| states.remove(&id));
+}
+
+/// A widget's popups route through the engine with no host code of their
+/// own: a click on the menu bar reports the opened view, the host echoes
+/// it, and a click on a row of the dropdown — a popup the menu owns —
+/// activates it.
+#[test]
+fn a_host_menu_bar_opens_its_dropdown_popup_and_activates_a_row() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "bar", "menu_bar": {"id": "bar", "items": [
+                {"id": "menu:file", "label": "&File", "submenu": [
+                    {"id": "menu:file:save", "label": {"spans": [{"text": "Save", "fg": null, "bg": null}]}},
+                ]},
+            ]}},
+            {"id": "save", "button": {"id": "save", "label": "Go"}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 12);
+    driver.render();
+    let (x, y) = driver.find("File").expect("the bar paints its items");
+    driver.click(x, y);
+    driver.render();
+    let (x, y) = driver
+        .find("Save")
+        .unwrap_or_else(|| panic!("the dropdown paints:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    let events = &driver.app().sink.borrow().events;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, UiEvent::MenuActivated(id) if *id == WidgetId::new("menu:file:save"))
+        ),
+        "{events:?}"
+    );
+}
+
+/// A form's field focus, caret and scroll are its own stored state: a host
+/// that never echoes a form event back still has Tab walk the fields and
+/// typing land in the focused one.
+#[test]
+fn a_host_form_walks_its_fields_and_edits_with_nothing_echoed() {
+    let field = |id: &str| {
+        serde_json::json!({
+            "id": id,
+            "label": {"spans": [{"text": id, "fg": null, "bg": null}]},
+            "kind": {"TextInput": {"value": ""}},
+        })
+    };
+    let view = serde_json::json!({
+        "column": [
+            {"id": "settings", "form": {"id": "settings", "fields": [field("a"), field("b")]}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 8);
+    driver.render();
+    for _ in 0..3 {
+        driver.press_named(quadraui::NamedKey::Tab);
+        driver.render();
+    }
+    driver.press(quadraui::Key::Char('x'));
+
+    let id = WidgetId::new("settings");
+    let form_events: Vec<FormEvent> = driver
+        .app()
+        .sink
+        .borrow()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Form(form, event) if *form == id => Some(event.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        form_events,
+        vec![
+            FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            },
+            FormEvent::FocusChanged {
+                id: WidgetId::new("b")
+            },
+            FormEvent::TextInputChanged {
+                id: WidgetId::new("b"),
+                value: "x".into()
+            },
+        ]
+    );
 }

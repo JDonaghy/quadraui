@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
 use quadraui::{
-    Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText,
+    Backend, Column, Icon, NaturalSize, Point, Rect, StyledText,
     TreeTableController, TreeTableNodeData, WidgetId,
 };
 
@@ -103,35 +103,6 @@ pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
     (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
 }
 
-impl ExtraPaint for Form {
-    /// The bare, non-interactive paint this trait's own `paint` always
-    /// does for every extra — `crate::engine::InteractionEngine::sync_forms`
-    /// repaints on top of it with the real [`quadraui::compose::FormController`]
-    /// state (scroll offset, in-progress edits, ...) once wired, the same
-    /// "paint plain first, then repaint interactive on top" sequencing
-    /// `crate::engine::InteractionEngine::sync_menu_bar` already uses for
-    /// `"menu_bar"`.
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check — a
-    /// click's precise field-level routing is
-    /// `crate::engine::InteractionEngine::handle`'s own `FormController`
-    /// dispatch, which resolves it via `FormController`'s own internal
-    /// layout rather than this trait's `bool`-only answer.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
 
 /// One node in a `"tree_table_controller"` extra's hierarchical model —
 /// the wire mirror of [`TreeTableNodeData`], which has no `Deserialize` of
@@ -277,18 +248,6 @@ impl ExtraPaint for TreeTableControllerDescriptor {
     }
 }
 
-impl ExtraPaint for MenuBar {
-    /// Installed as the platform's own menu bar under a native menu
-    /// style, painted otherwise — see [`MenuBar::present`].
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = self.present(backend, area);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 /// Counts its `literal` arguments at compile time — the array-length
 /// companion `extra_primitives!` needs so [`EXTRA_PRIMITIVE_KINDS`]'s
 /// size tracks the table below with no hand-maintained length to drift.
@@ -375,9 +334,7 @@ macro_rules! extra_primitives {
 }
 
 extra_primitives! {
-    "form" => Form,
     "tree_table_controller" => TreeTableControllerDescriptor,
-    "menu_bar" => MenuBar,
 }
 
 /// The `widget_kinds!`-registered kind strings this crate decodes into
@@ -463,12 +420,22 @@ extra_primitives! {
 /// shared text-editing core and keep their caret, selection and undo
 /// history in their own `Interactive::State`, which their painters read,
 /// so `"text_input"`, `"text_field"`, `"password"` and `"textarea"` need
-/// nothing more either. A further kind joins this table only when it
+/// nothing more either.
+/// `"form"` decodes to [`quadraui::Form`], whose
+/// [`quadraui::primitives::form::FormState`] holds the caret, scroll offset and (while the
+/// descriptor leaves `focused_field` unset) field focus, and whose
+/// per-field focus stops ([`quadraui::FocusSpec::Children`]) it walks
+/// itself once focused; `"menu_bar"` decodes to [`quadraui::AppMenu`],
+/// whose dropdown cascade is its own popups and whose open menu and
+/// highlights are descriptor fields the app echoes back from
+/// `UiEvent::AppMenu(id, AppMenuEvent::Changed(view))`. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 40] = [
+pub const WIDGET_KINDS: [&str; 42] = [
+    "form",
+    "menu_bar",
     "tree_table",
     "text_input",
     "text_field",
@@ -1267,103 +1234,6 @@ mod tests {
             )),
             "expected a TextDisplay(Scrolled {{ new_offset: 1 }}) event for a wheel notch \
              over the markdown leaf, got {dispatched:?}"
-        );
-    }
-
-    /// A `MenuBar` placed directly as a `LayoutNode::Leaf` is synced into
-    /// [`crate::engine::InteractionEngine`]'s own `AppMenu` by
-    /// [`crate::host::render_overlays`]'s `sync_menu_bar` call — the same
-    /// helper every binding's render path (flat-slot or render-callback)
-    /// runs after painting, so a leaf-painted bar gets the identical
-    /// dropdown/keyboard-navigation state a slot-painted one does.
-    /// `Alt+F` opens the one top-level menu this test builds, and `Enter`
-    /// activates its sole leaf item, round-tripping through
-    /// [`crate::engine::InteractionEngine::handle`] into the same
-    /// `UiEvent::MenuActivated` a slot-painted menu bar dispatches.
-    #[test]
-    fn menu_bar_leaf_activation_reaches_the_interaction_engine() {
-        use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode};
-        use crate::render::paint_layout;
-        use quadraui::Spacing;
-        use quadraui::{ContextMenuItem, Key, Modifiers, NamedKey, StyledText};
-
-        struct MenuBarLeafApp {
-            engine: InteractionEngine,
-            sink: RefCell<RecordingSink>,
-        }
-
-        impl AppLogic for MenuBarLeafApp {
-            type AreaId = ();
-
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let menu_bar = MenuBar {
-                    id: WidgetId::new("menu_bar:main"),
-                    items: vec![quadraui::MenuBarItem {
-                        id: WidgetId::new("menu:file"),
-                        label: "&File".into(),
-                        disabled: false,
-                        submenu: Some(vec![ContextMenuItem {
-                            id: Some(WidgetId::new("menu:file:save")),
-                            label: StyledText::plain("Save"),
-                            ..Default::default()
-                        }]),
-                    }],
-                    open_item: None,
-                    focused_item: None,
-                };
-                let tree = LayoutNode::Row(LayoutContainer::new(
-                    vec![LayoutNode::Leaf(LayoutLeaf {
-                        id: "menu_bar:main".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(menu_bar)),
-                        scroll_px: None,
-                    })],
-                    Spacing::default(),
-                ));
-                let viewport = backend.viewport();
-                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits);
-                crate::host::render_overlays(&self.engine, backend, hits);
-            }
-
-            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-                self.engine.tab_stops()
-            }
-
-            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-                self.engine
-                    .handle(event, backend, &mut *self.sink.borrow_mut())
-            }
-        }
-
-        let app = MenuBarLeafApp {
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(app, 20, 5);
-
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Char('f'),
-            modifiers: Modifiers {
-                alt: true,
-                ..Default::default()
-            },
-            repeat: false,
-        });
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Enter),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-
-        let dispatched = &driver.app().sink.borrow().dispatched;
-        assert!(
-            dispatched.iter().any(|event| matches!(
-                event,
-                UiEvent::MenuActivated(id) if *id == WidgetId::new("menu:file:save")
-            )),
-            "expected a MenuActivated event for the inline menu_bar leaf, got {dispatched:?}"
         );
     }
 

@@ -68,6 +68,18 @@ class Anchor(TypedDict):
     preferred: Side  # Side of `rect` the overlay prefers to open on.
     rect: Rect  # Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates.
 
+class AppMenu(TypedDict):
+    """An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`)."""
+    dropdown_selected: NotRequired[int]  # Highlighted item in the open dropdown.
+    focused_item: NotRequired[Optional[int]]  # The bar item keyboard or pointer focus sits on.
+    id: WidgetId  # The menu's id, also the painted bar's.
+    items: List[MenuDef]  # The top-level menus, in bar order.
+    native: NotRequired[bool]  # Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens.
+    open_item: NotRequired[Optional[int]]  # The menu whose dropdown is open.
+    submenu_path: NotRequired[List[int]]  # Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open.
+    submenu_selected: NotRequired[List[int]]  # Highlighted item at each open submenu depth, parallel to `submenu_path`.
+    typeahead: NotRequired[bool]  # Whether a plain printable key in an open dropdown is type-ahead (on by default).
+
 class AppMenuEvent(TypedDict):
     """What an `AppMenu` reports."""
     Activated: NotRequired[WidgetId]  # An action item was activated.
@@ -970,7 +982,7 @@ LayoutLeafNode = TypedDict(
         "list": NotRequired[Union[ListView, ListViewLeaf]],
         "markdown": NotRequired[Markdown],
         "max": NotRequired[Optional[float]],
-        "menu_bar": NotRequired[MenuBar],
+        "menu_bar": NotRequired[AppMenu],
         "message_list": NotRequired[MessageList],
         "min": NotRequired[Optional[float]],
         "minimap": NotRequired[Minimap],
@@ -1206,19 +1218,12 @@ class Markdown(TypedDict):
     scroll_offset: NotRequired[int]  # Lines scrolled off the top.
     source: str  # Raw markdown text.
 
-class MenuBar(TypedDict):
-    """Declarative description of a menu bar."""
-    focused_item: NotRequired[Optional[int]]  # Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal.
-    id: WidgetId
-    items: List[MenuBarItem]
-    open_item: NotRequired[Optional[int]]  # Index of the currently-open menu (if any).
-
-class MenuBarItem(TypedDict):
-    """One top-level menu entry."""
-    disabled: NotRequired[bool]  # When true, the item is rendered dimmed and clicks are ignored.
-    id: WidgetId
+class MenuDef(TypedDict):
+    """One top-level menu and its dropdown items."""
+    disabled: NotRequired[bool]  # When true, the item is rendered dimmed and does not open.
+    id: WidgetId  # The menu's id, the bar item's.
     label: str  # Display label, e.g.
-    submenu: NotRequired[Optional[List[ContextMenuItem]]]  # Declarative dropdown items.
+    submenu: NotRequired[Optional[List[ContextMenuItem]]]  # The dropdown's items, in order.
 
 class MessageDialogOverlayDescriptor(TypedDict):
     """The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`."""
@@ -1489,7 +1494,7 @@ class RenderFrameDict(TypedDict):
     image: NotRequired[Optional[Image]]
     list: NotRequired[Optional[Union[ListView, ListViewLeaf]]]
     markdown: NotRequired[Optional[Markdown]]
-    menu_bar: NotRequired[Optional[MenuBar]]
+    menu_bar: NotRequired[Optional[AppMenu]]
     message_list: NotRequired[Optional[MessageList]]
     minimap: NotRequired[Optional[Minimap]]
     multi_section_view: NotRequired[Optional[MultiSectionView]]

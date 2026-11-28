@@ -64,12 +64,19 @@ use crate::{DrawsPrimitives, Key, MouseButton, NamedKey};
 /// Serialises as a [`MenuBarItem`] does — its dropdown items under
 /// `submenu` — so an [`AppMenu`] decodes from a `menu_bar` leaf dict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MenuDef {
+    /// The menu's id, the bar item's.
     pub id: WidgetId,
+    /// Display label, e.g. `"&File"`, with `&` marking the Alt-activation
+    /// character.
     pub label: String,
+    /// When true, the item is rendered dimmed and does not open.
     #[serde(default)]
     pub disabled: bool,
+    /// The dropdown's items, in order.
     #[serde(rename = "submenu", default, deserialize_with = "items_or_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<Vec<ContextMenuItem>>"))]
     pub items: Vec<ContextMenuItem>,
 }
 
@@ -109,6 +116,7 @@ pub struct AppMenuView {
 /// its dropdown and submenu cascade. Serialises with the same shape as a
 /// [`MenuBar`] (`id`, `items`, `open_item`, `focused_item`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppMenu {
     /// The menu's id, also the painted bar's.
     pub id: WidgetId,

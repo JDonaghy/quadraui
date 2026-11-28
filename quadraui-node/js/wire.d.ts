@@ -64,6 +64,19 @@ export interface Anchor {
   rect: Rect; // Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates.
 }
 
+/** An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`). */
+export interface AppMenu {
+  dropdown_selected?: number; // Highlighted item in the open dropdown.
+  focused_item?: number | null; // The bar item keyboard or pointer focus sits on.
+  id: WidgetId; // The menu's id, also the painted bar's.
+  items: MenuDef[]; // The top-level menus, in bar order.
+  native?: boolean; // Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens.
+  open_item?: number | null; // The menu whose dropdown is open.
+  submenu_path?: number[]; // Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open.
+  submenu_selected?: number[]; // Highlighted item at each open submenu depth, parallel to `submenu_path`.
+  typeahead?: boolean; // Whether a plain printable key in an open dropdown is type-ahead (on by default).
+}
+
 /** What an `AppMenu` reports. */
 export type AppMenuEvent = { Activated: WidgetId; } | { Changed: AppMenuView; };
 
@@ -956,7 +969,7 @@ export interface LayoutLeafNode {
   list?: ListView | ListViewLeaf;
   markdown?: Markdown;
   max?: number | null;
-  menu_bar?: MenuBar;
+  menu_bar?: AppMenu;
   message_list?: MessageList;
   min?: number | null;
   minimap?: Minimap;
@@ -1178,20 +1191,12 @@ export interface Markdown {
   source: string; // Raw markdown text.
 }
 
-/** Declarative description of a menu bar. */
-export interface MenuBar {
-  focused_item?: number | null; // Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal.
-  id: WidgetId;
-  items: MenuBarItem[];
-  open_item?: number | null; // Index of the currently-open menu (if any).
-}
-
-/** One top-level menu entry. */
-export interface MenuBarItem {
-  disabled?: boolean; // When true, the item is rendered dimmed and clicks are ignored.
-  id: WidgetId;
+/** One top-level menu and its dropdown items. */
+export interface MenuDef {
+  disabled?: boolean; // When true, the item is rendered dimmed and does not open.
+  id: WidgetId; // The menu's id, the bar item's.
   label: string; // Display label, e.g.
-  submenu?: ContextMenuItem[] | null; // Declarative dropdown items.
+  submenu?: ContextMenuItem[] | null; // The dropdown's items, in order.
 }
 
 /** The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`. */
@@ -1473,7 +1478,7 @@ export interface RenderFrameDict {
   image?: Image | null;
   list?: (ListView | ListViewLeaf) | null;
   markdown?: Markdown | null;
-  menu_bar?: MenuBar | null;
+  menu_bar?: AppMenu | null;
   message_list?: MessageList | null;
   minimap?: Minimap | null;
   multi_section_view?: MultiSectionView | null;

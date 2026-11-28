@@ -327,6 +327,204 @@ pub(crate) fn insert_by_z(stack: &mut Vec<OpenPopup>, popup: OpenPopup) {
     stack.insert(at, popup);
 }
 
+/// Every popup the identified widgets in `owners` have open, in paint
+/// order: each owner's answer to
+/// [`crate::interactive::Interactive::popups`] against its stored state
+/// and its layout at its rect, plus every popup their content opens — the
+/// same answer [`crate::DrawsPrimitives::draw_dyn`] queues and
+/// [`paint_open_popups`] paints. Only owners whose widget can open popups
+/// ([`DynWidget::opens_popups`]) are laid out.
+///
+/// The routing engine resolves its frame tree's popups through this, and
+/// so does any other host that routes events to widgets it painted
+/// itself, before handing an event to [`route_popup_event`].
+pub fn resolve_open_popups<'w, B: crate::Backend + ?Sized>(
+    backend: &B,
+    owners: impl IntoIterator<Item = (WidgetId, Rect, &'w dyn DynWidget)>,
+) -> Vec<OpenPopup> {
+    let viewport = crate::backend::viewport_rect(backend.viewport());
+    let mut roots = Vec::new();
+    for (id, rect, widget) in owners {
+        if !widget.opens_popups() {
+            continue;
+        }
+        let layout = crate::backend::layout_like_paint(backend, widget, rect);
+        let popups = crate::widget_state::with_widget_state_ref(Some(&id), |state| {
+            widget.popups(state, layout.as_ref())
+        });
+        for popup in popups {
+            roots.push(OpenPopup::resolve(id, rect, popup, viewport));
+        }
+    }
+    if roots.is_empty() {
+        return roots;
+    }
+    with_nested_popups(backend, roots)
+}
+
+/// The topmost of `popups` (paint order) whose rect contains `point`.
+pub fn popup_at(popups: &[OpenPopup], point: crate::event::Point) -> Option<&OpenPopup> {
+    popups.iter().rev().find(|p| p.rect.contains(point))
+}
+
+/// What [`route_popup_event`] decided for one event.
+#[derive(Debug, Default)]
+pub struct PopupRouting {
+    /// Whether the popups claim the event, so nothing under them sees it.
+    pub claimed: bool,
+    /// Each popup owner's routed event, in delivery order: an event that
+    /// landed on one of its popups
+    /// ([`crate::interactive::RoutedEvent::PopupEvent`]) or a dismissal
+    /// ([`crate::interactive::RoutedEvent::PopupDismissed`]).
+    pub deliveries: Vec<(WidgetId, crate::interactive::RoutedEvent)>,
+}
+
+/// Route `event` against the open `popups`, before any widget sees it.
+///
+/// - A press, release, double-click or wheel over a popup reaches the
+///   popup's owner as [`crate::interactive::RoutedEvent::PopupEvent`] and
+///   is claimed whatever the owner answers: nothing under a popup
+///   receives an event that landed on it.
+/// - A press outside every popup dismisses, topmost first, each popup
+///   that allows it ([`PopupDismiss::outside_click`]) and whose owner the
+///   press also missed (`on_owner`) — the owner's own press handling
+///   covers a click on itself. The owners receive
+///   [`crate::interactive::RoutedEvent::PopupDismissed`], and the press
+///   then routes on as usual.
+/// - Escape dismisses the topmost popup that allows it
+///   ([`PopupDismiss::escape`]) and is claimed.
+/// - A move over a popup reaches its owner as a `PopupEvent` and is never
+///   claimed, like every move.
+///
+/// While a widget holds the pointer capture (`captured`), pointer events
+/// other than the wheel skip popups entirely and go to the captured
+/// widget.
+pub fn route_popup_event<B: crate::Backend + ?Sized>(
+    event: &crate::event::UiEvent,
+    backend: &B,
+    popups: &[OpenPopup],
+    captured: bool,
+    on_owner: impl Fn(&WidgetId, crate::event::Point) -> bool,
+) -> PopupRouting {
+    use crate::event::{Key, MouseButton, NamedKey, UiEvent};
+    use crate::interactive::{PointerKind, RoutedEvent};
+    use crate::types::Modifiers;
+
+    let at = |position: crate::event::Point,
+              make: &dyn Fn(
+        Option<crate::interactive::SubTarget>,
+        crate::event::Point,
+    ) -> RoutedEvent| {
+        popup_at(popups, position).map(|popup| {
+            let layout =
+                crate::backend::layout_like_paint(backend, popup.content.as_ref(), popup.rect);
+            let local =
+                crate::event::Point::new(position.x - popup.rect.x, position.y - popup.rect.y);
+            let sub = popup
+                .content
+                .sub_regions(layout.as_ref())
+                .into_iter()
+                .find(|(r, _)| r.contains(local))
+                .map(|(_, sub)| sub);
+            (
+                popup.owner,
+                RoutedEvent::PopupEvent {
+                    popup: popup.key,
+                    event: Box::new(make(sub, local)),
+                },
+            )
+        })
+    };
+    let pointer = |kind: PointerKind, mods: Modifiers| {
+        move |sub, local| RoutedEvent::Pointer {
+            kind,
+            sub,
+            local,
+            mods,
+        }
+    };
+    let dismissal = |popup: &OpenPopup, reason: DismissReason| {
+        (
+            popup.owner,
+            RoutedEvent::PopupDismissed {
+                popup: popup.key,
+                reason,
+            },
+        )
+    };
+    let claim = |delivery: Option<(WidgetId, RoutedEvent)>, claimed_when_hit: bool| PopupRouting {
+        claimed: claimed_when_hit && delivery.is_some(),
+        deliveries: delivery.into_iter().collect(),
+    };
+    match event {
+        UiEvent::MouseDown {
+            position,
+            button,
+            modifiers,
+            ..
+        } if !captured => match at(*position, &pointer(PointerKind::Down(*button), *modifiers)) {
+            Some(delivery) => claim(Some(delivery), true),
+            None => PopupRouting {
+                claimed: false,
+                deliveries: popups
+                    .iter()
+                    .rev()
+                    .filter(|p| p.dismiss.outside_click && !on_owner(&p.owner, *position))
+                    .map(|p| dismissal(p, DismissReason::OutsideClick))
+                    .collect(),
+            },
+        },
+        UiEvent::MouseUp {
+            position, button, ..
+        } if !captured => claim(
+            at(
+                *position,
+                &pointer(PointerKind::Up(*button), Modifiers::default()),
+            ),
+            true,
+        ),
+        UiEvent::DoubleClick { position, .. } if !captured => claim(
+            at(
+                *position,
+                &pointer(
+                    PointerKind::DoubleClick(MouseButton::Left),
+                    Modifiers::default(),
+                ),
+            ),
+            true,
+        ),
+        UiEvent::MouseMoved { position, .. } if !captured => claim(
+            at(*position, &pointer(PointerKind::Move, Modifiers::default())),
+            false,
+        ),
+        UiEvent::Scroll {
+            position, delta, ..
+        } => {
+            let (dx, dy) = (delta.x, delta.y);
+            claim(
+                at(*position, &move |_, local| RoutedEvent::Wheel {
+                    dx,
+                    dy,
+                    local,
+                    mods: Modifiers::default(),
+                }),
+                true,
+            )
+        }
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            ..
+        } => match popups.iter().rev().find(|p| p.dismiss.escape) {
+            Some(popup) => PopupRouting {
+                claimed: true,
+                deliveries: vec![dismissal(popup, DismissReason::Escape)],
+            },
+            None => PopupRouting::default(),
+        },
+        _ => PopupRouting::default(),
+    }
+}
+
 /// One popup [`paint_open_popups`] painted this frame — see
 /// [`painted_popups`].
 #[derive(Debug, Clone, Copy, PartialEq)]
