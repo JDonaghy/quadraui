@@ -17,8 +17,9 @@ sentinel -- `run_native`'s own pre-flight check, so this is a positive
 assertion ("no display raises a catchable Python error"), not a guess from
 subprocess stderr.
 
-Run against a build with the native feature enabled, under a virtual
-display:
+Run against a build with the native feature enabled -- on Linux, the
+x86_64 glibc-2.39 PyPI wheel with the system GTK 4.10+ installed, or a
+source build -- under a virtual display:
 
     maturin develop --features gtk
     xvfb-run -a pytest quadraui-py/tests/test_run_native.py

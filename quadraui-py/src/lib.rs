@@ -6172,9 +6172,28 @@ fn install_crash_handler(cfg: &Bound<'_, PyAny>) -> PyResult<()> {
 }
 
 /// The compiled extension module (`_quadraui`) that `python/quadraui/__init__.py`
-/// imports names from.
+/// imports names from, via `python/quadraui/_ext.py`.
+#[cfg(not(feature = "gtk-ext"))]
 #[pymodule]
 fn _quadraui(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    init_module(m)
+}
+
+/// The GTK-enabled variant of [`_quadraui`], shipped beside it in the Linux
+/// wheel. It links `libgtk-4.so.1` and its stack as `DT_NEEDED` entries, so
+/// importing it fails on a machine without GTK 4; `python/quadraui/_ext.py`
+/// tries this module first and falls back to the GTK-free `_quadraui` on
+/// `ImportError`. Only one of the two is ever loaded in a process, so the
+/// two copies of every `#[pyclass]`/exception type never meet.
+#[cfg(feature = "gtk-ext")]
+#[pymodule]
+fn _quadraui_gtk(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    init_module(m)
+}
+
+/// Registers every class, function and exception type on the extension
+/// module, whichever name it is loaded under.
+fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<QuiApp>()?;
     m.add_class::<QuiAppWaker>()?;
     m.add_class::<QuiAppActions>()?;
@@ -6736,7 +6755,7 @@ mod tests {
     fn native_backend_attribute_matches_enabled_feature() {
         Python::attach(|py| {
             let module = PyModule::new(py, "_quadraui").expect("module");
-            _quadraui(&module).expect("module init must not fail");
+            init_module(&module).expect("module init must not fail");
             let backend: Option<String> = module
                 .getattr("_NATIVE_BACKEND")
                 .expect("_NATIVE_BACKEND must be set")

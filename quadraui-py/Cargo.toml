@@ -41,6 +41,10 @@ crate-type = ["cdylib", "rlib"]
 gtk = ["quadraui/gtk", "quadraui-binding-core/gtk"]
 macos = ["quadraui/macos", "quadraui-binding-core/macos", "dep:objc2"]
 win = ["quadraui/win", "quadraui-binding-core/win"]
+# `gtk` plus renaming the extension module to `_quadraui_gtk`, so the Linux
+# wheel can carry it beside the GTK-free `_quadraui` and pick one at import
+# time. See `docs/LINUX_NATIVE_WHEELS.md`.
+gtk-ext = ["gtk"]
 
 [dependencies]
 # `tui` is unconditional (not under `[features]`) because it already gates

@@ -123,6 +123,11 @@ import sys
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _metadata_version
 
+# Loads the compiled extension -- the GTK-enabled build when the system can
+# load it, the GTK-free one otherwise -- and registers it as
+# `quadraui._quadraui`, so every `from ._quadraui import ...` below (and in
+# `aio`) reaches that one module. See `_ext`'s module doc.
+from . import _ext
 from . import aio as asyncio
 
 # `from . import aio as asyncio` above only binds `quadraui.asyncio` as an
@@ -166,6 +171,24 @@ from ._quadraui import (
     install_crash_handler,
     set_app_identifier,
 )
+
+_quadraui = _ext.ext
+
+if _ext.native_unavailable_reason is not None and not hasattr(QuiApp, "run_native"):
+
+    def _run_native_unavailable(
+        self: QuiApp,
+        title: "str | None" = None,
+        app_id: "str | None" = None,
+        icon_name: "str | None" = None,
+        single_instance: bool = False,
+    ) -> None:
+        """Raises ``UnsupportedError`` naming why no native backend loaded."""
+        raise UnsupportedError(_ext.native_unavailable_reason)
+
+    _run_native_unavailable.__name__ = "run_native"
+    _run_native_unavailable.__qualname__ = "QuiApp.run_native"
+    setattr(QuiApp, "run_native", _run_native_unavailable)
 
 try:
     # Reads the version PyPI's own installer metadata recorded for this

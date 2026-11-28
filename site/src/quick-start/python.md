@@ -100,23 +100,32 @@ Change the last line's `.run_tui()` to `.run_native(title="Counter")`.
 
 - **macOS and Windows:** that is all. The wheels from PyPI include the
   native backend.
-- **Linux:** the PyPI wheel is terminal-only, because GTK cannot be bundled
-  into a portable wheel. Build the package from source with the GTK backend
-  (needs `libgtk-4-dev` and a Rust toolchain):
+- **Linux (x86_64, glibc 2.39+: Ubuntu 24.04+, Fedora 40+, Debian 13+):**
+  the PyPI wheel uses the system GTK 4 (4.10 or newer). Install it once:
 
   ```sh
-  pip install maturin
-  git clone https://github.com/JDonaghy/quadraui
-  cd quadraui/quadraui-py && maturin develop --release --features gtk
+  sudo apt install libgtk-4-1    # Ubuntu / Debian
+  sudo dnf install gtk4          # Fedora
+  ```
+
+- **Other Linux hosts** (aarch64, which has no prebuilt wheel, or an older
+  glibc such as Ubuntu 22.04) get a terminal-only build. Build from source with the GTK backend instead
+  (needs `libgtk-4-dev` or `gtk4-devel`, GTK 4.10 or newer, and a Rust
+  toolchain):
+
+  ```sh
+  MATURIN_PEP517_ARGS="--features gtk" pip install --no-binary quadraui quadraui
   ```
 
 To check whether your installed build has a native backend:
 
 ```sh
-python -c "import quadraui; print(hasattr(quadraui.QuiApp, 'run_native'))"
+python -c "import quadraui._quadraui as m; print(m._NATIVE_BACKEND)"
 ```
 
-(`QuiApp` is the lower-level app object `App` runs on.)
+It prints `gtk`, `macos` or `win`, or `None` when there is none. Where there
+is none, `run_native()` raises `quadraui.UnsupportedError` with the reason
+and the fix, so an app can catch it and fall back to `run_tui()`.
 
 ## 5. Test it headless
 

@@ -12,6 +12,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
+  Fedora 40+, Debian 13+) carrying two builds of the extension,
+  `_quadraui_gtk` (linking the system GTK 4, Pango, Cairo and GLib; nothing
+  vendored) and `_quadraui` (no system dependencies). `import quadraui`
+  loads the GTK build when `libgtk-4.so.1` (4.10+) is present and the other
+  otherwise, so `QuiApp.run_native()` opens a GTK window with GTK installed.
+  `QUADRAUI_DISABLE_GTK=1` skips loading GTK. Older-glibc hosts (Ubuntu
+  22.04, Debian 12) keep the TUI-only `manylinux_2_17` wheel.
+
 - `QuiAppActions.show_overlay(kind, descriptor, anchor=None)`/
   `.dismiss_overlay(id)` -- the same nine `kind`s and anchor semantics as
   `QuiApp.show_overlay`/`QuiApp.dismiss_overlay`, callable from inside a
@@ -67,6 +76,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   carries the six new keys.
 
 ### Changed
+
+- On Linux, `QuiApp.run_native` now always exists: where no native
+  backend loaded (no GTK 4, a GTK older than 4.10, the TUI-only wheel, or
+  `QUADRAUI_DISABLE_GTK=1`) it raises `UnsupportedError` explaining what is
+  missing and how to install it. `hasattr(QuiApp, "run_native")` no longer
+  detects native support; catch `UnsupportedError` and fall back to
+  `run_tui()` instead.
 
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
