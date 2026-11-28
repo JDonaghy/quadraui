@@ -377,6 +377,10 @@ fragment step for this package (that mechanism, and
 
 ### Fixed
 
+- Ctrl/Cmd+Z in a `form` text, textarea or password row undoes back past
+  the last keystroke: the row keeps its undo history while it holds focus.
+  Before, each keystroke started a fresh history, so undo had nothing to
+  restore.
 - A focused `"text_input"` answers Ctrl+Left/Right (word jump),
   Ctrl+Backspace/Delete (word delete) and Ctrl+Home/End, which used to
   pass through unhandled, and Ctrl/Cmd+Z/Ctrl/Cmd+Shift+Z undo and redo in

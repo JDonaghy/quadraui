@@ -307,6 +307,7 @@
 //! [`super`]'s module doc already describes.
 
 use crate::a11y::A11yAction;
+use crate::behaviour::text_edit::EditHistory;
 use crate::event::{Key, MouseButton, NamedKey, Point, Rect};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
@@ -652,6 +653,9 @@ pub struct TextCursor {
     pub cursor: usize,
     /// Byte offset the current selection started at, if any.
     pub selection_anchor: Option<usize>,
+    /// The field's undo/redo history, kept while the field holds focus so
+    /// Ctrl/Cmd+Z reaches back past the last keystroke.
+    pub history: EditHistory,
 }
 
 /// Live focused-day / visible-month for the [`FieldKind::DatePicker`]
@@ -1470,6 +1474,7 @@ pub(crate) fn move_focus(
                 field_id: id,
                 cursor,
                 selection_anchor,
+                history: EditHistory::default(),
             }
         });
     // Same seeding as `new_text_edit` above, but for a `DatePicker`:
@@ -1574,11 +1579,12 @@ pub(crate) fn handle_text_event(
     let mut edit = FlatEditState::default();
     if let Some(e) = state
         .text_edit
-        .as_ref()
+        .as_mut()
         .filter(|e| e.field_id == focused_id)
     {
         edit.cursor = Some(e.cursor);
         edit.anchor = e.selection_anchor;
+        edit.history = std::mem::take(&mut e.history);
     }
     let outcome = handle_flat_edit_event(
         value,
@@ -1593,6 +1599,7 @@ pub(crate) fn handle_text_event(
         field_id: focused_id,
         cursor,
         selection_anchor: edit.anchor,
+        history: edit.history,
     });
     match outcome {
         FlatEditOutcome::Changed(value) => Handled::Event(FormEvent::TextInputChanged {
