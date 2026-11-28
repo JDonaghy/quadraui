@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from quadraui.app import App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField
+from quadraui.app import App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField, Tree
 from quadraui.testing import harness
 
 
@@ -328,3 +328,23 @@ def test_a_ctrl_click_after_arrow_keys_grows_the_selection_from_the_cursor_row()
     h.dispatch({"MouseDown": {"button": "Left", "position": position, "modifiers": {"ctrl": True}}})
     h.dispatch({"MouseUp": {"button": "Left", "position": position}})
     assert picked[-1] == [2, 3], picked
+
+
+def test_a_ctrl_click_after_an_arrow_key_grows_the_tree_selection_from_the_cursor_row():
+    picked = []
+    rows = [{"path": [i], "indent": 0, "icon": None, "text": {"spans": [{"text": f"node{i}"}]}, "badge": None, "is_expanded": None} for i in range(3)]
+    h = harness(App(24, 6, view=lambda: Tree(rows, id="tree", selection_mode="Multi", on_selection=picked.append)))
+    h.click_text("node0")
+    h.press("Down")
+    x, y = h.locate_all("node2")[0]
+    position = {"x": float(x), "y": float(y)}
+    h.dispatch({"MouseDown": {"button": "Left", "position": position, "modifiers": {"ctrl": True}}})
+    h.dispatch({"MouseUp": {"button": "Left", "position": position}})
+    assert picked[-1] == [[1], [2]], picked
+
+
+def test_a_sized_node_and_its_children_are_findable_by_id():
+    view = lambda: Column(Text("Count: 0", id="count"), Row(Button("+", id="inc"), size="content"))  # noqa: E731
+    h = harness(App(30, 5, view=view))
+    assert "Count: 0" in h.find(id="count").text
+    assert h.find(id="inc").role == "button"

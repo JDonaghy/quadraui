@@ -1405,30 +1405,18 @@ fn clip_main_axis(
     (clipped_origin, (end - clipped_origin).max(0.0))
 }
 
-/// Best-effort intrinsic size of `node`, consulted by
-/// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
-/// child's main-axis size and for a non-`Stretch`
-/// [`quadraui::Align`]'s cross-axis size. Measured directly off the
-/// descriptor already decoded for painting: `TabBar` via
-/// `Backend::measure_text` (the same measurer `quadraui::compose::
-/// menu_system` already leans on for its own label widths), `TextDisplay`
-/// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
-/// own row count (height only — none of the three has a cheap intrinsic
-/// width), a generic widget via its own `Primitive::measure`, and a nested
-/// `Row`/`Column` as [`NaturalSize::stacked`] over its children grown by
-/// its own padding and margin ([`quadraui::Spacing::outset`]),
-/// the same measure the Rust app layer gives a stack. Every other node kind
-/// (`Split`/`Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement at
-/// this layer and reports [`None`] on both axes — see
-/// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
-/// degrades a `None`.
+/// Best-effort intrinsic size of `node`, for a
+/// [`quadraui::SectionSize::Content`] child's main axis and a non-`Stretch`
+/// [`quadraui::Align`]'s cross axis in [`layout_container_rects`]: `TabBar`
+/// by `Backend::measure_text`, `TextDisplay` by its lines, `List`/`Tree`/
+/// `DataTable` by row count (height only), a generic widget by
+/// `Primitive::measure`, and a `Row`/`Column` as [`NaturalSize::stacked`]
+/// over its children plus its padding and margin
+/// ([`quadraui::Spacing::outset`]), as the Rust app layer measures a stack.
+/// Other kinds (`Split`/`Tabs`/`SidebarPanel`/`SplitTree`) report [`None`].
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
-    // A `Styled` wrapper carries no geometry of its own -- unwrap to
-    // whatever it wraps, but push the override first via the same
-    // `push_styled_override`/`pop_styled_override` bracket `paint_styled`
-    // brackets its own recursive paint with, so a `padding` override on
-    // this wrapper changes what gets measured here, not just how the
-    // subtree later paints.
+    // A `Styled` wrapper measures what it wraps, under its own override
+    // (as `paint_styled` paints it), so a `padding` override is measured.
     if let LayoutNode::Styled(styled) = node {
         let push = push_styled_override(backend, &styled.style);
         let size = natural_size(backend, &styled.node, line_height);

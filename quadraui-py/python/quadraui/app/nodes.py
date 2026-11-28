@@ -836,7 +836,7 @@ def Tree(
             "id": node_id,
             "rows": rows,
             "selection_mode": selection_mode,
-            "selected_path": selected_path if selected_path is not None else [],
+            "selected_path": selected_path,
             "has_focus": has_focus,
             "style": style if style is not None else _DEFAULT_TREE_STYLE,
         }

@@ -469,7 +469,7 @@ export function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node
       id: nodeId,
       rows,
       selection_mode: selectionMode,
-      selected_path: selectedPath ?? [],
+      selected_path: selectedPath ?? null,
       has_focus: hasFocus,
       style: style ?? DEFAULT_TREE_STYLE,
     };

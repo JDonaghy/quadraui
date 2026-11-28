@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField } = require("@quadraui/node/app");
+const { App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField, Tree } = require("@quadraui/node/app");
 const { run } = require("@quadraui/node");
 const { harness } = require("@quadraui/node/testing");
 const { load } = require("../../examples/hero/node/load_jsx.ts");
@@ -386,4 +386,29 @@ test("a Ctrl-click after arrow keys grows the selection from the cursor row", ()
   h.dispatch({ MouseDown: { button: "Left", position, modifiers: { ...NO_MODS, ctrl: true } } });
   h.dispatch({ MouseUp: { button: "Left", position } });
   assert.deepEqual(picked[picked.length - 1], [2, 3]);
+});
+
+test("a Ctrl-click after an arrow key grows the tree selection from the cursor row", () => {
+  const picked: number[][][] = [];
+  const rows = [0, 1, 2].map((i) => ({ path: [i], indent: 0, icon: null, text: { spans: [{ text: `node${i}` }] }, badge: null, is_expanded: null }));
+  const app = new App(24, 6, {
+    view: () => Tree(rows, { id: "tree", selectionMode: "Multi", onSelection: (s: number[][]) => picked.push(s) }),
+  });
+  const h = harness(app);
+  h.clickText("node0");
+  h.press("Down");
+  const [x, y] = h.locateAll("node2")[0];
+  const position = { x, y };
+  h.dispatch({ MouseDown: { button: "Left", position, modifiers: { ...NO_MODS, ctrl: true } } });
+  h.dispatch({ MouseUp: { button: "Left", position } });
+  assert.deepEqual(picked[picked.length - 1], [[1], [2]]);
+});
+
+test("a sized node and its children are findable by id", () => {
+  const app = new App(30, 5, {
+    view: () => Column([Text("Count: 0", { id: "count" }), Row([Button("+", { id: "inc" })], { size: "content" })]),
+  });
+  const h = harness(app);
+  assert.ok(h.find({ id: "count" }).text.includes("Count: 0"));
+  assert.equal(h.find({ id: "inc" }).role, "button");
 });

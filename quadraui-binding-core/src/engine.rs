@@ -360,15 +360,11 @@ fn stops_around_focused_children(
     stops
 }
 
-/// A plain Tab/Shift-Tab on a focused generic leaf with per-child focus
-/// stops whose focused child — the one it last requested focus for — is
-/// its last (or first): focus leaves the leaf for the next (or previous)
-/// stop in `hits`' tab order, rather than the leaf wrapping round its own
-/// children. The leaf [`stops_around_focused_children`] leaves out while it
-/// holds focus rejoins the cycle here. Returns the newly focused stop and
-/// the reaction to the move; `None` for any other event, a leaf not at
-/// either end of its children, or when there is nowhere else to go — the
-/// key then goes to the leaf itself.
+/// A plain Tab/Shift-Tab on a focused leaf whose focused child is its last
+/// (or first) stop ([`quadraui::FocusSpec::child_at_edge`]): focus moves to
+/// the next (or previous) stop in `hits`' tab order instead of wrapping
+/// inside the leaf. Returns the new stop and the reaction; `None` (the key
+/// goes to the leaf) otherwise.
 fn tab_past_child_stops(
     hits: &[PaintedHit],
     focused: Option<quadraui::FocusAddress>,
@@ -2641,13 +2637,9 @@ impl InteractionEngine {
                     _ => None,
                 });
                 if let Some(content) = layout_content {
-                    // `LayoutContent::dispatch`'s own `None` means
-                    // "nothing in the subtree claimed this" — an Escape
-                    // the popover itself owns, or a key with no meaning
-                    // for the focused leaf. A positioned event that
-                    // landed inside the popover is still claimed either
-                    // way: it visually hit the popover, so the tree
-                    // painted underneath must never see it.
+                    // `None`: nothing in the popover claimed it. A
+                    // positioned event inside the popover is claimed
+                    // anyway, so the tree underneath never sees it.
                     match content.dispatch(event, self, backend, sink) {
                         Some(result) => return Some(result),
                         None if inside == Some(true) => return Some(Reaction::Continue),
@@ -2657,13 +2649,9 @@ impl InteractionEngine {
             }
         }
 
-        // Float does NOT claim mouse clicks here: its content is painted
-        // by the host, not this engine (see `Self::show_float`'s doc), so
-        // a click anywhere near it has to keep flowing through the
-        // normal hit-map routing below for that content to ever receive
-        // it. A non-focusable hint float never steals Escape either, same
-        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
-        // draws.
+        // A host-painted float claims no clicks (they reach its content
+        // through the hit map below), and only a focusable one claims
+        // Escape ([`quadraui::ModalStack::top_focusable`]).
         let float_claims_escape = self
             .overlays
             .iter()
@@ -2754,9 +2742,8 @@ impl InteractionEngine {
         }
     }
 
-    /// Resets `id`'s multi-selection to the row its `List` or `Tree`
-    /// cursor moved to, as a plain arrow key does in the Rust widget: the
-    /// next Ctrl- or Shift-click then grows the selection from that row.
+    /// Re-anchors `id`'s multi-selection on its `List`/`Tree` cursor row, as
+    /// a plain arrow key does in the Rust widget.
     fn select_cursor_row(&self, id: WidgetId) {
         let hits = self.hit_map.borrow();
         let row = match tree_rows_and_viewport(&hits, id) {
@@ -2828,6 +2815,22 @@ impl InteractionEngine {
             }
             UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
                 apply_tree_toggle_expand(&self.widget_state, *id, path);
+                Reaction::Redraw
+            }
+            UiEvent::List(id, ListViewEvent::SelectionChanged { idx }) => {
+                crate::host::apply_list_selected(&self.widget_state, *id, *idx);
+                Reaction::Redraw
+            }
+            UiEvent::Tree(id, TreeEvent::SelectionChanged { path })
+            | UiEvent::Tree(
+                id,
+                TreeEvent::RowClicked {
+                    path,
+                    button: MouseButton::Left,
+                    ..
+                },
+            ) => {
+                crate::host::apply_tree_selected(&self.widget_state, *id, path);
                 Reaction::Redraw
             }
             _ => Reaction::Continue,
@@ -3338,7 +3341,26 @@ impl InteractionEngine {
         } else {
             quadraui::Reaction::Continue
         };
-        pointer.merge(self.route(event, backend, sink))
+        // Focus pushed onto a widget with per-child stops (a form) enters
+        // its first child, as Tab into it does.
+        let enters = match &event {
+            UiEvent::FocusChanged(Some(id)) if backend.focus_tree().focused_id() != Some(id) => {
+                dyn_widget_hit(&self.hit_map.borrow(), *id).is_some_and(
+                    |(_, w)| matches!(w.focus(), quadraui::FocusSpec::Children(s) if !s.is_empty()),
+                )
+            }
+            _ => false,
+        };
+        let reaction = pointer.merge(self.route(event, backend, sink));
+        if !enters {
+            return reaction;
+        }
+        let tab = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        reaction.merge(self.route(tab, backend, sink))
     }
 
     fn route(
@@ -3349,28 +3371,16 @@ impl InteractionEngine {
     ) -> quadraui::Reaction {
         use quadraui::Reaction;
 
-        // Set when a tooltip auto-dismisses below — merged into the final
-        // `Reaction` (and threaded through `continue_or_tooltip_redraw`
-        // for the handful of early `return`s further down whose own
-        // outcome is "nothing changed") so the redraw that takes the
-        // tooltip off screen always happens, regardless of which path
-        // through this function the event takes.
+        // A tooltip auto-dismissed below: every return path redraws
+        // (`continue_or_tooltip_redraw`) so it leaves the screen.
         let mut tooltip_dismissed = false;
 
-        // The reaction a focused generic widget produced for a key it let
-        // travel on (`Handled::Ignored`) while still asking for a repaint —
-        // a script-defined widget whose script consumed the key does this
-        // so the app sees the key press too. Merged into the final
-        // `Reaction` below, the same way `tooltip_dismissed` is, so the
-        // widget's repainted state shows even when `sink.dispatch` itself
-        // leaves `event` unhandled.
+        // The repaint a focused generic widget asked for on a key it still
+        // let travel on (`Handled::Ignored`), merged into the final result.
         let mut widget_key_reaction = Reaction::Continue;
 
-        // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
-        // valid drop target, below — merged into the final `Reaction` the
-        // same way `widget_key_reaction` is. `drag_started_reaction`/
-        // `drag_over_reaction` are its arm/continue counterparts, set
-        // further down once `hit`/the `MouseMoved` branch are reached.
+        // An armed `Self::gesture_drag` dropping, starting and moving over
+        // a target, merged into the final result.
         let mut gesture_reaction = Reaction::Continue;
         let mut drag_started_reaction = Reaction::Continue;
         let mut drag_over_reaction = Reaction::Continue;
@@ -3435,14 +3445,8 @@ impl InteractionEngine {
             }
         }
 
-        // A tooltip is non-interactive chrome, not a modal-input state
-        // machine — it never claims a click/key for itself, so this is a
-        // side effect rather than an early return. Clearing it here (on
-        // every `MouseDown`/`KeyPressed`, before anything else below gets
-        // a chance to consume the event) is what "route dismissal" means
-        // for a primitive with [`quadraui::Backend::draw_tooltip`]'s "no
-        // hit data returned" contract: the next interaction anywhere always hides
-        // it, same as a native tooltip's hover-out behaviour.
+        // Any press or key hides a tooltip, before anything can consume the
+        // event, without claiming it: a tooltip is non-interactive chrome.
         if matches!(
             event,
             UiEvent::MouseDown { .. } | UiEvent::KeyPressed { .. }
@@ -3456,18 +3460,10 @@ impl InteractionEngine {
             tooltip_dismissed = true;
         }
 
-        // A directly-dispatched `UiEvent::FocusChanged` — e.g. a binding's
-        // own Tab-cycling, which calls `AppLogic::handle` (hence this
-        // engine, once the binding's own `handle` forwards to it) straight
-        // through with the new focus, never going through the
-        // click-to-focus bookkeeping further down — gets the same
-        // "scroll a child only partly inside its `Scroll` fully into
-        // view" side effect that bookkeeping already applies to a
-        // click-driven focus change.
-        //
-        // One that names a widget other than the focused one (a test
-        // harness's `focus(id)`, an app pushing focus itself) moves
-        // keyboard focus there first, so the keys that follow reach it.
+        // A directly-dispatched `UiEvent::FocusChanged` (Tab-cycling, a test
+        // harness's `focus(id)`) moves keyboard focus to the widget it names,
+        // so the keys that follow reach it, and scrolls a child only partly
+        // inside its `Scroll` into view, as a click-driven focus change does.
         let mut scroll_into_view_reaction = Reaction::Continue;
         if let UiEvent::FocusChanged(Some(id)) = &event {
             if backend.focus_tree().focused_id() != Some(id) {
@@ -3491,26 +3487,15 @@ impl InteractionEngine {
         }
         let popup_reaction = popup_routing.reaction();
 
-        // One shared pass over `Self::overlays`, topmost (highest
-        // `Overlay::rank`) first — toast (claims a `MouseDown` landing on
-        // its own dismiss/action region only), then dialog (claims
-        // everything), then completions/rich-text-popup (each claims
-        // Escape and a `MouseDown`), then float (claims Escape only when
-        // focusable) — collapsing what used to be five hand-written
-        // per-kind precedence blocks into [`Self::dispatch_overlays`].
-        // `None` means nothing in the stack claimed `event`; the
-        // menu-bar/context-menu routing below (and everything after it)
-        // runs exactly as if none of this existed.
+        // `Self::overlays`, topmost first: a toast claims presses on its own
+        // regions, a dialog everything, completions/rich-text popups Escape
+        // and presses, a focusable float Escape. `None`: none claimed it.
         if let Some(reaction) = self.dispatch_overlays(&event, backend, sink) {
             return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
 
-        // A context-menu popup owns a full modal-input state machine that
-        // must see every event before the rest of this function's own
-        // routing — matching `ContextMenuController::handle`'s own doc
-        // ("call this before other UI routing"). It reports `Ignored`
-        // immediately when nothing of its own is open, so this is safe
-        // to run unconditionally.
+        // An open context menu sees every event before other routing
+        // (`ContextMenuController::handle`); with none open it ignores it.
         match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
                 // Activation/dismissal already closed the popup in
@@ -3772,27 +3757,13 @@ impl InteractionEngine {
             }
         }
 
-        // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
-        // the binding's own `preprocess_event` once `tab_stops` is
-        // non-empty) is routed to whichever leaf currently holds focus,
-        // wrapped into that leaf's own `KeyPressed` variant so the binding's
-        // own handler sees a focus-scoped event instead of a backend-global
-        // one.
-        //
-        // For a focused `Tree`/`List`/`DataTable`, a recognized navigation
-        // key (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried
-        // against [`apply_tree_nav_key`]/[`apply_list_nav_key`]/
-        // [`apply_data_table_nav_key`] first: it moves and scrolls-into-view
-        // the id's cursor in [`Self::widget_state`] (controlled or not — see
-        // those functions' own doc), using the hit's own row/viewport
-        // geometry rather than a stale descriptor. `tree_rows_and_viewport`
-        // returns `None` while the focused tree's selected row is mid-rename
-        // (`editing.is_some()`), so a rename's own text-editing keys
-        // (`Home`/`End` included) are never also interpreted as cursor
-        // navigation. This never changes what reaches `sink` (still the same
-        // `focus_scoped_key_event` result a binding always got), only
-        // forces the redraw that paints the moved cursor, even when the
-        // binding's own `sink.dispatch` leaves the key unhandled.
+        // A plain `KeyPressed` goes to the focused leaf, wrapped in that
+        // leaf's own `KeyPressed` variant. On a focused `Tree`/`List`/
+        // `DataTable` a navigation key first moves and scrolls the id's
+        // cursor in [`Self::widget_state`] from the hit's own geometry
+        // (`tree_rows_and_viewport` is `None` mid-rename, so a rename's
+        // keys never navigate); that changes nothing `sink` sees, only
+        // forces the redraw that paints the moved cursor.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 let nav_applied = if let Some((total_rows, viewport_rows)) =
@@ -9708,12 +9679,12 @@ mod tests {
         let (selected_idx, scroll_offset, viewport_rows) =
             list_hit.expect("the list must still be painted after 40 Down presses");
         assert_eq!(
-            selected_idx, 39,
-            "40 Downs starting from no selection must land exactly on row 39"
+            selected_idx, 40,
+            "40 Downs from the untouched list's row 0 must land exactly on row 40"
         );
         assert!(
-            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
-            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            (scroll_offset..scroll_offset + viewport_rows).contains(&40),
+            "row 40 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
             scroll_offset + viewport_rows
         );
     }

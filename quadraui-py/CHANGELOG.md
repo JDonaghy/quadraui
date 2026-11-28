@@ -471,12 +471,19 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- The test harness's `find(id=...)` and `walk()` see a node given `size`, `min`
+  or `max`, and everything inside it: those keys hid the node, so a
+  content-sized `Row` of buttons or any `Text` could not be found (#3080).
 - A content-sized `Row`/`Column` with `padding` keeps its children: its
   measured size now includes the padding, which was then inset from a box
   sized without it, leaving nothing to paint (#3080).
 - A plain arrow key on a `List` or `Tree` moves the multi-selection to the
   cursor row, so a following Ctrl-click grows the selection from there, as
   in Rust, instead of from the row clicked before the arrow keys (#3080).
+- A `List` or `Tree` the app leaves uncontrolled follows its own clicks
+  and arrow keys: a click moves its cursor, the first Down from an untouched
+  list goes to row 1, and a `Tree` with no selected path sends none instead
+  of an empty path that pinned its cursor (#3080).
 - `Text` in a `Row` (sized to its content by default) is as wide as its
   line plus the gutter a `TextDisplay` row reserves, so each label shows
   whole instead of wrapping into an empty one-row slot (#3107).
