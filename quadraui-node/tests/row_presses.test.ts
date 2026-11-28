@@ -12,9 +12,9 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
-const { App, Button } = require("../js/app/index.ts");
-const { harness } = require("../js/testing.ts");
+const { QuiApp } = require("@quadraui/node");
+const { App, Button } = require("@quadraui/node/app");
+const { harness } = require("@quadraui/node/testing");
 
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };
 const SHIFT = { ...NO_MODS, shift: true };
