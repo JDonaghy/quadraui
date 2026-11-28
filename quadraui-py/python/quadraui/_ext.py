@@ -95,8 +95,8 @@ def _load() -> ModuleType:
             native_unavailable_reason = (
                 "run_native is not available in this quadraui build: the installed "
                 "package carries no GTK backend. Prebuilt GTK-enabled Linux wheels "
-                "exist only for x86_64 with glibc 2.39 or newer (e.g. Ubuntu 24.04 "
-                "or Fedora 40). On another architecture, an older glibc, or a "
+                "exist for x86_64 and aarch64 with glibc 2.39 or newer (e.g. Ubuntu "
+                "24.04 or Fedora 40). On another architecture, an older glibc, or a "
                 "source install, build with the GTK feature instead: install the "
                 "GTK 4 development package (`libgtk-4-dev` or `gtk4-devel`) and a "
                 "Rust toolchain, then run `MATURIN_PEP517_ARGS=\"--features gtk\" "
