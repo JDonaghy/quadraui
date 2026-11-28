@@ -782,7 +782,7 @@ enum FloatContent {
     /// shared [`LayoutContent`] — the same embedding
     /// [`Overlay::LayoutDialog`] uses for its own content. See
     /// [`InteractionEngine::show_popover_layout`]'s own doc.
-    Layout(LayoutContent),
+    Layout(Box<LayoutContent>),
 }
 
 /// A modal [`Dialog`] whose body hosts an arbitrary [`LayoutNode`] subtree
@@ -2028,7 +2028,7 @@ impl InteractionEngine {
         self.push_overlay(Overlay::Float(
             float,
             measure,
-            Some(FloatContent::Layout(LayoutContent::new(content))),
+            Some(FloatContent::Layout(Box::new(LayoutContent::new(content)))),
         ));
     }
 
