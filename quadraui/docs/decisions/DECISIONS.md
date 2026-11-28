@@ -1,14 +1,22 @@
-# quadraui primitive-distinctness decisions
+# quadraui design decisions
 
-A running log of "do we introduce a new primitive, or reduce it to an
-existing one with parameters?" decisions for the quadraui crate. Each
-entry records the question, the call, and the reasoning so we don't
-re-litigate and so the design stays coherent.
+A running log of quadraui's design decisions: which primitives exist and
+why, the widget contract (D-021 onward), the backend and binding
+boundaries, and release-shaping calls. Each entry records the question,
+the call, and the reasoning so we don't re-litigate and so the design
+stays coherent.
 
 Entries are dated and kept as decided; a later entry that changes a
-decision says so in the earlier entry's **Status** line. Code blocks are
-the sketches agreed at the time, so they are marked `ignore` and are not
-checked against the current API.
+decision says so in the earlier entry's **Status** line. A superseded
+entry keeps its question and a short account of what was decided at the
+time, plus what carries over; its full original text is in git history.
+Code blocks are the sketches agreed at the time, so they are marked
+`ignore` and are not checked against the current API.
+
+The current architecture is D-021 to D-029 and D-031 to D-036: one
+implementation per widget (`Primitive` + `Interactive`), painted through
+`DrawsPrimitives::draw_dyn` / `Surface::Widget`; a `Backend` of platform
+services only; and bindings that decode into the same widgets.
 
 ---
 
@@ -54,10 +62,12 @@ ListViewEvent}` is distinct from `TreeView`.
    semantics). A plugin declaring a `ListView` in Lua via serde writes
    half as many fields as it would for a depth-0 `TreeView`.
 
-4. **Rendering is simpler per backend.** `draw_list` doesn't compute
-   chevron columns, indent math, or tree-path hit tests. GTK and
-   Direct2D implementations are materially shorter, which matters
-   because every primitive ships three backends.
+4. **Rendering is simpler.** A list's paint doesn't compute chevron
+   columns, indent math, or tree-path hit tests. When this was decided
+   every primitive had a rasteriser per backend, so the saving was
+   multiplied by each one; under the widget contract (D-021) there is
+   one paint implementation per widget, and the saving is that one
+   implementation is shorter.
 
 5. **Styling decisions don't cross-contaminate.** Zebra striping,
    right-aligned detail columns, and compact row heights are list
@@ -81,8 +91,9 @@ ListViewEvent}` is distinct from `TreeView`.
 ### What this does NOT mean
 
 - We won't try to derive one from the other later. If an internal
-  shared helper emerges (e.g. a row-layout routine both `draw_tree`
-  and `draw_list` call), fine — but the public API stays two types.
+  shared helper emerges (e.g. a row-layout routine both the tree's and
+  the list's paint call), fine — but the public API stays two types.
+  `TreeView` and `ListView` do share one today, `primitives::row_stack`.
 - We won't add a `flat: bool` or `hierarchy: Option<...>` knob to
   `TreeView` to cover list cases. That path leads to a god-object
   primitive.
@@ -91,8 +102,9 @@ ListViewEvent}` is distinct from `TreeView`.
 
 ## D-002 — `DataTable` vs. `TreeTable` (issue #140)
 
-**Status:** Open. Recommended call below; defer final until the
-TreeTable primitive (#139) starts.
+**Status:** Decided as recommended and shipped: `DataTable`
+(`primitives/data_table.rs`) and `TreeTable` (`primitives/tree_table.rs`)
+are separate primitives.
 
 ### Question
 
@@ -131,8 +143,10 @@ the hard part.
 
 ## D-003 — `MultiSectionView` primitive (issue #293)
 
-**Status:** Decided. Design pass complete; implementation in progress
-on branch `issue-293-multi-section-view`.
+**Status:** Decided and shipped. The per-backend section walk this
+entry describes as today's problem no longer exists: `MultiSectionView`
+paints and routes through its own `Primitive`/`Interactive` impls
+(D-021), with collapse and scroll as descriptor fields (D-026).
 
 **Date:** 2026-04-30.
 
@@ -416,13 +430,12 @@ algebraic generalisation that should live behind a flag on `Split`.
 
 `SplitTree` reuses `Split`'s existing `SplitDirection` type (not a new
 enum) — same crate, same mental model, same TUI divider glyphs (`│`/
-`─`) and GTK divider chrome. The two primitives' rasterisers
-(`tui::draw_split` / `tui::draw_split_tree`,
-`gtk::draw_split` / `gtk::draw_split_tree`) are siblings, not one
+`─`) and pixel divider chrome. Each primitive has its own
+`Primitive`/`Interactive` impl, side by side in
+`primitives/split/contract.rs`; the two are siblings, not one
 generalised over the other — see D-001's "share implementation via
 internal helpers, not public type-level parameters" if a genuinely
-shared internal helper emerges later (there wasn't enough duplication
-yet to justify one at ship time).
+shared internal helper is needed.
 
 ### Cross-cutting infra landed alongside
 
@@ -444,14 +457,12 @@ pattern, duplicated per backend per tree today).
   minimums, that's an additive follow-up, not a reason to have blocked
   this primitive on designing it up front.
 
-### Known gap (tracked, not blocking)
+### Backend coverage
 
-The macOS backend (`quadraui/src/macos/`) does not yet implement
-`Backend::draw_split_tree`/`split_tree_layout` — that module only
-compiles under `cfg(target_os = "macos")`, so it can't be authored or
-verified from a Linux dev box. `win/backend.rs` has the standard
-`todo!()` stub, matching every other not-yet-implemented Win-GUI
-primitive.
+`SplitTree` paints and hit-tests on every backend through its own
+`Primitive` and `Interactive` impls (D-021), so no backend carries
+split-tree code of its own. When this was decided, macOS and Win-GUI
+had no split-tree rasteriser; the widget contract closed that gap.
 
 ---
 
@@ -463,9 +474,9 @@ If concept A is a strict subset of concept B's visual rendering but
 carries different semantics (what events make sense, what fields are
 meaningful, how users think about it), ship them as separate
 primitives. Share implementation via internal helpers, not public
-type-level parameters. This costs more per-backend porting work; the
-payoff is discoverability, honest APIs, and a plugin-friendly serde
-surface that holds up as the crate grows.
+type-level parameters. This costs one more widget implementation per
+concept; the payoff is discoverability, honest APIs, and a
+plugin-friendly serde surface that holds up as the crate grows.
 
 Future primitive decisions should cite this file when they hit the
 similar tension between "share the algorithm" and "keep the concept
@@ -484,82 +495,33 @@ entry argues for carry over (`LESSONS.md`).
 
 ### Question
 
-`LESSONS.md` records a rule from a shipped bug (`mac_tree_layout` /
-`mac_form_layout` silently returning absolute coords while their
-TUI/GTK twins returned local, drifting clicks by `area.y` on macOS):
-*"layout helpers return local-frame coords."* Issue #505 asked whether
-that rule is actually followed trait-wide, or whether — as
-`tab_bar_layout`'s already-documented absolute-coordinate exception
-(#552) suggested — the real picture is more mixed and the doc comments
-just don't say so.
+A shipped macOS bug (tree and form hit regions returned in absolute
+coordinates while their TUI and GTK twins returned local ones, drifting
+every click by `area.y`) raised whether the per-widget `Backend` layout
+methods of the time used one coordinate frame, or a mix the doc
+comments did not state.
 
-### Audit
+### What was decided at the time
 
-Every `Backend::<name>_layout` trait method in `quadraui/src/backend.rs`
-was read against its TUI, GTK, and (where implemented) macOS
-implementation, tracing whether the returned `hit_regions` / `bounds`
-are shifted by `rect.x`/`rect.y` (**ABSOLUTE**) or left relative to
-`rect`'s origin (**LOCAL**). Result, 20 methods audited (excludes
-`tab_bar_layout*` and `activity_bar_layout`, already resolved by #552):
+An audit of the per-widget layout methods then on the trait (20 of them)
+found both frames in use (5 local, 15 absolute) and no live
+cross-backend mismatch. The decision kept both frames rather than
+converting the absolute ones (a breaking change for no bug fixed),
+stated each method's frame in its doc comment as **LOCAL** or
+**ABSOLUTE**, and required every backend implementing a method to agree
+with its siblings, with a regression test at a non-zero
+`rect.x`/`rect.y`.
 
-| Frame | Methods |
-|---|---|
-| **LOCAL** | `data_table_layout`, `status_bar_layout`, `text_display_layout`, `tree_layout`, `form_layout` |
-| **ABSOLUTE** | `text_input_layout`, `msv_layout`, `menu_bar_layout`, `split_layout`, `split_tree_layout`, `panel_layout`, `toast_stack_layout`, `pipeline_view_layout`, `progress_layout`, `spinner_layout`, `command_center_layout`, `toolbar_layout`, `sidebar_panel_layout`, `chart_layout`, `minimap_layout`, `command_line_layout` (added by #705, after this audit; `CommandLineLayout::text_origin_x` carries `rect.x`/`bounds.x`, same convention as `text_input_layout`) |
+### What carries over
 
-**No live cross-backend mismatch was found.** For every method, every
-backend that implements it agrees with its siblings on which frame it
-uses — unlike the historical `mac_tree_layout` bug, nothing here
-silently drifts between backends today. What *was* missing: 19 of the
-20 methods' trait doc comments said nothing at all about coordinate
-frame (the sole exception, `status_bar_layout`, already had its
-bar-local frame stated from #552), so the agreement was accidental
-(preserved by copy-paste and `#499`'s later unification into shared
-`layout_metrics` helpers) rather than contracted.
-
-### Decision
-
-**Keep both frames — do not collapse everything to LOCAL.** Converting
-the 15 ABSOLUTE methods to LOCAL would be a breaking change to every
-caller of every one of them (both in-tree composers and, per
-`CLAUDE.md`'s downstream-consumers policy, `coord-tui` and `vimcode` if
-either calls them directly) for a purely cosmetic uniformity gain — the
-audit found no bug the conversion would fix, only a documentation gap.
-Instead:
-
-1. Each method's doc comment now states its frame explicitly, in the
-   words **LOCAL** or **ABSOLUTE** (grep-able), matching the audited
-   reality above. Landed in the same PR as this decision — see
-   `quadraui/src/backend.rs`'s module doc "Coordinate frames for
-   `*_layout` methods" and each method's doc comment.
-2. `PRIMITIVE_RULES.md` gained a "Coordinate frames for `*_layout`
-   methods" section stating the convention going forward: a new
-   primitive's layout method picks LOCAL if a parent composer paints it
-   inline and already tracks the origin, ABSOLUTE if it's painted as a
-   freestanding widget at its own screen rect. `LESSONS.md`'s original
-   rule is marked superseded and points here instead of re-asserting
-   "always local."
-3. `tab_bar_layout`'s ABSOLUTE convention (audited and fixed under
-   #552, opposite of `activity_bar_layout`'s LOCAL one) is ratified by
-   this decision, not treated as an outstanding exception to resolve —
-   it's simply one more ABSOLUTE-frame method in the table above.
-
-### What this does NOT mean
-
-- It does not mean "frame doesn't matter." The rule that *does* still
-  bind unconditionally: whichever frame a method picks, every backend
-  implementing it must agree with its siblings, that agreement is
-  stated on the doc comment, and it is regression-tested at a non-zero
-  `rect.x`/`rect.y` (the case that hides a LOCAL/ABSOLUTE mixup, per
-  the `mac_tree_layout` postmortem). A future primitive that lets its
-  backends silently disagree on frame is still a bug of exactly this
-  kind.
-- It does not block deprecating an individual method's frame later —
-  `PRIMITIVE_RULES.md` rule 8's two-PR deprecation protocol applies if
-  a specific method's frame ever needs to change.
-
-Future primitive decisions should cite this file when they hit the
-same fork.
+The coordinate frames are now fixed by the contract instead of by a
+per-method convention: `RoutedEvent::Pointer`'s `local` and
+`Interactive::sub_regions` are in the widget's own local space, a
+`Self::Layout` may hold absolute geometry its paint needs and converts
+it in one helper, and `PaintedWidgets` translates sub-regions to
+absolute space. The rule that every layout is tested off the origin
+stands (`LESSONS.md`, *Every layout states its coordinate frame, and is
+tested off the origin*).
 
 ## D-006 — `Surface`/`ScreenLayout` is canonical; `Backend::draw_*` is the low-level entry point (issue #456)
 
@@ -571,108 +533,33 @@ same fork.
 
 ### Question
 
-`quadraui` exposes two independent ways to paint the same primitive:
-`backend.draw_<name>(rect, &data)` directly, or
-`layout.push(Surface::<Name> { rect, .. })` followed by `layout.draw(backend)`.
-Nothing steers a consumer toward one, and nothing keeps a call site that
-picks one in sync with a sibling call site (same app, other backend)
-that picks the other. #456 found exactly that in vimcode: the TUI
-palette painted via `b.draw_palette(...)`, the GTK palette via
-`frame.push(Surface::Palette { .. })` — five of six surrounding lines
-identical, only the paint call differing for no reason but that both
-APIs exist. That drift contributed to vimcode#587 (a GTK paint function
-with zero live callers going unnoticed).
+`quadraui` exposed two independent ways to paint the same widget: a
+per-widget `Backend` draw method called directly, or a
+`Surface::<Name>` entry pushed into a `ScreenLayout` and drawn with
+`layout.draw(backend)`. Nothing steered a consumer toward one. #456
+found vimcode painting its palette one way on TUI and the other on GTK,
+five of six surrounding lines identical, which contributed to a GTK
+paint function with no live callers going unnoticed (vimcode#587).
 
-### Audit
+### What was decided at the time
 
-`SMELL_AUDIT_2026-07.md` §4 quantified the gap: `frame.rs`'s `Surface`
-enum covers 25 primitives. 11 primitives that already have a
-`Backend::draw_<name>` trait method have **no** `Surface` variant:
-Board, DiffView, PipelineView, Toolbar, SidebarPanel, TextInput,
-Spinner, Progress, CommandCenter, DropOverlay, MessageList. `Surface`
-also only ever wraps primitive paints, not the helper draws that exist
-alongside a primitive's main one (`draw_terminal_divider`,
-`draw_settings_chrome`, `draw_tab_bar_with_chrome`,
-`draw_activity_bar_with_style`, `draw_tooltip_with_chrome`), which have
-no z-order slot of their own by design — they're always painted
-adjacent to a primitive that does.
+`ScreenLayout` + `Surface` became the canonical path for a consumer
+assembling a screen out of several widgets, because pushing `Surface`
+entries forces every backend's call site through one list and
+`ScreenLayout::zone_for` keeps the hit map matching what was painted.
+The per-widget `Backend` draw methods stayed public as the low-level
+entry point the `Surface` variants delegated to, and a new widget got
+its `Surface`/`FrameZone` arm in the same PR. quadraui#1099 later
+backfilled the 14 widgets that had no `Surface` variant.
 
-### Decision
+### What carries over
 
-**`ScreenLayout` + `Surface` is the canonical path for a consumer
-assembling a top-level screen out of multiple primitives.** Pushing
-`Surface` entries and calling `.draw(backend)` forces both backends'
-call sites through the same list, and `zone_for` (shared by `draw` and
-`hit_map`, see the doc comment on `ScreenLayout::zone_for`) guarantees
-the hit-map matches what was painted — the class of "two backends, two
-different paint calls, silently different behavior" bug #456 describes
-becomes a compile-time non-option for anything routed through
-`Surface`, because there's only one call site to route through.
-
-**`Backend::draw_<name>` is not deprecated, hidden, or downgraded — it
-stays public, documented API**, because:
-
-1. `ScreenLayout::draw` calls it internally. `Surface` is sugar over
-   `Backend::draw_*`, not a replacement for it; the trait method has to
-   stay exactly as public as it is today or the "canonical" path has
-   nothing to delegate to.
-2. The 11 primitives listed above have no `Surface` variant yet, so
-   `Backend::draw_*` is the *only* path available for them. A consumer
-   painting `Toolbar` or `Progress` today is not taking a shortcut —
-   there is no `Surface::Toolbar` to take instead.
-3. Rasteriser tests (`PRIMITIVE_RULES.md` rule 4's paint/click
-   round-trip harness) and compose helpers legitimately call
-   `Backend::draw_*` directly — they're testing or composing the
-   primitive itself, not assembling an app screen, and have no reason
-   to go through `ScreenLayout`.
-
-**Going forward: rule 7 in `PRIMITIVE_RULES.md` ("every primitive gets
-a `Backend::draw_<name>` trait method") is extended one hop.** A new
-primitive that participates in top-level screen composition (i.e. gets
-a `draw_<name>` trait method that a consumer calls directly to paint
-part of a frame) gets its `Surface::<Name>` / `FrameZone::<Name>` /
-`zone_for` arm added in the *same PR* — see the new "One primitive, one
-canonical paint path" section in `PRIMITIVE_RULES.md`. This stops new
-drift; it does not retroactively backfill the 11-primitive gap above,
-which is `SMELL_AUDIT_2026-07.md` §7 Epic D's `D4` ("trait symmetry"),
-scoped separately because it touches 11 primitives' worth of
-`Surface`/`FrameZone` plumbing rather than a single decision.
-
-**Resolved by quadraui#1099.** By the time #1099 picked this up the gap
-had grown from 11 to 14 (Image, Minimap, and SplitTree had each grown a
-`Backend::draw_*` method with no `Surface` twin in the interim) — exact
-evidence of "this rule stops new drift; it does not retroactively
-backfill" above being true in practice, not just in theory. #1099
-closed all 14 in one pass: `Board`, `CommandCenter`, `DiffView`,
-`DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
-`Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextInput`, and
-`Toolbar` all now have a `Surface`/`FrameZone` variant and a
-`ScreenLayout::zone_for` arm. The "What this does NOT mean" bullets
-below described the pre-#1099 state (`Backend::draw_*` as the *only*
-path for an uncovered primitive) — that specific gap no longer exists,
-though the general point (`Backend::draw_*` stays public/non-deprecated
-regardless of `Surface` coverage) still holds.
-
-### What this does NOT mean
-
-- It does not mean `Backend::draw_*` should get `#[doc(hidden)]` or
-  `#[deprecated]`. vimcode's TUI palette call site
-  (`b.draw_palette(...)`, the #456 evidence) is exactly the kind of
-  call a primitive with no `Surface` variant, a rasteriser test, or a
-  compose helper legitimately makes — hiding or deprecating the whole
-  trait surface over an 11-primitive coverage gap would force a worse
-  workaround than the drift it's meant to fix, and would breach rule
-  8's downstream-impact bar for no compensating benefit (both
-  consumers call `Backend::draw_*` methods directly today).
-- It does not retroactively fix vimcode's existing palette divergence
-  — that's vimcode's own migration (tracked as vimcode#587's
-  follow-up). This decision fixes which API a *new* call site should
-  reach for; it doesn't rewrite call sites in other repos.
-- It does not block a primitive that is legitimately never composed
-  into a multi-primitive frame (none identified so far) from staying
-  `Backend::draw_*`-only indefinitely — the rule is "if it's composed
-  into a `ScreenLayout` frame, it needs a `Surface` variant," not
-  "every primitive must have one."
+`ScreenLayout` stays canonical. It has one widget variant,
+`Surface::Widget`, and the low-level entry point is
+`DrawsPrimitives::draw_dyn` (or `draw_primitive` for a concrete widget
+type), which paints any widget on any backend. There is no per-widget
+`Backend` method to call instead, so the two-path drift #456 found
+cannot recur.
 
 ## D-007 — `Backend` trait symmetry: missing `*_layout` methods, off-trait rasteriser fns (issue #506)
 
@@ -682,232 +569,43 @@ contract no widget has one, so there is no symmetry to keep.
 
 ### Question
 
-#456/D-006 found that `Surface` and `Backend::draw_*` were two paint
-paths with nothing steering a consumer toward one. #506 is the
-trait-internal half of the same audit: does every primitive with a
-real `layout()` also expose a `Backend::<name>_layout` method, the way
-`data_table_layout` / `tree_layout` / `chart_layout` etc. already do?
-And are there rasteriser entry points that exist only as backend-crate
-free functions (`tui_board_layout`, `mac_list_layout`, ...) with no
-trait-level home at all — the "off-trait rasteriser fns" CLAUDE.md's
-portability commitment §1 calls a bug, since a Windows/macOS author
-can't discover them by reading the trait?
+#506 was the trait-internal half of D-006's audit. Did every widget
+with a real `layout()` also expose a matching `Backend` layout method,
+and were there rasteriser entry points that existed only as
+per-backend free functions, with no trait-level home a new backend's
+author could discover?
 
-### Audit
+### What was decided at the time
 
-Six primitives had a `draw_<name>` but no `<name>_layout` twin, despite
-a real `layout()` existing somewhere in the stack:
+The audit found six widgets with a `Backend` draw method but no layout
+twin (board, list, editor, terminal, diff view, palette) and several
+off-trait per-backend layout helpers. #506 added the missing trait
+layout methods, giving the ones whose formula was uniform across
+backends a default body backed by a paint-versus-layout parity test,
+routed the per-backend helpers behind them, and deferred the palette's
+until its GTK and TUI paint consumed the shared `Palette::layout()`
+instead of recomputing row positions (fixed by #818). It also wrote
+down which class of widget got a paired draw and layout method, a
+draw-takes-layout method (overlays the host anchors), or a collapsed
+draw-returns-layout one.
 
-| Primitive | What existed before #506 |
-|---|---|
-| `BoardModel` | `board_layout` free fn (`primitives/board.rs`); every backend already wrapped it in its own off-trait helper (`tui_board_layout` / `gtk_board_layout` / `mac_board_layout`) — nothing put it on the trait |
-| `ListView` | `ListView::layout()` (`primitives/list.rs:176`); TUI/GTK computed it *inline* inside `draw_list` (no reusable fn at all); Win/macOS had off-trait `win_list_layout` / `mac_list_layout` |
-| `Editor` | `Editor::layout()` (`primitives/editor.rs:524`); every backend's `draw_editor` already calls it with `(self.char_width(), self.line_height())` |
-| `Terminal` | `Terminal::layout()` (`primitives/terminal.rs:251`, plus `TerminalLayout::hit_test` / `cell_bounds`); **no backend called it at all** — `draw_terminal` iterates cells directly and callers had to re-derive `rect.width / char_width` by hand to hit-test a click |
-| `DiffView` | No standalone `layout()`; `DiffViewLayout { visible_rows, total_rows }` was computed by hand, identically, inside every backend's `draw_diff_view` (header-row reservation in side-by-side mode, `+1` per hunk in unified mode) |
-| `Palette` | `Palette::layout()` (`primitives/palette.rs:273`); Win/macOS had off-trait `win_palette_layout` / `mac_palette_layout`. **See "Palette: deferred, not missed" below — this one did not get a trait method.** |
+### What carries over
 
-Off-trait rasteriser entry points named in the issue, re-audited against
-the *current* tree (some had already been resolved by earlier work on
-this branch before #506 started):
-
-| Entry point | Resolution |
-|---|---|
-| `draw_terminal_divider` | Already a `Backend` method on all four backends (no default — `PRIMITIVE_RULES.md` rule 7). The issue text predates this; no action needed. |
-| `draw_settings_chrome` | Same — already a required `Backend` method (TUI + GTK implement it; no consumer needs it on Win/macOS yet). No action needed. |
-| `tui_dialog_layout` | **Exempt, by design.** `Dialog` is an *overlay-with-caller-anchor* primitive (see the convention table below) — same class as `Tooltip`/`ContextMenu`/`Completions`. The host builds its own `DialogMeasure` from portable `Backend::line_height()` and calls `dialog.layout(...)` directly (see `examples/common/modal_occlusion_demo.rs::dialog_layout`); no `Backend::dialog_layout` exists for any of those primitives, and Dialog shouldn't be the odd one out. `tui_dialog_layout` is TUI's *own* internal default measurer for dialogs TUI paints without a caller-supplied `DialogMeasure` — a backend-private convenience, not a missing trait method. |
-| `draw_context_menu_with_submenus` (TUI only) | **Exempt, written down, not promoted.** GTK has no cascading-submenu rasteriser yet (#371). A trait method here would need a default for GTK/Win/macOS, and CLAUDE.md's portability commitment explicitly rejects a no-op default that silently hides a real capability gap (`draw_terminal_divider`'s doc, `docs/SMELL_AUDIT_2026-07.md` PORT-01) — unlike `TabChrome`/`ActivityBarStyle`, ignoring `submenu_path` isn't a legitimate "no chrome vocabulary" fallback, it's "multi-level menus silently don't cascade." Also has zero call sites today (no compose helper or example wires it up) — it's a tested capability with no production consumer. Revisit once #371 gives GTK a real submenu rasteriser to pair it with; promoting it before that would ship a trait method that is honest for one backend out of four. |
-| `mac_palette_layout` | **Deferred alongside `palette_layout` — see below.** |
-| `mac_list_layout` | **Resolved.** Now the real backing implementation of `Backend::list_layout` for macOS (this issue). Kept as a `pub fn` — same "public free fn is the primitive-side thin wrapper" shape `data_table_layout`'s implementers already use; not deprecated, since nothing about its own contract changed. |
-| `gtk::MenuOverlay` | **Exempt, decided.** This is a GTK-hosting/compositing helper (coordinate transform for GTK's native overlay-widget positioning), not a primitive rasteriser — it implements no primitive's `layout()`/paint contract, so there is no `draw_<name>` for it to pair with. TUI/Win/macOS have no equivalent concept because they don't have GTK's overlay-widget model to bridge into. Same category as `AppShell`'s GTK widget-tree bootstrap: legitimately backend-specific, and rule 7 ("every primitive gets a trait method") doesn't apply to it because it isn't a primitive. |
-
-### Palette: deferred, not missed
-
-`palette_layout` looks like the same fix as `list_layout` — add the
-missing trait method, wire each backend's existing helper into it. The
-audit found a reason not to do that yet: **GTK's `draw_palette` paints
-item rows at `rows_y + i*line_height`, computed independently of the
-`PaletteLayout` struct's own `visible_items[i].bounds.y`.** When
-`show_query` is true, GTK reserves an extra 1px for the query/list
-separator stroke *outside* the `Palette::layout()` call (baked into
-`rows_y`, not into the `query_height` argument), so the struct's own
-`bounds.y` under-reports the real paint position by that 1px. This is
-harmless today only because `draw_palette` returns `()` — nothing
-outside the function ever reads the mismatched struct.
-
-Shipping `Backend::palette_layout` now would make that latent 1px drift
-externally visible the moment a host trusted it for hit-testing —
-exactly the "paint and no-paint silently disagree" bug class rule 5
-("one source of truth for layout") and the `mac_tree_layout` postmortem
-in `LESSONS.md` both exist to prevent. TUI's `draw_palette` doesn't
-call `Palette::layout()` at all (its border/query/separator rows
-predate the shared D6 layout refactor other primitives went through),
-which is a second, larger version of the same problem: a `tui_palette_layout`
-built from scratch today would be a parallel reimplementation, not an
-extraction, with no guarantee it matches what `draw_palette` actually
-paints.
-
-**Decision (superseded by #818 — see below): do not add
-`Backend::palette_layout` in this PR.** Fixing `gtk::draw_palette` to
-consume `PaletteLayout.visible_items[i].bounds` directly (eliminating
-the independent `rows_y` recomputation) and refactoring
-`tui::draw_palette` to route through `Palette::layout()` are both
-rendering-behavior changes, not trait-symmetry ones — real work, tracked
-as a follow-up, that must land *before* a `palette_layout` trait method
-can honestly claim to match its `draw_palette` twin. Rule 5 exists
-precisely so a new `*_layout` method is never the first thing to notice
-a paint function's internal layout was already lying.
-
-**Resolved by quadraui#818.** Both follow-ups landed together with the
-trait method, in this order:
-
-1. `tui::palette::tui_palette_layout` was added from scratch, calling
-   `Palette::layout()` for the first time on TUI — title/query/item hit
-   regions now come from the same call `draw_palette` itself would need
-   to make to agree with it (`draw_palette` still paints its own cell
-   grid independently for now; a paint/hit-test parity test asserts they
-   agree rather than a full paint-path refactor, since that's a larger,
-   separate rendering change). TUI's `PaletteLayout::scrollbar` is
-   deliberately always `None` — TUI's scrollbar glyph has no draggable
-   thumb and no equivalent to `fit_thumb`'s continuous-track formula, so
-   reporting one would just add a *new* disagreeing formula, the exact
-   failure mode this decision exists to prevent.
-2. `gtk::draw_palette` was fixed to consume
-   `PaletteLayout.visible_items[i].bounds` and
-   `PaletteLayout.scrollbar.{track,thumb}` directly instead of the
-   independently-derived `rows_y + i * line_height` / `thumb_ratio`
-   formulas — closing both the 1px item-row drift named above and a
-   second, same-class drift in the scrollbar thumb position that the
-   original audit didn't name. `gtk::palette::gtk_palette_layout` is now
-   the shared geometry function both `draw_palette` and
-   `Backend::palette_layout` call.
-
-`win_palette_layout` / `mac_palette_layout` already consumed
-`PaletteLayout` directly (no drift found in either), so `Backend::palette_layout`
-wires straight into them. Coordinate frame is **LOCAL** — matching what
-all four backends' free functions already returned natively (`Palette::layout`
-itself takes no origin argument), not the ABSOLUTE frame this doc's other
-"interactive chrome" entries use; converting all four to ABSOLUTE just to
-match a table entry would have been the exact kind of gratuitous
-rendering-behavior change rule 4 above warns against. See
-`Backend::palette_layout`'s own doc comment for the full contract and
-`compose::dual_mode_palette::DualModePaletteController::handle_mouse` for
-the first consumer (palette mouse clicks previously never reached any
-controller at all — a second, independent gap #818 also closed).
-
-### Decision: the convention table
-
-Three conventions coexist on the trait, and #506 asked which primitive
-class picks which. Audited against every `draw_<name>` / `<name>_layout`
-pair on the trait:
-
-| Primitive class | Convention | Examples |
-|---|---|---|
-| **Content-in-rect** (backend paints inline, inside a caller-supplied `rect`, and can compute the same layout without a live paint context) | **Paired**: `draw_<name>` + `<name>_layout`, both taking `rect`. | `data_table_layout`, `tree_layout`, `form_layout`, `list_layout`, `board_layout` (new), `terminal_layout` (new), `editor_layout` (new) |
-| **Overlay-with-caller-anchor** (host computes anchor/viewport/measure itself and calls the primitive's own `.layout(...)` directly; the backend only paints at the resolved bounds) | **Draw-takes-layout**: `draw_<name>(&self, thing, layout)`, no `Backend::<name>_layout` at all — there's nothing backend-specific to compute. | `Tooltip`, `ContextMenu`, `Completions`, `RichTextPopup`, `Dialog` (see `tui_dialog_layout`'s exemption above) |
-| **Interactive chrome** (freestanding widget painted at its own screen rect; used to have `draw_<name>` return its own layout with no separate no-paint accessor) | **Draw-returns-layout is redundant with paired — collapsed.** Every primitive that used to be draw-returns-layout-only now also has the paired `<name>_layout` twin, so a host can ask for hit-test geometry without a frame in progress. `BoardModel`/`DiffView` were the two hold-outs (`draw_board` / `draw_diff_view` already returned their layout struct, but had no no-paint twin) — `board_layout` closes this for `BoardModel`; `diff_view_layout` closes it for `DiffView`. | `chart_layout`, `toolbar_layout`, `sidebar_panel_layout`, `board_layout` (new), `diff_view_layout` (new) |
-
-A fourth shape showed up during the audit that the original three-way
-split didn't anticipate: **counts, not coordinates.** `diff_view_layout`
-returns `{ visible_rows, total_rows }` — there is no LOCAL/ABSOLUTE
-frame to pick because nothing it returns is a position. Its doc
-comment says so explicitly rather than silently defaulting to one.
-
-**Defaults, where the formula is provably uniform across backends.**
-`terminal_layout`, `editor_layout`, and `diff_view_layout` all turned
-out to be pure functions of `Backend::char_width()` / `line_height()`
-(plus, for diff views, `DiffView::mode`) — exactly the values every
-backend's own `draw_terminal` / `draw_editor` / `draw_diff_view`
-already resolves them to. Rather than hand-copy the same three-line
-body into `TuiBackend`, `GtkBackend`, `MacBackend`, and `WinBackend`
-(and every test `MockBackend`), these three got a **default trait
-body**, each backed by a real paint-vs-layout parity test in
-`tui/backend.rs` / `gtk/backend.rs` — see the doc comments on
-`Backend::terminal_layout` / `editor_layout` / `diff_view_layout` for
-the per-method contract, and
-`{tui,gtk}::backend::tests::{terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal,
-editor_layout_matches_draw_editor_*, diff_view_layout_matches_draw_diff_view_*}`
-for the tests themselves (issue #506 review fix — a first pass at this
-paragraph asserted these were already "verified byte-for-byte" and
-covered by "parity tests," which was aspirational, not true: no such
-tests existed at the time, and `terminal_layout`'s default body turned
-out to have exactly the drift the missing test would have caught —
-next paragraph). This is new territory for a `*_layout` method — every
-prior one required an explicit per-backend override — so
-`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS` list (quadraui#492's
-"no silent no-op defaults" honesty check) carries all twelve `(backend,
-method)` pairs with the reason, so a future backend that overrides one
-of these three without a good reason still shows up as a
-source-vs-declaration mismatch, not a silently-accepted default. The
-review fix below added a thirteenth method, `terminal_scrollbar_default_width`
-— a helper `terminal_layout` calls internally, not a `*_layout` method
-itself — with three more `ACCEPTED_DEFAULTS` entries (GTK/macOS/Win; TUI
-overrides it, so needs none), for fifteen total.
-
-**`terminal_layout`'s scrollbar gap (found at review, fixed before
-merge).** Unlike `Editor::layout` — which already takes the vertical
-scrollbar's presence into account internally — `Terminal::layout` is a
-bare `viewport_width / cell_width` division with no scrollbar concept
-at all; the scrollbar-gutter reservation happens entirely in each
-backend's `draw_terminal`, *before* it calls the cell-iteration logic
-(`cell_area_w = area.width.saturating_sub(sb_cols)` on TUI,
-`cell_area_w = (rect.width - sb_width).max(0.0)` on GTK/macOS/Win). The
-first version of `terminal_layout`'s default body called
-`term.layout(rect.width, …)` directly — the *unreduced* width — so
-`TerminalLayout::grid_cols` came out too wide by the scrollbar's column
-count whenever `term.scrollbar` was `Some`, meaning `hit_test` would
-report a click on the scrollbar gutter as a valid cell. Fixed by adding
-`Backend::terminal_scrollbar_default_width` (default `8.0`, matching
-GTK/macOS/Win's `unwrap_or(8.0)`; TUI overrides it to `1.0`, matching
-its own `unwrap_or(1)`) and having `terminal_layout` reduce the
-viewport width by the scrollbar's reserved width — `sb.width` when the
-caller set it, else that default — before calling `Terminal::layout`,
-mirroring every backend's real `draw_terminal` order of operations. The
-parity tests named above pin a `Terminal` with `scrollbar: Some(..)`
-against this exact formula so the drift can't reopen silently.
-
-`board_layout` and `list_layout` do **not** get a default: `BoardMeasure`'s
-column/card sizing and `ListView`'s scrollbar-reservation logic are
-backend-native constants (GTK's card height is 64px, not a multiple of
-`line_height()`), the same reason `TreeStyle::row_height`'s backend
-derivation isn't a single formula either. Every backend implements
-these two explicitly, mirroring `draw_board`'s existing "no default —
-a backend that forgets this silently reports an empty board" rule
-(quadraui#600, `PRIMITIVE_RULES.md` rule 7).
-
-### Surface-enum gap list
-
-D-006 already tracked and quantified this (`SMELL_AUDIT_2026-07.md` §4:
-`Board`, `DiffView`, `PipelineView`, `Toolbar`, `SidebarPanel`,
-`TextInput`, `Spinner`, `Progress`, `CommandCenter`, `DropOverlay`,
-`MessageList` have `Backend::draw_*` but no `Surface` variant), scoped
-to #456 as "Epic D's `D4`, trait symmetry, separately." #506 is that
-D4 follow-up for the *trait* half of the gap; the `Surface`/`FrameZone`
-half stays #456's to close — this decision doesn't duplicate or
-re-quantify it, only cross-references it so a reader doesn't go
-looking for a second gap list here.
-
-### What this does NOT mean
-
-- It does not mean every off-trait free fn in a backend crate is a bug.
-  `tui_board_layout` / `gtk_board_layout` / `mac_board_layout` /
-  `win_list_layout` / `mac_list_layout` all stay exactly as public as
-  they were — they're each backend's own thin wrapper that the new
-  trait method calls into (`data_table_layout`'s implementers already
-  established this shape). The bug #506 fixes is a rasteriser
-  capability with **no trait-level path at all**, not "a free function
-  exists alongside a trait method."
-- It does not mean `palette_layout` is cancelled — see "Palette:
-  deferred, not missed" above. It's blocked on a rendering fix, not a
-  design question, and should land as its own follow-up once GTK's
-  `draw_palette` and TUI's `draw_palette` both consume `Palette::layout()`'s
-  own returned bounds instead of recomputing paint positions
-  independently.
-- It does not promote `draw_context_menu_with_submenus` preemptively.
-  That waits on #371 (GTK cascading submenus) so the eventual trait
-  method is honest on more than one backend out of four.
+None of the convention. Under the contract a widget's geometry is
+`Primitive::layout`, reached on every backend through
+`DrawsPrimitives::layout_primitive`, and its paint is
+`Primitive::paint` / `paint_cells` reading that same layout. The audit's
+central finding — geometry computed separately inside each backend's
+paint drifts from the geometry hit-testing sees, as the palette's GTK
+paint did by a pixel — is the case D-021 makes for one implementation
+per widget.
 
 ## D-008 — Dead-API disposition pass: `modal.rs`, per-primitive `*Event` enums, `FocusGroup`/`FocusRing`, `drop_zone` (issue #509)
+
+**Status:** Decided. The `FocusGroup`/`FocusRing` merge recorded here was
+later replaced: both types are deleted, keyboard focus is the one
+`FocusTree` (D-021), and `tests/duplicate_symbols_deny_list.rs` keeps
+them out.
 
 ### Question
 
@@ -999,7 +697,8 @@ its cheatsheet overlay on `Panel` instead). That in-repo doc predates
 this issue and independently reached the same conclusion `modal.rs`
 was never wired past its own struct + tests, which is stronger
 evidence than the grep alone. Not "given rasterisers + trait method"
-(the PRIMITIVE_RULES.md rule 7 alternative the issue offered) because
+(the alternative the issue offered, under the per-widget-method rule
+D-021 later removed) because
 nothing in either consumer or this repo has ever wanted a
 backdrop+centered-box overlay through this specific shape — every real
 modal-ish overlay in this repo (`Dialog`, `Palette`, `ContextMenu`,
@@ -1031,11 +730,11 @@ present benefit.
 **`primitives/terminal.rs` (`TerminalHit`, `TerminalLayout`,
 `TerminalCellSize`) — KEEP; audit was stale.** These three were flagged
 zero-consumer, but by the time #509 ran, #506 (the immediately prior
-issue on this branch) had already given `Backend::terminal_layout` a
-default trait body that calls `TerminalLayout`/`TerminalHit` for real,
-with both TUI and GTK backends now exercising it
-(`{tui,gtk}::backend.rs`, see D-007's terminal-layout paragraphs above)
-— that's genuine, current in-repo usage, not a doc mention. Zero
+issue on this branch, D-007) had already given the terminal's `Backend`
+layout method a default trait body that calls
+`TerminalLayout`/`TerminalHit` for real, with both TUI and GTK backends
+exercising it — genuine in-repo usage, not a doc mention. Today
+`Terminal`'s own `Primitive::layout` uses them. Zero
 external hits in either consumer, but `TerminalCellSize` is also the
 field type of `TerminalLayout::cell_size`, so it's structurally
 required regardless.
@@ -1173,6 +872,11 @@ unchanged against the new implementation.
 
 ## D-009 — Minimal error channel for backend authors: `Unsupported` vs `PlatformFailure` vs `SurfaceLost` at frame/event/services seams (issue #507)
 
+**Status:** Decided. Under the widget contract the infallible paint path
+is `Primitive::paint` / `paint_cells`, not a per-widget `Backend` draw
+method; the reasoning in *Why not Result-ify* applies to it unchanged.
+The per-backend widget files that section names no longer exist.
+
 ### Question
 
 The crate has no error type anywhere in its public API — fallible
@@ -1269,8 +973,9 @@ polls once per loop iteration (after `end_frame`, conventionally) and
 doesn't need to know which of the four calls produced it; the `context`
 string inside `PlatformFailure` carries that detail when it matters. A
 default-provided method with a trivial always-`None` body costs existing
-implementors nothing (rule 7's "no default" stance is for primitives
-with real per-backend behavior — this is closer to `read_primary_selection`'s
+implementors nothing (the then-current "no default" stance for
+per-widget methods, which D-021 removed along with the methods, was for
+real per-backend behavior — this is closer to `read_primary_selection`'s
 already-precedented "most backends have nothing to say here" default).
 Win-GUI is the only backend with a concrete near-term producer
 (`end_frame`'s already-planned device-lost recovery, `backend.rs:179`'s
@@ -1498,7 +1203,7 @@ five other symbols (§D-008) was exactly trusting the narrower grep.
 
 ### Downstream impact — grep evidence
 
-```
+```console
 $ grep -rn '\bWindowClose\b'   ~/src/vimcode/src ~/src/coord-tui/src
 vimcode/src/gtk/mod.rs:7144:            UiEvent::WindowClose => {
 $ grep -rn '\bMouseEntered\b'  ~/src/vimcode/src ~/src/coord-tui/src
@@ -2175,6 +1880,8 @@ The three test cases:
 
 ## D-015 — The web backend is shelved; NativeSurface reopens its design if it is revived (issue #785)
 
+**Status:** Decided. `NativeSurface` was renamed `PaintSurface` (D-018).
+
 ### Question
 
 `docs/WEB_BACKEND_PROPOSAL.md` chose server-rendered semantic HTML (D7)
@@ -2211,6 +1918,10 @@ Neither is pre-chosen. W1 (#320) must not start without that decision.
   paint layer for GTK, macOS and Windows.
 
 ## D-016 — One unit contract for `Rect`/`Point`; `Px`/`Cell` newtypes rejected for now (issue #1098)
+
+**Status:** Decided; point 4 is moot. The newtype and unit-contract
+decision stands. The per-widget `Backend` layout methods whose
+LOCAL-frame conversion point 4 deferred no longer exist (D-005, D-021).
 
 ### Question
 
@@ -2294,8 +2005,9 @@ takes no origin parameters; `win_list_layout` takes a full `Rect` but
 reads only `.width`/`.height`. `mac_list_layout` is genuinely the one
 place carrying two parameters its own body never reads. Zero downstream
 hits (`grep -rn mac_list_layout ~/src/coord-tui/src ~/src/vimcode/src`
-→ none; macOS has no live consumer yet), two in-tree call sites
-(`draw_list`, `MacBackend::list_layout`), both updated in this PR.
+→ none; macOS has no live consumer yet), and its two in-tree callers,
+the macOS list paint and its `Backend` layout method, were both updated
+in this PR.
 
 ### Decision
 
@@ -2344,20 +2056,19 @@ introducing a new type that can't pay for its own migration.**
 4. **The #816 "finish the absolute-frame migration in the same pass"**
    ask is explicitly declined as part of this PR. `PRIMITIVE_RULES.md`'s
    own "Converging on one convention, ABSOLUTE-only" section already
-   states the remaining LOCAL-frame primitives (`tree_layout`,
-   `form_layout`, `data_table_layout`, `text_display_layout`,
-   `status_bar_layout`, `activity_bar_layout` — six trait methods, each
-   touching TUI + GTK + macOS + Win-GUI rasterisers, every in-tree
-   composer that calls them, and `PRIMITIVE_RULES.md` rule 8's two-PR
-   deprecation protocol per method) convert **one primitive, one PR at
-   a time** — the same discipline D-005 already chose for the mirror
-   direction. Batching all six into this PR would repeat the exact
-   mistake `PRIMITIVE_RULES.md` rule 4 ("Don't batch unrelated
+   states the remaining LOCAL-frame primitives (the tree, form, data
+   table, text display, status bar and activity bar layout methods — six
+   trait methods, each touching TUI + GTK + macOS + Win-GUI rasterisers,
+   every in-tree composer that calls them, and `PRIMITIVE_RULES.md` rule
+   8's two-PR deprecation protocol per method) convert **one primitive,
+   one PR at a time** — the same discipline D-005 already chose for the
+   mirror direction. Batching all six into this PR would repeat the
+   exact mistake `PRIMITIVE_RULES.md` rule 4 ("Don't batch unrelated
    removals") names issue #476 for, at six times the scale, entangled
    with an unrelated unit-contract doc change. #816's table in
    `PRIMITIVE_RULES.md` is unchanged by this PR and remains the tracker
-   for that follow-up work; this decision does not start or schedule
-   any of the six conversions.
+   for that follow-up work; this decision does not start or schedule any
+   of the six conversions.
 
 ### What this does NOT mean
 
@@ -2698,6 +2409,11 @@ listed in `CHANGELOG.md`.
 
 ## D-020 — The fixed VS-Code-style `Style` token set: padding/radius/border/shadow/control-height + `surface_stroke_rounded_rect`/`surface_draw_shadow`/`surface_draw_path` (issue #1378)
 
+**Status:** Decided; point 4 is moot. The token set and the three
+`PaintSurface` verbs stand. The per-backend `pub` painter functions and
+per-widget `Backend` methods point 4 is about no longer exist: every
+overlay reads its tokens from `PaintEnv`'s `Style` (D-021, D-025).
+
 ### Question
 
 D-017 shipped `Style::focus_ring_width` alone and named the rest of the
@@ -2768,8 +2484,8 @@ bordered box, so there is no rectangle for a radius or shadow to apply
 to.**
 
 **4. Every `pub` per-backend free function that paints one of these
-five primitives (`gtk::draw_tooltip_with_chrome`,
-`macos::draw_dialog`, `win::draw_context_menu`, …) keeps its exact
+five primitives (GTK's tooltip-with-chrome painter, macOS's dialog
+painter, Win-GUI's context-menu painter, …) keeps its exact
 pre-#1378 signature, painting with `Style::default()` internally.**
 Growing any of them to take a live `&Style` would be the breaking
 change rule 8 exists to avoid, and this crate cannot grep its
@@ -2783,8 +2499,8 @@ one path every app actually exercises honours `Backend::set_style`
 overrides without touching any `pub` signature. `win::dialog` is the
 one case where the free function's own body (toolbar sub-paint) was too
 large to duplicate safely without a Windows host to test against; it
-instead grew a `pub(crate) draw_dialog_with_style` sibling the existing
-`pub fn draw_dialog` now forwards to with `Style::default()`.
+instead grew a `pub(crate)` with-style sibling that the existing `pub`
+dialog painter forwarded to with `Style::default()`.
 
 ### What this does NOT mean
 
@@ -2822,7 +2538,7 @@ Every widget had one implementation per backend: a `Backend::draw_<widget>`
 plus a separate binding-core path for the Python/Node bindings. Audit 6
 counted 202 `Backend` methods, and found the documented rule "every
 primitive MUST have a Backend method" producing new legacy code (TreeTable
-added `draw_tree_table`/`tree_table_layout`). Each copy could drift from
+added a TreeTable draw and layout method pair). Each copy could drift from
 the others in paint, hit-testing and behaviour. Should a widget keep one
 implementation per backend, or own all of its behaviour in one place?
 
@@ -2979,7 +2695,8 @@ state live when widget values are rebuilt every frame?
 ## D-024 — TUI paints through `paint_cells` on a `CellSurface`, not a cell-quantised `PaintSurface` (issues #2815, #2946)
 
 **Status:** Decided 2026-11-21 (`CellSurface`); final signature
-2026-11-26.
+2026-11-26. The verb set grew after this entry; the current one, and
+the removal of the buffer accessor, are D-032.
 
 **Date:** 2026-11-21.
 
@@ -3053,7 +2770,8 @@ trackers, row-index `PaintState`s. Which one is the contract?
 
 ## D-026 — Controlled mode for visible state (0.12 execution plan)
 
-**Status:** Decided 2026-11-26, with the 0.12 execution plan.
+**Status:** Decided 2026-11-26, with the 0.12 execution plan. Refined by
+D-035: a controlled field left at its default behaves uncontrolled.
 
 **Date:** 2026-11-26.
 
@@ -3188,8 +2906,9 @@ binding-core collapse (#2976–#2979):
   strings are preserved.
 - The imperative overlay APIs (`show_toast`, `open_*_dialog`, …) stay, as
   a binding-host overlay stack of generic `DynWidget` entries.
-- The py/node removals `list_char_width`, `scrollbar_reserve` and the
-  tree-table `set_tree_table_children` / sort-override setters are
+- The py/node removals of the list character-width and scrollbar-reserve
+  queries and of the tree-table `set_tree_table_children` /
+  sort-override setters are
   accepted breaks for 0.12, each listed under the release's removed
   changes.
 
@@ -3261,3 +2980,257 @@ work is queued for it.
 - It does not affect `PaintSurface` itself, which stays the shared paint
   seam for GTK, macOS and Windows regardless of whether a browser
   painter is ever built against it.
+
+---
+
+## D-031 — `Backend` is 66 platform methods, pinned by source-parsing ratchets (issues #2980, #2981, #2982)
+
+**Status:** Decided and shipped 2026-11-27.
+
+**Date:** 2026-11-27.
+
+### Question
+
+D-029 defines 0.12 as "no per-widget `Backend` methods, platform files
+only in the backend directories, `Surface` is `Widget` plus `Opaque`".
+What exactly is left on the trait, and what stops the next widget from
+adding a method back?
+
+### Decision
+
+1. **`trait Backend` holds 66 methods, all platform services:** viewport
+   and frame lifecycle; theme, style and fonts; text and cell metrics
+   (`measure_text`, `line_height`, `char_width`, …); input (event
+   polling, the waker, accelerators, text regions, hit zones); native
+   menus and context menus; window drag, resize and cursor; the modal
+   and drag stacks; the focus tree; clipping; frame capture and
+   screenshots; the `services()`, `window()` and `tray()` handles; and
+   the two paint seams, `paint_surface()` and `cell_surface()`.
+2. **`draw_focus_ring` is the one `draw_*` method**, because it is the
+   runner's frame-level focus-visible stroke, not a widget.
+3. **`src/{tui,gtk,macos,win}/` hold platform modules only**: the
+   backend, event translation, the runner, platform services, the test
+   driver, and platform helpers such as the paint or cell surface, the
+   tray and text shaping. No file there is named after a widget.
+4. **`frame::Surface` is `Widget { rect, widget }` plus `Opaque { rect }`**,
+   the paintless placeholder a captured frame replays for content it
+   could not capture.
+5. **Source-parsing tests pin all of it**:
+   `tests/backend_method_ratchet.rs` (the exact method set and count, no
+   widget-shaped method, no `draw_<stem>`/`<stem>_layout` pair for any
+   `Primitive` type), `tests/per_backend_file_ratchet.rs` (platform
+   files, shrink-only line counts, `Surface`'s variants) and
+   `tests/duplicate_symbols_deny_list.rs` (replaced symbols, removed
+   methods and widget-named backend files stay gone, comments included).
+
+### Why
+
+- A rule a worker can misread ("every primitive must have a Backend
+  method") produced new legacy code. A test that parses the trait
+  cannot be misread, and its failure message names the contract.
+- Counting methods only downward keeps the cost of a new backend fixed:
+  66 platform methods and two surfaces, whatever the widget count.
+
+---
+
+## D-032 — `CellSurface` verbs are the whole terminal paint API (issue #2980)
+
+**Status:** Decided and shipped 2026-11-27. Supersedes D-024's verb list.
+
+**Date:** 2026-11-27.
+
+### Question
+
+`CellSurface` carried an escape hatch, `ratatui_buffer`, which handed a
+widget the terminal library's own buffer. Several widgets painted
+through it, so their cell paint depended on `ratatui` types the contract
+says nothing about. Keep it for convenience, or make the verbs the only
+way in?
+
+### Decision
+
+**The verbs are the only way in.** `CellSurface` (`src/cell_surface.rs`)
+has `size`, `put_char`, `put_wide`, `put_grapheme`, `put_str_clipped`,
+`fill`, `draw_border`, `get`, `tint_bg`, `set_bg`, `add_modifier`,
+`set_cursor`, `emit_graphics` and `color_depth`, and no accessor for an
+underlying buffer. `tui::cell_surface::BufferCellSurface` adapts a
+terminal buffer to it for the TUI backend and for tests. The deny-list
+test keeps `ratatui_buffer` out.
+
+### Why
+
+- A widget whose cell paint reaches the buffer directly is a widget tied
+  to one terminal library, which is the per-backend coupling D-021
+  removes, one layer down.
+- Every cell operation a widget needed fit a backend-neutral verb; the
+  ones that did not exist yet (`tint_bg`, `set_bg`, `add_modifier`) were
+  added as verbs.
+
+---
+
+## D-033 — binding-core: one generic widget leaf, a runtime kind registry, one widget-state model (issues #2976–#2979)
+
+**Status:** Decided and shipped 2026-11-27. The list-shaped kinds
+(`text_display`, `list`, `tree`, `data_table`) still decode to fixed
+leaf slots, which #2977 tracks.
+
+**Date:** 2026-11-27.
+
+### Question
+
+The Python and Node.js bindings share `quadraui-binding-core`, which
+carried its own paint, hit-test and event tables per widget kind, plus
+side tables for widgets whose state lived in the binding host. Under
+D-021 a widget already knows how to lay out, paint and handle input.
+What is left for binding-core to do, and how does a binding add a kind?
+
+### Decision
+
+1. **One generic leaf.** A wire leaf whose kind is in
+   `widget_kinds::WIDGET_KINDS` decodes through `quadraui::decode_widget`
+   into `LeafDescriptor::Widget`, a `Box<dyn DynWidget>`, and is laid
+   out, painted, hit-tested and routed through the widget's own
+   `Primitive` and `Interactive` impls. binding-core has no per-kind
+   paint or event code for these kinds.
+2. **A runtime kind registry.** `register_widget_kind` (and
+   `register_widget_kind_with_schema`) adds a kind at runtime, so a
+   binding, a scripted widget or a crate linking binding-core reaches
+   the same generic leaf with no table edit. A name a layout key would
+   shadow is refused.
+3. **One widget-state model.** Each `InteractionEngine` owns one
+   `WidgetStateStore` holding every generic leaf's and open overlay's
+   `Interactive::State`, keyed by widget id (else leaf id), reached with
+   `with_widget_states`. `paint_with_widget_state` installs that store
+   as the one `draw_dyn` paints from for the length of a paint pass and
+   restores the previous one afterwards, so a widget paints from the
+   state its own event handling walked, and two engines on one thread
+   never share state. The old per-kind state tables are deleted.
+4. **The layout solver is core's** (#2976), and **the wire schema is
+   derived** from the Rust types with `schemars` (#2979, the `schema`
+   feature and `export_wire_schema`), which generates `wire.pyi`,
+   `wire.d.ts` and the reference half of `docs/bindings-wire-format.md`.
+5. `quadraui-binding-core/tests/third_binding.rs` is the proof: a host
+   built only from public API decodes, paints and routes a built-in, a
+   runtime-registered and a scripted kind.
+
+### Why
+
+- A binding that re-implements a widget drifts from it; the generic leaf
+  makes a py/node widget the Rust widget.
+- A kind registry is what makes a third binding (Lua, FFI) a bounded
+  job instead of a fork of the tables.
+
+---
+
+## D-034 — One text-editing core with undo, in `quadraui` (issues #2977, #2978)
+
+**Status:** Decided and shipped 2026-11-27.
+
+**Date:** 2026-11-27.
+
+### Question
+
+Caret movement, selection, word motion and undo were implemented
+separately by the text widgets, and the binding host kept its own text
+editor for py/node text fields. Where does text editing live?
+
+### Decision
+
+**In `quadraui::behaviour::text_edit`, once.** A key maps to an `EditOp`
+(`EditOp::from_key`); `EditView` applies it to lines plus a caret, and
+`apply_flat_edit_op` to a flat `String` with byte offsets.
+`EditHistory` is the one undo implementation: it records a pre-mutation
+snapshot for every op that changes content and serves
+`EditOp::Undo`/`Redo` (Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z). `TextEditor`,
+`TextInput`, `TextField`, `CommandLine`, the palette query,
+`PasswordInput`, `TextArea` and a `Form`'s text rows all edit through
+it, and the binding host's text fields are those widgets, painted from
+the engine's widget state (D-033). Clipboard stays outside the core: a
+copy or cut reaches the host as `UiEvent::TextCopied`, and a paste
+arrives as `UiEvent::ClipboardPaste`.
+
+### Why
+
+- Eight copies of "where does Ctrl-Left stop" cannot agree.
+- Undo needs history that outlives one keystroke, which is per-widget
+  state; owning it in the core means every editable widget undoes the
+  same way, in Rust and from py/node.
+
+---
+
+## D-035 — A controlled field left at its default behaves uncontrolled (issue #2977)
+
+**Status:** Decided and shipped 2026-11-27. Refines D-026.
+
+**Date:** 2026-11-27.
+
+### Question
+
+D-026 keeps visible state on the descriptor. A host that never applies
+the widget's change events back to the descriptor (a py/node app that
+ignores `AppMenuEvent::Changed`) rebuilds the descriptor at its default
+every frame, so the widget's change is thrown away and a menu bar never
+opens. Is that the host's bug or the widget's?
+
+### Decision
+
+**The widget's.** A field at its default value means "uncontrolled": the
+widget keeps the state its own `handle` moved to in its
+`Interactive::State` and paints from that, until the host sets the field
+itself. `AppMenu` does this with `AppMenu::view`: at
+`AppMenuView::default()` the open menu lives in `AppMenuState::view`. A
+widget with a controlled field is tested both with a host that echoes
+its events back and with one that does not (`LESSONS.md`).
+
+### Why
+
+- Controlled mode stays the contract, so the app can still own, persist
+  and synchronise the value.
+- A host that only wants the widget to work is not forced to round-trip
+  state it does not care about.
+
+---
+
+## D-036 — Linux Python wheels ship the GTK backend and still import without GTK (issue #3081)
+
+**Status:** Decided and shipped 2026-11-27.
+
+**Date:** 2026-11-27.
+
+### Question
+
+The Linux wheel was TUI-only, so `run_native` did not exist on Linux. A
+GTK-linked extension lists `libgtk-4.so.1` as a hard dependency and
+CPython loads extensions with `RTLD_NOW`, so one GTK-linked module would
+fail to import on any host without GTK 4.10 or newer, and take the TUI
+path down with it.
+
+### Decision
+
+1. **Two Linux wheel tags, each for x86_64 and aarch64.** A
+   `manylinux_2_39` wheel, built on Ubuntu 24.04 (quadraui's `gtk4`
+   dependency needs GTK 4.10, which no manylinux image carries), and the
+   existing TUI-only `manylinux_2_17` wheel for older hosts. pip prefers
+   the newer tag where it applies.
+2. **The `manylinux_2_39` wheel carries two builds of the extension**:
+   the GTK-free `_quadraui` and a GTK-linked `_quadraui_gtk`.
+   `quadraui-py/python/quadraui/_ext.py` loads the GTK build when the
+   dynamic loader can, falls back to `_quadraui` on `ImportError`, and
+   registers whichever loaded as `quadraui._quadraui`. On a host without
+   a native backend, `run_native` raises `UnsupportedError` carrying the
+   loader's own error and install hints.
+3. **No GTK library is vendored**; `auditwheel repair` excludes the
+   system GTK stack.
+4. The `linux smoke` CI job installs from both wheels into clean distro
+   containers, with and without GTK, and checks which wheel pip picks,
+   the TUI path, and either a painted GTK frame or the
+   `UnsupportedError`.
+
+### Why
+
+- `pip install quadraui` should give a native window on every desktop
+  OS, Linux included, without making the TUI path depend on GTK being
+  installed.
+- Every mainstream distribution with GTK 4.10 already has glibc 2.39, so
+  the higher floor costs no reach. The design and its evidence are in
+  `quadraui-py/docs/LINUX_NATIVE_WHEELS.md`.
