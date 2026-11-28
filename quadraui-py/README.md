@@ -18,7 +18,7 @@ Direct2D/DirectWrite window on Windows, or a real GTK window on Linux, built
 from the same descriptors `run_tui()` reads headlessly or over a terminal.
 The prebuilt wheels on PyPI ship `run_native()` built in — `pip install
 quadraui` is enough, no Rust toolchain needed. On Linux it needs an x86_64
-host with the system GTK 4 (4.10 or newer) and glibc 2.39 or newer (Ubuntu
+or aarch64 host with the system GTK 4 (4.10 or newer) and glibc 2.39 or newer (Ubuntu
 24.04, Fedora 40, Debian 13 and later); see the *Wheels* section below. Where those are
 missing, `import quadraui` and `run_tui()` still work and `run_native()`
 raises `UnsupportedError` explaining what is missing, so an app can catch
@@ -85,9 +85,9 @@ self-contained wheel:
 - **Windows** — built with the `win` feature (Direct2D/DirectWrite), which
   links only against system DLLs every Windows install already has.
   `run_native()` works out of the box.
-- **Linux** — two wheels, and pip picks the newest one the host's glibc
-  allows:
-  - `manylinux_2_39` (x86_64, glibc 2.39+: Ubuntu 24.04, Fedora 40, Debian
+- **Linux** — two wheels for each of x86_64 and aarch64, and pip picks the
+  newest one the host's glibc allows:
+  - `manylinux_2_39` (glibc 2.39+: Ubuntu 24.04, Fedora 40, Debian
     13 and later) carries two builds of the extension: one with the `gtk` feature,
     linking the system GTK 4 libraries, and one without. `import quadraui`
     loads the GTK build when `libgtk-4.so.1` (4.10 or newer) is installed
@@ -100,9 +100,9 @@ self-contained wheel:
   - `manylinux_2_17` (older glibc, e.g. Ubuntu 22.04, Debian 12) is
     TUI-only: those distributions ship GTK older than 4.10, which the GTK
     backend needs. `run_native()` raises `UnsupportedError` there.
-  - There is no prebuilt aarch64 Linux wheel, so pip builds the sdist there
-    (TUI-only unless told otherwise). On aarch64, an older glibc or a
-    source install, build the GTK backend yourself: with the GTK 4
+  - On another architecture pip builds the sdist (TUI-only unless told
+    otherwise). There, with an older glibc or a source install, build the
+    GTK backend yourself: with the GTK 4
     `-dev`/`-devel` package and a Rust toolchain installed, run
     `MATURIN_PEP517_ARGS="--features gtk" pip install --no-binary quadraui quadraui`.
 

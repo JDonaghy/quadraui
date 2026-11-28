@@ -18,7 +18,7 @@ assertion ("no display raises a catchable Python error"), not a guess from
 subprocess stderr.
 
 Run against a build with the native feature enabled -- on Linux, the
-x86_64 glibc-2.39 PyPI wheel with the system GTK 4.10+ installed, or a
+x86_64/aarch64 glibc-2.39 PyPI wheel with the system GTK 4.10+ installed, or a
 source build -- under a virtual display:
 
     maturin develop --features gtk

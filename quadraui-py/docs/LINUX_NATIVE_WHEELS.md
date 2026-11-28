@@ -88,8 +88,9 @@ the one package users already install.
 
 ## How the wheel is built
 
-`.github/workflows/quadraui-py-wheels.yml`, job `linux-gtk`, on
-`ubuntu-24.04` with `libgtk-4-dev`:
+`.github/workflows/quadraui-py-wheels.yml`, job `linux-gtk`, once per
+architecture: natively on `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm`
+(aarch64), each with `libgtk-4-dev`:
 
 1. `cargo build --release -p quadraui-py --lib --features pyo3/extension-module,gtk-ext`,
    then copy `target/release/libquadraui_py.so` to
@@ -99,8 +100,9 @@ the one package users already install.
    alongside it, through `[tool.maturin] include` in `pyproject.toml`.
    maturin leaves a prebuilt `.so` under `python-source` out of the wheel
    unless it is listed there.
-3. `auditwheel repair --plat manylinux_2_39_x86_64 --exclude <lib> ...` for
-   the ten system libraries in the `DT_NEEDED` list above. With those
+3. `auditwheel repair --plat manylinux_2_39_<arch> --exclude <lib> ...` for
+   the ten system libraries in the `DT_NEEDED` list above, plus
+   `libcairo-gobject.so.2`, which the aarch64 build also needs. With those
    excluded, nothing is vendored, so the wheel has no `quadraui.libs/`
    directory, and auditwheel accepts the `manylinux_2_39` tag.
 4. A layout check fails the job if anything was vendored, if either `.so`
@@ -108,9 +110,9 @@ the one package users already install.
    `_quadraui` needs GLib. That catches a new GTK-side dependency that
    needs adding to the exclude list.
 
-The existing `build` job's `manylinux: auto` wheel stays as it is: TUI-only,
-with a glibc 2.17 floor. Both wheels are uploaded as `quadraui-py-wheel-*`
-artifacts, which `quadraui-py-release.yml`'s publish step already collects.
+The `build` job's `manylinux: auto` wheel stays TUI-only, with a glibc 2.17
+floor; its `ubuntu-24.04-arm` leg builds the aarch64 one. Every wheel is
+uploaded as a `quadraui-py-wheel-*` artifact, which `quadraui-py-release.yml`'s publish step already collects.
 For the same version and platform, pip ranks newer manylinux tags first
 (`packaging.tags.sys_tags()` on a glibc 2.39 host starts at
 `manylinux_2_39`), so a host that can use the GTK wheel gets it, and older
@@ -191,6 +193,10 @@ pip's tag choice is tested too. It runs `quadraui-py/ci/linux_wheel_smoke.py`:
 | `ubuntu:24.04` | python3 only | `missing-gtk` | GTK wheel picked, fell back to `_quadraui`, TUI works, `run_native` error names `libgtk-4.so.1` |
 | `debian:12` | python3 only | `tui-only` | TUI wheel picked (glibc 2.36), TUI works, `run_native` error names the glibc floor |
 
+The aarch64 rows run on `ubuntu-24.04-arm` against the aarch64 wheels:
+`ubuntu:24.04` in `gtk` and `missing-gtk` modes, and `debian:12` in
+`tui-only` mode.
+
 `GSK_RENDERER=cairo` is set because containers have no GPU device. Fedora 40
 is past end of life, so its package mirrors are unreliable in CI; Fedora 42
 stands in for it. Fedora 40's own glibc (2.39) and GTK (4.14) match Ubuntu
@@ -213,7 +219,5 @@ stands in for it. Fedora 40's own glibc (2.39) and GTK (4.14) match Ubuntu
   `quadraui/src/gtk/services.rs` and is outside this packaging change. With
   that done, the GTK variant could be built in `manylinux_2_34` (AlmaLinux 9,
   GTK 4.6) and the floor drops to glibc 2.34.
-- **aarch64.** Only x86_64 Linux wheels are built today. An `ubuntu-24.04-arm`
-  leg of `linux-gtk` would extend this unchanged.
 - **Node bindings** are out of scope; the same two-module approach would
   apply to a napi `.node` file.
