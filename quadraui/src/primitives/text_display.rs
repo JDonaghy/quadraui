@@ -318,6 +318,18 @@ pub struct TextDisplayLine {
     pub timestamp: Option<String>,
 }
 
+impl TextDisplayLine {
+    /// One unstyled line of `text`: a single [`StyledSpan::plain`] span, no
+    /// decoration and no timestamp.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
+}
+
 // ── D6 Layout API ───────────────────────────────────────────────────────────
 //
 // Per Decision D6: primitives return fully-resolved `Layout` structs.
@@ -1913,11 +1925,7 @@ mod interactive_tests {
     }
 
     fn plain_line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
     }
 
     fn display(count: usize, show_scrollbar: bool) -> TextDisplay {
@@ -2236,11 +2244,7 @@ mod cell_paint_tests {
     use crate::types::{Color, Decoration, StyledSpan, WidgetId};
 
     fn line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
     }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
@@ -2680,11 +2684,19 @@ mod tests {
     use crate::types::{Color, StyledSpan};
 
     fn line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
+    }
+
+    #[test]
+    fn plain_line_is_one_unstyled_span_with_no_decoration_or_timestamp() {
+        assert_eq!(
+            TextDisplayLine::plain("Count: 3"),
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain("Count: 3")],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }
+        );
     }
 
     fn make_td(lines: usize, show_scrollbar: bool, scroll: usize, auto: bool) -> TextDisplay {

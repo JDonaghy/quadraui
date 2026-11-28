@@ -23,11 +23,7 @@ this exact file (`examples/hero/python/counter.py`):
 
 <!-- sample: examples/hero/python/counter.py -->
 ```python
-from quadraui.app import App, Button, Column, Row, TextDisplay, key_name
-
-
-def text(s):
-    return [{"spans": [{"text": s, "fg": None, "bg": None}]}]
+from quadraui.app import App, Button, Column, Row, Text
 
 
 class Counter:
@@ -36,7 +32,7 @@ class Counter:
 
     def view(self):
         return Column(
-            TextDisplay(text(f"Count: {self.count}"), id="count"),
+            Text(f"Count: {self.count}", id="count"),
             Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
         )
 
@@ -46,14 +42,9 @@ class Counter:
     def dec(self):
         self.count -= 1
 
-    def on_key(self, event):
-        if key_name(event) == "q":
-            raise SystemExit
-
 
 if __name__ == "__main__":
-    counter = Counter()
-    App(30, 5, view=counter.view, on_event=counter.on_key).run_tui()  # or .run_native(title="Counter"): same Counter
+    App(view=Counter().view).run_tui()  # q quits; or .run_native(title="Counter"): same Counter
 ```
 
 The three parts:
@@ -63,21 +54,26 @@ The three parts:
   `Button`, ...) and runs again after every event, so a changed `count`
   shows up without any binding or redraw call.
 - **Update** is the callbacks: `on_click=self.inc` on a node, and
-  `on_event` for input no single widget owns, such as the `q` key.
+  `on_event` for input no single widget owns, such as a global shortcut.
 
 Three details the sample does not explain:
 
-- **`text()`.** A `TextDisplay` takes a list of lines, and each line is a
-  list of styled spans. `fg` and `bg` set a span's colours; `None` (or
-  leaving the key out) means the theme's colours. There is no plain-string
-  shortcut yet, so the sample defines `text()` for one unstyled line.
-- **`App(30, 5, ...)`** is the size in character cells (columns, rows)
-  for a headless run, such as the test in step 5. A live `run_tui()` fills
-  the terminal and `run_native()` opens a window, and both ignore it.
-- **Layout.** `Column` and `Row` split their space equally between their
-  children, so in a full-size terminal the label takes the top half and
-  each button half the width. Per-child sizes are not exposed yet
+- **`Text("...")`** is one line of plain text, sized to its content. For
+  colours, use a `TextDisplay`: it takes a list of lines, each a list of
+  styled spans with optional `fg` and `bg`.
+- **`App(...)`** takes an optional size in character cells, `App(30, 5,
+  view=...)`, for a headless run such as the test in step 5; it defaults
+  to 80x24. A live `run_tui()` fills the terminal and `run_native()` opens
+  a window, and both ignore it.
+- **Layout.** `Column` and `Row` split their space equally between the
+  children that do not ask for a size. `Text` asks for its content size, so
+  the label takes one row and the buttons the rest. Any node takes `size=`
+  (pixels as an `int`, `"30%"`, `"2fr"` or `"content"`) and `min=`/`max=`
   ([Layout](../concepts/layout.md)).
+- **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a
+  focused widget used the key (a text field takes `q` as a letter). Call
+  `app.quit()` from any callback to quit yourself, and pass
+  `App(..., quit_keys=False)` to turn the keys off.
 
 ## 3. Run it in the terminal
 
@@ -92,7 +88,7 @@ asks the terminal for its cursor position at startup, so it fails with
 "The cursor position could not be read" when input is piped or comes from
 `script`, and with "No such device or address" when there is no terminal
 at all. Under tmux an Escape key arrives after tmux's `escape-time` delay,
-so bind quitting to a letter, as the sample does.
+so `q` quits faster there.
 
 ## 4. Run it in a native window
 
@@ -185,7 +181,7 @@ unlike a `TextDisplay`, which takes a list of lines:
 <!-- sample: examples/parity/python/todo.py -->
 ```python
 def item(text):
-    return {"text": {"spans": [{"text": text, "fg": None, "bg": None}]}}
+    return {"text": {"spans": [{"text": text}]}}
 ```
 
 <!-- sample: examples/parity/python/todo.py -->

@@ -88,48 +88,33 @@ binding-only ones.
 2. **Rust built its view twice** (closed). `Run`, the app layer's
    `AppLogic` adapter, builds the view once per frame and routes against
    the frame it kept, so the app no longer stashes the cell size.
-3. **No language has a one-line text label.**
-   - Rust has `text("...")` in the app layer.
-   - Python and Node need `{"spans": [{"text": ..., "fg": None, "bg":
-     None}]}`.
-
-   Proposal: `TextDisplayLine::plain(s)`, a `Text("...")` node in the app
-   layer, and a `<text>` JSX intrinsic.
+3. **One-line text labels (#3107).** Rust has `text("...")` in the app
+   layer and `TextDisplayLine::plain(s)`, Python `Text("...")`, and Node
+   `<text>` and `Text()`. A span's `fg`/`bg` are optional in every language.
 4. **Fast clicks on the same spot are lost.** Two clicks at one position
    inside the double-click interval fold into a `DoubleClick`, and a
    `Button` does not activate on it. Clicking `+` twice quickly counts
    once. This happens in Rust (`TuiDriver`), Python and Node. The runners
    click `+ - +` to work around it. A button should activate on every
    press.
-5. **Python and Node can't quit the same way Rust does.**
-   - Rust quits on `q`, Escape or Ctrl-C by default, or when `update`
-     returns `Command::Exit`. Python raises `SystemExit` from `on_event`,
-     which works.
-   - Node: calling `app.stopLive()` from `onEvent` throws "The same native
-     value cannot be borrowed mutably while another borrow is active".
-     `quadraui-node/examples/rating.ts --tui` uses exactly that pattern, so
-     it likely crashes on `q` too.
-   - Deferring the call with `setImmediate` is not enough: the run loop's
-     next `step()` then throws `LiveRunnerExitedError`. The hero has to call
-     `live.stop()` and `app.stopLive()` together, deferred.
-   - No runner has a default quit key: `q`, Esc and Ctrl-C all do nothing
-     in a Python or Node TUI session.
-
-   Proposal: an `App.quit()` in both bindings that is safe to call from a
-   handler.
-6. **Python and Node require `App(width, height)` even for a live run.**
-   The size only matters headless. It should default for
-   `run_tui`/`run_native`.
+5. **Quitting (#3107).** `App.quit()` is safe from any callback in
+   both bindings (in Node, `app.stopLive()` inside a handler quits rather
+   than throwing). Ctrl-C always quits, and `q`/Esc quit when no
+   focused widget used the key; `quit_keys=False` / `quitKeys: false` turns
+   that off. Rust quits the same way by default (`quits_on` opts out), or
+   when `update` returns `Command::Exit`.
+6. **`App(width, height)` is optional (#3107)** in Python and Node
+   (80x24); the size only sizes a headless run.
 7. **The TUI focus ring covers the focused button's label** in Python and
    Node: `[ + ]` renders as `│ + ]`. The Rust `AppLogic` version shows no
    focus ring at all. So a cross-language parity test that compares frames
    cell for cell (#3077) would fail on focus styling before it gets to
    anything else.
-8. **Python and Node app-layer children always take equal shares of
-   space.** The wire accepts per-child `"size"`/`"min"`/`"max"`, but the
-   `Column`/`Row` node constructors don't expose them (Rust nodes do). The label therefore takes half the
-   height, and each button stretches across half the width, sitting at the
-   bottom of its cell.
+8. **Per-child sizes (#3106, #3107).** Every app-layer node takes a
+   size and `min`/`max` in all three languages (Rust: `.content()`,
+   `.fixed(px)`, `.weight(w)`, ...; Python and Node: `size=`/`min=`/`max=`),
+   and text labels default to their content size, so the label takes one
+   row.
 9. **Node can't run JSX directly.** `node/load_jsx.ts` compiles
    `counter.tsx` in memory with esbuild and maps `@quadraui/node/*` to this
    checkout. An app built on the published package needs `tsc`, esbuild or

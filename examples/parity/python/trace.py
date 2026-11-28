@@ -40,7 +40,7 @@ def frame(h, todo, input_step):
 def main():
     script = json.load(open(sys.argv[1]))
     todo = Todo()
-    h = harness(App(WIDTH, HEIGHT, view=todo.view, on_event=todo.on_key))
+    h = harness(App(WIDTH, HEIGHT, view=todo.view))
     trace = [frame(h, todo, None)]
     for step in script:
         if "click" in step:

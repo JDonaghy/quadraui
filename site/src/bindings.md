@@ -18,7 +18,7 @@ through all three.
 | Global keys | `fn on_event(&self, &UiEvent)` | `on_event=` + `key_name(event)` | `onEvent:` + `keyName(event)` |
 | Run, terminal | `run_tui(app)` | `App(...).run_tui()` | `new App(...).runTui()` |
 | Run, window | `run_native(app)` | `.run_native(title=...)` | `.runNative(title)` |
-| Quit | `q`/Escape/Ctrl-C, or return `Command::Exit` | raise `SystemExit` | stop the live handle |
+| Quit | return `Command::Exit`; Ctrl-C, `q`, Esc by default | `app.quit()`; Ctrl-C, `q`, Esc by default | `app.quit()`; Ctrl-C, `q`, Esc by default |
 | Test headless | `TuiDriver` | `quadraui.testing.harness` | `@quadraui/node/testing` |
 | Reusable parts | your own `Primitive` | `Component`, `Widget` | `Component`, `defineWidget` |
 | Hot reload | rebuild | `App.enable_hot_reload` | `App.enableHotReload` |
@@ -34,20 +34,19 @@ has the table.
   and iced do, which keeps `&mut self` borrows out of the view.
 - **Child sizes.** Rust nodes take `.content()`, `.fixed(px)`,
   `.weight(w)`, `.min(px)` and `.max(px)`, and containers `.gap(px)`;
-  Python and Node children share their container equally.
-- **Quitting.** Rust quits on `q`, Escape or Ctrl-C when no widget took
-  the key (`quits_on` opts out). There is no default quit key in Python or
-  Node. Python
-  raises `SystemExit` from `on_event`. Node cannot stop a live session from
-  inside a handler (`app.stopLive()` throws there), so the counter's
-  `quit()` defers `live.stop()` and `app.stopLive()` with `setImmediate`.
-  An `App.quit()` safe to call from a handler is proposed.
+  Python and Node children take `size=`/`min=`/`max=` (`size` is an int,
+  `"N%"`, `"Nfr"` or `"content"`).
+- **Quitting.** All three quit on Ctrl-C, and on `q` or Escape that no
+  focused widget used. Rust opts out with `quits_on`, Python with
+  `quit_keys=False` and Node with `quitKeys: false`. Python and Node quit
+  from any callback with `app.quit()`; a Rust `update` returns
+  `Command::Exit`.
 - **Node from npm.** `@quadraui/node` is first published with 0.12, and its
   app and JSX entry points need #2801 to load from `node_modules`; until
   then Node apps run from a clone ([Node quick start](quick-start/node.md)).
-- **Text.** Python lets a span leave out `fg`/`bg`; the TypeScript type
-  requires both (`null` for the theme's colour). Rust's `text("...")` is
-  one plain line.
+- **Text.** Rust has `text("...")`, Python `Text("...")` and Node `<text>` /
+  `Text()`, all sized to their content. A span's `fg`/`bg` are optional
+  everywhere.
 - **Native windows.** The Linux Python wheel and the npm addons are
   terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
 

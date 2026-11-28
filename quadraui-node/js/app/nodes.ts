@@ -34,6 +34,7 @@ import type {
   ListItem as ListItemDescriptor,
   PaddingValue,
   RowAlign,
+  SectionSize,
   SelectionMode,
   StatusBarSegment,
   StyledText,
@@ -115,9 +116,65 @@ export interface Node {
    * the way it looks up any other widget id.
    */
   extraCallbacks?(resolvedId: string): Readonly<Record<string, Readonly<Record<string, AnyCallback>>>>;
+  /** The `size`/`min`/`max` sibling keys this node carries as a `Column`/`Row` child (see {@link LayoutOptions}), merged into the built object. */
+  layout?: Readonly<Record<string, unknown>>;
 }
 
 type AnyCallback = (...args: unknown[]) => void;
+
+/**
+ * How much of its parent `Column`/`Row` a child takes along the stack's main
+ * axis: a `number` is a fixed size in portable pixels (a TUI cell is 8 px
+ * wide and 16 px tall, so `size: 32` is two rows of a `Column` on TUI),
+ * `"30%"` a share of the parent, `"2fr"` a weight shared out of what is
+ * left, `"content"` the child's natural size, and omitted an equal share of
+ * what is left. A raw wire `SectionSize` (`{Weight: 2}`, `"Content"`) passes
+ * through unchanged.
+ */
+export type SizeSpec = number | "content" | `${number}%` | `${number}fr` | SectionSize;
+
+/**
+ * Per-child sizing every node constructor except `Slider` (whose `min`/`max`
+ * are its value range) accepts: `size` (a {@link SizeSpec}) and a
+ * `min`/`max` clamp on the resolved size, in the same portable pixels.
+ */
+export interface LayoutOptions {
+  size?: SizeSpec;
+  min?: number;
+  max?: number;
+}
+
+/** {@link SizeSpec} -> the wire `SectionSize` the stack solver reads. */
+function sizeWire(size: SizeSpec): SectionSize {
+  if (typeof size === "number") {
+    if (!Number.isInteger(size) || size < 0) {
+      throw new TypeError(`size must be a whole number of pixels, not ${size}`);
+    }
+    return { Fixed: size };
+  }
+  if (typeof size === "object" && size !== null) {
+    return size;
+  }
+  if (typeof size === "string") {
+    const text = size.trim();
+    if (text === "Content" || text === "EqualShare") return text;
+    if (text === "content") return "Content";
+    const percent = /^(\d+(?:\.\d+)?)%$/.exec(text);
+    if (percent) return { Percent: Number(percent[1]) / 100 };
+    const weight = /^(\d+(?:\.\d+)?)fr$/.exec(text);
+    if (weight) return { Weight: Number(weight[1]) };
+  }
+  throw new TypeError(`size must be a number, "N%", "Nfr", "content" or a wire SectionSize, not ${JSON.stringify(size)}`);
+}
+
+/** Records `options`' own `size`/`min`/`max` on `node` as a `Column`/`Row` child. */
+function sized(node: Node, options: LayoutOptions): Node {
+  const layout: Record<string, unknown> = {};
+  if (options.size !== undefined) layout.size = sizeWire(options.size);
+  if (options.min !== undefined) layout.min = options.min;
+  if (options.max !== undefined) layout.max = options.max;
+  return Object.keys(layout).length === 0 ? node : { ...node, layout };
+}
 
 function callbacksFrom(named: Record<string, AnyCallback | undefined>): Record<string, AnyCallback> {
   const result: Record<string, AnyCallback> = {};
@@ -131,7 +188,7 @@ function callbacksFrom(named: Record<string, AnyCallback | undefined>): Record<s
 
 // --- composition: split / column / row / sidebarPanel / scroll / tabs -----
 
-export interface SplitOptions {
+export interface SplitOptions extends LayoutOptions {
   id?: string;
   orientation?: "horizontal" | "vertical";
   ratio?: number;
@@ -161,11 +218,11 @@ function Split(first: Renderable, second: Renderable, options: SplitOptions = {}
     return { split: payload };
   }
 
-  return { kind: "split", id, callbacks: {}, children: { first, second }, build };
+  return sized({ kind: "split", id, callbacks: {}, children: { first, second }, build }, options);
 }
 exports.Split = Split;
 
-export interface ColumnOptions {
+export interface ColumnOptions extends LayoutOptions {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
@@ -189,11 +246,11 @@ function Column(items: Renderable[], options: ColumnOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "column", id: null, callbacks: {}, children: { items: [...items] }, build };
+  return sized({ kind: "column", id: null, callbacks: {}, children: { items: [...items] }, build }, options);
 }
 exports.Column = Column;
 
-export interface RowOptions {
+export interface RowOptions extends LayoutOptions {
   padding?: PaddingValue;
   margin?: number;
   gap?: number;
@@ -211,11 +268,11 @@ function Row(items: Renderable[], options: RowOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "row", id: null, callbacks: {}, children: { items: [...items] }, build };
+  return sized({ kind: "row", id: null, callbacks: {}, children: { items: [...items] }, build }, options);
 }
 exports.Row = Row;
 
-export interface SidebarPanelOptions {
+export interface SidebarPanelOptions extends LayoutOptions {
   id?: string;
   toolbar?: ToolbarDescriptor;
   toolbarHeight?: number;
@@ -236,11 +293,11 @@ function SidebarPanel(content: Renderable, options: SidebarPanelOptions = {}): N
     return { sidebar_panel: payload };
   }
 
-  return { kind: "sidebar_panel", id, callbacks: {}, children: { content }, build };
+  return sized({ kind: "sidebar_panel", id, callbacks: {}, children: { content }, build }, options);
 }
 exports.SidebarPanel = SidebarPanel;
 
-export interface ScrollOptions {
+export interface ScrollOptions extends LayoutOptions {
   id?: string;
   axis?: LayoutScrollPayload["axis"];
   offset?: LayoutScrollPayload["offset"];
@@ -272,7 +329,7 @@ function Scroll(content: Renderable, options: ScrollOptions = {}): Node {
     return wire;
   }
 
-  return { kind: "scroll", id, callbacks: {}, children: { content }, build };
+  return sized({ kind: "scroll", id, callbacks: {}, children: { content }, build }, options);
 }
 exports.Scroll = Scroll;
 
@@ -304,7 +361,7 @@ function Tab(content: Renderable, options: TabOptions): TabSpec {
 }
 exports.Tab = Tab;
 
-export interface TabsOptions {
+export interface TabsOptions extends LayoutOptions {
   id?: string;
   closable?: boolean;
   /**
@@ -364,7 +421,7 @@ function Tabs(tabs: TabSpec[], options: TabsOptions = {}): Node {
 
   const callbacks = callbacksFrom({ on_close: onClose as AnyCallback | undefined, on_activate: onActivate as AnyCallback | undefined });
   const children = { tabs: tabs.map((spec) => spec.content) };
-  return { kind: "tabs", id, callbacks, children, build };
+  return sized({ kind: "tabs", id, callbacks, children, build }, options);
 }
 exports.Tabs = Tabs;
 
@@ -378,7 +435,7 @@ const DEFAULT_TREE_STYLE: TreeStyle = {
   chevron_collapsed: "▸",
 };
 
-export interface TreeOptions {
+export interface TreeOptions extends LayoutOptions {
   id?: string;
   selectionMode?: SelectionMode;
   selectedPath?: TreePath;
@@ -428,11 +485,11 @@ function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,
   });
-  return { kind: "tree", id, callbacks, children: {}, build };
+  return sized({ kind: "tree", id, callbacks, children: {}, build }, options);
 }
 exports.Tree = Tree;
 
-export interface TableOptions {
+export interface TableOptions extends LayoutOptions {
   id?: string;
   onActivate?: (idx: number) => void;
   onSelect?: (idx: number) => void;
@@ -457,11 +514,11 @@ function Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options: 
     on_select: onSelect as AnyCallback | undefined,
     on_header_click: onHeaderClick as AnyCallback | undefined,
   });
-  return { kind: "data_table", id, callbacks, children: {}, build };
+  return sized({ kind: "data_table", id, callbacks, children: {}, build }, options);
 }
 exports.Table = Table;
 
-export interface ListOptions {
+export interface ListOptions extends LayoutOptions {
   id?: string;
   /**
    * The row index to render as selected -- defaults to `0`, the same as
@@ -508,7 +565,7 @@ function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
     on_select: onSelect as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
   });
-  return { kind: "list", id, callbacks, children: {}, build };
+  return sized({ kind: "list", id, callbacks, children: {}, build }, options);
 }
 exports.List = List;
 
@@ -746,7 +803,7 @@ function formFieldId(formId: string, spec: FormFieldSpec, index: number): string
   return spec.id ?? `${formId}:field:${index}`;
 }
 
-export interface FormOptions {
+export interface FormOptions extends LayoutOptions {
   id?: string;
   focusedField?: WidgetId | null;
   scrollOffset?: number;
@@ -807,7 +864,7 @@ function Form(fields: FormFieldSpec[], options: FormOptions = {}): Node {
     return result;
   }
 
-  return { kind: "form", id, callbacks: {}, children: {}, build, extraCallbacks };
+  return sized({ kind: "form", id, callbacks: {}, children: {}, build, extraCallbacks }, options);
 }
 exports.Form = Form;
 
@@ -827,7 +884,7 @@ exports.Form = Form;
 // multi-line editor; `Switch`), not a `FieldKind::TextInput`/
 // `FieldKind::Toggle` payload -- out of scope for this additive pass.
 
-export interface CheckboxOptions {
+export interface CheckboxOptions extends LayoutOptions {
   id?: string;
   disabled?: boolean;
   focused?: boolean;
@@ -847,7 +904,7 @@ function Checkbox(value: boolean, options: CheckboxOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "checkbox", id, callbacks, children: {}, build };
+  return sized({ kind: "checkbox", id, callbacks, children: {}, build }, options);
 }
 exports.Checkbox = Checkbox;
 
@@ -877,7 +934,7 @@ function Slider(value: number, min: number, max: number, options: SliderOptions 
 }
 exports.Slider = Slider;
 
-export interface SelectOptions {
+export interface SelectOptions extends LayoutOptions {
   id?: string;
   selectedIdx?: number;
   disabled?: boolean;
@@ -899,11 +956,11 @@ function Select(choices: string[], options: SelectOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "select", id, callbacks, children: {}, build };
+  return sized({ kind: "select", id, callbacks, children: {}, build }, options);
 }
 exports.Select = Select;
 
-export interface PasswordOptions {
+export interface PasswordOptions extends LayoutOptions {
   id?: string;
   cursor?: number | null;
   hasFocus?: boolean;
@@ -930,11 +987,11 @@ function Password(value: string, options: PasswordOptions = {}): Node {
     on_change: onChange as AnyCallback | undefined,
     on_submit: onSubmit as AnyCallback | undefined,
   });
-  return { kind: "password", id, callbacks, children: {}, build };
+  return sized({ kind: "password", id, callbacks, children: {}, build }, options);
 }
 exports.Password = Password;
 
-export interface TextAreaOptions {
+export interface TextAreaOptions extends LayoutOptions {
   id?: string;
   placeholder?: string | null;
   cursor?: number | null;
@@ -958,11 +1015,11 @@ function TextArea(value: string, options: TextAreaOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_change: onChange as AnyCallback | undefined });
-  return { kind: "textarea", id, callbacks, children: {}, build };
+  return sized({ kind: "textarea", id, callbacks, children: {}, build }, options);
 }
 exports.TextArea = TextArea;
 
-export interface StatusBarOptions {
+export interface StatusBarOptions extends LayoutOptions {
   id?: string;
   onSegmentClick?: (segmentId: WidgetId) => void;
 }
@@ -983,11 +1040,11 @@ function StatusBar(
   }
 
   const callbacks = callbacksFrom({ on_segment_click: onSegmentClick as AnyCallback | undefined });
-  return { kind: "status_bar", id, callbacks, children: {}, build };
+  return sized({ kind: "status_bar", id, callbacks, children: {}, build }, options);
 }
 exports.StatusBar = StatusBar;
 
-export interface TextDisplayOptions {
+export interface TextDisplayOptions extends LayoutOptions {
   id?: string;
 }
 
@@ -999,11 +1056,23 @@ function TextDisplay(lines: TextDisplayLineDescriptor[], options: TextDisplayOpt
     return { id: nodeId, text_display: { id: nodeId, lines } };
   }
 
-  return { kind: "text_display", id, callbacks: {}, children: {}, build };
+  return sized({ kind: "text_display", id, callbacks: {}, children: {}, build }, options);
 }
 exports.TextDisplay = TextDisplay;
 
-export interface ButtonOptions {
+/**
+ * Plain text: a {@link TextDisplay} with one unstyled line per
+ * `\n`-separated line of `text`. Sized to its content by default, so a
+ * label in a `Column` takes one row rather than an equal share; pass
+ * `size: "EqualShare"` for an equal share instead.
+ */
+function Text(text: string, options: TextDisplayOptions = {}): Node {
+  const lines = text.split("\n").map((line) => ({ spans: [{ text: line }] }));
+  return TextDisplay(lines, { size: "content", ...options });
+}
+exports.Text = Text;
+
+export interface ButtonOptions extends LayoutOptions {
   id?: string;
   onClick?: () => void;
   variant?: ButtonVariant;
@@ -1038,7 +1107,7 @@ function Button(label: string, options: ButtonOptions = {}): Node {
   }
 
   const callbacks = callbacksFrom({ on_click: onClick as AnyCallback | undefined });
-  return { kind: "button", id, callbacks, children: {}, build };
+  return sized({ kind: "button", id, callbacks, children: {}, build }, options);
 }
 exports.Button = Button;
 

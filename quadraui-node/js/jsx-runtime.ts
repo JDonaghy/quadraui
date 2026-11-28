@@ -117,6 +117,7 @@ const nodeConstructors = require("./app/nodes.ts") as {
   List(items: ListItemDescriptor[], options?: ListOptions): QuiNode;
   StatusBar(leftSegments: StatusBarSegment[], rightSegments: StatusBarSegment[], options?: StatusBarOptions): QuiNode;
   TextDisplay(lines: TextDisplayLineDescriptor[], options?: TextDisplayOptions): QuiNode;
+  Text(text: string, options?: TextDisplayOptions): QuiNode;
   Button(label: string, options?: ButtonOptions): QuiNode;
   Form(fields: FormFieldSpec[], options?: FormOptions): QuiNode;
   Checkbox(value: boolean, options?: CheckboxOptions): QuiNode;
@@ -214,6 +215,11 @@ export interface TextDisplayProps extends TextDisplayOptions {
   lines: TextDisplayLineDescriptor[];
 }
 
+/** `<text>Count: {n}</text>`: the children are joined into one string for `Text`. */
+export interface TextProps extends TextDisplayOptions {
+  children?: string | number | ReadonlyArray<string | number>;
+}
+
 export interface ButtonProps extends ButtonOptions {
   label: string;
 }
@@ -288,6 +294,7 @@ export namespace JSX {
     list: ListProps;
     statusBar: StatusBarProps;
     textDisplay: TextDisplayProps;
+    text: TextProps;
     button: ButtonProps;
     form: FormProps;
     checkbox: CheckboxProps;
@@ -405,6 +412,10 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   textDisplay: (props) => {
     const { lines, ...options } = props as unknown as TextDisplayProps;
     return nodeConstructors.TextDisplay(lines, options);
+  },
+  text: (props) => {
+    const typed = props as unknown as TextProps;
+    return nodeConstructors.Text(childList(typed.children).join(""), withoutChildren(typed));
   },
   button: (props) => {
     const { label, ...options } = props as unknown as ButtonProps;

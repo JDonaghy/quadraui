@@ -1,6 +1,6 @@
-const { App, keyName, TextInputField } = require("@quadraui/node/app");
+const { App, TextInputField } = require("@quadraui/node/app");
 
-const item = (text: string) => ({ text: { spans: [{ text, fg: null, bg: null }] } });
+const item = (text: string) => ({ text: { spans: [{ text }] } });
 const grey = { r: 220, g: 220, b: 220, a: 255 };
 const navy = { r: 40, g: 40, b: 60, a: 255 };
 const segment = (text: string) => ({ text: ` ${text} `, fg: grey, bg: navy });
@@ -53,7 +53,5 @@ export class Todo {
 
 if (require.main === module) {
   const todo = new Todo();
-  const app = new App(40, 12, { view: () => todo.view(), onEvent: (e: unknown) => keyName(e) === "Escape" && quit() });
-  const live = app.runTui();
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => todo.view() }).runTui(); // Esc quits
 }

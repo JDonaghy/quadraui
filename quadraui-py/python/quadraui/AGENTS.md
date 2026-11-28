@@ -38,15 +38,7 @@ nodes mutate the state. There is no data binding, no "mark dirty", and no
 redraw call. `App` repaints after every event a callback handled.
 
 ```python
-from quadraui.app import App, Button, Column, Component, TextDisplay, key_name
-
-
-class Quit(Exception):
-    pass
-
-
-def line(text):
-    return {"spans": [{"text": text, "fg": None, "bg": None}]}
+from quadraui.app import App, Button, Column, Component, Text
 
 
 class Counter(Component):
@@ -58,28 +50,21 @@ class Counter(Component):
             state["count"] += 1
 
         return Column(
-            TextDisplay([line(f"Count: {state['count']}")], id="count"),
+            Text(f"Count: {state['count']}", id="count"),
             Button("Increment", id="inc", on_click=bump),
         )
 
 
 class CounterApp:
-    def __init__(self, width=60, height=12):
-        self.app = App(width, height, view=self.view, on_event=self.on_key)
+    def __init__(self):
+        self.app = App(view=self.view)
 
     def view(self):
         return Counter(key="main")
 
-    def on_key(self, event):
-        if key_name(event) in ("q", "Escape"):
-            raise Quit
-
 
 if __name__ == "__main__":
-    try:
-        CounterApp().app.run_tui()   # or .run_native(title="Counter")
-    except Quit:
-        pass
+    CounterApp().app.run_tui()   # or .run_native(title="Counter"); q quits
 ```
 
 Rules that follow from the model:
@@ -111,14 +96,21 @@ Rules that follow from the model:
   `lambda idx, folder=folder: ...`, not by parsing ids.
 - **Global input goes to `App(on_event=...)`**, the fallback for events no
   node callback claimed. Use `key_name(event)` to get a key name out of
-  whatever shape the event arrived in. Quit `run_tui()`/`run_native()` by
-  raising an exception of your own from a handler and catching it around
-  the run call.
+  whatever shape the event arrived in.
+- **Quitting.** Ctrl-C always quits, and `q` or Escape quit when no
+  focused widget used the key. `app.quit()` quits from any callback;
+  `App(quit_keys=False)` turns the keys off, and `on_event` returning
+  `True` keeps one.
+- **Layout.** `Column`/`Row` children share space equally; give a child
+  `size=` (`int` pixels, a TUI cell being 8x16, `"30%"`, `"2fr"` or
+  `"content"`) and `min=`/`max=` to change that. `Text("...")` is a
+  one-line label sized to its content. `App(width, height)` is optional
+  (80x24) and only sizes a headless run.
 
 ### Available nodes
 
 `Split`, `Column`, `Row`, `SidebarPanel`, `Scroll`, `Tabs`/`Tab`, `Tree`,
-`Table`, `List`, `StatusBar`, `TextDisplay`, `Button`, `Form` (plus its
+`Table`, `List`, `StatusBar`, `Text`, `TextDisplay`, `Button`, `Form` (plus its
 field builders), `Checkbox`/`Slider`/`Select`/`Password`/`TextArea` (the
 standalone leaves), plus `Toolbar`. `Toolbar` is not a node: it returns a
 raw descriptor for `SidebarPanel(toolbar=...)`, and its buttons do
