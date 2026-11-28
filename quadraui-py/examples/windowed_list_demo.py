@@ -51,12 +51,13 @@ class _Quit(Exception):
 
 
 class WindowedListDemo:
-    """Owns the loaded slice (`start`, `count`) and the requests the list
-    made, in order."""
+    """Owns the loaded slice (`start`, `count`), the selected row (an
+    absolute index) and the requests the list made, in order."""
 
     def __init__(self) -> None:
         self.start = 0
         self.count = FIRST_SLICE
+        self.selected = 0
         self.requests: List[Dict[str, Any]] = []
 
     def render(self) -> Any:
@@ -73,6 +74,7 @@ class WindowedListDemo:
                         "id": "rows",
                         "items": items,
                         "items_window": {"start": self.start, "total": TOTAL},
+                        "selected_idx": self.selected,
                         "has_focus": True,
                     },
                 }
@@ -87,6 +89,10 @@ class WindowedListDemo:
             self.requests.append(dict(request))
             self.start = request["start"]
             self.count = request["count"]
+        elif "List" in event:
+            _, list_event = event["List"]
+            if isinstance(list_event, dict) and "SelectionChanged" in list_event:
+                self.selected = list_event["SelectionChanged"]["idx"]
         elif "KeyPressed" in event:
             key = event["KeyPressed"]["key"]
             if key == {"Char": "q"} or key == {"Named": "Escape"}:

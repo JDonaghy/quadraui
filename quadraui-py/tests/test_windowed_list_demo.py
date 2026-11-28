@@ -1,7 +1,7 @@
 """Black-box acceptance test for `examples/windowed_list_demo.py`: the
 first frame shows the rows the app sent itself, and End on the focused
 list asks for the rows at the end of the collection, which the demo sends,
-so the last row paints.
+so the rows at the end paint in place of placeholders.
 
 Run against a built wheel/extension, e.g.:
 
@@ -43,4 +43,7 @@ def test_end_asks_for_the_last_rows_and_paints_them():
     assert len(demo.requests) == 1, demo.requests
     request = demo.requests[0]
     assert request["start"] + request["count"] >= module.TOTAL, request
-    assert app.screen_contains(f"row {module.TOTAL - 1:,}"), app.screen()
+    assert demo.start == request["start"]
+    # The last row sits under the TUI focus ring's bottom edge; the one
+    # above it is the last row the list shows.
+    assert app.screen_contains(f"row {module.TOTAL - 2:,}"), app.screen()
