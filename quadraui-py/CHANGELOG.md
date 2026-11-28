@@ -68,6 +68,31 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- A `"menu_bar"` leaf is the whole application menu (core `AppMenu`) and
+  is controlled: a click or key that opens a menu or moves a
+  highlight reports `{"AppMenu": (id, {"Changed": view})}`, and the app
+  merges `view` (`open_item`, `focused_item`, `dropdown_selected`,
+  `submenu_path`, `submenu_selected`) back into the `"menu_bar"` dict it
+  renders next; a menu with nothing echoed never opens. An activation still
+  reports `{"MenuActivated": item_id}`, now after the `Changed` view that
+  closes the menu and with the `"hit": {"kind": "widget_body"}` every
+  generic leaf's event carries. The dropdown is a popup routed to the
+  menu: a press on a row activates it, and a press elsewhere or Escape
+  closes the menu (as a `Changed` view). The bar is a focus stop, and its
+  Alt mnemonics and arrow keys reach it while it holds focus, not
+  globally. While a dialog is open the dropdown is hidden and takes no
+  input; it is no longer closed by opening the dialog. `wire.pyi`'s
+  `MenuBar`/`MenuBarItem` types are now `AppMenu`/`MenuDef`.
+- A `"form"` leaf routes through core `Form`'s own widget contract: its
+  events carry `"hit": {"kind": "widget_body"}` like every generic leaf's.
+  Field focus the dict leaves unset is still the form's own to track; Tab
+  inside a focused form walks its fields and moves on to the next stop
+  past either end, Up/Down move between fields the focused one has no use
+  for, and a wheel notch scrolls it. A form's slider field (`SliderField`)
+  moves on a click or drag on its track and on the arrow keys and Home/End
+  while focused, firing `on_change`, instead of only through an a11y
+  Increment/Decrement. Any open widget popup (a `"combo_box"` list) now
+  receives the press that lands on it, instead of the press being dropped.
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
   on a row reports `{"List": (id, {"SelectionChanged": {"idx": n}})}` and

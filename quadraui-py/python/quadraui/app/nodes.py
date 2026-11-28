@@ -371,11 +371,9 @@ def Form(
     unset (the default) to let the engine own Tab/Shift-Tab/click focus
     movement between fields itself; pass a field's id on every render
     only to pin it from app state. Keyboard editing and dropdown
-    navigation inside a field are entirely engine-owned (via
-    `FormController`) -- nothing here needs to decode a raw key itself,
-    the same "just works" contract every field builder's own doc repeats.
-    The one exception is the embedded slider row: see `SliderField`'s own
-    doc for its current paint/a11y-only limitation.
+    navigation inside a field are entirely the form's own -- nothing here
+    needs to decode a raw key itself, the same "just works" contract every
+    field builder's own doc repeats.
 
     For a single boolean/slider/select/password/text-area control with no
     surrounding `Form` chrome, use the standalone leaf instead:
@@ -461,8 +459,8 @@ def ToggleField(
     on_change: Optional[Callable[[bool], None]] = None,
 ) -> Node:
     """A `Form`-embedded `FieldKind::Toggle` row. Space/Enter while
-    focused, or a click, flips `value` (engine-owned, via
-    `FormController`); `on_change(new_value)` fires on the resulting
+    focused, or a click, flips `value` (handled by the form itself);
+    `on_change(new_value)` fires on the resulting
     `FormEvent::ToggleChanged`. `FieldKind::Toggle` has no bare
     standalone-leaf counterpart of its own -- use `Checkbox` outside a
     `Form` for the same boolean shape."""
@@ -512,7 +510,7 @@ def TextInputField(
     Typing (engine-owned) fires `on_change(new_value)` on every keystroke
     (`FormEvent::TextInputChanged`); `on_submit(value)` fires once, on
     Enter (`FormEvent::TextInputCommitted`). Cursor/selection are entirely
-    `FormController`-owned -- nothing here needs to track or echo one."""
+    the form's own -- nothing here needs to track or echo one."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         return _form_field(
@@ -556,12 +554,10 @@ def SliderField(
     on_change: Optional[Callable[[float], None]] = None,
 ) -> Node:
     """A `Form`-embedded `FieldKind::Slider` row, bounded by `min..=max`
-    with increment `step`. Paint and a11y Increment/Decrement only for now:
-    `FormController` has no click/drag/arrow-key arm for `FieldKind::Slider`,
-    so `on_change` fires only from an a11y Increment/Decrement action, never
-    from a real mouse drag or keypress. For an interactive slider, use the
-    standalone `Slider` leaf instead, which does fire `on_change` on every
-    adjustment via `FormEvent::SliderChanged`."""
+    with increment `step`. A click or drag on the track, the arrow keys
+    (by `step`) and Home/End (to the bounds) move it while it is focused;
+    `on_change(new_value)` fires on every resulting
+    `FormEvent::SliderChanged`."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         kind: Dict[str, Any] = {"value": value, "min": min, "max": max}

@@ -11141,11 +11141,11 @@ def handle(event):
         });
     }
 
-    /// Clicking a `"menu_bar"` extra's top-level item opens its dropdown
-    /// (no event reaches Python — a bare open/close is navigation, not an
-    /// app-level action) and a later click on one of its items closes the
-    /// dropdown and dispatches exactly one `UiEvent::MenuActivated` to the
-    /// registered handler, carrying the activated item's id.
+    /// Clicking a `"menu_bar"` leaf's top-level item reports the opened
+    /// view as `UiEvent::AppMenu(bar, Changed(view))`, which the app
+    /// echoes onto its descriptor so the dropdown paints; a later click on
+    /// one of its items reports the closed view and then exactly one
+    /// `UiEvent::MenuActivated`, carrying the activated item's id.
     #[test]
     fn clicking_a_menu_bar_item_opens_its_dropdown_and_selecting_emits_menu_activated() {
         Python::attach(|py| {
@@ -11153,9 +11153,10 @@ def handle(event):
             py.run(
                 c"
 received = []
+view = {}
 
 def render():
-    return {'menu_bar': {
+    return {'menu_bar': dict({
         'id': 'bar:main',
         'items': [
             {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
@@ -11163,12 +11164,14 @@ def render():
                 {'id': 'item:quit', 'label': {'spans': [{'text': 'Quit', 'fg': None, 'bg': None}]}},
             ]},
         ],
-        'open_item': None,
-        'focused_item': None,
-    }}
+    }, **view)}
 
 def handle(event):
-    received.append(event)
+    if 'AppMenu' in event:
+        view.clear()
+        view.update(event['AppMenu'][1]['Changed'])
+    elif 'MenuActivated' in event:
+        received.append(event)
 ",
                 Some(&locals),
                 Some(&locals),
@@ -11222,7 +11225,7 @@ def handle(event):
             assert_eq!(
                 received_list.len(),
                 0,
-                "opening the dropdown is pure navigation: nothing reaches Python yet"
+                "opening the dropdown activates nothing"
             );
 
             let item_bounds = app
@@ -11584,38 +11587,36 @@ def handle(event):
         });
     }
 
-    /// Opening a message dialog while a `"menu_bar"` extra's dropdown is
-    /// open closes the dropdown first: paint order puts the dialog on top
-    /// of the bar (`render_dialog` runs after `sync_menu_bar`), so without
-    /// this, the dropdown would be stuck open but invisible underneath,
-    /// and `handle` would route a click/Enter to it (`MenuActivated`)
-    /// instead of to the dialog it paints on top of, since `handle`
-    /// previously checked the dropdown before the dialog. Pins the fix:
-    /// the dropdown's "Open" item vanishes the moment the dialog opens,
-    /// and Enter resolves the dialog rather than activating the hidden
-    /// menu item.
+    /// Opening a message dialog while a `"menu_bar"` leaf's dropdown is
+    /// open hides the dropdown and takes its input: a modal sits above
+    /// every widget's popups, so the dropdown's "Open" item vanishes the
+    /// moment the dialog opens, and Enter resolves the dialog rather than
+    /// activating the hidden menu item.
     #[test]
-    fn open_message_dialog_closes_an_open_menu_bar_dropdown_and_claims_input() {
+    fn open_message_dialog_hides_an_open_menu_bar_dropdown_and_claims_input() {
         Python::attach(|py| {
             let locals = PyDict::new(py);
             py.run(
                 c"
 received = []
+view = {}
 
 def render():
-    return {'menu_bar': {
+    return {'menu_bar': dict({
         'id': 'bar:main',
         'items': [
             {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
                 {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
             ]},
         ],
-        'open_item': None,
-        'focused_item': None,
-    }}
+    }, **view)}
 
 def handle(event):
-    received.append(event)
+    if 'AppMenu' in event:
+        view.clear()
+        view.update(event['AppMenu'][1]['Changed'])
+    elif 'FocusChanged' not in event:
+        received.append(event)
 ",
                 Some(&locals),
                 Some(&locals),

@@ -379,6 +379,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ActivityItem`](#wire-activityitem)
 - [`AlignValue`](#wire-alignvalue)
 - [`Anchor`](#wire-anchor)
+- [`AppMenu`](#wire-appmenu)
 - [`AppMenuEvent`](#wire-appmenuevent)
 - [`AppMenuView`](#wire-appmenuview)
 - [`AuxHit`](#wire-auxhit)
@@ -527,8 +528,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ListViewEvent`](#wire-listviewevent)
 - [`ListViewLeaf`](#wire-listviewleaf)
 - [`Markdown`](#wire-markdown)
-- [`MenuBar`](#wire-menubar)
-- [`MenuBarItem`](#wire-menubaritem)
+- [`MenuDef`](#wire-menudef)
 - [`MessageDialogOverlayDescriptor`](#wire-messagedialogoverlaydescriptor)
 - [`MessageList`](#wire-messagelist)
 - [`MessageListEvent`](#wire-messagelistevent)
@@ -1075,6 +1075,23 @@ Common shape for every overlay primitive that positions a box relative to an anc
 | `margin` | `number` | yes | Gap between `rect` and the overlay along the placement axis. |
 | `preferred` | `Side` | yes | Side of `rect` the overlay prefers to open on. |
 | `rect` | `Rect` | yes | Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates. |
+
+<a id="wire-appmenu"></a>
+#### `AppMenu`
+
+An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dropdown_selected` | `number` | no | Highlighted item in the open dropdown. |
+| `focused_item` | `number \| null` | no | The bar item keyboard or pointer focus sits on. |
+| `id` | `WidgetId` | yes | The menu's id, also the painted bar's. |
+| `items` | `MenuDef[]` | yes | The top-level menus, in bar order. |
+| `native` | `boolean` | no | Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens. |
+| `open_item` | `number \| null` | no | The menu whose dropdown is open. |
+| `submenu_path` | `number[]` | no | Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open. |
+| `submenu_selected` | `number[]` | no | Highlighted item at each open submenu depth, parallel to `submenu_path`. |
+| `typeahead` | `boolean` | no | Whether a plain printable key in an open dropdown is type-ahead (on by default). |
 
 <a id="wire-appmenuevent"></a>
 #### `AppMenuEvent`
@@ -2584,7 +2601,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `list` | `ListView \| ListViewLeaf` | no |  |
 | `markdown` | `Markdown` | no |  |
 | `max` | `number \| null` | no |  |
-| `menu_bar` | `MenuBar` | no |  |
+| `menu_bar` | `AppMenu` | no |  |
 | `message_list` | `MessageList` | no |  |
 | `min` | `number \| null` | no |  |
 | `minimap` | `Minimap` | no |  |
@@ -2882,29 +2899,17 @@ A scrollable, read-only markdown viewer.
 | `scroll_offset` | `number` | no | Lines scrolled off the top. |
 | `source` | `string` | yes | Raw markdown text. |
 
-<a id="wire-menubar"></a>
-#### `MenuBar`
+<a id="wire-menudef"></a>
+#### `MenuDef`
 
-Declarative description of a menu bar.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `focused_item` | `number \| null` | no | Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal. |
-| `id` | `WidgetId` | yes |  |
-| `items` | `MenuBarItem[]` | yes |  |
-| `open_item` | `number \| null` | no | Index of the currently-open menu (if any). |
-
-<a id="wire-menubaritem"></a>
-#### `MenuBarItem`
-
-One top-level menu entry.
+One top-level menu and its dropdown items.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `disabled` | `boolean` | no | When true, the item is rendered dimmed and clicks are ignored. |
-| `id` | `WidgetId` | yes |  |
+| `disabled` | `boolean` | no | When true, the item is rendered dimmed and does not open. |
+| `id` | `WidgetId` | yes | The menu's id, the bar item's. |
 | `label` | `string` | yes | Display label, e.g. |
-| `submenu` | `ContextMenuItem[] \| null` | no | Declarative dropdown items. |
+| `submenu` | `ContextMenuItem[] \| null` | no | The dropdown's items, in order. |
 
 <a id="wire-messagedialogoverlaydescriptor"></a>
 #### `MessageDialogOverlayDescriptor`
@@ -3372,7 +3377,7 @@ A flat render frame: one optional descriptor per widget kind.
 | `image` | `Image \| null` | no |  |
 | `list` | `(ListView \| ListViewLeaf) \| null` | no |  |
 | `markdown` | `Markdown \| null` | no |  |
-| `menu_bar` | `MenuBar \| null` | no |  |
+| `menu_bar` | `AppMenu \| null` | no |  |
 | `message_list` | `MessageList \| null` | no |  |
 | `minimap` | `Minimap \| null` | no |  |
 | `multi_section_view` | `MultiSectionView \| null` | no |  |

@@ -622,14 +622,14 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
   });
 }
 
-// The four chrome-bar kinds below each have their own click-routing
-// mechanism (`ExtraPaint::paint_chrome`'s `chrome_hits` for
-// toolbar/status_bar/activity_bar, `render_overlays`'s `sync_menu_bar` for
-// menu_bar) that doesn't fit `INLINE_LEAF_CASES`' generic "one Form event
-// per pushed event" shape above, so each gets its own test here instead of
-// a table row -- proving the same semantic event a flat-slot chrome bar
-// dispatches from a render callback's flat `{"<kind>": {...}}` object
-// still reaches the handler when the bar is painted as a literal inline
+// The four chrome-bar kinds below each report events that don't fit
+// `INLINE_LEAF_CASES`' generic "one Form event per pushed event" shape
+// above -- toolbar/status_bar/activity_bar their own click events, and
+// menu_bar the application menu's view changes plus `MenuActivated` -- so
+// each gets its own test here instead of a table row, proving the same
+// semantic event a flat-slot chrome bar dispatches from a render
+// callback's flat `{"<kind>": {...}}` object still reaches the handler
+// when the bar is painted as a literal inline
 // `{ row: [{ id, <kind>: {...} }] }` leaf.
 
 test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
@@ -757,12 +757,13 @@ test("inline tree leaf activity_bar click emits ActivityBar(ItemClicked)", () =>
 });
 
 test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", () => {
-  // `render_overlays`'s `sync_menu_bar` call reads the hit map generically
-  // -- it never distinguishes a flat-slot `"menu_bar"` from one painted
-  // through an inline leaf -- so `Alt+F` opens the bar's one top-level menu
-  // and `Enter` activates its sole leaf item exactly as it would for a
-  // slot-painted bar.
+  // The `"menu_bar"` leaf is the application menu, routed like any other
+  // leaf: once it holds focus (Tab, its only stop), `Alt+F` opens the
+  // bar's one top-level menu and `Enter` activates its sole leaf item.
+  // Which menu is open is the app's to keep: it echoes every
+  // `AppMenu(..., { Changed: view })` back onto the descriptor.
   const app = new QuiApp(40, 20);
+  let view: Record<string, unknown> = {};
   app.setRender(() => ({
     row: [
       {
@@ -781,6 +782,7 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
               ],
             },
           ],
+          ...view,
         },
       },
     ],
@@ -788,15 +790,20 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
   app.screen();
 
   const received: any[] = [];
-  app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({
-    KeyPressed: { key: { Char: "f" }, modifiers: { alt: true }, repeat: false },
+  app.setHandler((event: any) => {
+    received.push(event);
+    if (event.AppMenu) {
+      view = event.AppMenu[1].Changed;
+    }
   });
-  app.run(1);
-  app.pushEvent({
-    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
-  });
-  app.run(1);
+  for (const [key, modifiers] of [
+    [{ Named: "Tab" }, {}],
+    [{ Char: "f" }, { alt: true }],
+    [{ Named: "Enter" }, {}],
+  ] as const) {
+    app.pushEvent({ KeyPressed: { key, modifiers, repeat: false } });
+    app.run(1);
+  }
 
   assert.ok(
     received.some((event) => event.MenuActivated === "menu:file:save"),

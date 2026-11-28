@@ -1617,19 +1617,17 @@ def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
 
 def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # Acceptance criterion: `form`/`number_input`/`combo_box`/`date_picker`
-    # all newly return `tab_stop() -> true` (`ExtraPaint::tab_stop`), which
-    # changes `Tab` behaviour for any app painting them --
-    # `runtime::preprocess_event`'s own step 3 cycles `app.tab_stops()`,
-    # built from `InteractionEngine::tab_stops`'s own paint-order traversal
-    # of the hit map. One `Tab` per extra, in `EXTRA_PRIMITIVE_KINDS`'
-    # registration order (`form` < `number_input` < `combo_box` <
+    # are all tab stops -- `runtime::preprocess_event`'s own step 3 cycles
+    # `app.tab_stops()`, built from `InteractionEngine::tab_stops`'s own
+    # paint-order traversal of the hit map. One `Tab` per leaf, in
+    # `WIDGET_KINDS` order (`form` < `number_input` < `combo_box` <
     # `date_picker`), must focus it -- plus one extra `Tab` for `form`
-    # itself: a render callback's `frame` is resynced against the engine's
-    # own tracked state every frame (`resolve_render_refs`), so once
-    # `settings` has engine focus, the next `Tab` moves `FormController`'s
-    # own cursor onto its first field before a further `Tab` yields back to
-    # the engine's cycle. A sixth `Tab` then wraps the whole lap back to
-    # `settings`, proving the cycle is closed. `radio_group` is a
+    # itself: once `settings` holds focus it walks its own fields, so the
+    # next `Tab` moves onto its first field, and a further `Tab` past its
+    # last field yields back to the engine's cycle. A sixth `Tab` then
+    # wraps the whole lap back to `settings`, proving the cycle is closed.
+    # The form's own event arrives with the `widget_body` hit every
+    # generic leaf's event carries. `radio_group` is a
     # `WIDGET_KINDS` member now, not an `EXTRA_PRIMITIVE_KINDS` one, and a
     # flat render-callback dict's generic-widget slots (`WIDGET_KINDS`) are
     # not wired into this `tab_stops()` traversal, so it is left out of this
@@ -1669,7 +1667,10 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
 
     assert received == [
         {"FocusChanged": "settings"},
-        {"Form": ("settings", {"FocusChanged": {"id": "name"}})},
+        {
+            "Form": ("settings", {"FocusChanged": {"id": "name"}}),
+            "hit": {"kind": "widget_body"},
+        },
         {"FocusChanged": "ni:1"},
         {"FocusChanged": "combo:1"},
         {"FocusChanged": "date:1"},
@@ -2227,12 +2228,13 @@ def test_inline_tree_leaf_activity_bar_click_emits_item_clicked():
 
 
 def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
-    # `render_overlays`'s `sync_menu_bar` call reads this frame's hit map
-    # generically -- it never distinguishes a flat-slot `"menu_bar"` from
-    # one painted through an inline leaf -- so an `Alt+F` opens the bar's
-    # one top-level menu and `Enter` activates its sole leaf item exactly
-    # as it would for a slot-painted bar.
+    # The `"menu_bar"` leaf is the application menu, routed like any other
+    # leaf: once it holds focus (Tab, its only stop), `Alt+F` opens the
+    # bar's one top-level menu and `Enter` activates its sole leaf item.
+    # Which menu is open is the app's to keep: it echoes every
+    # `AppMenu(..., {"Changed": view})` back onto the descriptor.
     app = QuiApp(40, 20)
+    view = {}
 
     def render():
         return {
@@ -2257,6 +2259,7 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
                                 ],
                             },
                         ],
+                        **view,
                     },
                 },
             ]
@@ -2266,17 +2269,23 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
     app.screen()
 
     received = []
-    app.set_handler(lambda event: received.append(event))
-    app.push_event(
-        {"KeyPressed": {"key": {"Char": "f"}, "modifiers": {"alt": True}, "repeat": False}}
-    )
-    app.run(1)
-    app.push_event(
-        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
-    )
-    app.run(1)
 
-    assert {"MenuActivated": "menu:file:save"} in received, received
+    def handle(event):
+        received.append(event)
+        if "AppMenu" in event:
+            view.clear()
+            view.update(event["AppMenu"][1]["Changed"])
+
+    app.set_handler(handle)
+    for key, modifiers in (
+        ({"Named": "Tab"}, {}),
+        ({"Char": "f"}, {"alt": True}),
+        ({"Named": "Enter"}, {}),
+    ):
+        app.push_event({"KeyPressed": {"key": key, "modifiers": modifiers, "repeat": False}})
+        app.run(1)
+
+    assert any(event.get("MenuActivated") == "menu:file:save" for event in received), received
 
 
 def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event():
@@ -3739,16 +3748,22 @@ def test_dismiss_overlay_message_dialog_closes_without_resolving():
     assert received == []
 
 
-def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
-    # Paint order puts the dialog on top of the menu bar's dropdown
-    # (`render_dialog` runs after `sync_menu_bar`); `handle` now routes
-    # the dialog ahead of the menu bar too, and
-    # `show_overlay("message_dialog", ...)` closes any open dropdown so
-    # nothing is left underneath holding input precedence it no longer has
-    # paint precedence for.
+def test_show_overlay_message_dialog_hides_an_open_menu_bar_dropdown():
+    # A modal sits above every widget's popups: while the dialog is open
+    # the menu bar's dropdown neither paints nor takes input, so Enter
+    # resolves the dialog rather than activating the hidden menu item.
     app = QuiApp(40, 20)
     received = []
-    app.set_handler(lambda event: received.append(event))
+    view = {}
+
+    def handle(event):
+        if "AppMenu" in event:
+            view.clear()
+            view.update(event["AppMenu"][1]["Changed"])
+        elif "FocusChanged" not in event:
+            received.append(event)
+
+    app.set_handler(handle)
     app.set_render(
         lambda: {
             "menu_bar": {
@@ -3768,8 +3783,7 @@ def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
                         ],
                     }
                 ],
-                "open_item": None,
-                "focused_item": None,
+                **view,
             }
         }
     )
@@ -3788,7 +3802,7 @@ def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
         ),
     )
 
-    assert not app.screen_contains("Open"), "the dialog must close the dropdown underneath it"
+    assert not app.screen_contains("Open"), "the dialog must hide the dropdown underneath it"
     assert app.screen_contains("OK")
 
     app.push_event(

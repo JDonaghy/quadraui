@@ -485,7 +485,10 @@ widget_kinds! {
     // impls carry no feature gate. The kind strings are the ones the wire
     // schema already publishes for them.
     "toolbar" => crate::Toolbar,
-    "menu_bar" => crate::MenuBar,
+    // The wire's `menu_bar` is the whole application menu — the bar and
+    // its dropdown cascade — not the bare strip, so a host routing it
+    // through the widget contract gets the dropdowns as popups.
+    "menu_bar" => crate::AppMenu,
     "context_menu" => crate::ContextMenu,
     // Ungated: `Palette`'s and `Form`'s `Primitive`/`Interactive` impls
     // carry no feature gate. The kind strings are the ones the wire
@@ -866,6 +869,10 @@ mod tests {
         )
         .expect("menu_bar decodes");
         assert_eq!(menu_bar.id().map(|id| id.as_str()), Some("menus"));
+        assert!(
+            menu_bar.as_any().is::<crate::AppMenu>(),
+            "menu_bar decodes to the whole application menu, dropdowns included"
+        );
 
         let context_menu = decode_widget(
             "context_menu",
