@@ -18,7 +18,7 @@ through all three.
 | Global keys | `UiEvent::KeyPressed` in `handle` | `on_event=` + `key_name(event)` | `onEvent:` + `keyName(event)` |
 | Run, terminal | `quadraui::tui::run(app)` | `App(...).run_tui()` | `new App(...).runTui()` |
 | Run, window | `quadraui::{gtk,macos,win}::run(app)` | `.run_native(title=...)` | `.runNative(title)` |
-| Quit | return `Reaction::Exit` | raise `SystemExit` | stop the live handle |
+| Quit | return `Reaction::Exit` | `app.quit()`; Ctrl-C, `q`, Esc by default | `app.quit()`; Ctrl-C, `q`, Esc by default |
 | Test headless | `TuiDriver` | `quadraui.testing.harness` | `@quadraui/node/testing` |
 | Reusable parts | your own `Primitive` | `Component`, `Widget` | `Component`, `defineWidget` |
 | Hot reload | rebuild | `App.enable_hot_reload` | `App.enableHotReload` |
@@ -34,17 +34,15 @@ has the table.
   and borrows out of the Rust API.
 - **Layout.** Python and Node have `Column`/`Row`; Rust places widgets in
   rectangles (or uses `ShellApp` or the `layout` feature).
-- **Quitting.** There is no default quit key in Python or Node. Python
-  raises `SystemExit` from `on_event`. Node cannot stop a live session from
-  inside a handler (`app.stopLive()` throws there), so the counter's
-  `quit()` defers `live.stop()` and `app.stopLive()` with `setImmediate`.
-  An `App.quit()` safe to call from a handler is proposed.
+- **Quitting.** Python and Node quit on Ctrl-C, and on `q` or Escape that
+  no focused widget used; `app.quit()` quits from any callback. A Rust
+  `AppLogic` quits by returning `Reaction::Exit` and has no default keys.
 - **Node from npm.** `@quadraui/node` is first published with 0.12, and its
   app and JSX entry points need #2801 to load from `node_modules`; until
   then Node apps run from a clone ([Node quick start](quick-start/node.md)).
-- **Text.** Python lets a span leave out `fg`/`bg`; the TypeScript type
-  requires both (`null` for the theme's colour). Rust uses
-  `StyledSpan::plain`.
+- **Text.** Python has `Text("...")` and Node `<text>` / `Text()`, both
+  sized to their content; Rust has `TextDisplayLine::plain` and
+  `StyledSpan::plain`. A span's `fg`/`bg` are optional everywhere.
 - **Native windows.** The Linux Python wheel and the npm addons are
   terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
 

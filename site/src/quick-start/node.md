@@ -38,7 +38,7 @@ from the README, and CI runs and type-checks this exact file
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+const { App } = require("@quadraui/node/app");
 
 class Counter {
   count = 0;
@@ -46,7 +46,7 @@ class Counter {
   view() {
     return (
       <column>
-        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
+        <text id="count">Count: {this.count}</text>
         <row>
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
@@ -54,18 +54,11 @@ class Counter {
       </column>
     );
   }
-
-  onKey(event: unknown, quit: () => void) {
-    if (keyName(event) === "q") quit();
-  }
 }
 
 if (require.main === module) {
   const counter = new Counter();
-  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
-  const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => counter.view() }).runTui(); // q quits; or .runNative("Counter"): same Counter
 }
 module.exports = { Counter };
 ```
@@ -77,7 +70,7 @@ The three parts:
   and runs again after every event, so a changed `count` shows up without
   `setState` or a redraw call.
 - **Update** is the handlers: `onClick` on an element, and `onEvent` for
-  input no single widget owns, such as the `q` key.
+  input no single widget owns, such as a global shortcut.
 
 Lowercase tags are quadraui's built-in widgets, typed from the same
 generated schema as the Rust side, so a misspelled prop fails `tsc`. The
@@ -87,21 +80,22 @@ now, because the app layer's runtime exports are CommonJS assignments
 
 Some details the sample does not explain:
 
-- **Text.** A `<textDisplay>` takes a list of lines, each a list of styled
-  spans. `fg: null, bg: null` means the theme's colours; the type requires
-  both keys.
-- **`new App(30, 5, ...)`** is the size in character cells (columns, rows)
-  for a headless run, such as the test in step 5. A live `runTui()` fills
-  the terminal and `runNative()` opens a window, and both ignore it.
-- **Quitting.** `app.stopLive()` throws if it runs inside an event
-  handler, and the run loop's next step throws unless `live.stop()` runs
-  too. So `quit()` defers both with `setImmediate`. It is declared after
-  `app` because it needs `live` and `app`; the handler only calls it
-  later. An `App.quit()` that is safe to call from a handler is proposed.
-- **Layout.** `<column>` and `<row>` split their space equally between
-  their children, so in a full-size terminal the label takes the top half
-  and each button half the width. Per-child sizes are not exposed yet
-  ([Layout](../concepts/layout.md)).
+- **Text.** `<text>` is one line of plain text, sized to its content. For
+  colours, use a `<textDisplay>`: it takes a list of lines, each a list of
+  styled spans with optional `fg` and `bg`.
+- **`new App(...)`** takes an optional size in character cells, `new
+  App(30, 5, { view })`, for a headless run such as the test in step 5; it
+  defaults to 80x24. A live `runTui()` fills the terminal and `runNative()`
+  opens a window, and both ignore it.
+- **Layout.** `<column>` and `<row>` split their space equally between the
+  children that do not ask for a size. `<text>` asks for its content size,
+  so the label takes one row and the buttons the rest. Any element takes
+  `size` (pixels as a number, `"30%"`, `"2fr"` or `"content"`) and
+  `min`/`max` ([Layout](../concepts/layout.md)).
+- **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a
+  focused widget used the key (a text field takes `q` as a letter). Call
+  `app.quit()` from any handler to quit yourself, and pass `quitKeys:
+  false` to turn the keys off.
 
 ## 3. Run it in the terminal
 
@@ -122,7 +116,7 @@ it fails or hangs when input is piped or comes from `script`.
 
 ## 4. Run it in a native window
 
-Change `app.runTui()` to `app.runNative("Counter")`, and build the addon
+Change `.runTui()` to `.runNative("Counter")`, and build the addon
 with a native backend (`libgtk-4-dev` is needed on Linux):
 
 ```sh
@@ -186,7 +180,7 @@ a status bar. From `examples/parity/node/todo.tsx`:
 
 <!-- sample: examples/parity/node/todo.tsx -->
 ```tsx
-const item = (text: string) => ({ text: { spans: [{ text, fg: null, bg: null }] } });
+const item = (text: string) => ({ text: { spans: [{ text }] } });
 ```
 
 <!-- sample: examples/parity/node/todo.tsx -->
@@ -229,6 +223,7 @@ array:
 | `<column>...</column>` | `Column([...children], { gap, padding })` |
 | `<row>...</row>` | `Row([...children], { gap, padding })` |
 | `<button id="b" label="Go" onClick={f} />` | `Button("Go", { id: "b", onClick: f })` |
+| `<text id="t">Hello</text>` | `Text("Hello", { id: "t" })` |
 | `<textDisplay id="t" lines={lines} />` | `TextDisplay(lines, { id: "t" })` |
 | `<list id="l" items={items} onSelect={f} />` | `List(items, { id: "l", onSelect: f })` |
 | `<form id="f" fields={fields} />` | `Form(fields, { id: "f" })` |
@@ -264,8 +259,8 @@ npm install --save-dev tsx typescript @types/node
 }
 ```
 
-`@types/node` and `"types": ["node"]` are what let `tsc` see `require`,
-`module` and `setImmediate`. Then `npx tsx counter.tsx` runs the app.
+`@types/node` and `"types": ["node"]` are what let `tsc` see `require`
+and `module`. Then `npx tsx counter.tsx` runs the app.
 
 ## More
 

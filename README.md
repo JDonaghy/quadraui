@@ -25,11 +25,7 @@ below):
 
 <!-- sample: examples/hero/python/counter.py -->
 ```python
-from quadraui.app import App, Button, Column, Row, TextDisplay, key_name
-
-
-def text(s):
-    return [{"spans": [{"text": s, "fg": None, "bg": None}]}]
+from quadraui.app import App, Button, Column, Row, Text
 
 
 class Counter:
@@ -38,7 +34,7 @@ class Counter:
 
     def view(self):
         return Column(
-            TextDisplay(text(f"Count: {self.count}"), id="count"),
+            Text(f"Count: {self.count}", id="count"),
             Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
         )
 
@@ -48,21 +44,16 @@ class Counter:
     def dec(self):
         self.count -= 1
 
-    def on_key(self, event):
-        if key_name(event) == "q":
-            raise SystemExit
-
 
 if __name__ == "__main__":
-    counter = Counter()
-    App(30, 5, view=counter.view, on_event=counter.on_key).run_tui()  # or .run_native(title="Counter"): same Counter
+    App(view=Counter().view).run_tui()  # q quits; or .run_native(title="Counter"): same Counter
 ```
 
 **TypeScript (JSX)**
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+const { App } = require("@quadraui/node/app");
 
 class Counter {
   count = 0;
@@ -70,7 +61,7 @@ class Counter {
   view() {
     return (
       <column>
-        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
+        <text id="count">Count: {this.count}</text>
         <row>
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
@@ -78,18 +69,11 @@ class Counter {
       </column>
     );
   }
-
-  onKey(event: unknown, quit: () => void) {
-    if (keyName(event) === "q") quit();
-  }
 }
 
 if (require.main === module) {
   const counter = new Counter();
-  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
-  const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => counter.view() }).runTui(); // q quits; or .runNative("Counter"): same Counter
 }
 module.exports = { Counter };
 ```

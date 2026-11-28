@@ -111,6 +111,7 @@ exports.Table = nodes.Table;
 exports.List = nodes.List;
 exports.StatusBar = nodes.StatusBar;
 exports.TextDisplay = nodes.TextDisplay;
+exports.Text = nodes.Text;
 exports.Button = nodes.Button;
 exports.Toolbar = nodes.Toolbar;
 exports.Form = nodes.Form;
@@ -126,7 +127,7 @@ exports.Select = nodes.Select;
 exports.Password = nodes.Password;
 exports.TextArea = nodes.TextArea;
 
-export type { Node, Renderable, ComponentLike } from "./nodes";
+export type { Node, Renderable, ComponentLike, LayoutOptions, SizeSpec } from "./nodes";
 export type {
   SplitOptions,
   ColumnOptions,

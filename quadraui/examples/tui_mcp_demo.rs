@@ -151,11 +151,7 @@ impl Default for McpDemo {
 /// One line of plain, unstyled text — the same shape every
 /// `TextDisplay` pane below is built from.
 fn plain_line(text: impl Into<String>) -> TextDisplayLine {
-    TextDisplayLine {
-        spans: vec![StyledSpan::plain(text)],
-        decoration: Decoration::default(),
-        timestamp: None,
-    }
+    TextDisplayLine::plain(text)
 }
 
 impl AppLogic for McpDemo {

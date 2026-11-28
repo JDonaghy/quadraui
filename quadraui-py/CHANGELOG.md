@@ -12,6 +12,23 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `App.quit()` ends the run from any callback (a node callback, `on_event`,
+  an async task) or from top-level code; the step that ran it, or the next
+  one, returns `False`, and `run_tui()`/`run_native()`/`run_async()`
+  return (#3107).
+- Default quit keys on `App`: Ctrl-C always, and `q`/Escape when no focused
+  widget consumed the key. `on_event` sees the key first and keeps the app
+  running by returning `True`; `App(quit_keys=False)` turns all three off
+  (#3107).
+- `App(width, height)` is optional and defaults to 80x24; it only sizes a
+  headless run (#3107).
+- `Text("...")`: one unstyled `TextDisplay` line per `\n`-separated line,
+  sized to its content by default (#3107).
+- Per-child `size=`, `min=` and `max=` on every app-layer node constructor
+  except `Slider`: `size` is an `int` (portable pixels; a TUI cell is 8x16),
+  `"N%"`, `"Nfr"`, `"content"` or a raw wire `SectionSize`, and sets how
+  much of its parent `Column`/`Row` the node takes (#3107).
+
 - A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
   Fedora 40+, Debian 13+) carrying two builds of the extension,
   `_quadraui_gtk` (linking the system GTK 4, Pango, Cairo and GLib; nothing

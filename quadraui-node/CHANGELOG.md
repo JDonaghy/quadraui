@@ -18,6 +18,25 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- `App.quit()` ends the run from any callback or from top-level code; the
+  step that ran it, or the next one, returns `false`, and a `runTui()`/
+  `runNative()` loop restores the terminal or closes the window and stops
+  (#3107).
+- Default quit keys on `App`: Ctrl-C always, and `q`/Escape when no focused
+  widget consumed the key. `onEvent` sees the key first and keeps the app
+  running by returning `true`; `quitKeys: false` turns all three off
+  (#3107).
+- `new App({ view })`: the size is optional and defaults to 80x24; it only
+  sizes a headless run (#3107).
+- `Text(text, options)` and the `<text>` JSX intrinsic (`<text>Count:
+  {n}</text>`): one unstyled `TextDisplay` line per line of text, sized to
+  its content by default (#3107).
+- Per-child `size`, `min` and `max` options (and JSX props) on every
+  app-layer node except `Slider`: `size` is a number (portable pixels; a
+  TUI cell is 8x16), `"N%"`, `"Nfr"`, `"content"` or a raw wire
+  `SectionSize`, and sets how much of its parent `Column`/`Row` the node
+  takes. New exported types `LayoutOptions` and `SizeSpec` (#3107).
+
 - `QuiAppActions.showOverlay(kind, descriptor, anchor)`/
   `.dismissOverlay(id)` -- the same nine `kind`s and anchor semantics as
   `QuiApp.showOverlay`/`QuiApp.dismissOverlay`, callable from inside a
@@ -100,6 +119,11 @@ fragment step for this package (that mechanism, and
   runnable 5-star rating control.
 
 ### Changed
+
+- `App.stopLive()` called inside a callback quits the app (as
+  `App.quit()`) instead of throwing a native borrow error (#3107).
+- `AppOptions.onEvent` may return `boolean | void`; `true` keeps a default
+  quit key from quitting (#3107).
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input

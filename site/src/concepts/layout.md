@@ -19,15 +19,37 @@ They nest. From `quadraui-py/examples/task_list_demo.py`:
 
 In JSX the same containers are `<column>`, `<row>`, `<split>` and so on.
 
-`Column` and `Row` take `gap`, `padding` and `margin`. Children currently
-share the space equally: the wire format accepts a per-child size, minimum
-and maximum, but the `Column`/`Row` constructors do not expose them yet.
-So in the counter the label takes half the height and each button half the
-width, however large the terminal or window is.
+`Column` and `Row` take `gap`, `padding` and `margin`. Their children share
+the space equally unless a child asks for a size along the stack's main axis
+(height in a `Column`, width in a `Row`). Every node takes one, except
+`Slider`, whose `min`/`max` are its value range:
 
-The root of the tree fills the whole window or terminal. The size you pass
-to `App(width, height, ...)` is used only by a headless run (the test
-harness); a live `run_tui()` or `run_native()` ignores it.
+| `size=` (Python) / `size` (Node) | Takes |
+|---|---|
+| `32` | that many pixels; a terminal cell is 8 px wide and 16 px tall |
+| `"30%"` | that share of the parent |
+| `"2fr"` | a weight: what is left is shared out by weight |
+| `"content"` | the child's natural size (a text's lines, a list's rows) |
+| left out | an equal share of what is left |
+
+`min` and `max` clamp the result, in the same pixels. `Text("...")` and
+`<text>` default to `"content"`, so the counter's label takes one row and
+the buttons the rest:
+
+<!-- sample: untested — a fragment; the sizes are tested in tests/test_app_ergonomics.py -->
+```python
+Column(Text("Title"), List(items, id="items"), Row(..., size=32))
+```
+
+<!-- sample: untested — a fragment; the sizes are tested in tests/app_ergonomics.test.ts -->
+```tsx
+<column><text>Title</text><list id="items" items={items} /><row size={32}>...</row></column>
+```
+
+The root of the tree fills the whole window or terminal. The optional size
+you pass to `App(width, height, ...)` (80x24 by default) is used only by a
+headless run (the test harness); a live `run_tui()` or `run_native()`
+ignores it.
 
 ## Rust: three levels
 
