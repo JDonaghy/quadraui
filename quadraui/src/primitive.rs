@@ -1279,6 +1279,13 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// a programmer error reported as [`Handled::Ignored`] rather than a
     /// panic, mirroring every other "not mine" outcome this method can
     /// return.
+    ///
+    /// A [`crate::interactive::PointerKind::DoubleClick`] the widget
+    /// ignores is delivered again as the plain
+    /// [`crate::interactive::PointerKind::Down`] it also is (see
+    /// [`RoutedEvent::double_click_as_press`]), so a widget with no
+    /// double-click meaning of its own — a `Button`, a `Checkbox` — sees
+    /// both presses of a quick pair.
     fn handle(
         &self,
         state: &mut dyn std::any::Any,
@@ -1417,7 +1424,14 @@ where
         ) else {
             return Handled::Ignored;
         };
-        Interactive::handle(self, state, event, layout, cx).map(|action| action.into_ui_event(id))
+        let handled = match Interactive::handle(self, state, event, layout, cx) {
+            Handled::Ignored => match event.double_click_as_press() {
+                Some(press) => Interactive::handle(self, state, &press, layout, cx),
+                None => Handled::Ignored,
+            },
+            handled => handled,
+        };
+        handled.map(|action| action.into_ui_event(id))
     }
 
     fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction> {

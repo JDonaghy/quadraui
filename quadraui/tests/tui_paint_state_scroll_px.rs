@@ -220,6 +220,8 @@ fn tree_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
 
 fn data_table(n: usize) -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("test:table"),
         columns: vec![Column {
             title: "Name".to_string(),

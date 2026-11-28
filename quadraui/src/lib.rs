@@ -865,7 +865,7 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionCore,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, RowPress, SelectionCore,
     SelectionGesture, SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;

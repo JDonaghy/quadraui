@@ -290,7 +290,7 @@ const byIndex = (row: Row) => ({ idx: row.index });
 // (role, verb) -> the `UiEvent` variant the engine delivers for it.
 const ROW_EVENTS: Record<string, Record<string, [string, (row: Row) => unknown]>> = {
   tree: {
-    click: ["RowClicked", (row: Row) => ({ path: row.path, modifiers: wireModifiers() })],
+    click: ["RowClicked", (row: Row) => ({ path: row.path, button: "Left", modifiers: wireModifiers() })],
     select: ["SelectionChanged", byPath],
     doubleClick: ["RowDoubleClicked", byPath],
     activate: ["RowDoubleClicked", byPath],

@@ -56,56 +56,28 @@ pub fn loaded_row_path(
 /// [`hit_test_painted`] to translate an incoming pointer event's screen
 /// position into the primitive (and sub-region) under it.
 pub enum PaintedHit {
-    /// `area` is the absolute rect this tree was painted into, and the
-    /// frame `layout` is relative to (like `List`/`DataTable`'s
-    /// own layout) — a hit-test must translate a click into it via
-    /// `area`'s origin before calling `layout.hit_test`, and `area` is
-    /// never narrowed by [`clip_hits_to_viewport`] for exactly that
-    /// reason. `clip` is the sub-rect of `area` actually inside every
-    /// enclosing `Scroll`'s own viewport (equal to `area` until a `Scroll`
-    /// narrows it) — checked for containment in `clip`'s place, so a point
-    /// outside an enclosing scroll's viewport never resolves to this tree
-    /// even though `area`'s own origin (hence the frame `layout.hit_test`
-    /// translates into) is untouched. `row_paths` holds the `TreePath` of
-    /// every row this frame actually loaded, in visual order, kept
-    /// alongside the layout so a `TreeViewHit::Row(i)` can be turned into
-    /// a semantic `UiEvent::Tree(RowClicked)` without re-borrowing the
-    /// `TreeView` itself — indexed by [`LoadedRows`]-relative position, so
-    /// `row_paths[i]` is the row at ABSOLUTE index `loaded_rows.start + i`
-    /// ([`loaded_row_path`] does that translation; `loaded_rows` is `None`
-    /// on an unwindowed tree, where `start` is `0` and every row is
-    /// loaded). A windowed tree's not-yet-loaded positions are absent from
-    /// `row_paths` entirely rather than carrying the placeholder row's own
-    /// synthetic path, because that path is not a stable identity — it can
-    /// collide with a real row's path (see `crate::render::windowed_tree`'s
-    /// own doc) and would resolve a click or a cursor to the wrong row if
-    /// it escaped here. `area` is already narrowed to exclude
-    /// `scrollbar`'s own gutter (see `draw_tree_with_scrollbar`), so a row
-    /// hit-test never sees a point that landed on the scrollbar.
-    /// `scrollbar` is `None` when the tree's rows fit without scrolling —
-    /// its own `track` is an absolute rect (see [`quadraui::Scrollbar`]'s
-    /// own doc), so [`clip_hits_to_viewport`] narrows it directly, the same
-    /// way it narrows [`Self::Widget`]'s `area`. `scroll_offset`
-    /// is the tree's own ABSOLUTE offset as painted (an index into
-    /// `total_rows`, not into `row_paths`); `total_rows` is the
-    /// collection's real row count — `TreeView::rows.len()` on an
-    /// unwindowed tree, or the windowed `ItemsWindow::total` otherwise,
-    /// since a windowed tree only ever materialises the band it paints
-    /// (see `crate::render::windowed_vec`'s own doc), so a reader
-    /// needing the real extent must use this field rather than
-    /// `row_paths.len()`; `viewport_rows` is how many rows fit in `area` at
-    /// a zero offset (snapshotted at paint time, since a `Scrollbar`'s
-    /// `thumb_len` alone can't be inverted back to it once `min_thumb_len`
-    /// clamping has applied). All three feed the scrollbar drag/page/wheel
-    /// math in the binding's own event handler without needing to
-    /// re-borrow the `TreeView` or re-touch the backend. `editing` is the
-    /// path and edit state of whichever row currently has `TreeRow::edit`
-    /// set (`None` when no row is mid-rename), read by
-    /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
-    /// that row is being renamed is resolved by
-    /// `crate::semantic::tree_rename_event` instead of falling straight
-    /// through to the tree's raw `TreeEvent::KeyPressed`. `loaded_rows` is
-    /// `Some` only for a windowed tree — see [`LoadedRows`]'s own doc.
+    /// `area` is the absolute rect the tree was painted into and the frame
+    /// `layout` is relative to: a hit-test translates a click by `area`'s
+    /// origin before `layout.hit_test`, so [`clip_hits_to_viewport`] never
+    /// narrows it. `clip` is the part of `area` inside every enclosing
+    /// `Scroll` viewport (equal to `area` until one narrows it) and is what
+    /// containment checks, so a point outside a scroll's viewport never
+    /// resolves here. `row_paths` holds the `TreePath` of every row this
+    /// frame loaded, in visual order, indexed relative to `loaded_rows`
+    /// ([`loaded_row_path`] translates; `loaded_rows` is `None` on an
+    /// unwindowed tree, which loads every row). A windowed tree's unloaded
+    /// positions are absent rather than carrying the placeholder row's
+    /// synthetic path, which can collide with a real row's (see
+    /// `crate::render::windowed_tree`). `area` already excludes the
+    /// `scrollbar` gutter; `scrollbar` is `None` when the rows fit, and its
+    /// absolute `track` is narrowed by [`clip_hits_to_viewport`].
+    /// `scroll_offset` is the ABSOLUTE offset as painted, `total_rows` the
+    /// collection's real row count (the windowed `ItemsWindow::total`, not
+    /// `row_paths.len()`), and `viewport_rows` how many rows fit at a zero
+    /// offset — together they feed scrollbar drag/page/wheel math without
+    /// re-borrowing the `TreeView`. `editing` is the path and edit state of
+    /// the row mid-rename, read by [`crate::semantic::focus_scoped_key_event`]
+    /// to route keys to `crate::semantic::tree_rename_event`.
     Tree {
         id: WidgetId,
         area: Rect,
@@ -118,6 +90,8 @@ pub enum PaintedHit {
         viewport_rows: usize,
         editing: Option<(TreePath, TreeRowEditState)>,
         loaded_rows: Option<LoadedRows>,
+        /// `TreeView::selection_mode`.
+        selection_mode: quadraui::SelectionMode,
     },
     List {
         id: WidgetId,
@@ -175,6 +149,9 @@ pub enum PaintedHit {
         viewport_rows: usize,
         /// `Some` only for a windowed table — see [`LoadedRows`]'s own doc.
         loaded_rows: Option<LoadedRows>,
+        /// `DataTable::selected_indices` in [`quadraui::SelectionMode::Multi`]
+        /// (absolute indices); `None` in any other mode.
+        multi: Option<Vec<usize>>,
     },
     /// `area` is the absolute rect this display was painted into;
     /// `layout` is in a frame relative to `area`'s origin **shifted down by
@@ -238,36 +215,19 @@ pub enum PaintedHit {
         area: Rect,
         widget: Rc<dyn DynWidget>,
     },
-    /// A [`crate::layout::LayoutNode::Scroll`]'s own viewport, in the
-    /// ABSOLUTE frame (matching [`Self::Split`]) — `viewport` already
-    /// excludes the scrollbar gutter `crate::render::paint_layout`'s
-    /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
-    /// into its (culled, offset) content, same ordering as
-    /// [`Self::Split`]'s own divider hit — a descendant content hit
-    /// (pushed after, so checked first in reverse order) wins over this
-    /// one. Content scrolled out of view never gets its own
-    /// [`PaintedHit`] at all (culled before painting), so there is nothing
-    /// for this entry to mask; it exists so a click or wheel landing on
-    /// empty space inside the viewport (nothing painted under the pointer)
-    /// still resolves to the `Scroll` itself, via [`HitDetail::ScrollBody`].
-    /// `axis`/`content_len`/`offset` are the same values
-    /// [`crate::render::paint_scroll`] fed its own [`quadraui::ScrollView`]
-    /// this frame — read back by the engine's wheel/page-key/drag handling
-    /// to resolve a new offset without re-measuring the content. `scrollbar`
-    /// is `None` when the content fits without scrolling, mirroring
-    /// [`Self::Tree`]'s own `scrollbar` field; its `track` is an absolute
-    /// rect, outside `viewport` (reserved alongside it, not inside it), and
-    /// is narrowed by [`clip_hits_to_viewport`] the same way it narrows
-    /// [`Self::Tree`]'s — a `Scroll` nested inside another `Scroll`'s
-    /// viewport needs its own track clipped to the OUTER viewport too, the
-    /// same class of leak a nested `Tree`'s track is already guarded
-    /// against. `children` is one [`ScrollChildHit`] per direct
-    /// [`crate::layout::LayoutNode::Leaf`] child when this scroll's
-    /// content is a `Column`/`Row` matching its own axis — read by the
-    /// engine to scroll a child that just received focus fully into view.
-    /// Empty for `Atomic` content or a non-`Leaf` direct child (a nested
-    /// `Row`/`Column`/`Split`/…), where that scroll-into-view isn't
-    /// implemented yet.
+    /// A [`crate::layout::LayoutNode::Scroll`]'s viewport in the ABSOLUTE
+    /// frame, excluding the scrollbar gutter. Pushed before its (culled,
+    /// offset) content, so a descendant hit wins; it exists so a click or
+    /// wheel on empty space inside the viewport still resolves to the
+    /// `Scroll` ([`HitDetail::ScrollBody`]). `axis`/`content_len`/`offset`
+    /// are what [`crate::render::paint_scroll`] fed its
+    /// [`quadraui::ScrollView`] this frame, read back by wheel/page/drag
+    /// handling. `scrollbar` is `None` when the content fits; its absolute
+    /// `track` sits outside `viewport` and is narrowed by
+    /// [`clip_hits_to_viewport`] like [`Self::Tree`]'s. `children` has one
+    /// [`ScrollChildHit`] per direct `Leaf` child of matching-axis
+    /// `Column`/`Row` content, for scrolling a newly focused child into
+    /// view; it is empty for `Atomic` content or non-`Leaf` children.
     Scroll {
         id: WidgetId,
         viewport: Rect,
@@ -295,44 +255,19 @@ pub struct ScrollChildHit {
 }
 
 /// Intersects `hits[start..]` — one [`crate::render::paint_scroll`] call's
-/// own descendant content, painted inside `viewport` between its
-/// `Backend::push_clip(viewport)`/`pop_clip` pair — with `viewport`
-/// itself, dropping an entry whose bounds don't overlap it at all.
+/// descendant content, painted inside `viewport`'s clip — with `viewport`,
+/// dropping an entry that does not overlap it. A descendant's bounds can
+/// otherwise reach past the viewport (negative-origin rects on pixel
+/// backends, `Atomic` content sized to the full `content_len`), and since
+/// [`hit_test_painted`] checks in reverse paint order, such a hit would
+/// mask a sibling painted earlier at that spot.
 ///
-/// Without this, a descendant's own recorded bounds can reach past
-/// `viewport` on a backend whose `Rect` carries a negative-origin main
-/// axis correctly (every non-cell-grid one — see
-/// [`crate::render::scroll_content_slots`]'s own `cell_grid` doc, which
-/// already clips a cell-grid backend's bounds before they're ever
-/// painted, making this pass a no-op there), or on any backend whose
-/// `ScrollSlots::Atomic` content is sized to the scroll's full
-/// `content_len` rather than clamped to one viewport's worth (the common
-/// case — see `scroll_content_slots`'s own doc). Checked in reverse paint
-/// order by [`hit_test_painted`], a hit whose bounds leak past its own
-/// scroll's viewport can otherwise mask a sibling painted earlier at that
-/// same screen position (e.g. a button above a scroll whose own
-/// oversized content reaches back up over it) — this keeps every
-/// descendant's bounds inside the viewport it was actually painted into,
-/// so a point outside it never resolves to that scroll's content and a
-/// sibling painted before the scroll keeps its own clicks.
-///
-/// Only the hit kinds whose containment test lives in a plain field this
-/// module can reach are narrowed, via [`primary_bounds_mut`]:
-/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
-/// [`PaintedHit::DataTable`]/
-/// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
-/// [`PaintedHit::Tree`]'s own doc for why moving a local-frame kind's
-/// `area` instead would desync it from the layout `area`'s origin
-/// translates a click into); and a nested [`PaintedHit::Scroll`]'s own
-/// `viewport`. Two more sub-rect collections, checked by
-/// [`hit_test_painted`] ahead of a kind's own primary bounds, are narrowed
-/// alongside it: [`PaintedHit::Tree`]'s and [`PaintedHit::Scroll`]'s own
-/// `scrollbar.track` (an absolute rect, like [`PaintedHit::Widget`]'s own
-/// `area` — narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
-/// even when the track itself ends up with no overlap). The chrome-layout kinds
-/// (`Split`/`SplitTree`) carry several independent
-/// sub-region rects apiece with no single outer bounds to narrow, and
-/// aren't realistic `Scroll` content — left as-is.
+/// Narrowed via [`primary_bounds_mut`]: [`PaintedHit::Widget`]'s `area`;
+/// the `clip` (never `area` — see [`PaintedHit::Tree`]) of `Tree`, `List`,
+/// `DataTable` and `TextDisplay`; a nested [`PaintedHit::Scroll`]'s
+/// `viewport`; and the absolute `scrollbar.track` of `Tree` and `Scroll`
+/// (narrowed in place, never dropping the entry). `Split`/`SplitTree`
+/// carry several sub-rects with no single outer bound and are left as-is.
 pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
     let mut i = start;
     while i < hits.len() {
@@ -922,6 +857,7 @@ mod tests {
             viewport_rows: 24,
             editing,
             loaded_rows: None,
+            selection_mode: quadraui::SelectionMode::Single,
         }
     }
 
@@ -1165,6 +1101,7 @@ mod tests {
             viewport_rows: 24,
             editing: None,
             loaded_rows: None,
+            selection_mode: quadraui::SelectionMode::Single,
         }];
         clip_hits_to_viewport(&mut hits, 0, viewport);
 

@@ -91,12 +91,6 @@ binding-only ones.
 3. **One-line text labels (#3107).** Rust has `text("...")` in the app
    layer and `TextDisplayLine::plain(s)`, Python `Text("...")`, and Node
    `<text>` and `Text()`. A span's `fg`/`bg` are optional in every language.
-4. **Fast clicks on the same spot are lost.** Two clicks at one position
-   inside the double-click interval fold into a `DoubleClick`, and a
-   `Button` does not activate on it. Clicking `+` twice quickly counts
-   once. This happens in Rust (`TuiDriver`), Python and Node. The runners
-   click `+ - +` to work around it. A button should activate on every
-   press.
 5. **Quitting (#3107).** `App.quit()` is safe from any callback in
    both bindings (in Node, `app.stopLive()` inside a handler quits rather
    than throwing). Ctrl-C always quits, and `q`/Esc quit when no

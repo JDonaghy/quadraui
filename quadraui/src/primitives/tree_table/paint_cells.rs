@@ -156,6 +156,8 @@ mod tests {
     fn make_tree_table() -> TreeTable {
         TreeTable::new(
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("files"),
                 columns: vec![
                     Column {

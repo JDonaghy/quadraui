@@ -460,14 +460,16 @@ export interface DataTable {
   min_total_width?: number | null; // Minimum total width for all columns.
   rows: DataRow[];
   scroll_offset?: number;
-  selected_idx?: number | null;
+  selected_idx?: number | null; // The cursor row, and the anchor a Shift range grows from.
+  selected_indices?: number[]; // The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back.
+  selection_mode?: SelectionMode; // `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`.
   show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
   sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
   striped?: boolean; // Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
 }
 
 /** Events a `DataTable` emits back to the app. */
-export type DataTableEvent = { HeaderClicked: _DataTableEventHeaderClicked; } | { RowActivated: _DataTableEventRowActivated; } | { RowSelected: _DataTableEventRowSelected; } | { RowDoubleClicked: _DataTableEventRowDoubleClicked; } | { Scroll: _DataTableEventScroll; } | { ColumnResized: _DataTableEventColumnResized; } | { SelectionSet: _DataTableEventSelectionSet; } | { ScrollChanged: _DataTableEventScrollChanged; } | { ColumnFocused: _DataTableEventColumnFocused; } | { ContextMenuRequested: _DataTableEventContextMenuRequested; };
+export type DataTableEvent = { HeaderClicked: _DataTableEventHeaderClicked; } | { RowActivated: _DataTableEventRowActivated; } | { RowSelected: _DataTableEventRowSelected; } | { RowDoubleClicked: _DataTableEventRowDoubleClicked; } | { Scroll: _DataTableEventScroll; } | { ColumnResized: _DataTableEventColumnResized; } | { SelectionSet: _DataTableEventSelectionSet; } | { ScrollChanged: _DataTableEventScrollChanged; } | { ColumnFocused: _DataTableEventColumnFocused; } | { ContextMenuRequested: _DataTableEventContextMenuRequested; } | { RowClicked: _DataTableEventRowClicked; };
 
 /** Optional app-supplied override for the sort-direction glyphs `native_surface_paint` appends to a sorted column's header title. */
 export interface DataTableGlyphs {
@@ -487,7 +489,9 @@ export interface DataTableLeaf {
   min_total_width?: number | null; // Minimum total width for all columns.
   rows: DataRow[];
   scroll_offset?: number;
-  selected_idx?: number | null;
+  selected_idx?: number | null; // The cursor row, and the anchor a Shift range grows from.
+  selected_indices?: number[]; // The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back.
+  selection_mode?: SelectionMode; // `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`.
   show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
   sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
   striped?: boolean; // Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
@@ -598,7 +602,7 @@ export interface DiffView {
 /** What a `DiffView` reports. `scroll_offset` and `focused_pane` are the app's: it writes each back onto the descriptor. */
 export type DiffViewEvent = { Scrolled: _DiffViewEventScrolled; } | { PaneFocused: _DiffViewEventPaneFocused; };
 
-/** Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path. */
+/** Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` (which by default ignores it, returning `Continue`, until a binding overrides it). `Serialize` only: `HitDetail`, which every `*_detail` field reuses, has no reverse (host -> engine) decode path either. */
 export type DragGestureWireEvent = _DragGestureWireEventDragStarted | _DragGestureWireEventDragOver | _DragGestureWireEventDropped;
 
 /** One drawing instruction. Coordinates are LOCAL to the canvas — see the module doc's "Coordinate frame" section. */
@@ -1166,7 +1170,7 @@ export interface ListView {
 }
 
 /** Events a `ListView` emits back to the app. */
-export type ListViewEvent = { SelectionChanged: _ListViewEventSelectionChanged; } | { ItemActivated: _ListViewEventItemActivated; } | { ItemDoubleClicked: _ListViewEventItemDoubleClicked; } | { KeyPressed: _ListViewEventKeyPressed; } | { SelectionSet: _ListViewEventSelectionSet; };
+export type ListViewEvent = { SelectionChanged: _ListViewEventSelectionChanged; } | { ItemActivated: _ListViewEventItemActivated; } | { ItemDoubleClicked: _ListViewEventItemDoubleClicked; } | { KeyPressed: _ListViewEventKeyPressed; } | { SelectionSet: _ListViewEventSelectionSet; } | { ContextMenuRequested: _ListViewEventContextMenuRequested; } | { ItemClicked: _ListViewEventItemClicked; };
 
 export interface ListViewLeaf {
   bordered?: boolean; // When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list and inset items by 1 cell on each side.
@@ -2145,7 +2149,7 @@ export interface TreeTableControllerNode {
 export type TreeTableControllerWireEvent = { RowSelected: _TreeTableControllerWireEventRowSelected; } | { RowActivated: _TreeTableControllerWireEventRowActivated; } | { ToggleExpand: _TreeTableControllerWireEventToggleExpand; } | { ChildrenRequested: _TreeTableControllerWireEventChildrenRequested; } | { SortChanged: _TreeTableControllerWireEventSortChanged; };
 
 /** Events a `TreeTable` emits back to the app. Row events carry the row's `TreePath` alongside its flat index. */
-export type TreeTableEvent = { SortChanged: _TreeTableEventSortChanged; } | { RowActivated: _TreeTableEventRowActivated; } | { RowSelected: _TreeTableEventRowSelected; } | { RowDoubleClicked: _TreeTableEventRowDoubleClicked; } | { Scroll: _TreeTableEventScroll; } | { ScrollChanged: _TreeTableEventScrollChanged; } | { ColumnResized: _TreeTableEventColumnResized; } | { SelectionSet: _TreeTableEventSelectionSet; } | { ToggleExpanded: _TreeTableEventToggleExpanded; } | { ChildrenRequested: _TreeTableEventChildrenRequested; } | { ContextMenuRequested: _TreeTableEventContextMenuRequested; };
+export type TreeTableEvent = { SortChanged: _TreeTableEventSortChanged; } | { RowActivated: _TreeTableEventRowActivated; } | { RowSelected: _TreeTableEventRowSelected; } | { RowDoubleClicked: _TreeTableEventRowDoubleClicked; } | { Scroll: _TreeTableEventScroll; } | { ScrollChanged: _TreeTableEventScrollChanged; } | { ColumnResized: _TreeTableEventColumnResized; } | { SelectionSet: _TreeTableEventSelectionSet; } | { ToggleExpanded: _TreeTableEventToggleExpanded; } | { ChildrenRequested: _TreeTableEventChildrenRequested; } | { ContextMenuRequested: _TreeTableEventContextMenuRequested; } | { RowClicked: _TreeTableEventRowClicked; };
 
 /** Per-row tree metadata for one `TreeTable` row, parallel to `DataTable::rows` on `TreeTable::table`. */
 export interface TreeTableNode {
@@ -2250,6 +2254,7 @@ export interface _CanvasEventRegionClicked {
 }
 
 export interface _CanvasEventRegionDoubleClicked {
+  button: MouseButton;
   region: WidgetId;
   x: number;
   y: number;
@@ -2393,6 +2398,12 @@ export interface _DataTableEventHeaderClicked {
 
 export interface _DataTableEventRowActivated {
   idx: number;
+}
+
+export interface _DataTableEventRowClicked {
+  button: MouseButton;
+  idx: number;
+  modifiers: Modifiers;
 }
 
 export interface _DataTableEventRowDoubleClicked {
@@ -2921,8 +2932,19 @@ export interface _LayoutLeafNodeScriptedWidget {
   props?: unknown;
 }
 
+export interface _ListViewEventContextMenuRequested {
+  idx: number;
+  position: Point;
+}
+
 export interface _ListViewEventItemActivated {
   idx: number;
+}
+
+export interface _ListViewEventItemClicked {
+  button: MouseButton;
+  idx: number;
+  modifiers: Modifiers;
 }
 
 export interface _ListViewEventItemDoubleClicked {
@@ -3409,6 +3431,7 @@ export interface _TreeEventRowActivated {
 }
 
 export interface _TreeEventRowClicked {
+  button: MouseButton;
   modifiers: Modifiers;
   path: number[];
 }
@@ -3492,6 +3515,13 @@ export interface _TreeTableEventRowActivated {
   path: number[];
 }
 
+export interface _TreeTableEventRowClicked {
+  button: MouseButton;
+  idx: number;
+  modifiers: Modifiers;
+  path: number[];
+}
+
 export interface _TreeTableEventRowDoubleClicked {
   idx: number;
   path: number[];
@@ -3538,6 +3568,7 @@ export interface _UiEventCommandCenterActivated {
 export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; } | { GlobalShortcut: GlobalShortcutId; } | { KeyPressed: _UiEventKeyPressed; } | { CharTyped: string; } | { MouseDown: _UiEventMouseDown; } | { MouseUp: _UiEventMouseUp; } | { MouseMoved: _UiEventMouseMoved; } | { MouseEntered: _UiEventMouseEntered; } | { MouseLeft: _UiEventMouseLeft; } | { DoubleClick: _UiEventDoubleClick; } | { Scroll: _UiEventScroll; } | { WindowResized: _UiEventWindowResized; } | { WindowFocused: boolean; } | { DpiChanged: number; } | { WindowStateChanged: _UiEventWindowStateChanged; } | { FilesDropped: _UiEventFilesDropped; } | { ClipboardPaste: string; } | { OpenRequested: _UiEventOpenRequested; } | { TextCopied: string; } | { FocusChanged: WidgetId | null; } | { SystemThemeChanged: SystemTheme; } | { PowerStateChanged: _UiEventPowerStateChanged; } | { ScrollOffsetChanged: _UiEventScrollOffsetChanged; } | { ScrollbarMoved: _UiEventScrollbarMoved; } | { SwitchToggled: _UiEventSwitchToggled; } | { RadioGroupSelectionChanged: _UiEventRadioGroupSelectionChanged; } | { ButtonActivated: _UiEventButtonActivated; } | { CommandCenterActivated: _UiEventCommandCenterActivated; } | { TextSelectionChanged: _UiEventTextSelectionChanged; } | { SplitDividerDragged: _UiEventSplitDividerDragged; } | { MenuActivated: WidgetId; } | { ContextMenuItemActivated: WidgetId; } | { MessageDialogResolved: WidgetId; } | { ToastActionClicked: WidgetId; } | { CompletionItemActivated: [WidgetId, number]; } | { RichTextLinkClicked: [WidgetId, string]; } | { TrayClicked: _UiEventTrayClicked; } | { NotificationActivated: _UiEventNotificationActivated; } | { Tree: [WidgetId, TreeEvent]; } | { List: [WidgetId, ListViewEvent]; } | { Form: [WidgetId, FormEvent]; } | { Palette: [WidgetId, PaletteEvent]; } | { TabBar: [WidgetId, TabBarEvent]; } | { StatusBar: [WidgetId, StatusBarEvent]; } | { ActivityBar: [WidgetId, ActivityBarEvent]; } | { Terminal: [WidgetId, TerminalEvent]; } | { TextDisplay: [WidgetId, TextDisplayEvent]; } | { Chart: [WidgetId, ChartEvent]; } | { DataTable: [WidgetId, DataTableEvent]; } | { TreeTable: [WidgetId, TreeTableEvent]; } | { TreeTableController: [WidgetId, TreeTableControllerWireEvent]; } | { CellGrid: [WidgetId, CellGridEvent]; } | { MultiSectionView: [WidgetId, MultiSectionViewEvent]; } | { Chat: [WidgetId, ChatEvent]; } | { Sidebar: [WidgetId, SidebarAction]; } | { TabGroup: [WidgetId, TabGroupEvent]; } | { ScrollView: [WidgetId, ScrollViewEvent]; } | { Editor: [WidgetId, EditorEvent]; } | { Minimap: [WidgetId, MinimapEvent]; } | { Board: [WidgetId, BoardAction]; } | { PipelineView: [WidgetId, PipelineEvent]; } | { DiffView: [WidgetId, DiffViewEvent]; } | { MessageList: [WidgetId, MessageListEvent]; } | { FindReplace: [WidgetId, FindReplaceEvent]; } | { HelpOverlay: [WidgetId, HelpOverlayAction]; } | { PathPicker: [WidgetId, PathPickerAction]; } | { DualModePalette: [WidgetId, DualModePaletteAction]; } | { AppMenu: [WidgetId, AppMenuEvent]; } | { ShellView: [WidgetId, ShellEvent]; } | { BottomPanel: [WidgetId, BottomPanelEvent]; } | { Workspace: [WidgetId, WorkspaceEvent]; } | { Toolbar: [WidgetId, ToolbarEvent]; } | { Canvas: [WidgetId, CanvasEvent]; } | { BackendNative: BackendNativeEvent; } | { User: UserPayload; };
 
 export interface _UiEventDoubleClick {
+  button: MouseButton;
   position: Point;
   widget?: WidgetId | null;
 }

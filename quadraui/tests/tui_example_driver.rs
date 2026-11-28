@@ -3606,6 +3606,7 @@ fn full_chrome_title_bar_double_click_requests_maximize_toggle() {
 
     driver.dispatch(UiEvent::DoubleClick {
         widget: None,
+        button: quadraui::MouseButton::Left,
         position: Point::new(x, y),
     });
     assert!(

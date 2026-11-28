@@ -5711,6 +5711,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table-glyphs"),
                 columns: vec![crate::Column {
                     title: String::new(),
@@ -5789,6 +5791,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table"),
                 columns: vec![crate::Column {
                     title: "col".to_string(),

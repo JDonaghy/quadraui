@@ -225,6 +225,30 @@ pub enum RoutedEvent {
     },
 }
 
+impl RoutedEvent {
+    /// The plain press a double-click also is: `Some(Pointer { kind:
+    /// Down(button), .. })` for a [`PointerKind::DoubleClick`] pointer
+    /// event (same `sub`, `local` and `mods`), `None` for every other
+    /// event. [`crate::primitive::DynWidget::handle`] re-delivers an
+    /// ignored double-click through this.
+    pub fn double_click_as_press(&self) -> Option<RoutedEvent> {
+        match self {
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(button),
+                sub,
+                local,
+                mods,
+            } => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Down(*button),
+                sub: *sub,
+                local: *local,
+                mods: *mods,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// The runtime seam [`Interactive::handle`] reaches through [`EventCx`] to
 /// ask for focus, capture the pointer, change the cursor, or emit a
 /// [`UiEvent`] — implemented by the runtime that drives [`Interactive`]
@@ -553,6 +577,7 @@ mod tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }

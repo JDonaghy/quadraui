@@ -83,7 +83,7 @@ test("double click on a data table row emits the distinct RowDoubleClicked", () 
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 2.0, y: 1.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 2.0, y: 1.0 } } });
   app.run(1);
 
   assert.ok(
@@ -165,7 +165,7 @@ test("double click on a list item emits ItemDoubleClicked, not ItemActivated", (
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 0.0, y: 1.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 0.0, y: 1.0 } } });
   app.run(1);
 
   assert.ok(

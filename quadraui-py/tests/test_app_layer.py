@@ -164,7 +164,7 @@ def test_tree_row_click_and_toggle_expand_dispatch_to_their_own_callback():
         )
 
     app = App(20, 5, view=view)
-    app.push_event({"Tree": ["t:tree", {"RowClicked": {"path": [0], "modifiers": _NO_MODS}}]})
+    app.push_event({"Tree": ["t:tree", {"RowClicked": {"path": [0], "button": "Left", "modifiers": _NO_MODS}}]})
     app.step()
     assert clicked == [[0]]
     assert toggled == []

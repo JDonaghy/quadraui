@@ -193,7 +193,7 @@ def test_show_overlay_completions_click_selects_and_double_click_activates():
     ]
     assert app.screen_contains("filter")
 
-    app.push_event({"DoubleClick": {"position": {"x": float(col), "y": float(row)}}})
+    app.push_event({"DoubleClick": {"button": "Left", "position": {"x": float(col), "y": float(row)}}})
     app.run(1)
 
     assert received[-1] == {"CompletionItemActivated": ("completions:editor", 1)}

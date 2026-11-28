@@ -138,11 +138,10 @@ from quadraui.testing import harness  # noqa: E402
 counter = Counter()
 h = harness(App(30, 5, view=counter.view))
 assert h.contains("Count: 0"), h.screen()
-# `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-# DoubleClick, which a Button does not treat as a second activation (see
-# examples/hero/README.md, "Gaps").
-for label in ("+", "-", "+"):
+for label in ("+", "+"):
     h.click_text(label)
+assert h.contains("Count: 2"), h.screen()
+h.click_text("-")
 print(h.screen())
 assert h.contains("Count: 1"), h.screen()
 assert counter.count == 1
@@ -160,12 +159,11 @@ The harness methods you will use most:
 | `screen()`, `screen_lines()` | The frame as text. |
 | `find(id=..., role=..., text=...)` | A widget, to read (`.text`, `.state`) or act on (`.click()`, `.focus()`, `.row(...)`). |
 
-**Two clicks on the same spot count once.** Clicks less than 400 ms and
-1.5 cells apart fold into a double-click, and a button ignores the second
-half of one. This is why the test clicks `+ - +` rather than `+ + -`. To
-press the same button twice, click it once (which also focuses it) and
-then `h.press("Enter")`. A user clicking quickly in a live app hits the
-same limit today.
+**Two quick clicks are two clicks.** Clicks less than 400 ms and 1.5
+cells apart fold into a double-click, which a list, table or tree row
+treats as "open"; a button, or any widget with no double-click meaning,
+sees both presses, so the two quick `+` clicks above count twice. Only the
+left button folds: two quick right-clicks are two context-menu requests.
 
 The package also ships a pytest fixture, `quadraui_harness`, and an
 `AGENTS.md` guide for writing apps with a coding agent.

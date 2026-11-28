@@ -1,5 +1,6 @@
-//! Drives the hero counter headless on the TUI backend: click `+`, `-`, `+` by
-//! locating each button's label on screen, then assert the
+//! Drives the hero counter headless on the TUI backend: click `+`, `+`, `-` by
+//! locating each button's label on screen (the two `+` clicks land on one
+//! spot inside the double-click interval, and each one counts), then assert the
 //! rendered frame. The Python and Node runners
 //! (`examples/hero/{python,node}/run_headless.*`) drive the identical script.
 
@@ -18,16 +19,15 @@ fn click_label(driver: &mut TuiDriver<Run<hero::Counter>>, label: &str) {
 }
 
 #[test]
-fn plus_minus_plus_counts_to_one() {
+fn plus_plus_minus_counts_to_one() {
     let mut driver = TuiDriver::new(Run::new(hero::Counter::default()), 30, 5);
     driver.render();
     assert!(driver.screen_contains("Count: 0"), "{}", driver.screen());
-    // `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-    // DoubleClick, which a Button does not treat as a second activation
-    // (see examples/hero/README.md, "Gaps").
-    for label in ["+", "-", "+"] {
+    for label in ["+", "+"] {
         click_label(&mut driver, label);
     }
+    assert!(driver.screen_contains("Count: 2"), "{}", driver.screen());
+    click_label(&mut driver, "-");
     let screen = driver.screen();
     println!("{screen}");
     assert!(screen.contains("Count: 1"), "{screen}");

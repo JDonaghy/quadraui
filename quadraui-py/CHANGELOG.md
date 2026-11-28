@@ -28,6 +28,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   except `Slider`: `size` is an `int` (portable pixels; a TUI cell is 8x16),
   `"N%"`, `"Nfr"`, `"content"` or a raw wire `SectionSize`, and sets how
   much of its parent `Column`/`Row` the node takes (#3107).
+- Multi-select reaches the app (#2551). `data_table` descriptors take
+  `selection_mode` (`"Single"`/`"Multi"`) and `selected_indices`; in
+  `"Multi"`, Ctrl/Cmd-click, Shift-click, Shift+Up/Down, Ctrl/Cmd+A and
+  Ctrl+Space/Insert emit `DataTable.SelectionSet{indices}` and the set
+  paints back from `selected_indices`. A `list` emits
+  `List.SelectionSet{indices}` for Ctrl/Cmd/Shift clicks, Ctrl/Cmd+A and
+  Ctrl+Space/Insert, and a `"Multi"` `tree` emits `Tree.SelectionSet{paths}`
+  for Ctrl/Cmd/Shift clicks. App layer: `Table(selection_mode=...,
+  selected_indices=..., on_selection=, on_context_menu=, on_click=)`,
+  `List(on_selection=, on_context_menu=, on_click=)` and
+  `Tree(on_selection=, on_context_menu=)`.
 
 - A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
   Fedora 40+, Debian 13+) carrying two builds of the extension,
@@ -93,6 +104,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   carries the six new keys.
 
 ### Changed
+
+- Mouse events changed shape (#3074, #2555). `DoubleClick` carries a
+  `button` (`{"DoubleClick": {"button": "Left", "position": ...}}`; a pushed
+  `DoubleClick` must now name it), and only the left button folds, so two
+  quick right-clicks are two context-menu requests. Two quick clicks on a
+  `Button` call `on_click` twice. A right-click on a `DataTable`, `List` or
+  `Tree` row emits `ContextMenuRequested{idx|path, position}` instead of a
+  selection, and a middle or back/forward press emits
+  `DataTable.RowClicked`/`List.ItemClicked{idx, button, modifiers}`;
+  `Tree.RowClicked` gains `button`. A header or chevron reacts to the left
+  button only.
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input

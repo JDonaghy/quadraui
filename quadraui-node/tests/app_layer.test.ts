@@ -122,7 +122,7 @@ test("tree row click and toggle-expand dispatch to their own callback", () => {
       ),
   });
 
-  app.pushEvent({ Tree: ["t:tree", { RowClicked: { path: [0], modifiers: NO_MODS } }] });
+  app.pushEvent({ Tree: ["t:tree", { RowClicked: { path: [0], button: "Left", modifiers: NO_MODS } }] });
   app.step();
   assert.deepEqual(clicked, [[0]]);
   assert.deepEqual(toggled, []);

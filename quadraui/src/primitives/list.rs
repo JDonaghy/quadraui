@@ -40,11 +40,11 @@ use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::A11yAction;
-use crate::event::{Key, MouseButton, NamedKey};
+use crate::event::{Key, MouseButton, NamedKey, Point};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-use crate::types::SelectionGesture;
+use crate::types::{SelectionGesture, SelectionMode};
 use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
@@ -2781,6 +2781,16 @@ impl ListView {
                 None => Handled::Ignored,
             };
         }
+        let cursor = (!self.items.is_empty()).then(|| self.current_idx(state));
+        if let Some(indices) = state.selection.key(
+            SelectionMode::Multi,
+            key,
+            *modifiers,
+            cursor,
+            self.items.len(),
+        ) {
+            return Handled::Event(ListViewEvent::SelectionSet { indices });
+        }
         match key {
             Key::Named(NamedKey::Enter) | Key::Char(' ') => {
                 if self.items.is_empty() {
@@ -2789,18 +2799,6 @@ impl ListView {
                     Handled::Event(ListViewEvent::ItemActivated {
                         idx: self.current_idx(state),
                     })
-                }
-            }
-            Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
-                if self.items.is_empty() {
-                    Handled::Ignored
-                } else {
-                    let indices: Vec<usize> = (0..self.items.len()).collect();
-                    let last = self.items.len() - 1;
-                    state.selection.selected = indices.clone();
-                    state.selection.anchor = Some(last);
-                    state.cursor = Some(last);
-                    Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
             }
             _ => {
@@ -2816,43 +2814,50 @@ impl ListView {
         }
     }
 
-    /// `PointerKind::Down(MouseButton::Left)` — hit-tests `local` and
-    /// selects the row it landed on, honouring `mods`' own
-    /// [`SelectionGesture`] the same way a keyboard range-extension does
-    /// (see [`Self::navigate`]). A hit on the title row requests focus
-    /// (so clicking a bordered list's header still focuses it) but is
-    /// otherwise non-actionable, per [`ListViewHit`]'s own doc; a hit on
-    /// the empty tail below the last item is ignored outright.
+    /// `PointerKind::Down(button)` — hit-tests `local` and resolves the
+    /// press on the item it landed on through
+    /// [`crate::SelectionCore::press`]: a left press selects it (a ListView
+    /// always lets Ctrl/Cmd and Shift grow a multi-selection), a
+    /// right press asks for its context menu, any other button reports
+    /// [`ListViewEvent::ItemClicked`]. A left press on the title row
+    /// requests focus (so clicking a bordered list's header still focuses
+    /// it) but is otherwise non-actionable, per [`ListViewHit`]'s own doc;
+    /// a hit on the empty tail below the last item is ignored outright.
     fn handle_mouse_down(
         &self,
         state: &mut ListViewState,
         hit: ListViewHit,
+        button: MouseButton,
         mods: &Modifiers,
+        position: Point,
         cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
+        let left = button == MouseButton::Left;
         let idx = match hit {
             ListViewHit::Item(idx) => idx,
-            ListViewHit::Title => {
+            ListViewHit::Title if left => {
                 cx.request_focus(None);
                 return Handled::Ignored;
             }
-            ListViewHit::Empty => return Handled::Ignored,
+            ListViewHit::Title | ListViewHit::Empty => return Handled::Ignored,
         };
+        if !left {
+            let press = state
+                .selection
+                .press(SelectionMode::Multi, None, idx, button, *mods);
+            return Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position));
+        }
         cx.request_focus(None);
         let current = self.current_idx(state);
-        let gesture = SelectionGesture::from_modifiers(*mods);
-        let indices = state.selection.on_gesture(Some(current), idx, gesture);
+        let press = state
+            .selection
+            .press(SelectionMode::Multi, Some(current), idx, button, *mods);
         state.cursor = Some(idx);
-        match gesture {
-            SelectionGesture::Replace => {
-                state.cursor_echo = Some(idx);
-                Handled::Event(ListViewEvent::SelectionChanged { idx })
-            }
-            SelectionGesture::Toggle | SelectionGesture::Range => {
-                state.cursor_echo = indices.first().copied();
-                Handled::Event(ListViewEvent::SelectionSet { indices })
-            }
-        }
+        state.cursor_echo = match &press {
+            crate::RowPress::Set(indices) => indices.first().copied(),
+            _ => Some(idx),
+        };
+        Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position))
     }
 }
 
@@ -2928,13 +2933,14 @@ impl Interactive for ListView {
     ) -> Handled<ListViewEvent> {
         match event {
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
+                kind: PointerKind::Down(button),
                 local,
                 mods,
                 ..
             } => {
                 let hit = layout.local_hit_test(local.x, local.y);
-                self.handle_mouse_down(state, hit, mods, cx)
+                let position = Point::new(local.x + layout.area.x, local.y + layout.area.y);
+                self.handle_mouse_down(state, hit, *button, mods, position, cx)
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::DoubleClick(MouseButton::Left),
@@ -3480,6 +3486,7 @@ mod interactive_tests {
             selection: crate::types::SelectionCore {
                 selected: vec![0],
                 anchor: Some(0),
+                ..Default::default()
             },
             cursor: Some(0),
             cursor_echo: Some(0),
@@ -3554,7 +3561,7 @@ mod interactive_tests {
 }
 
 /// Events a `ListView` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
@@ -3581,6 +3588,44 @@ pub enum ListViewEvent {
     /// sorted, de-duplicated selection, not just the row that changed —
     /// see [`crate::types::apply_selection_gesture`].
     SelectionSet { indices: Vec<usize> },
+    /// The user asked for item `idx`'s context menu (right-click);
+    /// `position` is where, in the coordinates the list was laid out in.
+    ContextMenuRequested {
+        idx: usize,
+        position: crate::event::Point,
+    },
+    /// Item `idx` was pressed with a button other than the primary and
+    /// secondary ones — middle, `X1`/`X2` or a backend-specific button.
+    /// See [`crate::DataTableEvent::RowClicked`].
+    ItemClicked {
+        idx: usize,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
+}
+
+impl ListViewEvent {
+    /// The event a press on item `idx`, resolved by
+    /// [`crate::SelectionCore::press`], reports — the list counterpart of
+    /// [`crate::DataTableEvent::from_row_press`].
+    pub fn from_row_press(
+        press: crate::RowPress,
+        idx: usize,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+    ) -> Self {
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::SelectionChanged { idx },
+            RowPress::Set(indices) => Self::SelectionSet { indices },
+            RowPress::ContextMenu => Self::ContextMenuRequested { idx, position },
+            RowPress::Click(button) => Self::ItemClicked {
+                idx,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
