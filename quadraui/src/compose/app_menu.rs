@@ -166,12 +166,18 @@ impl WidgetAction for AppMenuEvent {
 }
 
 /// [`Interactive::State`] for [`AppMenu`]: the open dropdown's typeahead
-/// buffer — the deepest level's [`ContextMenuState`].
+/// buffer — the deepest level's [`ContextMenuState`] — and the menu's own
+/// view while the host leaves it uncontrolled.
 #[non_exhaustive]
 #[derive(Debug, Default)]
 pub struct AppMenuState {
     /// The deepest open level's typeahead state.
     pub menu: ContextMenuState,
+    /// The view the menu moved itself to while its descriptor's
+    /// [`AppMenu::view`] is the default (an uncontrolled menu: the host
+    /// never applies [`AppMenuEvent::Changed`]). `None` once the menu is
+    /// closed again or the descriptor carries a view of its own.
+    pub view: Option<AppMenuView>,
 }
 
 /// Resolved widths of one menu level and, per item, of the submenu it
@@ -268,6 +274,22 @@ impl AppMenu {
     /// Whether a dropdown is open.
     pub fn is_open(&self) -> bool {
         self.view.open_item.is_some()
+    }
+
+    /// This menu as it shows and handles input: its own [`Self::view`]
+    /// when the host sets one, otherwise the view an uncontrolled menu
+    /// keeps in `state` ([`AppMenuState::view`]). A host that applies
+    /// [`AppMenuEvent::Changed`] controls the view; one that never does
+    /// still sees its dropdowns open, highlight and close.
+    fn live(&self, state: Option<&AppMenuState>) -> std::borrow::Cow<'_, Self> {
+        match state.and_then(|s| s.view.as_ref()) {
+            Some(view) if self.view == AppMenuView::default() => {
+                let mut live = self.clone();
+                live.view = view.clone();
+                std::borrow::Cow::Owned(live)
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
     }
 
     /// Apply what this menu reported: a view change replaces
@@ -839,7 +861,8 @@ impl Primitive for AppMenu {
         if self.native {
             return;
         }
-        Primitive::paint(&self.build_menu_bar(), &layout.bar, surface, env);
+        let live = self.live(env.widget_state_as::<AppMenuState>());
+        Primitive::paint(&live.build_menu_bar(), &layout.bar, surface, env);
     }
 
     #[cfg(feature = "tui")]
@@ -852,7 +875,8 @@ impl Primitive for AppMenu {
         if self.native {
             return;
         }
-        Primitive::paint_cells(&self.build_menu_bar(), &layout.bar, cells, env);
+        let live = self.live(env.widget_state_as::<AppMenuState>());
+        Primitive::paint_cells(&live.build_menu_bar(), &layout.bar, cells, env);
     }
 }
 
@@ -883,7 +907,9 @@ impl Interactive for AppMenu {
     /// on an open level arrives as a popup event naming the row under the
     /// pointer; keys while a dropdown is open go to the deepest level's
     /// [`ContextMenu::handle_key`]. A dismissal closes the dismissed level
-    /// and everything below it.
+    /// and everything below it. An uncontrolled menu (default
+    /// [`AppMenu::view`]) also keeps the view it moves to in
+    /// [`AppMenuState::view`].
     fn handle(
         &self,
         state: &mut AppMenuState,
@@ -894,6 +920,36 @@ impl Interactive for AppMenu {
         if self.native {
             return Handled::Ignored;
         }
+        let uncontrolled = self.view == AppMenuView::default();
+        if !uncontrolled {
+            state.view = None;
+        }
+        let live = self.live(Some(&*state));
+        live.handle_live(state, event, layout, cx, uncontrolled)
+    }
+
+    /// The open dropdown, under its bar item; its open submenus are the
+    /// dropdown's own popups, beside their parent rows.
+    fn popups(&self, state: &AppMenuState, layout: &AppMenuLayout) -> Vec<Popup> {
+        let live = self.live(Some(state));
+        live.root_spec(layout)
+            .map(|spec| live.level_popup(0, spec, &layout.metrics))
+            .into_iter()
+            .collect()
+    }
+}
+
+impl AppMenu {
+    /// [`Interactive::handle`] against the view this menu shows. With
+    /// `uncontrolled`, the view it moves to is kept in `state`.
+    fn handle_live(
+        &self,
+        state: &mut AppMenuState,
+        event: &RoutedEvent,
+        layout: &AppMenuLayout,
+        cx: &mut EventCx,
+        uncontrolled: bool,
+    ) -> Handled<AppMenuEvent> {
         let mut next = self.clone();
         let handled = match event {
             RoutedEvent::PopupEvent { popup, event } => {
@@ -932,6 +988,9 @@ impl Interactive for AppMenu {
         if next.view == self.view {
             return handled;
         }
+        if uncontrolled {
+            state.view = (next.view != AppMenuView::default()).then(|| next.view.clone());
+        }
         let changed = AppMenuEvent::Changed(next.view);
         match handled {
             // An activation, or an event left to the host that still moved
@@ -943,15 +1002,6 @@ impl Interactive for AppMenu {
             }
             Handled::Consumed => Handled::Event(changed),
         }
-    }
-
-    /// The open dropdown, under its bar item; its open submenus are the
-    /// dropdown's own popups, beside their parent rows.
-    fn popups(&self, _state: &AppMenuState, layout: &AppMenuLayout) -> Vec<Popup> {
-        self.root_spec(layout)
-            .map(|spec| self.level_popup(0, spec, &layout.metrics))
-            .into_iter()
-            .collect()
     }
 }
 
@@ -1681,6 +1731,56 @@ mod tests {
     /// On a backend that paints its own menu bar, the mnemonic
     /// underlines are real, so Alt+the access key opens that menu's
     /// in-window dropdown.
+    /// A menu whose descriptor view stays at the default keeps the view
+    /// it moves to in its state and opens its dropdown from it; once the
+    /// descriptor carries a view, that view wins and the state's is
+    /// dropped.
+    #[test]
+    fn an_uncontrolled_menu_keeps_its_own_view_until_the_descriptor_sets_one() {
+        let menu = AppMenu::new(WidgetId::new("menubar:test"), sample_menus());
+        let layout = Primitive::layout(&menu, &cells_ctx(), bar_rect());
+        let mut state = AppMenuState::default();
+        let alt_f = RoutedEvent::Key(KeyEvent {
+            key: Key::Char('f'),
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        });
+        let driven = crate::compose::widget_host::drive(
+            &menu,
+            menu.id,
+            &mut state,
+            &alt_f,
+            &layout,
+            Units::Cells,
+        );
+        assert!(matches!(
+            driven.handled,
+            Handled::Event(AppMenuEvent::Changed(_))
+        ));
+        assert_eq!(state.view.as_ref().and_then(|v| v.open_item), Some(0));
+        assert_eq!(Interactive::popups(&menu, &state, &layout).len(), 1);
+
+        let mut controlled = menu.clone();
+        controlled.view.focused_item = Some(1);
+        crate::compose::widget_host::drive(
+            &controlled,
+            controlled.id,
+            &mut state,
+            &RoutedEvent::Key(KeyEvent {
+                key: Key::Char('z'),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+            &layout,
+            Units::Cells,
+        );
+        assert_eq!(state.view, None);
+        assert!(Interactive::popups(&menu, &state, &layout).is_empty());
+    }
+
     #[test]
     fn alt_char_opens_the_painted_menu_bars_dropdown() {
         let mut ms = Ms::new(sample_menus());

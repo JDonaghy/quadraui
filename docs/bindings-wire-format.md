@@ -190,19 +190,17 @@ descendant's `{"class": "secondary"}` against that narrowed theme.
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
 -- exactly one `<kind>` key is present alongside `"id"`. `LayoutLeafNode`'s
 own field table in the generated reference lists every registered kind key
-and the descriptor type it carries: the six fixed kinds
-(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"button"`,
-`"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"`),
-`"status_bar"`, and every additive kind registered in
-`quadraui-binding-core::extra_paint::EXTRA_PRIMITIVE_KINDS` (`"progress"`,
-`"spinner"`, `"image"`, `"form"`, `"text_input"`, `"number_input"`,
-`"combo_box"`, `"date_picker"`, `"radio_group"`, `"switch"`, `"chart"`,
-`"message_list"`, `"board"`, `"pipeline_view"`, `"minimap"`,
-`"multi_section_view"`, `"diff_view"`, `"activity_bar"`, `"toolbar"`,
-`"menu_bar"`, `"command_line"`, `"command_center"`, `"palette"`,
-`"scrollbar"`, `"editor"`, `"terminal"`, `"canvas"`, `"scroll_view"`,
-`"find_replace"`). Adding a kind to either Rust-side list is what adds its
-row to `LayoutLeafNode`'s table below -- this page never lists them by hand.
+and the descriptor type it carries: the fixed kinds
+(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"text_display"`,
+`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`) and every generic widget
+kind (`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
+`quadraui::widget_kinds!` table declares, such as `"button"`, `"form"`,
+`"menu_bar"`, `"text_input"` and `"palette"`, plus any kind a binding
+registers at runtime). A generic kind decodes into its core widget and is
+painted, hit-tested and routed through that widget's own
+`Primitive`/`Interactive` implementation. Adding a kind to either list is
+what adds its row to `LayoutLeafNode`'s table below -- this page never
+lists them by hand.
 
 `RenderFrameDict` is the older, flat, per-slot shape some callbacks return
 instead of a `LayoutNode` tree: the same kind keys as `LayoutLeafNode`, but
@@ -238,12 +236,14 @@ in the generated reference for its variants.
 
 ## Controlled vs. uncontrolled fields
 
-Several leaf descriptors carry a field that mirrors a piece of state
-`quadraui-binding-core::widget_state::WidgetState` also tracks per widget
-across frames -- a scroll offset, a checked flag, a focused index. Every
-such field is optional (`field_opt` in the generated reference: the key may
-be omitted) and follows the same resolution rule, applied per widget id by
-`WidgetState::resolve`:
+Several leaf descriptors carry a field that mirrors a piece of state the
+binding's engine also tracks per widget across frames, in a
+`quadraui::WidgetStateStore` -- a scroll offset, a checked flag, a focused
+index, a menu bar's open dropdown. Every such field is optional
+(`field_opt` in the generated reference: the key may be omitted) and
+follows the same resolution rule, applied per widget id
+(`WidgetStateStore::resolve` for a host-resolved value, the widget's own
+`Interactive::State` for a generic widget kind):
 
 - **Controlled** -- the descriptor sets the field (key present, non-null).
   The app's value wins outright for this frame, and is written back into the
@@ -261,7 +261,7 @@ reference below are the common examples.
 
 ### `Form.focused_field`
 
-A `"form"` extra's own `focused_field` follows the rule above, with a
+A `"form"` leaf's own `focused_field` follows the rule above, with a
 richer uncontrolled behaviour than a plain scroll offset or checked flag:
 
 - **Controlled** -- the render callback sets `focused_field` to a field id
@@ -285,11 +285,30 @@ interaction (typing into whichever field is focused, toggling a switch,
 clicking a button) working with no app code tracking focus at all -- the
 form is never a dead end just because the key was left `null`.
 
+### `menu_bar` view
+
+A `"menu_bar"` leaf (`AppMenu`) carries its view as `open_item`,
+`focused_item`, `dropdown_selected`, `submenu_path` and
+`submenu_selected`, and reports every change as
+`{"AppMenu": [id, {"Changed": <view>}]}`:
+
+- **Controlled** -- the render callback merges each `Changed` view into
+  the next frame's `"menu_bar"` dict. The descriptor's view then wins.
+- **Uncontrolled** -- the render callback leaves every view key unset. The
+  menu keeps the view itself, so a click or an Alt mnemonic opens a
+  dropdown, the highlight moves and an activation or Escape closes it with
+  no app code. `Changed` is still reported, for an app that wants to
+  observe it.
+
+A closed view and an omitted one are the same descriptor. So a controlled
+app that closes an open menu on its own, before any further input reaches
+the menu, sees the menu's own last view again until that input arrives.
+
 ### `has_focus` is not a controlled/uncontrolled field
 
-`has_focus` on a `"text_input"`/`"password"`/`"textarea"` extra (and on a
+`has_focus` on a `"text_input"`/`"password"`/`"textarea"` leaf (and on a
 `Form`'s own fields) looks like it belongs in the list above, but it isn't
-tracked by `WidgetState::resolve` at all -- it is purely cosmetic, read only
+resolved per widget at all -- it is purely cosmetic, read only
 when painting the caret/focus-ring chrome. Which widget actually *receives*
 a typed key or click is decided entirely by the engine's own focus state
 (`backend.focus_tree().focused_id()`, set by click-to-focus or

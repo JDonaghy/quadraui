@@ -285,6 +285,33 @@ pub fn with_widget_states<R>(f: impl FnOnce(&mut WidgetStateStore) -> R) -> R {
     WIDGET_STATES.with(|s| f(&mut s.borrow_mut()))
 }
 
+/// Runs `f` with `state` lent to this thread's runtime store as `id`'s
+/// state, then hands it back with `f`'s result — for a host that keeps a
+/// widget's state itself and paints the widget through
+/// [`crate::DrawsPrimitives::draw_dyn`], which reads the state from the
+/// store. Whatever the store held for `id` before is restored afterwards.
+///
+/// `f` may paint or route: the store is not borrowed while it runs.
+pub fn lend_widget_state<S: Any, R>(id: WidgetId, state: S, f: impl FnOnce() -> R) -> (S, R) {
+    let displaced = with_widget_states(|states| {
+        let displaced = states.take(&id);
+        states.insert(id, Box::new(state));
+        displaced
+    });
+    let result = f();
+    let lent = with_widget_states(|states| {
+        let lent = states.take(&id);
+        if let Some(displaced) = displaced {
+            states.insert(id, displaced);
+        }
+        lent
+    });
+    let state = *lent
+        .and_then(|lent| lent.downcast::<S>().ok())
+        .expect("the lent state stays in the store while `f` runs");
+    (state, result)
+}
+
 /// Run `f` with `id`'s stored state from this thread's runtime store, or
 /// `None` when `id` is `None`, has no state yet, or the store is already
 /// borrowed further up the stack.
@@ -477,6 +504,23 @@ mod tests {
         store.gc();
         assert_eq!(store.value::<i32>(&kept), Some(1));
         assert!(!store.contains(&dropped));
+    }
+
+    #[test]
+    fn a_lent_state_is_visible_during_the_call_and_the_displaced_one_comes_back() {
+        let id = WidgetId::new("widget-state-test:lent");
+        with_widget_states(|states| states.set(id, 1_i32));
+        let (back, seen) = lend_widget_state(id, 7_i32, || {
+            with_widget_states(|states| states.value::<i32>(&id))
+        });
+        assert_eq!((back, seen), (7, Some(7)));
+        assert_eq!(
+            with_widget_states(|states| states.value::<i32>(&id)),
+            Some(1)
+        );
+        with_widget_states(|states| states.remove(&id));
+        lend_widget_state(id, 2_i32, || ());
+        assert!(!with_widget_states(|states| states.contains(&id)));
     }
 
     #[test]

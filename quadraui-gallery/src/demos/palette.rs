@@ -136,12 +136,9 @@ impl Demo for PaletteDemo {
         // store, so it is lent to the store for the paint, which draws the
         // caret from it.
         let popup_rect = Self::popup_rect(variant, area, backend);
-        let id = self.picker.id;
-        quadraui::with_widget_states(|states| {
-            states.insert(id, Box::new(self.picker_state.clone()))
+        quadraui::lend_widget_state(self.picker.id, self.picker_state.clone(), || {
+            backend.draw_dyn(popup_rect, &self.picker, &())
         });
-        let _ = backend.draw_dyn(popup_rect, &self.picker, &());
-        quadraui::with_widget_states(|states| states.remove(&id));
     }
 
     fn handle(

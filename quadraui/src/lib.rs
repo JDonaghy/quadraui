@@ -935,7 +935,9 @@ pub use interactive::{
 // The widget-contract routing engine's two public types — see
 // `frame_tree`/`widget_state`'s own module docs.
 pub use frame_tree::{FrameHit, FrameTree, FrameTreeNode};
-pub use widget_state::{with_widget_states, WidgetRoutingState, WidgetStateStore};
+pub use widget_state::{
+    lend_widget_state, with_widget_states, WidgetRoutingState, WidgetStateStore,
+};
 // Widget-owned popups — see `popup`'s own module doc.
 pub use popup::{
     paint_open_popups, DismissReason, OpenPopup, Popup, PopupDismiss, PopupKey, PopupSide,

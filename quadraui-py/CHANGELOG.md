@@ -79,9 +79,8 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
     press reached (before, a bare tab bar started from tab 0 on every
     press), and Enter/Space activate it. While the bar has not moved focus
     yet, a `"tabs"` node's `focused_index` is the starting tab.
-  - A key the bar has no use for reaches the handler as the bar's
-    `TabBar` `KeyPressed` event and then as the raw `KeyPressed` (before,
-    only the former).
+  - A key the bar has no use for still reaches the handler once, as the
+    bar's `TabBar` `KeyPressed` event and not also as the raw `KeyPressed`.
   - A double-click on a tab reaches the handler as the raw `DoubleClick`
     (before, a second `TabActivated`).
 
@@ -107,12 +106,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   - A `"text_input"` leaf's natural height counts its border rows, so
     under a non-`stretch` `align` it sizes to the box it paints.
 
-- A `"menu_bar"` leaf is the whole application menu (core `AppMenu`) and
-  is controlled: a click or key that opens a menu or moves a
-  highlight reports `{"AppMenu": (id, {"Changed": view})}`, and the app
-  merges `view` (`open_item`, `focused_item`, `dropdown_selected`,
-  `submenu_path`, `submenu_selected`) back into the `"menu_bar"` dict it
-  renders next; a menu with nothing echoed never opens. An activation still
+- A `"menu_bar"` leaf is the whole application menu (core `AppMenu`). A
+  click or key that opens a menu or moves a highlight reports
+  `{"AppMenu": (id, {"Changed": view})}`. A dict that leaves every view key
+  out (`open_item`, `focused_item`, `dropdown_selected`, `submenu_path`,
+  `submenu_selected`) is uncontrolled: the menu keeps its own view, so it
+  opens and closes with no app code, as before. An app that merges each
+  `Changed` view back into the `"menu_bar"` dict it renders next controls
+  the view instead. An activation still
   reports `{"MenuActivated": item_id}`, now after the `Changed` view that
   closes the menu and with the `"hit": {"kind": "widget_body"}` every
   generic leaf's event carries. The dropdown is a popup routed to the
@@ -392,6 +393,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- While a modal overlay (`show_overlay("message_dialog", ...)` and the
+  other modal kinds) is open, a click, pointer move or key it does not use
+  no longer reaches the widget painted beside or beneath it.
 - Ctrl/Cmd+Z in a `form` text, textarea or password row undoes back past
   the last keystroke: the row keeps its undo history while it holds focus.
   Before, each keystroke started a fresh history, so undo had nothing to

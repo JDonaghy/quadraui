@@ -24,11 +24,11 @@ use quadraui::{
     wheel_row_delta, Backend, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
     CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
     ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
-    FloatMeasure, FormEvent, Key, KeyEvent, ListViewEvent, MessageDialogButton, Modifiers,
-    MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup,
-    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent,
-    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
-    TooltipMeasure, TreeEvent, UiEvent, WidgetId,
+    FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
+    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupLayout,
+    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, Toast, ToastCorner,
+    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -231,17 +231,9 @@ impl LayoutContent {
                         .merge(sink.dispatch(&resolved, Some(&detail))),
                 )
             }
-            UiEvent::KeyPressed {
-                key,
-                modifiers,
-                repeat,
-            } => {
+            UiEvent::KeyPressed { key, modifiers, .. } => {
                 let focused = backend.focus_tree().focused_id().copied()?;
-                let routed = RoutedEvent::Key(KeyEvent {
-                    key: key.clone(),
-                    modifiers: *modifiers,
-                    repeat: *repeat,
-                });
+                let routed = quadraui::compose::routed_event(event, Rect::default(), &[])?;
                 let child_focus = engine.dyn_widget_focus(backend);
                 if let Some((_, reaction)) =
                     tab_past_child_stops(&self.hits.borrow(), child_focus, event, backend, sink)
@@ -271,7 +263,7 @@ impl LayoutContent {
             }
             UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_) => {
                 let focused = backend.focus_tree().focused_id().copied()?;
-                let routed = routed_input_event(event)?;
+                let routed = quadraui::compose::routed_event(event, Rect::default(), &[])?;
                 self.dispatch_focused_widget(focused, routed, engine, backend, sink)?
             }
             _ => None,
@@ -497,27 +489,6 @@ fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> b
 /// `leaf` for a widget that carries none.
 fn dyn_state_key(leaf: WidgetId, widget: &dyn DynWidget) -> WidgetId {
     widget.id().copied().unwrap_or(leaf)
-}
-
-/// The [`RoutedEvent`] a focused generic leaf receives for a
-/// `KeyPressed`/`CharTyped`/`ClipboardPaste`: the key itself, or the typed
-/// or pasted text as committed text. `None` for any other event.
-fn routed_input_event(event: &UiEvent) -> Option<RoutedEvent> {
-    Some(match event {
-        UiEvent::KeyPressed {
-            key,
-            modifiers,
-            repeat,
-            ..
-        } => RoutedEvent::Key(KeyEvent {
-            key: key.clone(),
-            modifiers: *modifiers,
-            repeat: *repeat,
-        }),
-        UiEvent::CharTyped(c) => RoutedEvent::Text(c.to_string()),
-        UiEvent::ClipboardPaste(text) => RoutedEvent::Text(text.clone()),
-        _ => return None,
-    })
 }
 
 /// Whether `event` is a bare Escape press: the host's dismiss key for an
@@ -2449,8 +2420,10 @@ impl InteractionEngine {
     /// open or it does not claim `event`, so routing carries on.
     ///
     /// A modal dialog is routed every input event, laid out over the
-    /// viewport; it claims whatever it handles and every press, and lets
-    /// what it ignores travel on. A popup is routed the presses,
+    /// viewport, and claims every pointer, key and text input whether it
+    /// handles it or not, so none reaches whatever is painted beside or
+    /// beneath it; only events no widget handles (a resize, a window
+    /// close, an app event) travel on. A popup is routed the presses,
     /// double-clicks and wheel notches that land on it and claims every
     /// one of them, so none reaches whatever is painted beneath it; Escape
     /// or a press outside it dismisses it.
@@ -2535,8 +2508,9 @@ impl InteractionEngine {
                 reaction = reaction.merge(sink.dispatch(&reported, None));
             }
             None if outcome.consumed => {}
-            None if modal && !matches!(event, UiEvent::MouseDown { .. }) => return None,
-            None if modal => reaction = reaction.merge(Reaction::Redraw),
+            None if modal && matches!(event, UiEvent::MouseDown { .. }) => {
+                reaction = reaction.merge(Reaction::Redraw)
+            }
             None => {}
         }
         Some(reaction)
@@ -2954,7 +2928,9 @@ impl InteractionEngine {
         let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), focused) else {
             return DynWidgetClickOutcome::default();
         };
-        let Some(routed) = routed_input_event(event) else {
+        let Some(routed) = quadraui::compose::routed_event(event, area, &[])
+            .filter(|r| matches!(r, RoutedEvent::Key(_) | RoutedEvent::Text(_)))
+        else {
             return DynWidgetClickOutcome::default();
         };
         self.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink)
@@ -3205,6 +3181,7 @@ impl InteractionEngine {
         if intents.redraw {
             outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
         }
+        let reported = !intents.emitted.is_empty();
         for emitted in intents.emitted {
             let reaction = sink.dispatch(&emitted, Some(&HitDetail::WidgetBody));
             outcome.reaction = outcome.reaction.merge(reaction);
@@ -3214,6 +3191,17 @@ impl InteractionEngine {
             Handled::Consumed => {
                 outcome.consumed = true;
                 outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
+            }
+            // A focused leaf that answers a key `Ignored` after emitting
+            // its own report of it (a tab bar's, list's or tree's scoped
+            // `KeyPressed`) has delivered that key once already, so the
+            // raw `KeyPressed` does not reach the handler as well.
+            Handled::Ignored
+                if reported
+                    && focus == DispatchFocus::Tree
+                    && matches!(routed, RoutedEvent::Key(_)) =>
+            {
+                outcome.consumed = true;
             }
             Handled::Ignored => {}
         }
@@ -11268,17 +11256,23 @@ mod tests {
         );
     }
 
-    /// One `"menu_bar"` leaf decoded from its wire dict, whose app echoes
-    /// every `AppMenuEvent::Changed` view back onto the descriptor — the
-    /// controlled contract a binding app follows.
+    /// One `"menu_bar"` leaf decoded from its wire dict. With `echo`, the
+    /// app applies every `AppMenuEvent::Changed` view back onto the
+    /// descriptor (a controlled menu); without, it never touches the view
+    /// (an uncontrolled one).
     struct AppMenuLogic {
         menu: RefCell<quadraui::AppMenu>,
+        echo: bool,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
 
     impl AppMenuLogic {
         fn new() -> Self {
+            Self::with_echo(true)
+        }
+
+        fn with_echo(echo: bool) -> Self {
             let widget = quadraui::decode_widget(
                 "menu_bar",
                 serde_json::json!({
@@ -11301,6 +11295,7 @@ mod tests {
                 .clone();
             Self {
                 menu: RefCell::new(menu),
+                echo,
                 engine: InteractionEngine::new(),
                 sink: RefCell::new(RecordingSink::default()),
             }
@@ -11342,8 +11337,11 @@ mod tests {
                 .engine
                 .handle(event, backend, &mut *self.sink.borrow_mut());
             for (event, _) in self.sink.borrow().dispatched[seen..].iter() {
-                if let UiEvent::AppMenu(_, change) = event {
-                    self.menu.borrow_mut().apply(change);
+                match event {
+                    UiEvent::AppMenu(_, change) if self.echo => {
+                        self.menu.borrow_mut().apply(change)
+                    }
+                    _ => {}
                 }
             }
             reaction.merge(Reaction::Redraw)
@@ -11396,6 +11394,39 @@ mod tests {
                 UiEvent::AppMenu(bar, AppMenuEvent::Changed(AppMenuView::default())),
                 UiEvent::MenuActivated(WidgetId::new("menu:file:save")),
             ]
+        );
+    }
+
+    /// An app that never echoes the menu's view still gets a working menu:
+    /// a click opens the dropdown, a click on a row activates it and the
+    /// menu closes, all from the view the menu keeps itself.
+    #[test]
+    fn an_uncontrolled_menu_bar_opens_activates_and_closes_without_an_echo() {
+        let mut driver = TuiDriver::new(AppMenuLogic::with_echo(false), 40, 12);
+        driver.render();
+        let (x, y) = driver.find("File").expect("the bar paints its items");
+        driver.click(x, y);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .unwrap_or_else(|| panic!("the dropdown opens with no echo:\n{}", driver.screen()));
+        driver.click(x, y);
+        driver.render();
+        assert!(
+            driver.find("Save").is_none(),
+            "the activation closes the dropdown:\n{}",
+            driver.screen()
+        );
+        assert!(driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .any(|(event, _)| *event == UiEvent::MenuActivated(WidgetId::new("menu:file:save"))));
+        assert!(
+            !driver.app().menu.borrow().is_open(),
+            "the app's own view is untouched"
         );
     }
 

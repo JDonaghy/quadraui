@@ -181,10 +181,9 @@ impl ShellApp for HelpLayerDemo {
             // store, so it is lent to the store for the paint, which draws
             // the caret from it.
             let popup = popup_rect(layout.window_bounds, backend);
-            let id = palette.id;
-            quadraui::with_widget_states(|states| states.insert(id, Box::new(state.clone())));
-            backend.draw_dyn(popup, palette, &());
-            quadraui::with_widget_states(|states| states.remove(&id));
+            quadraui::lend_widget_state(palette.id, state.clone(), || {
+                backend.draw_dyn(popup, palette, &());
+            });
         } else {
             // `active_view_help()` is `None` for the Settings panel — the
             // overlay's own fallback (a visible "no help available"

@@ -639,11 +639,12 @@ impl Form {
 
 // ── Interaction state ───────────────────────────────────────────────
 
-/// Live caret and selection anchor for the field currently being typed
-/// into. The *value* is **not** cached here — it is always read fresh
-/// off the descriptor (the host's own canonical string), so the host
-/// staying the single source of truth for field content still holds;
-/// only cursor placement lives here.
+/// Live caret, selection anchor and undo history for the field currently
+/// being typed into. The field's current *value* is read fresh off the
+/// descriptor (the host's own canonical string) on every edit; `history`
+/// holds earlier value snapshots of this field only, so Ctrl/Cmd+Z can
+/// emit one of them back to the host. The whole cursor, history
+/// included, is dropped when focus moves to another field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextCursor {
     /// The field this caret belongs to, so moving focus away and back

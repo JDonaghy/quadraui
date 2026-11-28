@@ -3833,3 +3833,119 @@ def test_show_overlay_message_dialog_hides_an_open_menu_bar_dropdown():
     app.run(1)
 
     assert received == [{"MessageDialogResolved": "ok"}]
+
+
+def _file_menu_bar():
+    return {
+        "id": "bar:main",
+        "items": [
+            {
+                "id": "menu:file",
+                "label": "&File",
+                "submenu": [
+                    {
+                        "id": "item:save",
+                        "label": {"spans": [{"text": "Save", "fg": None, "bg": None}]},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_a_menu_bar_whose_app_never_echoes_its_view_still_opens_on_click():
+    # Leaving every view key out makes the menu uncontrolled: it keeps its
+    # own open dropdown, so an app with no `AppMenu` handling still has a
+    # working menu.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(lambda: {"menu_bar": _file_menu_bar()})
+
+    row, col = _locate(app, "File")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert app.screen_contains("Save"), app.screen()
+
+    row, col = _locate(app, "Save")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert any(event.get("MenuActivated") == "item:save" for event in received), received
+    assert not app.screen_contains("Save"), app.screen()
+
+
+def test_a_menu_bar_whose_app_never_echoes_its_view_opens_on_its_alt_mnemonic():
+    app = QuiApp(40, 20)
+    app.set_handler(lambda _event: None)
+    app.set_render(lambda: {"row": [{"id": "bar:main", "menu_bar": _file_menu_bar()}]})
+    app.screen()
+    for key, modifiers in (({"Named": "Tab"}, {}), ({"Char": "f"}, {"alt": True})):
+        app.push_event({"KeyPressed": {"key": key, "modifiers": modifiers, "repeat": False}})
+        app.run(1)
+    assert app.screen_contains("Save"), app.screen()
+
+
+def test_a_focused_tab_bar_delivers_a_key_it_does_not_use_once():
+    # The tab bar reports a key it has no use for as its own scoped
+    # `KeyPressed`; the raw `KeyPressed` is not delivered as well.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(
+        lambda: {"tab_bar": {"id": "tabs", "tabs": [{"label": "One"}, {"label": "Two"}]}}
+    )
+    row, col = _locate(app, "One")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    received.clear()
+
+    app.push_event({"KeyPressed": {"key": {"Named": "Delete"}, "modifiers": {}, "repeat": False}})
+    app.run(1)
+
+    keys = [
+        event
+        for event in received
+        if "KeyPressed" in event
+        or ("TabBar" in event and "KeyPressed" in event["TabBar"][1])
+    ]
+    assert len(keys) == 1, received
+    assert keys[0]["TabBar"][0] == "tabs"
+    assert keys[0]["TabBar"][1]["KeyPressed"]["key"] == "Delete"
+
+
+def test_a_modal_message_dialog_keeps_clicks_from_the_widget_beside_it():
+    app = QuiApp(40, 12)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(
+        lambda: {"row": [{"id": "b", "button": {"id": "b", "label": "UNDERNEATH-UNDERNEATH-UNDERNEATH"}}]}
+    )
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Sure?", "Really?", [{"id": "ok", "label": "OK", "is_default": True}]),
+    )
+    # The button's left edge stays painted beside the dialog.
+    row, col = _locate(app, "[ UND")
+    x = col + 2.5
+    received.clear()
+
+    for event in (
+        {"MouseDown": {"button": "Left", "position": {"x": x, "y": row + 0.5}, "modifiers": {}}},
+        {"MouseUp": {"button": "Left", "position": {"x": x, "y": row + 0.5}, "modifiers": {}}},
+        {"MouseMoved": {"position": {"x": x, "y": row + 0.5}, "buttons": {}}},
+    ):
+        app.push_event(event)
+        app.run(1)
+
+    reached_button = [event for event in received if "'b'" in repr(event)]
+    assert reached_button == [], received
+    assert not any(
+        "MouseUp" in event or "MouseDown" in event or "DoubleClick" in event or "FocusChanged" in event
+        for event in received
+    ), received

@@ -848,6 +848,85 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
   );
 });
 
+test("a menu_bar whose app never echoes its view still opens on its Alt mnemonic", () => {
+  // Leaving every view key out makes the menu uncontrolled: it keeps its
+  // own open dropdown, so an app with no `AppMenu` handling still has a
+  // working menu.
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    row: [
+      {
+        id: "menu_bar:main",
+        menu_bar: {
+          id: "menu_bar:main",
+          items: [
+            {
+              id: "menu:file",
+              label: "&File",
+              submenu: [
+                {
+                  id: "menu:file:save",
+                  label: { spans: [{ text: "Save", fg: null, bg: null }] },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  app.screen();
+  const received: any[] = [];
+  app.setHandler((event: any) => {
+    received.push(event);
+  });
+  for (const [key, modifiers] of [
+    [{ Named: "Tab" }, {}],
+    [{ Char: "f" }, { alt: true }],
+  ] as const) {
+    app.pushEvent({ KeyPressed: { key, modifiers, repeat: false } });
+    app.run(1);
+  }
+  assert.ok(app.screenContains("Save"), app.screen());
+
+  app.pushEvent({ KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false } });
+  app.run(1);
+  assert.ok(
+    received.some((event) => event.MenuActivated === "menu:file:save"),
+    `expected a MenuActivated event, got: ${JSON.stringify(received)}`,
+  );
+  assert.ok(!app.screenContains("Save"), app.screen());
+});
+
+test("a focused tab_bar delivers a key it does not use once, as its own KeyPressed", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    tab_bar: { id: "tabs", tabs: [{ label: "One" }, { label: "Two" }] },
+  }));
+  const received: any[] = [];
+  app.setHandler((event: any) => {
+    received.push(event);
+  });
+  const lines = app.screen().split("\n");
+  const row = lines.findIndex((line: string) => line.includes("One"));
+  const col = lines[row].indexOf("One");
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: col + 0.5, y: row + 0.5 }, modifiers: {} },
+  });
+  app.run(1);
+  received.length = 0;
+
+  app.pushEvent({ KeyPressed: { key: { Named: "Delete" }, modifiers: {}, repeat: false } });
+  app.run(1);
+
+  const keys = received.filter(
+    (event) => event.KeyPressed || (event.TabBar && event.TabBar[1].KeyPressed),
+  );
+  assert.equal(keys.length, 1, JSON.stringify(received));
+  assert.equal(keys[0].TabBar[0], "tabs");
+  assert.equal(keys[0].TabBar[1].KeyPressed.key, "Delete");
+});
+
 test("inline tree leaf markdown renders formatting and link click emits RichTextLinkClicked", () => {
   // `"markdown"` reuses `render_markdown_to_styled` (the same adapter
   // `push_turn_markdown`/`RichTextPopup` content already goes through),
