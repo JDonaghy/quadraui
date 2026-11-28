@@ -1,24 +1,14 @@
-//! Public GTK (Cairo + Pango) rasterisers for `quadraui` primitives.
+//! GTK backend: GTK4 with Cairo painting and Pango text.
 //!
-//! Enabled via the `gtk` Cargo feature. Apps depend on `quadraui` with
-//! `features = ["gtk"]` and call these `draw_*` functions to paint
-//! primitives onto a [`gtk4::cairo::Context`] using a
-//! [`pango::Layout`] for text measurement.
+//! Enabled via the `gtk` Cargo feature. Every widget paints through its
+//! widget contract (`Backend::draw_dyn`) on `GtkBackend`'s `PaintSurface`
+//! over a [`gtk4::cairo::Context`]; this module carries only the platform
+//! plumbing (window, events, text measurement, services, the run loop and
+//! the test driver).
 //!
-//! Primitives own layout, backends rasterise. Most GTK rasterisers in this
-//! module compute the primitive's `*Layout` internally because Pango
-//! measurement requires the live `pango::Layout` — taking the layout
-//! pre-computed would force callers to share that handle through two
-//! separate phases. The result the layout would have produced is
-//! returned alongside any per-frame hit regions so callers can dispatch
-//! clicks.
-//!
-//! Most of the free functions re-exported at the bottom of this module are
-//! painter internals, not a documented API: **unstable, not covered by
-//! semver** — they can move, split, or disappear between any two 0.1.x
-//! releases with no version bump. The few re-exports with doc comments on
-//! this page (`GtkBackend`, …) are the stable, consumer-depended-on subset;
-//! everything else is `#[doc(hidden)]`.
+//! The re-exports with doc comments on this page (`GtkBackend`, `run`, …)
+//! are the stable, consumer-depended-on subset; everything else is
+//! `#[doc(hidden)]`: **unstable, not covered by semver**.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
@@ -126,15 +116,9 @@ mod tray;
 // four-backend swap to `TabBarLayout` lands.
 #[allow(deprecated)]
 pub use crate::primitives::tab_bar::TabBarHits;
-// The flat re-exports below split into two groups, verified by grepping
-// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
-// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
-// `quadraui::gtk::<name>` / `crate::gtk::<name>`: the handful a real caller
-// reaches by this exact flat path stay documented; everything else is a
-// painter internal duplicating what `Backend::draw_*` already exposes, with
-// zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
-// semver, free to move or disappear without a version bump (see
-// `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+// The flat re-exports below a real caller reaches by this exact path stay
+// documented; the rest are `#[doc(hidden)]` — unstable, not covered by
+// semver (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::GtkBackend;
 #[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};

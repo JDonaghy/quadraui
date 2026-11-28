@@ -1,19 +1,14 @@
-//! Public TUI (ratatui) rasterisers for `quadraui` primitives.
+//! TUI backend: a terminal through ratatui.
 //!
-//! Enabled via the `tui` Cargo feature. Apps depend on `quadraui` with
-//! `features = ["tui"]` and call these `draw_*` functions to paint
-//! primitives into a [`ratatui::buffer::Buffer`].
+//! Enabled via the `tui` Cargo feature. Every widget paints through its
+//! widget contract (`Backend::draw_dyn`) onto `TuiBackend`'s
+//! [`crate::cell_surface::CellSurface`]; this module carries only the
+//! platform plumbing (terminal setup, events, text measurement, services,
+//! the run loop and the test driver).
 //!
-//! Primitives own layout, backends rasterise. Each rasteriser takes a
-//! pre-computed `*Layout` from the primitive's `.layout()` method along
-//! with the primitive itself and a [`crate::Theme`] for default colours.
-//!
-//! Most of the free functions re-exported at the bottom of this module are
-//! painter internals, not a documented API: **unstable, not covered by
-//! semver** — they can move, split, or disappear between any two 0.1.x
-//! releases with no version bump. The few re-exports with doc comments on
-//! this page (`TuiBackend`, `run`, …) are the stable, consumer-depended-on
-//! subset; everything else is `#[doc(hidden)]`.
+//! The re-exports with doc comments on this page (`TuiBackend`, `run`, …)
+//! are the stable, consumer-depended-on subset; everything else is
+//! `#[doc(hidden)]`: **unstable, not covered by semver**.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -66,15 +61,9 @@ pub mod text;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
 
-// The flat re-exports below split into two groups, verified by grepping
-// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
-// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
-// `quadraui::tui::<name>` / `crate::tui::<name>`: the handful a real caller
-// reaches by this exact flat path stay documented; everything else is a
-// painter internal duplicating what `Backend::draw_*` already exposes, with
-// zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
-// semver, free to move or disappear without a version bump (see
-// `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+// The flat re-exports below a real caller reaches by this exact path stay
+// documented; the rest are `#[doc(hidden)]` — unstable, not covered by
+// semver (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::TuiBackend;
 pub use cell_surface::BufferCellSurface;
 #[doc(hidden)]
@@ -98,9 +87,9 @@ pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
-/// [`BufferCellSurface`]. Public so apps adopting these rasterisers can mirror the
-/// conversion when they paint extra cells alongside (e.g. their own
-/// borders or background fills).
+/// [`BufferCellSurface`]. Public so an app that paints its own cells into
+/// the same ratatui buffer (borders, background fills) matches the colours
+/// the widgets paint.
 pub fn ratatui_color(c: Color) -> RatatuiColor {
     RatatuiColor::Rgb(c.r, c.g, c.b)
 }
@@ -109,7 +98,7 @@ pub fn ratatui_color(c: Color) -> RatatuiColor {
 /// y)`, returning the column past the last drawn character. Honors the
 /// caller's `decoration` as a final colour override (e.g. `Muted` dims
 /// every span that didn't already specify its own `fg`). Used by the
-/// list / form / tree rasterisers.
+/// form and tree cell painters.
 ///
 /// Strides by each character's [`char_cell_width`] (via
 /// [`CellSurface::put_wide`] for double-width glyphs) rather than one
