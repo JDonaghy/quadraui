@@ -33,8 +33,9 @@ the space equally unless a child asks for a size along the stack's main axis
 | left out | an equal share of what is left |
 
 `min` and `max` clamp the result, in the same pixels. `Text("...")` and
-`<text>` default to `"content"`, so the counter's label takes one row and
-the buttons the rest:
+`<text>` default to `"content"`, so the counter's label takes one row; its
+row of buttons asks for `"content"` too, and the two buttons share the
+row's width:
 
 <!-- sample: untested — a fragment; the sizes are tested in tests/test_app_ergonomics.py -->
 ```python

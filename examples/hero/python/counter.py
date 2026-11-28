@@ -8,7 +8,11 @@ class Counter:
     def view(self):
         return Column(
             Text(f"Count: {self.count}", id="count"),
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+            Row(
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
+                size="content",
+            ),
         )
 
     def inc(self):

@@ -45,7 +45,8 @@ impl View for Counter {
             row([
                 button("-").id("dec").on_click(Msg::Dec),
                 button("+").id("inc").on_click(Msg::Inc),
-            ]),
+            ])
+            .content(),
         ])
     }
     fn update(&mut self, msg: Msg) -> Command {
@@ -73,9 +74,10 @@ The three parts:
   button into the message `Msg::Inc`, and `update` applies it. Every
   message redraws; return `Command::Exit` to quit.
 
-Children share their container equally unless they ask otherwise. `text`
-sizes itself to its lines, so the label takes one row and the buttons split
-the rest, exactly as in Python and Node. `.content()` sizes any node to fit, `.fixed(px)`, `.weight(w)`, `.percent(p)`,
+Children share their container equally unless they ask otherwise, exactly
+as in Python and Node. `text` sizes itself to its lines, so the label takes
+one row, and `.content()` gives the row of buttons its natural height; the
+two buttons share its width. `.fixed(px)`, `.weight(w)`, `.percent(p)`,
 `.min(px)` and `.max(px)` do what they say, and `.gap(px)` spaces a
 container's children. Sizes are surface pixels; the terminal rounds them up
 to whole cells of 8×16 pixels, so `.gap(16.0)` between rows is one line.

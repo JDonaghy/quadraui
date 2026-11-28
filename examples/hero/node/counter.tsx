@@ -7,7 +7,7 @@ class Counter {
     return (
       <column>
         <text id="count">Count: {this.count}</text>
-        <row>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>

@@ -43,8 +43,8 @@ the way Elm and iced do. Both are idiomatic for their language. The README
 can put them side by side under one heading: "state, view, update".
 
 Layout is the same too: `text`/`Text`/`<text>` is sized to its one line,
-and the two buttons split the rest of the window equally, so all three
-render the identical frame.
+the row of buttons asks for its content height, and the two buttons share
+its width equally, so all three render the identical frame.
 
 ## How each is checked
 

@@ -12,7 +12,8 @@ both languages, `snake_case` in Python and `camelCase` in Node:
 
 <!-- sample: examples/hero/python/counter.py -->
 ```python
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
 ```
 
 <!-- sample: examples/hero/node/counter.tsx -->

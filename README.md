@@ -33,7 +33,11 @@ class Counter:
     def view(self):
         return Column(
             Text(f"Count: {self.count}", id="count"),
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+            Row(
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
+                size="content",
+            ),
         )
 
     def inc(self):
@@ -60,7 +64,7 @@ class Counter {
     return (
       <column>
         <text id="count">Count: {this.count}</text>
-        <row>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>
@@ -102,7 +106,8 @@ impl View for Counter {
             row([
                 button("-").id("dec").on_click(Msg::Dec),
                 button("+").id("inc").on_click(Msg::Inc),
-            ]),
+            ])
+            .content(),
         ])
     }
     fn update(&mut self, msg: Msg) -> Command {

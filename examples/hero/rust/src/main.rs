@@ -19,7 +19,8 @@ impl View for Counter {
             row([
                 button("-").id("dec").on_click(Msg::Dec),
                 button("+").id("inc").on_click(Msg::Inc),
-            ]),
+            ])
+            .content(),
         ])
     }
     fn update(&mut self, msg: Msg) -> Command {

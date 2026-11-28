@@ -33,7 +33,11 @@ class Counter:
     def view(self):
         return Column(
             Text(f"Count: {self.count}", id="count"),
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+            Row(
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
+                size="content",
+            ),
         )
 
     def inc(self):
@@ -67,7 +71,8 @@ Three details the sample does not explain:
   a window, and both ignore it.
 - **Layout.** `Column` and `Row` split their space equally between the
   children that do not ask for a size. `Text` asks for its content size, so
-  the label takes one row and the buttons the rest. Any node takes `size=`
+  the label takes one row; `Row(..., size="content")` gives the buttons
+  their natural height, and they share its width. Any node takes `size=`
   (pixels as an `int`, `"30%"`, `"2fr"` or `"content"`) and `min=`/`max=`
   ([Layout](../concepts/layout.md)).
 - **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a

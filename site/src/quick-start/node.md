@@ -43,7 +43,7 @@ class Counter {
     return (
       <column>
         <text id="count">Count: {this.count}</text>
-        <row>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>
@@ -83,7 +83,8 @@ Some details the sample does not explain:
   opens a window, and both ignore it.
 - **Layout.** `<column>` and `<row>` split their space equally between the
   children that do not ask for a size. `<text>` asks for its content size,
-  so the label takes one row and the buttons the rest. Any element takes
+  so the label takes one row; `<row size="content">` gives the buttons
+  their natural height, and they share its width. Any element takes
   `size` (pixels as a number, `"30%"`, `"2fr"` or `"content"`) and
   `min`/`max` ([Layout](../concepts/layout.md)).
 - **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a
