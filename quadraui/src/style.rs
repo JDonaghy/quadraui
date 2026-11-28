@@ -373,10 +373,10 @@ pub struct Style {
     /// [`crate::primitives::tree::TreeView::vscrollbar_with_track_width`]
     /// / [`crate::primitives::list::ListView::vscrollbar_with_track_width`]
     /// — so wiring either widget to this token is one change to its
-    /// shared painter, not one per backend. Each backend's own
-    /// `Backend::list_vscrollbar` hit-testing impl passes this same live
-    /// field (`self.current_style.scrollbar_width`), so `List`'s paint and
-    /// hit-test can't drift apart at a non-default style. `TreeView`'s
+    /// shared painter, not one per backend. `ListView`'s `Primitive::layout`
+    /// reads this same live field for the vertical scrollbar it reports,
+    /// so `List`'s paint and hit-test can't drift apart at a non-default
+    /// style. `TreeView`'s
     /// own pixel layout sizes its scrollbar from this field's default.
     ///
     /// **`DataTable` keeps its own fixed

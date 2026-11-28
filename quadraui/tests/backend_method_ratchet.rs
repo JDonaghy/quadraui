@@ -1,40 +1,39 @@
-//! Ratchet tests over `Backend`'s trait body (quadraui#2608): lock in the
-//! direction set by `src/primitive.rs` — a new widget implements
-//! [`quadraui::Primitive`] and goes through
-//! [`quadraui::backend::DrawsPrimitives::draw_primitive`], it does not add a
-//! fresh `draw_*`/`*_layout` pair to the sealed `Backend` trait.
+//! Pins of `Backend`'s trait body: the trait holds platform services only,
+//! and every widget reaches every backend through
+//! [`quadraui::Primitive`] and
+//! [`quadraui::backend::DrawsPrimitives::draw_dyn`] rather than a
+//! `draw_*`/`*_layout` pair on the sealed `Backend` trait.
 //!
-//! Four tests, all parsing real source with [`syn`] rather than grepping
-//! line counts (mirrors `tests/backend_todo_gate.rs`'s approach):
+//! Every test parses real source with [`syn`] rather than grepping line
+//! counts (mirrors `tests/backend_todo_gate.rs`'s approach):
 //!
-//! 1. [`backend_trait_method_count_may_only_shrink`] counts `Backend`'s
-//!    trait-body methods and fails if that count rises above a frozen
-//!    baseline. The baseline may only be lowered, never raised — the whole
-//!    point of a ratchet.
-//! 2. [`primitives_dir_types_skip_bespoke_backend_methods`] finds every
+//! 1. [`backend_trait_holds_exactly_the_platform_methods`] asserts the
+//!    trait-body method set equals [`BACKEND_PLATFORM_METHODS`], so the
+//!    count is pinned at exactly [`BACKEND_METHOD_COUNT_BASELINE`].
+//! 2. [`backend_trait_has_no_widget_methods`] fails on any trait method
+//!    named `draw_*` (other than the runner's frame-level
+//!    `draw_focus_ring`) or ending in `_layout`.
+//! 3. [`primitives_dir_types_skip_bespoke_backend_methods`] finds every
 //!    `impl Primitive for X` under `src/primitives/` and asserts `Backend`
 //!    carries no bespoke `draw_<stem>`/`<stem>_layout` pair for any
 //!    leading-word stem of `X`'s name (`ListView` -> `list_view` or
-//!    `list`), except the pre-existing legacy pairs this test grandfathers
-//!    explicitly.
-//! 3. [`the_backend_trait_declares_no_tab_bar_method`] pins `TabBar`'s
+//!    `list`).
+//! 4. [`the_backend_trait_declares_no_tab_bar_method`] pins `TabBar`'s
 //!    completed port: the trait declares no `*tab_bar*` method at all.
-//! 4. [`no_backend_directory_carries_a_tab_bar_file`] pins the file-level
+//! 5. [`no_backend_directory_carries_a_tab_bar_file`] pins the file-level
 //!    half of the same claim.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use syn::{Item, ItemImpl, ItemTrait, TraitItem, Type};
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{collect_rs_files, parse_rust_file};
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn parse_rust_file(path: &Path) -> syn::File {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()))
 }
 
 /// Find a top-level `trait <name> { ... }` item in a parsed file.
@@ -59,82 +58,145 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
         .collect()
 }
 
-/// Frozen baseline for `Backend`'s trait-body method count, measured the
-/// day quadraui#2608 landed this ratchet. **May only be lowered.** If
-/// you're raising this number because a new widget needs a per-backend
-/// paint path, that is exactly the case this ratchet exists to catch:
-/// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
-/// every backend through `DrawsPrimitives::draw_primitive` — see
-/// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 78;
+/// The platform services `Backend` holds: windowing, input, fonts and
+/// metrics, focus, clipping, capture and the paint seams. No widget paints
+/// through a method of its own.
+const BACKEND_PLATFORM_METHODS: &[&str] = &[
+    "viewport",
+    "cell_grid",
+    "begin_frame",
+    "end_frame",
+    "set_theme",
+    "theme",
+    "set_style",
+    "style",
+    "set_nerd_fonts",
+    "nerd_fonts_enabled",
+    "set_editor_font",
+    "set_ui_font",
+    "default_fonts",
+    "register_font_from_memory",
+    "set_nerd_font_fallback",
+    "has_font_family",
+    "register_text_region",
+    "register_zone",
+    "cancel_text_selection_drag",
+    "poll_events",
+    "wait_events",
+    "waker",
+    "request_frame_in",
+    "request_full_repaint",
+    "invalidate_rect",
+    "invalidation_log",
+    "register_accelerator",
+    "unregister_accelerator",
+    "install_menu_bar",
+    "show_context_menu",
+    "menu_style",
+    "set_menu_style",
+    "effective_menu_style",
+    "begin_window_drag",
+    "toggle_window_maximize",
+    "begin_window_resize",
+    "set_cursor",
+    "titlebar_control_inset",
+    "window",
+    "tray",
+    "modal_stack_handle",
+    "drag_state_handle",
+    "focus_tree",
+    "set_focus",
+    "draw_focus_ring",
+    "frame_capture",
+    "last_frame",
+    "screenshot",
+    "last_error",
+    "services",
+    "paint_surface",
+    "cell_surface",
+    "backend_caps",
+    "line_height",
+    "char_width",
+    "wheel_delta_rows",
+    "chrome_line_height",
+    "set_current_line_height",
+    "set_current_char_width",
+    "measure",
+    "measure_text",
+    "scales_text_rows",
+    "snap_height",
+    "push_clip",
+    "pop_clip",
+    "set_caret_shape",
+];
+
+/// `Backend`'s exact trait-body method count. A widget that needs a paint
+/// path implements `quadraui::Primitive` (`src/primitive.rs`) and reaches
+/// every backend through `DrawsPrimitives::draw_dyn` — see
+/// `tests/primitive_public_api.rs` for a worked third-party example — so
+/// this number does not move for a widget.
+const BACKEND_METHOD_COUNT_BASELINE: usize = 66;
 
 #[test]
-fn backend_trait_method_count_may_only_shrink() {
+fn backend_trait_holds_exactly_the_platform_methods() {
     let file = parse_rust_file(&repo_root().join("src/backend.rs"));
-    let backend_trait = find_trait(&file, "Backend");
-    let methods = trait_method_names(backend_trait);
+    let methods = trait_method_names(find_trait(&file, "Backend"));
 
-    assert!(
-        methods.len() <= BACKEND_METHOD_COUNT_BASELINE,
-        "Backend's trait body grew from {BACKEND_METHOD_COUNT_BASELINE} methods to {} — this \
-         repo ratchets that count down, never up (quadraui#2608). A new widget should \
-         implement `quadraui::Primitive` (src/primitive.rs) and reach every backend through \
-         `DrawsPrimitives::draw_primitive`, not add a new `draw_*`/`*_layout` pair to the \
-         sealed `Backend` trait. If this growth is genuinely unavoidable, say why in the PR \
-         and lower nothing; if it isn't, switch to `Primitive` instead.\n\n\
-         Methods found: {:#?}",
-        methods.len(),
-        methods,
+    assert_eq!(
+        BACKEND_PLATFORM_METHODS.len(),
+        BACKEND_METHOD_COUNT_BASELINE,
+        "BACKEND_PLATFORM_METHODS and BACKEND_METHOD_COUNT_BASELINE disagree"
     );
-
-    // A down-only ratchet enforces both directions, not just "never grows":
-    // a PR that *removes* a deprecated method must lower
-    // `BACKEND_METHOD_COUNT_BASELINE` in the same change, or this fails
-    // instead of silently passing with slack in the ratchet.
     assert_eq!(
         methods.len(),
         BACKEND_METHOD_COUNT_BASELINE,
-        "Backend's trait body shrank from {BACKEND_METHOD_COUNT_BASELINE} methods to {} — \
-         lower BACKEND_METHOD_COUNT_BASELINE in tests/backend_method_ratchet.rs to {} in the \
-         same change that removed the method(s), so the ratchet stays tight instead of \
-         recording slack. See `docs/PRIMITIVE_RULES.md` for the widget-authoring rules this \
-         ratchet enforces.\n\nMethods found: {:#?}",
-        methods.len(),
+        "Backend's trait body has {} methods, not {BACKEND_METHOD_COUNT_BASELINE}. A widget \
+         implements `quadraui::Primitive` and reaches every backend through \
+         `DrawsPrimitives::draw_dyn`; it never adds a `Backend` method. See \
+         `docs/PRIMITIVE_RULES.md`.\n\nMethods found: {:#?}",
         methods.len(),
         methods,
     );
+
+    let found: HashSet<&str> = methods.iter().map(String::as_str).collect();
+    let expected: HashSet<&str> = BACKEND_PLATFORM_METHODS.iter().copied().collect();
+    let mut extra: Vec<&str> = found.difference(&expected).copied().collect();
+    let mut missing: Vec<&str> = expected.difference(&found).copied().collect();
+    extra.sort_unstable();
+    missing.sort_unstable();
+    assert!(
+        extra.is_empty() && missing.is_empty(),
+        "Backend's trait body differs from BACKEND_PLATFORM_METHODS: not in the list \
+         {extra:?}, absent from the trait {missing:?}"
+    );
 }
 
-/// `(Primitive-implementing type name, legacy Backend method name)` pairs
-/// that predate this ratchet and are allowed to keep their bespoke
-/// `draw_*`/`*_layout` path alongside their `Primitive` impl.
-///
-/// `ListView` is quadraui's pilot `Primitive` implementor (quadraui#2647):
-/// it kept its pre-existing `draw_list` / `draw_list_with_state` /
-/// `list_layout` trio on `Backend` because every existing caller already
-/// goes through those, and ripping them out is a separate, larger
-/// migration — not something this ratchet forces. A *new* `Primitive`
-/// implementor gets no such exemption: it should reach every backend
-/// through `draw_primitive` alone.
-///
-const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
-    ("ListView", "draw_list"),
-    ("ListView", "draw_list_with_state"),
-    ("ListView", "list_layout"),
-    // Group-A ports: each now paints
-    // through `Primitive`/`Interactive`, and keeps its bespoke pair
-    // until the group's cleanup deletes the methods, the per-backend
-    // wrapper files and the `Surface` variants together. `draw_scrollbar`
-    // additionally stays because it is the shared chrome paint the
-    // not-yet-ported rasterisers (`tui::editor`, `tui::list`, …) reach
-    // for, none of which has a `PaintTarget` to route through
-    // `draw_primitive` with yet.
-    ("ProgressBar", "draw_progress"),
-    ("ProgressBar", "progress_layout"),
-    ("Spinner", "draw_spinner"),
-    ("Spinner", "spinner_layout"),
-    ("Scrollbar", "draw_scrollbar"),
-];
+/// Every trait method whose name is shaped like a widget paint or layout
+/// entry point: `draw_*` (other than `draw_focus_ring`, the runner's
+/// frame-level focus-visible stroke) or `*_layout`.
+fn widget_shaped_method_names(methods: &[String]) -> Vec<String> {
+    methods
+        .iter()
+        .filter(|m| {
+            (m.starts_with("draw_") && m.as_str() != "draw_focus_ring") || m.ends_with("_layout")
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn backend_trait_has_no_widget_methods() {
+    let file = parse_rust_file(&repo_root().join("src/backend.rs"));
+    let methods = trait_method_names(find_trait(&file, "Backend"));
+    let widget_methods = widget_shaped_method_names(&methods);
+
+    assert!(
+        widget_methods.is_empty(),
+        "`Backend` declares widget-shaped method(s) {widget_methods:#?} — a widget paints \
+         through its `Primitive` impl and `DrawsPrimitives::draw_dyn`, and its geometry comes \
+         from `Primitive::layout` / `DrawsPrimitives::layout_primitive`."
+    );
+}
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
 /// its identifier, or `None` for anything more exotic (a reference, a
@@ -174,8 +236,8 @@ fn primitive_impl_type_names(file: &syn::File) -> Vec<String> {
 
 /// Lowercase ASCII `snake_case` of a `PascalCase`/`camelCase` identifier —
 /// `ListView` -> `list_view`. `Backend`'s bespoke methods are not always
-/// named after this *full* form (`draw_list`/`list_layout` for `ListView`,
-/// `draw_tree`/`tree_layout` for `TreeView`); [`candidate_stems`] below
+/// named after this *full* form (`draw_foo`/`foo_layout` for a `FooView`);
+/// [`candidate_stems`] below
 /// derives the shorter leading-word forms those methods actually use.
 fn to_snake_case(ident: &str) -> String {
     let mut out = String::new();
@@ -207,7 +269,7 @@ fn candidate_stems(snake: &str) -> Vec<String> {
 
 /// Whether `method` is a `Backend` method shaped like a bespoke
 /// `draw_<stem>`, `<stem>_layout`, or `draw_<stem>_with_*` state variant
-/// (e.g. `draw_list_with_state`) for any leading-word stem of `type_name`.
+/// (e.g. `draw_foo_with_state`) for any leading-word stem of `type_name`.
 fn bespoke_method_for_type(method: &str, type_name: &str) -> bool {
     let snake = to_snake_case(type_name);
     candidate_stems(&snake).iter().any(|stem| {
@@ -219,13 +281,12 @@ fn bespoke_method_for_type(method: &str, type_name: &str) -> bool {
 
 /// For every `type_name` in `primitive_type_names`, find `Backend` methods
 /// in `backend_methods` that match a bespoke `draw_*`/`*_layout` shape for
-/// one of its stems and are not exempted by `known`. Returns
+/// one of its stems. Returns
 /// `(type_name, method)` for each violation — pulled out of the test body
 /// so it can be driven with synthetic inputs in the `tests` module below.
 fn find_bespoke_violations<'a>(
     primitive_type_names: &'a [String],
     backend_methods: &'a [String],
-    known: &std::collections::HashSet<(&str, &str)>,
 ) -> Vec<(&'a str, &'a str)> {
     let mut violations = Vec::new();
     for type_name in primitive_type_names {
@@ -233,28 +294,10 @@ fn find_bespoke_violations<'a>(
             if !bespoke_method_for_type(method, type_name) {
                 continue;
             }
-            if known.contains(&(type_name.as_str(), method.as_str())) {
-                continue;
-            }
             violations.push((type_name.as_str(), method.as_str()));
         }
     }
     violations
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 #[test]
@@ -285,16 +328,11 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
     let backend_trait = find_trait(&backend_file, "Backend");
     let backend_methods = trait_method_names(backend_trait);
 
-    let known: std::collections::HashSet<(&str, &str)> = KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS
-        .iter()
-        .copied()
-        .collect();
-
     let type_names: Vec<String> = primitive_types
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
-    let violating = find_bespoke_violations(&type_names, &backend_methods, &known);
+    let violating = find_bespoke_violations(&type_names, &backend_methods);
 
     let violations: Vec<String> = violating
         .iter()
@@ -304,10 +342,7 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
                 .find(|(name, _)| name == type_name)
                 .map(|(_, p)| p.display().to_string())
                 .unwrap_or_default();
-            format!(
-                "`{type_name}` (impl Primitive in {path}) has a bespoke `Backend::{method}` that \
-                 is not in KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS"
-            )
+            format!("`{type_name}` (impl Primitive in {path}) has a bespoke `Backend::{method}`")
         })
         .collect();
 
@@ -316,10 +351,8 @@ fn primitives_dir_types_skip_bespoke_backend_methods() {
         "found Primitive implementor(s) with a stray per-backend draw path alongside their \
          Primitive impl (quadraui#2608): a widget that implements `quadraui::Primitive` must \
          reach every backend through `DrawsPrimitives::draw_primitive` alone, not a fresh \
-         `draw_*`/`*_layout` pair on the sealed `Backend` trait. If this pair genuinely \
-         predates the Primitive impl and is deliberate legacy debt (the `ListView` shape), add \
-         it to KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS with a comment explaining why; if it's \
-         new, delete the bespoke methods and rely on `draw_primitive` instead:\n{}",
+         `draw_*`/`*_layout` pair on the sealed `Backend` trait. Delete the bespoke methods \
+         and rely on `draw_dyn` instead:\n{}",
         violations.join("\n"),
     );
 }
@@ -402,6 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn widget_shaped_method_names_keeps_draw_focus_ring() {
+        let methods: Vec<String> = [
+            "draw_focus_ring",
+            "draw_list",
+            "progress_layout",
+            "char_width",
+            "begin_frame",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(
+            widget_shaped_method_names(&methods),
+            vec!["draw_list".to_string(), "progress_layout".to_string()]
+        );
+    }
+
+    #[test]
     fn to_snake_case_matches_existing_backend_method_convention() {
         assert_eq!(to_snake_case("ListView"), "list_view");
         assert_eq!(to_snake_case("TreeView"), "tree_view");
@@ -419,9 +471,8 @@ mod tests {
     #[test]
     fn bespoke_method_for_type_matches_a_leading_word_stem() {
         // `FooView`'s bespoke `draw_foo`/`foo_layout` should be caught even
-        // though the type's full snake_case form is `foo_view` — this
-        // mirrors ListView's real `draw_list`/`list_layout` pair, which is
-        // named after the `list` stem, not the full `list_view` name.
+        // though the type's full snake_case form is `foo_view`: the
+        // method is named after the `foo` stem, not the full name.
         assert!(bespoke_method_for_type("draw_foo", "FooView"));
         assert!(bespoke_method_for_type("foo_layout", "FooView"));
         assert!(bespoke_method_for_type("draw_foo_with_state", "FooView"));
@@ -430,16 +481,14 @@ mod tests {
     }
 
     #[test]
-    fn find_bespoke_violations_catches_a_non_grandfathered_pair() {
+    fn find_bespoke_violations_catches_a_bespoke_pair() {
         let types = vec!["FooView".to_string()];
         let methods = vec![
             "draw_foo".to_string(),
             "foo_layout".to_string(),
             "unrelated_method".to_string(),
         ];
-        let known = std::collections::HashSet::new();
-
-        let violations = find_bespoke_violations(&types, &methods, &known);
+        let violations = find_bespoke_violations(&types, &methods);
 
         assert_eq!(
             violations,
@@ -448,33 +497,16 @@ mod tests {
     }
 
     #[test]
-    fn find_bespoke_violations_grandfathers_a_known_pair() {
+    fn find_bespoke_violations_catches_a_draw_layout_trio() {
+        // The shape the ratchet must flag for any `Primitive` implementor
+        // that also keeps a bespoke paint/layout trio on `Backend`.
         let types = vec!["FooView".to_string()];
-        let methods = vec!["draw_foo".to_string(), "foo_layout".to_string()];
-        let known: std::collections::HashSet<(&str, &str)> =
-            [("FooView", "draw_foo"), ("FooView", "foo_layout")]
-                .into_iter()
-                .collect();
-
-        let violations = find_bespoke_violations(&types, &methods, &known);
-
-        assert!(violations.is_empty());
-    }
-
-    #[test]
-    fn find_bespoke_violations_would_catch_the_real_list_view_pair_if_ungrandfathered() {
-        // Mirrors ListView's actual `Backend` methods: without the
-        // grandfather entries, this is exactly the shape the ratchet must
-        // flag for any *new* `Primitive` implementor.
-        let types = vec!["ListView".to_string()];
         let methods = vec![
-            "draw_list".to_string(),
-            "list_layout".to_string(),
-            "draw_list_with_state".to_string(),
+            "draw_foo".to_string(),
+            "foo_layout".to_string(),
+            "draw_foo_with_state".to_string(),
         ];
-        let known = std::collections::HashSet::new();
-
-        let violations = find_bespoke_violations(&types, &methods, &known);
+        let violations = find_bespoke_violations(&types, &methods);
 
         assert_eq!(violations.len(), 3);
     }

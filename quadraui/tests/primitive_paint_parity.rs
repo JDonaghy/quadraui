@@ -1,7 +1,7 @@
-//! Parity between `ListView`/`TreeView`/`DataTable`/`TreeTable`'s
+//! Parity between `TreeView`/`DataTable`/`TreeTable`'s
 //! [`Primitive::paint_cells`] path and their TUI free-function
-//! rasterisers (`quadraui::tui::draw_list`/`TreeView`'s paint/`DataTable`'s
-//! paint/`TreeTable`'s paint), driven entirely through public API from a
+//! rasterisers (`TreeView`'s paint/`DataTable`'s paint/`TreeTable`'s
+//! paint), and `ListView`'s paint-state handling, driven entirely through public API from a
 //! separate compilation unit (`tests/`, outside the crate).
 //!
 //! Each test below does two things:
@@ -28,13 +28,10 @@
 //!
 //! `DataTable`, like `TreeView`, reads its hovered row from the paint
 //! state itself (`data_table_paint_cells_follows_the_paint_state_hover`).
-//! - [`quadraui::tui::draw_list_with_state`]'s `scroll_px` wins over
-//!   `scroll_offset` and can land on a different first visible row —
-//!   `list_paint_cells_matches_draw_list_then_diverges_under_scroll_px`
-//!   below shows the same thing for scroll position.
 //!
-//! `TreeView` is the exception: its `paint_cells` reads `scroll_px` from
-//! the paint state itself (`tree_paint_cells_follows_the_paint_state_scroll_px`).
+//! `ListView` and `TreeView` read `scroll_px` from the paint state
+//! itself (`list_paint_cells_follows_the_paint_state_scroll_px`,
+//! `tree_paint_cells_follows_the_paint_state_scroll_px`).
 //!
 //! `pressed_idx` is omitted from every divergence test: no TUI
 //! rasteriser in this crate reads it today (confirmed by grep across
@@ -185,59 +182,42 @@ fn theme_with_distinct_hover_bg() -> Theme {
     }
 }
 
-/// `ListView`: [`Primitive::layout`] + [`Primitive::paint_cells`] match
-/// [`quadraui::tui::draw_list`] exactly at the default interaction
-/// state, and diverge from [`quadraui::tui::draw_list_with_state`] once
-/// `scroll_px` names a different first visible row than `scroll_offset`
-/// does — a state `paint_cells` has no parameter to carry.
+/// `ListView` reads a pixel-precise scroll position from its paint
+/// state: [`Primitive::paint_cells`] under a [`ListPaintState`] whose
+/// `scroll_px` names a later first visible row paints a different buffer
+/// than the same widget at the default state.
 #[test]
-fn list_paint_cells_matches_draw_list_then_diverges_under_scroll_px() {
+fn list_paint_cells_follows_the_paint_state_scroll_px() {
     let list = sample_list();
     let theme = Theme::default();
+    let style = quadraui::Style::default();
     let ctx = ctx();
 
     let layout = Primitive::layout(&list, &ctx, area());
-    let mut via_primitive = Buffer::empty(cell_area());
+    let mut at_default = Buffer::empty(cell_area());
     Primitive::paint_cells(
         &list,
         &layout,
-        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
-        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+        &mut quadraui::tui::BufferCellSurface::new(&mut at_default),
+        &quadraui::PaintEnv::new(&theme, &style),
     );
-
-    let mut direct_default = Buffer::empty(cell_area());
-    quadraui::tui::draw_list(
-        &mut direct_default,
-        cell_area(),
-        &list,
-        &theme,
-        ctx.nerd_fonts_enabled,
-    );
-
     assert_ne!(
-        via_primitive,
+        at_default,
         Buffer::empty(cell_area()),
         "the list must paint something for this comparison to be meaningful"
     );
-    assert_eq!(
-        via_primitive, direct_default,
-        "Primitive::paint_cells must match quadraui::tui::draw_list at the default state"
-    );
 
     let state = ListPaintState::default().with_scroll_px(Some(1.0));
-    let mut direct_scrolled = Buffer::empty(cell_area());
-    quadraui::tui::draw_list_with_state(
-        &mut direct_scrolled,
-        cell_area(),
+    let mut scrolled = Buffer::empty(cell_area());
+    Primitive::paint_cells(
         &list,
-        &theme,
-        ctx.nerd_fonts_enabled,
-        &state,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut scrolled),
+        &quadraui::PaintEnv::new(&theme, &style).with_state(&state),
     );
     assert_ne!(
-        via_primitive, direct_scrolled,
-        "Primitive::paint_cells has no scroll_px parameter, so it can never match \
-         draw_list_with_state once scroll_px names a different first visible row"
+        at_default, scrolled,
+        "a scroll_px naming a later first row must move the painted rows"
     );
 }
 

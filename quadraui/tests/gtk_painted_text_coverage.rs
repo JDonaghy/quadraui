@@ -13,7 +13,7 @@
 //! * **`Terminal`** — the cell-grid painter paints one Pango run *per
 //!   cell*, so a text needle spanning cells is never one recorded run. It
 //!   needs the cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
-//! * **`Split` / `SplitTree` / `draw_scrollbar` / `DropOverlay`** — these paint no text at all (dividers,
+//! * **`Split` / `SplitTree` / `Scrollbar` / `DropOverlay`** — these paint no text at all (dividers,
 //!   tracks, tint rects), so there is nothing to record. The labels a
 //!   `Split` appears to have belong to whatever the app paints into
 //!   `first_bounds` / `second_bounds`.
@@ -433,7 +433,7 @@ fn sidebar_panel_app_paints_locatable_toolbar_and_list_rows() {
         &[
             ("draw_dyn(SidebarPanel)", "Filter (f)"),
             ("draw_dyn(SidebarPanel)", "Clear (c)"),
-            ("draw_list", "Review PR #257"),
+            ("draw_dyn(ListView)", "Review PR #257"),
         ],
     );
 }
@@ -456,7 +456,10 @@ fn indicators_app_paints_locatable_spinner_and_progress_labels() {
     let driver = GtkDriver::new(indicators_app::IndicatorsApp::new(), W, H);
     assert_locatable(
         &driver,
-        &[("draw_spinner", "Loading..."), ("draw_progress", "30%")],
+        &[
+            ("draw_dyn(Spinner)", "Loading..."),
+            ("draw_dyn(ProgressBar)", "30%"),
+        ],
     );
 }
 

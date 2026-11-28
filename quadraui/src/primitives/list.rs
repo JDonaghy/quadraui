@@ -39,42 +39,12 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::a11y::A11yAction;
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::event::{Key, MouseButton, NamedKey};
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::types::{apply_selection_gesture, SelectionGesture};
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+use crate::types::SelectionGesture;
 use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
@@ -129,8 +99,8 @@ pub struct ListView {
     /// persistent indicator unrelated to real keyboard focus, so a
     /// focus-visible ring can't ride on this field without painting a
     /// ring on every one of them. The GUI focus-visible ring instead
-    /// reads [`crate::Backend::draw_list_with_state`]'s own
-    /// `focus_ring_visible` parameter — pass
+    /// reads the paint state's
+    /// [`crate::primitive::PaintState::focus_ring_visible`] — pass
     /// `ring.is_focused(&list.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
@@ -201,8 +171,8 @@ pub struct ListItem {
 // TreeView — same vertical-stacking layout, minus indent and chevrons.
 // An optional title row always renders at the top (outside scroll).
 
-/// Horizontal-scrollbar track geometry, shared by every backend's
-/// `list_hscrollbar` rasteriser.
+/// Horizontal-scrollbar track geometry, shared by every painter of a
+/// list's horizontal scrollbar.
 ///
 /// `char_w` and `row_h` are the caller's native horizontal/vertical
 /// units: `1.0` / `1.0` on TUI (a cell), `current_char_width` /
@@ -589,7 +559,8 @@ impl ListView {
     /// implement thumb dragging. Keeping it here (rather than inline in
     /// each backend's `draw_*`) means a consumer never re-derives the
     /// track rect and so can never drift out of sync with the paint.
-    /// Reach it backend-agnostically via [`crate::Backend::list_hscrollbar`].
+    /// Reach it backend-agnostically via
+    /// [`ListViewPrimitiveLayout::hscrollbar`].
     ///
     /// Returns `None` when no horizontal scrollbar is needed:
     /// `max_content_width` is `None`, or the content fits within the
@@ -628,6 +599,39 @@ impl ListView {
             row_height,
         ))
     }
+
+    /// The horizontal scrollbar a pixel surface paints for this list in
+    /// `area`, measuring a content column as `char_w` and the track one
+    /// `line_height` row tall, inset by `border_inset` on every edge.
+    /// `None` when the content fits or [`Self::max_content_width`] is
+    /// unset.
+    pub(crate) fn pixel_hscrollbar(
+        &self,
+        area: Rect,
+        border_inset: f32,
+        char_w: f32,
+        line_height: f32,
+    ) -> Option<Scrollbar> {
+        let content_px = self.max_content_width? as f32 * char_w;
+        let visible_px = (area.width - border_inset * 2.0).max(0.0);
+        if content_px <= visible_px {
+            return None;
+        }
+        let track = Rect::new(
+            area.x + border_inset,
+            area.y + area.height - border_inset - line_height,
+            visible_px,
+            line_height,
+        );
+        Some(Scrollbar::horizontal(
+            self.id,
+            track,
+            self.h_scroll as f32 * char_w,
+            content_px,
+            visible_px,
+            line_height,
+        ))
+    }
     /// Vertical scrollbar geometry for this list rendered into `area`.
     ///
     /// This is the single source of truth shared by the rasteriser — which
@@ -636,7 +640,7 @@ impl ListView {
     /// dragging. Keeping it here (rather than inline in each backend's
     /// `draw_*`) means a consumer never re-derives the track rect and so can
     /// never drift out of sync with the paint. Reach it backend-agnostically
-    /// via [`crate::Backend::list_vscrollbar`].
+    /// via [`ListViewPrimitiveLayout::vscrollbar`].
     ///
     /// Returns `None` when no vertical scrollbar is needed: `show_v_scrollbar`
     /// is `false`, the list is empty, or all items fit in the visible viewport.
@@ -1033,10 +1037,10 @@ mod vscrollbar_tests {
 // and `crate::primitives::scrollbar::native_surface_paint` for the same
 // pattern applied to earlier primitives.
 //
-// The vertical scrollbar is now painted via
+// The vertical scrollbar is painted via
 // [`crate::primitives::scrollbar::native_surface_paint::paint`],
-// using real track/thumb geometry that `Backend::list_vscrollbar`
-// already provides.
+// using the same track/thumb geometry `ListViewPrimitiveLayout::vscrollbar`
+// reports.
 //
 // `bordered`'s frame itself is not painted here: `ListView`'s
 // `Primitive::paint` clips this content to a rounded rect and strokes
@@ -1062,21 +1066,16 @@ pub(crate) mod native_surface_paint {
     /// visible rows (selection/decoration/icon/detail), and h/v
     /// scrollbars — onto `surface` at `area`.
     ///
-    /// - `list_layout` must be the same [`ListViewLayout`] the caller
-    ///   uses for hit-testing (typically `gtk_list_layout`/
-    ///   `mac_list_layout`/`win_list_layout`'s return value) so paint
-    ///   and hit-test can never disagree.
+    /// - `rows_layout` must be the same [`ListViewLayout`] the caller
+    ///   uses for hit-testing (the list's own `Primitive::layout`) so
+    ///   paint and hit-test can never disagree.
     /// - `line_height` is one row's height in `surface`'s native units
     ///   (pixels on every current caller).
     /// - `nerd_fonts_enabled` selects `Icon::glyph` vs. `Icon::fallback`.
     /// - `supports_border` — see this module's doc for what it toggles.
-    /// - `supports_hscrollbar` — `false` on Windows only: `win_list_layout`
-    ///   never reserves a bottom row for an overflowing
-    ///   `ListView::max_content_width` (a real, tracked-separately gap —
-    ///   see `win::list`'s module doc, "Known gap: no horizontal
-    ///   scrollbar"), so painting one there without a reservation would
-    ///   overlap the last content row — a new (and wrong) visual, not a
-    ///   fix. `true` on GTK/macOS, which both already reserve the row.
+    /// - `supports_hscrollbar` — whether to paint a horizontal scrollbar
+    ///   for an overflowing `ListView::max_content_width`; the caller's
+    ///   layout must have reserved the bottom row for it.
     /// - `style` supplies [`Style::row_padding_x`], the horizontal inset
     ///   a row's leading content (chevron-less here, so its icon/text)
     ///   starts at — callers pass `&self.current_style` (GTK/macOS);
@@ -1103,7 +1102,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1118,7 +1117,7 @@ pub(crate) mod native_surface_paint {
         paint_with_scroll_px(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1135,10 +1134,8 @@ pub(crate) mod native_surface_paint {
 
     /// Like [`paint`], plus an explicit pixel-precise scroll position
     /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
-    /// the rows (via `list_layout.visible_items`, already resolved
-    /// against `scroll_px` by whichever of
-    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`
-    /// built `list_layout`) and the vertical scrollbar thumb (resolved
+    /// the rows (via `rows_layout.visible_items`, already resolved
+    /// against `scroll_px` by [`ListView::layout_with_scroll_px`]) and the vertical scrollbar thumb (resolved
     /// here, via [`ListView::vscrollbar_with_scroll_px`]).
     ///
     /// `scroll_px: None` (what [`paint`] passes) is pixel-identical to
@@ -1149,7 +1146,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint_with_scroll_px(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1165,7 +1162,7 @@ pub(crate) mod native_surface_paint {
         paint_inner(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1189,7 +1186,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint_with_state(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1206,7 +1203,7 @@ pub(crate) mod native_surface_paint {
         paint_inner(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1226,7 +1223,7 @@ pub(crate) mod native_surface_paint {
     fn paint_inner(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1261,11 +1258,11 @@ pub(crate) mod native_surface_paint {
 
         let char_w = surface.surface_measure_text("M").0.max(1.0);
         let h_off_px = list.h_scroll as f32 * char_w;
-        let visible_px = (area.width - border_inset * 2.0).max(0.0);
-        let needs_hscrollbar = supports_hscrollbar
-            && list
-                .max_content_width
-                .is_some_and(|n| n as f32 * char_w > visible_px);
+        let hscrollbar = if supports_hscrollbar {
+            list.pixel_hscrollbar(area, border_inset, char_w, line_height)
+        } else {
+            None
+        };
 
         if title_overlay {
             if let Some(ref title) = list.title {
@@ -1285,7 +1282,7 @@ pub(crate) mod native_surface_paint {
                 );
             }
         } else if let (Some(title_bounds), Some(title)) =
-            (list_layout.title_bounds, list.title.as_ref())
+            (rows_layout.title_bounds, list.title.as_ref())
         {
             let tb = Rect::new(
                 area.x + title_bounds.x,
@@ -1327,7 +1324,7 @@ pub(crate) mod native_surface_paint {
         // before this fn existed.
         let items_clip_active = scroll_px.is_some();
         if items_clip_active {
-            let title_h = list_layout
+            let title_h = rows_layout
                 .title_bounds
                 .map(|b| b.y + b.height)
                 .unwrap_or(0.0);
@@ -1341,7 +1338,7 @@ pub(crate) mod native_surface_paint {
             ));
         }
 
-        for vis_item in &list_layout.visible_items {
+        for vis_item in &rows_layout.visible_items {
             let item = &list.items[vis_item.item_idx];
             let row_x = item_x_offset + vis_item.bounds.x;
             let row_y = item_y_offset + vis_item.bounds.y;
@@ -1385,21 +1382,11 @@ pub(crate) mod native_surface_paint {
             let row_rect = Rect::new(row_x, row_y, row_w, row_h);
             surface.surface_fill_rect(row_rect, row_bg);
 
-            // Focus-visible ring: a square stroke flush with the
-            // selected row's own bounds, in `Theme::focus_ring_color`
-            // at `Style::focus_ring_width`. Unlike `Button`'s/
-            // `TextInput`'s ring, this one is not outset — adjacent
-            // rows have no gap between them, so an outset stroke would
-            // bleed into the row above/below. Gated on
-            // `focus_ring_visible`, not `list.has_focus` — see this
-            // fn's own doc and `ListView::has_focus`'s doc for why the
-            // two are kept separate.
+            // Gated on `focus_ring_visible`, not `list.has_focus` — see
+            // this fn's own doc and `ListView::has_focus`'s doc for why
+            // the two are kept separate.
             if is_selected && focus_ring_visible {
-                surface.surface_stroke_rect(
-                    row_rect,
-                    theme.focus_ring_color(),
-                    style.focus_ring_width,
-                );
+                row_stack::row_content_paint::paint_focus_ring(surface, row_rect, theme, style);
             }
 
             // Per-row clip: with h_scroll the cursor starts to the left
@@ -1431,45 +1418,14 @@ pub(crate) mod native_surface_paint {
             // boundary sits.
             let text_right_limit = row_x + row_w - detail_reserve - 4.0;
 
-            // A span that overflows `text_right_limit` is ellipsis-
-            // truncated (via the shared `fit_text_prefix`) rather than
-            // hard-clipped mid-glyph — see `Tree`'s identical treatment,
-            // the pattern every overflowing primitive now follows.
-            for span in &item.text.spans {
-                let remaining = text_right_limit - cursor_x;
-                if remaining <= 0.0 {
-                    break;
-                }
-                let span_fg = span.fg.unwrap_or(decoration_fg);
-                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-                let (paint_text, paint_w, truncated) = if sw <= remaining {
-                    (span.text.clone(), sw, false)
-                } else {
-                    let (t, w) = crate::paint_surface::fit_text_prefix(
-                        surface, &span.text, span.bold, remaining,
-                    );
-                    (t, w, true)
-                };
-                if paint_w <= 0.0 {
-                    break;
-                }
-                if let Some(sbg) = span.bg {
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
-                }
-                surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, row_y + (row_h - sh) / 2.0, paint_w, sh),
-                    &paint_text,
-                    span_fg,
-                    span.bold,
-                    false,
-                    false,
-                    1.0,
-                );
-                cursor_x += paint_w;
-                if truncated {
-                    break;
-                }
-            }
+            row_stack::row_content_paint::paint_row_spans(
+                surface,
+                &item.text,
+                cursor_x,
+                text_right_limit,
+                (row_y, row_h),
+                decoration_fg,
+            );
 
             // Detail text is pinned to the visible viewport (does not
             // scroll with h_scroll) so it stays readable regardless of
@@ -1493,30 +1449,7 @@ pub(crate) mod native_surface_paint {
 
         // ── Horizontal scrollbar ──────────────────────────────────────
         // Painted after items so it overlays the bottom row's background.
-        if needs_hscrollbar {
-            let content_px = list.max_content_width.unwrap_or(0) as f32 * char_w;
-            let track_y = if list.bordered {
-                area.y + area.height - border_inset - line_height
-            } else {
-                area.y + area.height - line_height
-            };
-            let (track_x, track_w) = if list.bordered {
-                (
-                    area.x + border_inset,
-                    (area.width - 2.0 * border_inset).max(0.0),
-                )
-            } else {
-                (area.x, area.width)
-            };
-            let hsb_track = Rect::new(track_x, track_y, track_w, line_height);
-            let hsb = crate::primitives::scrollbar::Scrollbar::horizontal(
-                list.id,
-                hsb_track,
-                list.h_scroll as f32 * char_w,
-                content_px,
-                visible_px,
-                line_height,
-            );
+        if let Some(hsb) = hscrollbar {
             crate::primitives::scrollbar::native_surface_paint::paint(&hsb, surface, theme);
         }
 
@@ -2363,9 +2296,8 @@ pub(crate) mod native_surface_paint {
 // ── `crate::primitive::Primitive` pilot ─────────────────────────────
 //
 // `paint`'s pixel-backend branch below needs `native_surface_paint`;
-// `paint_cells` needs `crate::tui::draw_list`/`ratatui` — gated to
-// whichever of those a build actually has, same as those modules
-// themselves.
+// `paint_cells` needs the `tui` cell painter — each gated to whichever of
+// those a build actually has, same as those modules themselves.
 
 /// [`crate::primitive::Primitive::Layout`] for [`ListView`] — the
 /// list-local [`ListViewLayout`] paired with the absolute area it was
@@ -2376,12 +2308,6 @@ pub(crate) mod native_surface_paint {
 /// `#[non_exhaustive]`: backend-returned, never constructed by a
 /// consumer via struct literal, same convention as [`ListViewLayout`]
 /// itself.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct ListViewPrimitiveLayout {
@@ -2411,14 +2337,14 @@ pub struct ListViewPrimitiveLayout {
     ///
     /// [`Primitive`]: crate::primitive::Primitive
     pub vscrollbar_layout: Option<crate::primitives::scrollbar::ScrollbarLayout>,
+    /// The horizontal scrollbar, in absolute coordinates, exactly where
+    /// the painter draws it: the bottom cell row on a cell grid, a
+    /// one-row track inside the frame on a pixel surface, measured in
+    /// the chrome font's `M` advance. `None` when the content fits or
+    /// [`ListView::max_content_width`] is unset.
+    pub hscrollbar: Option<Scrollbar>,
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl ListViewPrimitiveLayout {
     /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
     /// origin before delegating to [`Self::local_hit_test`].
@@ -2438,12 +2364,6 @@ impl ListViewPrimitiveLayout {
 
 /// The frame width a [`ListView::bordered`] list strokes on a pixel
 /// surface, kept clear of rows on every edge.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 const LIST_PIXEL_BORDER: f32 = 1.0;
 
 /// Corner radius of a [`ListView::bordered`] list's pixel frame and of
@@ -2502,7 +2422,6 @@ impl ListViewSubPart {
 /// The row a paint tints as hovered and as pressed.
 #[cfg(any(
     feature = "gtk",
-    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2513,7 +2432,6 @@ struct ListRowPointer {
 
 #[cfg(any(
     feature = "gtk",
-    feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
@@ -2534,12 +2452,6 @@ impl ListView {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl crate::primitive::Primitive for ListView {
     type Layout = ListViewPrimitiveLayout;
     type Event = ListViewEvent;
@@ -2548,14 +2460,11 @@ impl crate::primitive::Primitive for ListView {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`] —
-    /// distinct from [`crate::frame::OwnedContent::List`] (which
-    /// [`crate::frame::capture_surface`] produces for the legacy
-    /// [`crate::frame::Surface::List`] instead) so a `ListView` reached
-    /// through [`crate::frame::Surface::Widget`] replays through
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
-    /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
-    /// exactly as it does live — see that variant's own doc.
+    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so
+    /// a `ListView` reached through [`crate::frame::Surface::Widget`]
+    /// replays through [`crate::backend::DrawsPrimitives::draw_primitive`]
+    /// and hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
+    /// exactly as it does live.
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::ListWidget(self.clone())
     }
@@ -2571,20 +2480,17 @@ impl crate::primitive::Primitive for ListView {
         } else {
             0.0
         };
-        let (layout, vscrollbar) = if !pixels {
+        let (layout, vscrollbar, hscrollbar) = if !pixels {
             // The vertical scrollbar takes the column the resolver kept
             // from the rows, above the horizontal scrollbar's row.
             let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, scroll_px);
-            let hsb_h = if self.hscrollbar(rect, 1.0).is_some() {
-                1.0
-            } else {
-                0.0
-            };
+            let hscrollbar = self.hscrollbar(rect, 1.0);
+            let hsb_h = if hscrollbar.is_some() { 1.0 } else { 0.0 };
             let v_area = Rect::new(rect.x, rect.y, rect.width, (rect.height - hsb_h).max(0.0));
             // A cell grid scrolls by whole rows.
             let vscrollbar =
                 self.vscrollbar_with_scroll_px(v_area, 1.0, 1.0, scroll_px.map(f32::floor));
-            (layout, vscrollbar)
+            (layout, vscrollbar, hscrollbar)
         } else {
             // A bordered list's rows start inside the frame the painter
             // strokes.
@@ -2602,7 +2508,9 @@ impl crate::primitive::Primitive for ListView {
                 ctx.style().scrollbar_width,
                 scroll_px,
             );
-            (layout, vscrollbar)
+            let char_w = ctx.text_width("M", crate::FontRole::Chrome).max(1.0);
+            let hscrollbar = self.pixel_hscrollbar(rect, border_inset, char_w, ctx.line_height);
+            (layout, vscrollbar, hscrollbar)
         };
         let vscrollbar_layout = vscrollbar
             .as_ref()
@@ -2615,6 +2523,7 @@ impl crate::primitive::Primitive for ListView {
             border_inset,
             vscrollbar,
             vscrollbar_layout,
+            hscrollbar,
         }
     }
 
@@ -2695,13 +2604,10 @@ impl crate::primitive::Primitive for ListView {
         }
     }
 
-    /// Paints through the TUI list rasteriser
-    /// [`crate::tui::backend::TuiBackend::draw_list`] shares, cutting an
-    /// overlong row by [`crate::Style::list_cell_overflow`] (the default
-    /// ellipsis paints exactly what `draw_list` paints). See
-    /// [`crate::primitive::Primitive::paint_cells`]'s own doc for why
-    /// this method exists instead of a cell-quantised `PaintSurface`
-    /// impl.
+    /// The cell-grid painter [`paint_cells::paint`], cutting an overlong
+    /// row by [`crate::Style::list_cell_overflow`] and honouring the
+    /// paint state's `scroll_px` and striping. A cell grid paints no
+    /// hover or press tint.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2709,29 +2615,21 @@ impl crate::primitive::Primitive for ListView {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        let pointer = self.row_pointer(env);
-        let paint_state = ListPaintState::default()
-            .with_hovered_idx(pointer.hovered)
-            .with_pressed_idx(pointer.pressed)
-            .with_scroll_px(env.state.scroll_px())
-            .with_striped(env.state.striped());
-        crate::tui::draw_list_with_overflow(
-            buf,
-            area,
+        paint_cells::paint(
+            cells,
+            layout.area,
             self,
-            theme,
+            env.theme(),
             layout.nerd_fonts_enabled,
-            &paint_state,
+            env.state.scroll_px(),
+            env.state.striped(),
             env.style().list_cell_overflow,
         );
     }
 }
+
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
 
 // ── Interactive: keyboard nav + mouse click ─────────────────────────
 //
@@ -2748,12 +2646,6 @@ impl crate::primitive::Primitive for ListView {
 // from — see [`SelectionGesture`]'s own doc for why a row-oriented
 // widget needs a host-tracked anchor instead of deriving one per event.
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl WidgetAction for ListViewEvent {
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
         crate::UiEvent::List(id, self)
@@ -2766,26 +2658,14 @@ impl WidgetAction for ListViewEvent {
 ///
 /// `#[non_exhaustive]`: a future field add here (e.g. an in-progress
 /// drag anchor) is additive, same convention as [`ListViewLayout`].
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListViewState {
-    /// The full multi-selection set, sorted/deduped by
-    /// [`apply_selection_gesture`]. Empty until a Ctrl/Cmd or Shift
-    /// gesture first grows it beyond the single `selected_idx` every
-    /// plain click/arrow press collapses it back to.
-    pub selected: Vec<usize>,
-    /// The index a Shift range-extension grows from — the last
-    /// `Replace`/`Toggle` target, per [`SelectionGesture::Range`]'s own
-    /// doc. `None` until the first extending gesture, at which point it
-    /// seeds from `cursor` (or `ListView::selected_idx` if even that is
-    /// unset yet) rather than defaulting to row `0`.
-    pub anchor: Option<usize>,
+    /// The multi-selection set and the anchor a Shift range-extension
+    /// grows from — the shared row-widget selection engine `TreeView` and
+    /// `DataTable` keep too. Both stay empty until the first gesture,
+    /// which seeds them from the cursor row rather than from row `0`.
+    pub selection: crate::types::SelectionCore,
     /// The row the last keyboard/mouse move actually landed on,
     /// independent of whatever `ListView::selected_idx` the app echoes
     /// back next frame (which, for a `SelectionSet`, may only carry
@@ -2804,12 +2684,6 @@ pub struct ListViewState {
     pub cursor_echo: Option<usize>,
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl ListView {
     /// The row the next navigation/extension computes relative to:
     /// `state.cursor` when `self.selected_idx` still matches
@@ -2828,32 +2702,14 @@ impl ListView {
         }
     }
 
-    /// The multi-selection set [`Self::handle_mouse_down`]'s `Toggle`/`Range`
-    /// gestures grow from: `state.selected` once any gesture has grown it
-    /// beyond a single row, falling back to `[self.selected_idx]` (or
-    /// empty, for an empty list) before the first one — the same
-    /// lazy-seed convention [`Self::current_idx`] applies to the cursor,
-    /// so a first Ctrl/Cmd-click never discards the descriptor's own
-    /// `selected_idx` the way an unseeded empty `Vec` would.
-    fn current_selected(&self, state: &ListViewState) -> Vec<usize> {
-        if !state.selected.is_empty() {
-            state.selected.clone()
-        } else if self.items.is_empty() {
-            Vec::new()
-        } else {
-            vec![self.selected_idx.min(self.items.len() - 1)]
-        }
-    }
-
     /// Build the `Handled::Event` that moves the selection to `target`
     /// (already clamped into `self.items`), honouring `extend` (Shift
     /// held) the same way a click's own [`SelectionGesture`] does: a
     /// plain move collapses to a single-row `SelectionChanged` and
-    /// re-anchors there; an extending move grows `state.selected` via
-    /// [`apply_selection_gesture`]'s `Range` gesture from `state.anchor`
-    /// (seeded from [`Self::current_idx`] the first time an extension
-    /// starts, not reset on every subsequent one) and reports the full
-    /// set via `SelectionSet`. Either way, `state.cursor` is updated to
+    /// re-anchors there; an extending move grows the selection as a
+    /// `Range` gesture from its anchor (seeded from [`Self::current_idx`]
+    /// the first time an extension starts, not reset on every subsequent
+    /// one) and reports the full set via `SelectionSet`. Either way, `state.cursor` is updated to
     /// `target` so the *next* call keeps extending from where this one
     /// left off, even though the app's own echoed `selected_idx` may not
     /// track that.
@@ -2869,15 +2725,16 @@ impl ListView {
         let current = self.current_idx(state);
         state.cursor = Some(target);
         if extend {
-            let anchor = *state.anchor.get_or_insert(current);
             let indices =
-                apply_selection_gesture(&state.selected, anchor, target, SelectionGesture::Range);
-            state.selected = indices.clone();
+                state
+                    .selection
+                    .on_gesture(Some(current), target, SelectionGesture::Range);
             state.cursor_echo = indices.first().copied();
             Handled::Event(ListViewEvent::SelectionSet { indices })
         } else {
-            state.anchor = Some(target);
-            state.selected = vec![target];
+            state
+                .selection
+                .on_gesture(Some(current), target, SelectionGesture::Replace);
             state.cursor_echo = Some(target);
             Handled::Event(ListViewEvent::SelectionChanged { idx: target })
         }
@@ -2940,8 +2797,8 @@ impl ListView {
                 } else {
                     let indices: Vec<usize> = (0..self.items.len()).collect();
                     let last = self.items.len() - 1;
-                    state.selected = indices.clone();
-                    state.anchor = Some(last);
+                    state.selection.selected = indices.clone();
+                    state.selection.anchor = Some(last);
                     state.cursor = Some(last);
                     Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
@@ -2983,30 +2840,15 @@ impl ListView {
         };
         cx.request_focus(None);
         let current = self.current_idx(state);
-        match SelectionGesture::from_modifiers(*mods) {
+        let gesture = SelectionGesture::from_modifiers(*mods);
+        let indices = state.selection.on_gesture(Some(current), idx, gesture);
+        state.cursor = Some(idx);
+        match gesture {
             SelectionGesture::Replace => {
-                state.anchor = Some(idx);
-                state.cursor = Some(idx);
-                state.selected = vec![idx];
                 state.cursor_echo = Some(idx);
                 Handled::Event(ListViewEvent::SelectionChanged { idx })
             }
-            gesture @ SelectionGesture::Toggle => {
-                let anchor = state.anchor.unwrap_or(current);
-                let selected = self.current_selected(state);
-                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
-                state.selected = indices.clone();
-                state.anchor = Some(idx);
-                state.cursor = Some(idx);
-                state.cursor_echo = indices.first().copied();
-                Handled::Event(ListViewEvent::SelectionSet { indices })
-            }
-            gesture @ SelectionGesture::Range => {
-                let anchor = *state.anchor.get_or_insert(current);
-                let selected = self.current_selected(state);
-                let indices = apply_selection_gesture(&selected, anchor, idx, gesture);
-                state.selected = indices.clone();
-                state.cursor = Some(idx);
+            SelectionGesture::Toggle | SelectionGesture::Range => {
                 state.cursor_echo = indices.first().copied();
                 Handled::Event(ListViewEvent::SelectionSet { indices })
             }
@@ -3017,12 +2859,6 @@ impl ListView {
 /// Canonical key string for a widget's `KeyPressed` event — a printable
 /// character as itself, a named key in [`NamedKey::name`]'s spelling — so
 /// every widget and backend reports the same key the same way.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 pub(crate) fn key_to_event_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
@@ -3030,12 +2866,6 @@ pub(crate) fn key_to_event_string(key: &Key) -> String {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl Interactive for ListView {
     type State = ListViewState;
     type Action = ListViewEvent;
@@ -3240,7 +3070,12 @@ mod interactive_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
         let mut alone = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_scrollbar(&mut alone, &sb, &theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&sb, sb.track),
+            &mut crate::tui::BufferCellSurface::new(&mut alone),
+            &theme,
+            theme.background,
+        );
         for y in 1..11u16 {
             assert_eq!(
                 painted[(21, y)].symbol(),
@@ -3642,8 +3477,10 @@ mod interactive_tests {
         let l = list(3, 0);
         let layout = layout_for(&l);
         let mut state = ListViewState {
-            selected: vec![0],
-            anchor: Some(0),
+            selection: crate::types::SelectionCore {
+                selected: vec![0],
+                anchor: Some(0),
+            },
             cursor: Some(0),
             cursor_echo: Some(0),
         };
@@ -3666,7 +3503,7 @@ mod interactive_tests {
                 indices: vec![0, 2]
             })
         );
-        assert_eq!(state.selected, vec![0, 2]);
+        assert_eq!(state.selection.selected, vec![0, 2]);
     }
 
     /// Regression for the bug the second review round flagged: a list
@@ -3699,7 +3536,7 @@ mod interactive_tests {
                 indices: vec![1, 2]
             })
         );
-        assert_eq!(state.selected, vec![1, 2]);
+        assert_eq!(state.selection.selected, vec![1, 2]);
     }
 
     #[test]
@@ -4157,13 +3994,13 @@ mod primitive_parity_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
 
-        let direct_layout = crate::primitives::layout_metrics::list_layout(
-            &list,
-            rect.width as f64,
-            rect.height as f64,
-            ctx.line_height as f64,
-            ctx.char_width as f64,
+        let direct_layout = list.resolve_layout(
+            crate::primitive::Units::Pixels,
+            (rect.width, rect.height),
+            ctx.line_height,
+            ctx.char_width,
             0.0,
+            None,
         );
         let mut direct_surface = LogSurface::default();
         native_surface_paint::paint(
@@ -4290,5 +4127,546 @@ mod primitive_parity_tests {
             layout.hit_test(rect.x, rect.y + layout.line_height / 2.0),
             layout.layout.hit_test(0.0, layout.line_height / 2.0),
         );
+    }
+}
+
+/// Multi-select click wiring over [`crate::gtk::testing::GtkDriver`].
+///
+/// `ListView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`ListViewLayout::hit_test`], and derives the
+/// gesture from the event's `Modifiers`. This mirrors the combo box's
+/// toy-`AppLogic` driver-test shape, since
+/// `ListView` has no `.click()` method of its own to delegate to.
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_multi_select_driver_tests {
+    use crate::gtk::testing::GtkDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, ListItem, ListItemMeasure,
+        ListView, ListViewEvent, ListViewHit, Modifiers, MouseButton, Point, Rect,
+        SelectionGesture, StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 40.0;
+    const VIEWPORT_H: f32 = 10.0;
+    const ROW_H: f32 = 1.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+            striped: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<ListViewEvent>,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let _ = backend.draw_dyn(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.list, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .list
+                .layout(VIEWPORT_W, VIEWPORT_H, 0.0, |_| ListItemMeasure::new(ROW_H));
+            let ListViewHit::Item(idx) = layout.hit_test(position.x, position.y) else {
+                return Reaction::Continue;
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            self.events.push(ListViewEvent::SelectionSet { indices });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = GtkDriver::new(ListApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 2.0, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = GtkDriver::new(ListApp::new(), 80, 40);
+        // These rows sit well within the real double-click radius
+        // (`GTK_DOUBLE_CLICK_RADIUS`), so without this, the detector would
+        // fold the deliberate back-to-back single clicks below into a
+        // `DoubleClick` instead of two independent `MouseDown`s.
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Ctrl-click the same row again toggles it back off.
+        driver.dispatch(mouse_down(2.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet { indices: vec![0] })
+        );
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = GtkDriver::new(ListApp::new(), 80, 40);
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, 3.0, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = GtkDriver::new(ListApp::new(), 80, 40);
+        driver.set_double_click_folding(false);
+        driver.dispatch(mouse_down(2.0, 1.0, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            2.0,
+            4.0,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Multi-select click wiring over [`crate::macos::testing::MacDriver`].
+///
+/// `ListView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`ListViewLayout::hit_test`], and derives the
+/// gesture from the event's `Modifiers`. The layout comes from the list's
+/// own `Primitive::layout`, not a locally fabricated measure, so the
+/// click router stays backend-agnostic per the portability commitment.
+///
+/// Mirrors the GTK and Windows multi-select driver tests,
+/// minus the x-axis click spacing `win::list` needs:
+/// `MacDriver::dispatch` feeds `dispatch_event` directly and never calls
+/// `MacBackend::fold_double_click` (only `macos::run` does), so repeated
+/// clicks on one row stay independent `MouseDown`s.
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_multi_select_driver_tests {
+    use crate::macos::testing::MacDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, ListItem, ListView,
+        ListViewEvent, ListViewHit, Modifiers, MouseButton, Point, Rect, SelectionGesture,
+        StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 200.0;
+    const VIEWPORT_H: f32 = 400.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+            striped: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<ListViewEvent>,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let _ = backend.draw_dyn(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.list, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            // The same `Primitive::layout` `render` painted through, so
+            // the hit-test agrees with the painted rows.
+            let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+            let layout = backend.layout_primitive(rect, &self.list).layout;
+            let ListViewHit::Item(idx) = layout.hit_test(position.x, position.y) else {
+                return Reaction::Continue;
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            self.events.push(ListViewEvent::SelectionSet { indices });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    /// Row `idx`'s vertical center in the list's real `Primitive::layout`
+    /// geometry, resolved against the driver's own backend — the very
+    /// instance `ListApp::render`/`handle` paint and hit-test through —
+    /// so these clicks land on the rows that were actually painted
+    /// rather than on an assumed row height.
+    fn row_center_y(driver: &MacDriver<ListApp>, idx: usize) -> f32 {
+        let rect = Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H);
+        let layout = driver
+            .backend()
+            .layout_primitive(rect, &driver.app().list)
+            .layout;
+        let item = layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == idx)
+            .expect("row visible in layout");
+        item.bounds.y + item.bounds.height / 2.0
+    }
+
+    fn driver() -> MacDriver<ListApp> {
+        MacDriver::new(ListApp::new(), VIEWPORT_W as u32, VIEWPORT_H as u32)
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = driver();
+        let y = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y2 = row_center_y(&driver, 2);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y2, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Toggle-off (a second ctrl-click deselecting row 2) is deferred: a
+        // repeated ctrl+mouse_down at the same point does not re-fire through
+        // MacDriver (a known harness quirk, tracked separately). The shared
+        // toggle itself is correct and unit-tested
+        // (apply_selection_gesture_toggle_adds_and_removes).
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = driver();
+        let y0 = row_center_y(&driver, 0);
+        let y3 = row_center_y(&driver, 3);
+        driver.dispatch(mouse_down(2.0, y0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(2.0, y3, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet {
+                indices: vec![0, 1, 2, 3]
+            })
+        );
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = driver();
+        let y1 = row_center_y(&driver, 1);
+        let y4 = row_center_y(&driver, 4);
+        driver.dispatch(mouse_down(2.0, y1, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            2.0,
+            y4,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
+    }
+}
+
+/// Multi-select click wiring over [`crate::win::testing::WinDriver`].
+///
+/// `ListView` stays purely declarative (no selection-set field of its
+/// own — see `crate::types::apply_selection_gesture`'s doc), so the app
+/// owns the selected-index set and the gesture anchor, resolves each
+/// `MouseDown` to a row via [`ListViewLayout::hit_test`], and derives the
+/// gesture from the event's `Modifiers`. Mirrors the GTK multi-select
+/// driver tests, except `WinDriver` has no
+/// `set_double_click_folding` toggle, so consecutive clicks that must stay
+/// independent (rather than fold into a `DoubleClick`) are spaced more
+/// than `WIN_DOUBLE_CLICK_RADIUS` DIPs apart on the x axis — row hit
+/// testing only depends on y, so this keeps each click landing on its
+/// intended row without tripping the shared `DoubleClickDetector`.
+#[cfg(all(test, feature = "win", target_os = "windows"))]
+mod win_multi_select_driver_tests {
+    use crate::runner::{AppLogic, Reaction};
+    use crate::win::testing::WinDriver;
+    use crate::{
+        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, ListItem, ListItemMeasure,
+        ListView, ListViewEvent, ListViewHit, Modifiers, MouseButton, Point, Rect,
+        SelectionGesture, StyledText, UiEvent, WidgetId,
+    };
+
+    const VIEWPORT_W: f32 = 40.0;
+    const VIEWPORT_H: f32 = 10.0;
+    const ROW_H: f32 = 1.0;
+
+    fn item(label: &str) -> ListItem {
+        ListItem {
+            text: StyledText::plain(label.to_string()),
+            icon: None,
+            detail: None,
+            decoration: Decoration::Normal,
+        }
+    }
+
+    fn sample_list() -> ListView {
+        ListView {
+            id: WidgetId::new("l"),
+            title: None,
+            items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
+            selected_idx: 0,
+            scroll_offset: 0,
+            has_focus: true,
+            bordered: false,
+            h_scroll: 0,
+            max_content_width: None,
+            show_v_scrollbar: false,
+            striped: false,
+        }
+    }
+
+    struct ListApp {
+        list: ListView,
+        selected: Vec<usize>,
+        anchor: usize,
+        events: Vec<ListViewEvent>,
+    }
+
+    impl ListApp {
+        fn new() -> Self {
+            Self {
+                list: sample_list(),
+                selected: Vec::new(),
+                anchor: 0,
+                events: Vec::new(),
+            }
+        }
+    }
+
+    impl AppLogic for ListApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let _ = backend.draw_dyn(Rect::new(0.0, 0.0, VIEWPORT_W, VIEWPORT_H), &self.list, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            let UiEvent::MouseDown {
+                position,
+                modifiers,
+                ..
+            } = event
+            else {
+                return Reaction::Continue;
+            };
+            let layout = self
+                .list
+                .layout(VIEWPORT_W, VIEWPORT_H, 0.0, |_| ListItemMeasure::new(ROW_H));
+            let ListViewHit::Item(idx) = layout.hit_test(position.x, position.y) else {
+                return Reaction::Continue;
+            };
+            let gesture = SelectionGesture::from_modifiers(modifiers);
+            let indices = apply_selection_gesture(&self.selected, self.anchor, idx, gesture);
+            self.selected = indices.clone();
+            if !matches!(gesture, SelectionGesture::Range) {
+                self.anchor = idx;
+            }
+            self.events.push(ListViewEvent::SelectionSet { indices });
+            Reaction::Redraw
+        }
+    }
+
+    fn mouse_down(x: f32, y: f32, modifiers: Modifiers) -> UiEvent {
+        UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn plain_click_replaces_selection() {
+        let mut driver = WinDriver::new(ListApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 2.0, Modifiers::default()));
+        assert_eq!(driver.app().selected, vec![2]);
+    }
+
+    #[test]
+    fn ctrl_click_toggles_rows_into_a_multi_selection() {
+        let mut driver = WinDriver::new(ListApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        // x is spaced > WIN_DOUBLE_CLICK_RADIUS DIPs from the previous
+        // click so the shared `DoubleClickDetector` doesn't fold these
+        // back-to-back single clicks into a `DoubleClick`; y alone picks
+        // the row.
+        driver.dispatch(mouse_down(10.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0, 2]);
+        // Ctrl-click the same row again toggles it back off.
+        driver.dispatch(mouse_down(18.0, 2.0, ctrl));
+        assert_eq!(driver.app().selected, vec![0]);
+        assert_eq!(
+            driver.app().events.last(),
+            Some(&ListViewEvent::SelectionSet { indices: vec![0] })
+        );
+    }
+
+    #[test]
+    fn shift_click_selects_the_range_from_the_anchor() {
+        let mut driver = WinDriver::new(ListApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 0.0, Modifiers::default()));
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        driver.dispatch(mouse_down(10.0, 3.0, shift));
+        assert_eq!(driver.app().selected, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn cmd_click_toggles_the_same_as_ctrl_click() {
+        let mut driver = WinDriver::new(ListApp::new(), 80, 40);
+        driver.dispatch(mouse_down(2.0, 1.0, Modifiers::default()));
+        driver.dispatch(mouse_down(
+            10.0,
+            4.0,
+            Modifiers {
+                cmd: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(driver.app().selected, vec![1, 4]);
     }
 }

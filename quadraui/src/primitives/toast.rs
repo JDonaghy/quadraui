@@ -3679,3 +3679,688 @@ mod cell_test_paint {
         layout
     }
 }
+
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::primitives::toast::{Toast, ToastCorner, ToastHit, ToastOverlay, ToastSeverity};
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    // Fixed overlay size, independent of the test's origin.
+    const VIEW_W: f64 = 340.0;
+    const VIEW_H: f64 = 200.0;
+    const LINE_HEIGHT: f64 = 16.0;
+    const BOX_COLOR: Color = Color::rgb(10, 20, 30);
+
+    /// A toast with a distinct `accent` fill (overrides the severity
+    /// tint) so its painted box is trivially distinguishable from the
+    /// white canvas background by colour, without scanning for glyphs.
+    fn colored_toast(id: &str, title: &str) -> Toast {
+        Toast {
+            id: WidgetId::new(id),
+            title: title.into(),
+            body: String::new(),
+            severity: ToastSeverity::Info,
+            actions: Vec::new(),
+            accent: Some(BOX_COLOR),
+        }
+    }
+
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts,
+            focus: None,
+        }
+    }
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Paint→click round trip at `(origin_x, origin_y)`: paints a single
+    /// toast through [`crate::gtk::surface::CairoSurface`] and the shared
+    /// `primitives::toast::native_surface_paint::paint`, confirms the box's
+    /// fill colour lands at the origin-shifted *absolute* position, and that
+    /// `hit_test` resolves clicks at that same absolute position through
+    /// Dismiss and Body.
+    ///
+    /// Canvas grows with the origin (`VIEW_W`/`VIEW_H` stay fixed) so an
+    /// origin regression would show as a shifted absolute paint position.
+    fn paint_and_click_round_trip_at(origin_x: f64, origin_y: f64) {
+        let canvas_w = (origin_x + VIEW_W).ceil() as i32;
+        let canvas_h = (origin_y + VIEW_H).ceil() as i32;
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        let stack = stack_br(vec![colored_toast("t1", "Hello")]);
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut raw = crate::gtk::surface::CairoSurface {
+                cr: &cr,
+                layout: Some(&pango_layout),
+                translucent_fill: true,
+            };
+            crate::primitives::toast::native_surface_paint::paint(
+                &stack,
+                &mut raw,
+                &Theme::default(),
+                &crate::style::Style::default(),
+                origin_x as f32,
+                origin_y as f32,
+                VIEW_W as f32,
+                VIEW_H as f32,
+                LINE_HEIGHT as f32,
+            )
+        };
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+
+        // Probe near the box's own left edge, at mid-height — inset,
+        // away from glyphs/dismiss *and* away from the rounded corners
+        // (a near-corner probe would land outside the fillet, seeing the
+        // backdrop instead of the box) — must be the toast's fill colour
+        // at the *absolute* bounds `draw_toast_stack` painted into.
+        let probe_x = (vt.bounds.x + 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height / 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b),
+            "toast box should be painted at its own absolute bounds \
+             (origin=({origin_x}, {origin_y}), bounds={:?})",
+            vt.bounds,
+        );
+
+        // Round trip: absolute clicks at the dismiss and body positions
+        // resolve through hit_test.
+        let db = vt.dismiss_bounds.expect("dismiss bounds present");
+        let hit = layout.hit_test(db.x + db.width * 0.5, db.y + db.height * 0.5);
+        assert_eq!(hit, ToastHit::Dismiss(WidgetId::new("t1")));
+
+        let body_hit = layout.hit_test(vt.bounds.x + 5.0, vt.bounds.y + vt.bounds.height * 0.5);
+        assert_eq!(body_hit, ToastHit::Body(WidgetId::new("t1")));
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0.0, 0.0);
+    }
+
+    /// Regression guard: `gtk_toast_stack_layout` must return coordinates in
+    /// the same frame (absolute window coordinates) regardless of the overlay's
+    /// starting position.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7.0, 13.0);
+    }
+
+    /// The overlay-order contract `quadraui-binding-core::host::render_overlays`'s
+    /// doc states — toast topmost of all — must hold on GTK even when the
+    /// base layer underneath is a bordered, focused
+    /// [`crate::primitives::text_input::TextInput`] (the `clipboard_demo`
+    /// example's editor shape), not empty space: a toast opened over it
+    /// must still show its own fill, not get painted over by the editor's
+    /// own border/background. Mirrors
+    /// `macos::toast::tests::toast_paints_over_a_bordered_focused_text_input`/
+    /// `win::backend::tests::draw_toast_overlay_paints_over_a_bordered_focused_text_input`,
+    /// directly against `GtkBackend` instead of through a binding host.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_text_input() {
+        use crate::gtk::backend::GtkBackend;
+        use crate::primitives::text_input::TextInput;
+        use crate::Backend;
+
+        let canvas_w = VIEW_W.ceil() as i32;
+        let canvas_h = VIEW_H.ceil() as i32;
+        let stack = stack_br(vec![colored_toast("t1", "Saved")]);
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, canvas_w, canvas_h).expect("create ImageSurface");
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(LINE_HEIGHT);
+        backend.set_current_char_width(8.0);
+        backend.begin_frame(crate::Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
+
+        let mut editor = TextInput::new(WidgetId::new("editor"));
+        editor.lines = vec!["fn main() {}".to_string()];
+        editor.has_focus = true;
+
+        let layout = {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let bounds = crate::event::Rect::new(0.0, 0.0, VIEW_W as f32, VIEW_H as f32);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                b.draw_dyn(bounds, &editor, &());
+                b.draw_dyn(bounds, &stack, &());
+                b.layout_primitive(bounds, &stack).layout
+            })
+        };
+        backend.end_frame();
+
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+        let probe_x = (vt.bounds.x + 2.0) as i32;
+        let probe_y = (vt.bounds.y + vt.bounds.height / 2.0) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b),
+            "the toast must paint over the bordered, focused editor underneath it, \
+             not get overwritten by its border/background (bounds={:?})",
+            vt.bounds,
+        );
+    }
+}
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::layout_metrics::pixel;
+    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastHit, ToastSeverity};
+    use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+    use crate::Backend;
+    use core_text::font::CTFont;
+
+    const W: u32 = 400;
+    const H: u32 = 240;
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    fn toast(id: &str, title: &str, severity: ToastSeverity) -> Toast {
+        Toast {
+            id: WidgetId::new(id),
+            title: title.into(),
+            body: String::new(),
+            severity,
+            actions: Vec::new(),
+            accent: None,
+        }
+    }
+
+    fn sample_stack() -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![
+                toast("t1", "Saved", ToastSeverity::Success),
+                toast("t2", "Error", ToastSeverity::Error),
+            ],
+            focus: None,
+        }
+    }
+
+    fn paint_via_backend(stack: &ToastOverlay) -> (BitmapSurface, ToastStackLayout) {
+        paint_via_backend_at(stack, 0.0, 0.0)
+    }
+
+    /// Like [`paint_via_backend`] but paints the toast overlay anchored
+    /// at an arbitrary `(origin_x, origin_y)` instead of always `(0, 0)`.
+    /// `mac_toast_stack_layout` bakes the origin straight into the returned
+    /// bounds (absolute frame, matching `MenuBar::pixel_layout`), so `hit_test` must keep resolving against raw
+    /// (unshifted) click coordinates at any origin, not just `(0, 0)`.
+    fn paint_via_backend_at(
+        stack: &ToastOverlay,
+        origin_x: f32,
+        origin_y: f32,
+    ) -> (BitmapSurface, ToastStackLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(
+                QRect::new(origin_x, origin_y, W as f32 - origin_x, H as f32 - origin_y),
+                stack,
+            )
+            .layout
+        });
+        backend.end_frame();
+        (surface, layout)
+    }
+
+    #[test]
+    fn bottom_right_corner_positions_toasts_at_bottom_right() {
+        let stack = sample_stack();
+        let (_surface, layout) = paint_via_backend(&stack);
+        assert_eq!(layout.visible_toasts.len(), 2);
+        // First-visible toast is newest (t2 = idx 1), nearest the
+        // corner (bottom-right).
+        let first = &layout.visible_toasts[0];
+        // Right edge near W - margin.
+        assert!(
+            (first.bounds.x + first.bounds.width - (W as f32 - pixel::TOAST_MARGIN)).abs() < 1.0,
+            "toast right edge should be near viewport right: got x={}, width={}",
+            first.bounds.x,
+            first.bounds.width,
+        );
+        // Bottom edge near H - margin.
+        assert!(
+            (first.bounds.y + first.bounds.height - (H as f32 - pixel::TOAST_MARGIN)).abs() < 1.0,
+            "toast bottom edge should be near viewport bottom",
+        );
+    }
+
+    #[test]
+    fn severity_tint_painted() {
+        let stack = ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![toast("err", "Boom", ToastSeverity::Error)],
+            focus: None,
+        };
+        let (surface, layout) = paint_via_backend(&stack);
+        let theme = Theme::default();
+        let t = &layout.visible_toasts[0];
+        // Probe inside the box, away from glyphs (right of the title
+        // and above the dismiss).
+        let px = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
+        let py = (t.bounds.y + t.bounds.height - 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        // Error severity's fallback tint is `theme.danger_bg()` — see
+        // `primitives::toast::native_surface_paint::severity_bg`, the
+        // shared implementation of this formula.
+        let expected = theme.danger_bg();
+        assert_eq!((r, g, b), (expected.r, expected.g, expected.b));
+    }
+
+    /// Shared body for `hit_test_dismiss_vs_body` — returns layout with
+    /// the toast overlay anchored at `(origin_x, origin_y)`.
+    fn hit_test_dismiss_vs_body_at(origin_x: f32, origin_y: f32) {
+        let stack = sample_stack();
+        let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
+        let t = &layout.visible_toasts[0];
+        let db = t.dismiss_bounds.expect("dismiss bounds present");
+        let hit = layout.hit_test(db.x + db.width * 0.5, db.y + db.height * 0.5);
+        assert!(matches!(hit, ToastHit::Dismiss(_)), "hit was {:?}", hit);
+
+        // Body click: left side of toast, well before dismiss/action.
+        let hit = layout.hit_test(t.bounds.x + 10.0, t.bounds.y + t.bounds.height * 0.5);
+        assert!(matches!(hit, ToastHit::Body(_)));
+    }
+
+    #[test]
+    fn hit_test_dismiss_vs_body() {
+        hit_test_dismiss_vs_body_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard: same round trip,
+    /// painted at a shifted overlay origin.
+    #[test]
+    fn hit_test_dismiss_vs_body_at_nonzero_origin() {
+        hit_test_dismiss_vs_body_at(7.0, 13.0);
+    }
+
+    /// Shared body for `action_button_reserves_action_bounds` — returns
+    /// layout with the toast overlay anchored at `(origin_x, origin_y)`.
+    fn action_button_reserves_action_bounds_at(origin_x: f32, origin_y: f32) {
+        let stack = ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![Toast {
+                actions: vec![ToastButton {
+                    spec: None,
+                    id: WidgetId::new("undo"),
+                    label: "Undo".into(),
+                    primary: false,
+                }],
+                ..toast("t", "Did the thing", ToastSeverity::Info)
+            }],
+            focus: None,
+        };
+        let (_surface, layout) = paint_via_backend_at(&stack, origin_x, origin_y);
+        let t = &layout.visible_toasts[0];
+        let ab = *t.action_rects.first().expect("action bounds present");
+        // Hit-test the action returns Action.
+        let hit = layout.hit_test(ab.x + ab.width * 0.5, ab.y + ab.height * 0.5);
+        assert!(matches!(hit, ToastHit::Action(_)), "hit was {:?}", hit);
+    }
+
+    #[test]
+    fn action_button_reserves_action_bounds() {
+        action_button_reserves_action_bounds_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn action_button_reserves_action_bounds_at_nonzero_origin() {
+        action_button_reserves_action_bounds_at(7.0, 13.0);
+    }
+
+    #[test]
+    fn empty_stack_no_visible_toasts() {
+        let stack = ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![],
+            focus: None,
+        };
+        let (_surface, layout) = paint_via_backend(&stack);
+        assert!(layout.visible_toasts.is_empty());
+    }
+
+    /// The overlay-order contract documented on
+    /// [`crate::Backend::draw_focus_ring`] — tooltip/toast topmost of all —
+    /// must hold on macOS even when the base layer underneath is a
+    /// bordered, focused [`TextInput`] (e.g. the `clipboard_demo`
+    /// example's editor), not empty space: a toast opened over it must
+    /// still show its own fill, not get painted over by the editor's own
+    /// border/background, nor by the generic focus ring `draw_focus_ring`
+    /// strokes around that same focused editor on this same frame. Mirrors
+    /// `quadraui-binding-core::host::tests::toast_paints_over_a_bordered_focused_editor`,
+    /// directly against `MacBackend` instead of through a binding host.
+    #[test]
+    fn toast_paints_over_a_bordered_focused_text_input() {
+        use crate::primitives::text_input::TextInput;
+
+        let stack = sample_stack();
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_skip_animations(true);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let mut editor = TextInput::new(WidgetId::new("editor"));
+        editor.lines = vec!["fn main() {}".to_string()];
+        editor.has_focus = true;
+        let editor_rect = QRect::new(0.0, 0.0, W as f32, H as f32);
+
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(editor_rect, &editor);
+            let l = b.draw_primitive(editor_rect, &stack).layout;
+            // The chrome-level focus ring the runner strokes around
+            // `editor_rect` once `AppLogic::render` returns — must not
+            // land on top of the toast just painted above.
+            b.draw_focus_ring(editor_rect);
+            l
+        });
+        backend.end_frame();
+
+        let t = &layout.visible_toasts[0];
+        let probe_x = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
+        let probe_y = (t.bounds.y + t.bounds.height - 2.0) as u32;
+        let (r, g, b, _a) = surface.pixel(probe_x, probe_y);
+        // `t2`'s (the nearest-corner, topmost toast) `Error` severity tint.
+        let danger_bg = Theme::default().danger_bg();
+        assert_eq!(
+            (r, g, b),
+            (danger_bg.r, danger_bg.g, danger_bg.b),
+            "the toast must paint over the bordered, focused editor underneath it, \
+             not get overwritten by its border/background or its focus ring",
+        );
+
+        // The toast stack is inset from `editor_rect` by `TOAST_MARGIN`
+        // (see `primitives::layout_metrics::pixel::TOAST_MARGIN`), so it
+        // never reaches the editor's own edges — the ring must still
+        // paint there, on the far (top-left) side from the bottom-right
+        // toast stack.
+        let theme = Theme::default();
+        let (r, g, b, _a) = surface.pixel(2, 0);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.focus_ring_color().r,
+                theme.focus_ring_color().g,
+                theme.focus_ring_color().b
+            ),
+            "the focus ring must still paint around the focused editor where the \
+             toast, inset within it, never reaches",
+        );
+    }
+}
+
+#[cfg(all(test, feature = "win", target_os = "windows"))]
+mod win_tests {
+    use crate::event::Rect;
+    use crate::primitives::toast::ToastOverlay;
+    use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastHit, ToastSeverity};
+    #[cfg(all(test, target_os = "windows"))]
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::win::testing::HeadlessSurface;
+    #[cfg(all(test, target_os = "windows"))]
+    use crate::win::text::DWrite;
+
+    const W: u32 = 400;
+    const H: u32 = 300;
+    const LINE_HEIGHT: f32 = 16.0;
+
+    /// A toast with a distinct `accent` fill (overrides the severity
+    /// tint) so its painted box is trivially distinguishable from the
+    /// cleared canvas by colour, without scanning for glyphs — same
+    /// technique `gtk::toast::tests::colored_toast` uses.
+    const BOX_COLOR: Color = Color::rgb(10, 20, 30);
+
+    fn colored_toast(id: &str, title: &str) -> Toast {
+        Toast {
+            id: WidgetId::new(id),
+            title: title.into(),
+            body: "Details here".into(),
+            severity: ToastSeverity::Info,
+            actions: vec![ToastButton {
+                spec: None,
+                id: WidgetId::new(format!("{id}:act")),
+                label: "Undo".into(),
+                primary: false,
+            }],
+            accent: Some(BOX_COLOR),
+        }
+    }
+
+    fn stack_br(toasts: Vec<Toast>) -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts,
+            focus: None,
+        }
+    }
+
+    /// Paint↔click round trip: the toast box's painted fill colour lands
+    /// at its own bounds, and `hit_test` resolves clicks on dismiss,
+    /// action, and body to the matching `ToastHit`. Exercises the shared
+    /// paint through [`crate::win::surface::D2dSurface`] directly —
+    /// the same adapter the now-removed `draw_toast_stack` shim used
+    #[test]
+    fn paint_and_hit_test_round_trip() {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let stack = stack_br(vec![colored_toast("t1", "Saved")]);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+
+        let layout = surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                crate::primitives::toast::native_surface_paint::paint(
+                    &stack,
+                    &mut raw,
+                    &theme,
+                    &crate::style::Style::default(),
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                );
+            })
+            .map(|_| {
+                crate::primitives::layout_metrics::pixel_toast_stack_layout(
+                    &stack,
+                    &dwrite,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                )
+            })
+            .expect("paint toast stack");
+
+        assert_eq!(layout.visible_toasts.len(), 1);
+        let vt = &layout.visible_toasts[0];
+
+        // Probe the box's own left edge at mid-height — inset, away
+        // from glyphs/dismiss/action *and* away from the rounded
+        // corners (a near-corner probe would land outside the fillet
+        // and see the backdrop instead of the box).
+        let probe = surface.pixel_at(
+            (vt.bounds.x + 2.0) as u32,
+            (vt.bounds.y + vt.bounds.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (probe.r, probe.g, probe.b),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b)
+        );
+
+        let db = vt.dismiss_bounds.expect("dismiss bounds present");
+        let dismiss_hit = layout.hit_test(db.x + db.width / 2.0, db.y + db.height / 2.0);
+        assert_eq!(dismiss_hit, ToastHit::Dismiss(WidgetId::new("t1")));
+
+        let ab = *vt.action_rects.first().expect("action bounds present");
+        let action_hit = layout.hit_test(ab.x + ab.width / 2.0, ab.y + ab.height / 2.0);
+        assert_eq!(action_hit, ToastHit::Action(WidgetId::new("t1:act")));
+
+        let body_hit = layout.hit_test(vt.bounds.x + 2.0, vt.bounds.y + vt.bounds.height - 2.0);
+        assert_eq!(body_hit, ToastHit::Body(WidgetId::new("t1")));
+    }
+
+    /// `win_toast_stack_layout` (no-paint) must produce byte-identical
+    /// layout to what the shared paint lays out — same stack, same rect, same line height.
+    #[test]
+    fn no_paint_layout_matches_paint_layout() {
+        let stack = stack_br(vec![colored_toast("t1", "Saved")]);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let painted = surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                crate::primitives::toast::native_surface_paint::paint(
+                    &stack,
+                    &mut raw,
+                    &theme,
+                    &crate::style::Style::default(),
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                );
+            })
+            .map(|_| {
+                crate::primitives::layout_metrics::pixel_toast_stack_layout(
+                    &stack,
+                    &dwrite,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                )
+            })
+            .expect("paint");
+        let no_paint = crate::primitives::layout_metrics::pixel_toast_stack_layout(
+            &stack,
+            &dwrite,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            LINE_HEIGHT,
+        );
+
+        assert_eq!(painted, no_paint);
+    }
+
+    /// Non-zero-origin invariant: `rect`'s own `(x, y)` must be honoured as the
+    /// overlay's absolute origin, not silently treated as `(0, 0)`.
+    #[test]
+    fn paint_and_hit_test_round_trip_at_nonzero_origin() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let stack = stack_br(vec![colored_toast("t1", "Saved")]);
+        let rect = Rect::new(20.0, 30.0, W as f32, H as f32);
+        let theme = Theme::default();
+
+        let surface = HeadlessSurface::new(W + 20, H + 30).expect("create surface");
+        let layout = surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                crate::primitives::toast::native_surface_paint::paint(
+                    &stack,
+                    &mut raw,
+                    &theme,
+                    &crate::style::Style::default(),
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                );
+            })
+            .map(|_| {
+                crate::primitives::layout_metrics::pixel_toast_stack_layout(
+                    &stack,
+                    &dwrite,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    LINE_HEIGHT,
+                )
+            })
+            .expect("paint toast stack");
+
+        let vt = &layout.visible_toasts[0];
+        assert!(
+            vt.bounds.x >= rect.x && vt.bounds.y >= rect.y,
+            "toast bounds should be shifted into the overlay's absolute frame"
+        );
+
+        // Left edge at mid-height, not a corner — a near-corner
+        // probe would land outside the rounded fillet and see the
+        // backdrop instead of the box.
+        let probe = surface.pixel_at(
+            (vt.bounds.x + 2.0) as u32,
+            (vt.bounds.y + vt.bounds.height / 2.0) as u32,
+        );
+        assert_eq!(
+            (probe.r, probe.g, probe.b),
+            (BOX_COLOR.r, BOX_COLOR.g, BOX_COLOR.b)
+        );
+    }
+}

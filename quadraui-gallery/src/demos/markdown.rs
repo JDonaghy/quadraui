@@ -193,8 +193,7 @@ impl MarkdownDemo {
             show_v_scrollbar: true,
             striped: false,
         };
-        #[allow(deprecated)]
-        backend.draw_list(area, &list);
+        let _ = backend.draw_dyn(area, &list, &());
     }
 }
 

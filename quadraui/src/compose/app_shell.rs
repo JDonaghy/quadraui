@@ -2830,7 +2830,7 @@ mod tests {
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
         let area = ratatui::layout::Rect::new(0, 0, 4, 10);
         crate::primitives::activity_bar::cell_paint::paint(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             bar,
             &theme,

@@ -16,9 +16,9 @@
 //! (`blend(background, accent_bg, 0.25)`) since a cell has no alpha.
 
 use super::{Minimap, MinimapLayout, BRAILLE_LINES_PER_ROW};
+use crate::cell_surface::braille::{dither_threshold_met, pack_braille_cell};
 use crate::cell_surface::{solid_style, CellSurface};
 use crate::theme::Theme;
-use crate::tui::braille::{dither_threshold_met, pack_braille_cell};
 use crate::Color;
 
 /// Paint `minimap` at `layout` onto `cells`, at `layout.cols_per_cell`
@@ -267,7 +267,7 @@ mod tests {
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
         let _layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
-        // Hand-derived from the BRAILLE_OFFSETS table (see `crate::tui::braille`):
+        // Hand-derived from the BRAILLE_OFFSETS table (see `crate::cell_surface::braille`):
         // left cell: bit0 (line0 col0) + bit5 (line2 col1) -> 0x21.
         // right cell: bit1 (line1 col0) + bit7 (line3 col1) -> 0x82.
         assert_eq!(cell_char(&buf, 0, 0), '\u{2821}', "left cell mispacked");

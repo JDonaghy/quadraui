@@ -61,15 +61,10 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::menu_bar::MenuBar;
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::scrollbar::Scrollbar;
-use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
-use crate::{
-    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices, Theme,
-};
+use crate::{Accelerator, AcceleratorId, Key, Modifiers, ParsedBinding, PlatformServices, Theme};
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
 // backend.
@@ -939,7 +934,7 @@ impl MacBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// Opacity multiplier the overlay scrollbars paint the track
     /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -1059,24 +1054,6 @@ impl MacBackend {
     /// The current style. Mirrors [`Self::current_theme`].
     pub fn current_style(&self) -> &crate::Style {
         &self.current_style
-    }
-
-    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), floored at the font's own line
-    /// height so a chrome/editor font large enough to need more than
-    /// `Style::row_height` still gets it — a huge UI font size never
-    /// clips row content against a fixed slot. On a cell grid
-    /// (`candidate_line_height <= 1.0`, which never reaches this code on
-    /// macOS but is kept symmetric with the TUI-shared formula other
-    /// chrome strips use), `Style` tokens are a documented no-op (see
-    /// that module's "Where each token maps on TUI"), so the raw
-    /// candidate passes through unchanged.
-    pub(crate) fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.row_height as f64)
-        } else {
-            candidate_line_height
-        }
     }
 
     /// Shared handle to the backend's event queue. The runner clones
@@ -2279,17 +2256,6 @@ impl Backend for MacBackend {
         MacBackend::set_current_char_width(self, char_width as f64);
     }
 
-    /// `chrome_char_width`, not `current_char_width` — [`Self::draw_list`]
-    /// paints row text with `chrome_font`, and
-    /// `chrome_char_width` is that font's real advance, kept in sync by
-    /// [`Self::set_chrome_font`] whenever [`Backend::set_ui_font`]
-    /// changes it. This is exactly the metric-mismatch hazard `chrome_font`
-    /// / `current_font`'s separate cached widths exist to avoid —
-    /// see `chrome_font`'s field doc.
-    fn list_char_width(&self) -> f32 {
-        self.chrome_char_width as f32
-    }
-
     /// Real Core Text measurement via [`super::text::measure_text`]
     /// against `chrome_font`/`current_font` — the same per-role `CTFont`
     /// resolution [`Self::surface_draw_text_run_with_role`] uses,
@@ -2304,170 +2270,6 @@ impl Backend for MacBackend {
         };
         let (w, h) = super::text::measure_text(font, text);
         (w as f32, h as f32)
-    }
-
-    // ── Drawing ────────────────────────────────────────────────────
-
-    fn draw_list(&mut self, rect: Rect, list: &ListView) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_list called outside enter_frame_scope",
-        );
-        // The list is chrome (`ChromePrimitive::List`) — paint through
-        // `chrome_font` at `chrome_line_height`, matching the compose
-        // layer's layout and `list_layout` hit regions.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.chrome_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::list::draw_list(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                list,
-                &theme,
-                &self.current_style,
-                line_height,
-                self.nerd_fonts_enabled,
-            );
-        }
-    }
-    /// [`Self::draw_list`], plus hover/press tinting, a focus-visible
-    /// ring, and — when `state.scroll_px` is `Some` — a pixel-precise
-    /// scroll position instead of only [`ListView::scroll_offset`]'s
-    /// whole-row value, via [`super::list::draw_list_with_state`].
-    /// `state.scroll_px: None` paints pixel-identically to
-    /// [`Self::draw_list`].
-    fn draw_list_with_state(
-        &mut self,
-        rect: Rect,
-        list: &ListView,
-        state: &crate::primitives::list::ListPaintState,
-        focus_ring_visible: bool,
-    ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_list_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.chrome_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::list::draw_list_with_state(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                list,
-                &theme,
-                &self.current_style,
-                line_height,
-                self.nerd_fonts_enabled,
-                state,
-                focus_ring_visible,
-            );
-        }
-    }
-    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        // `ListView::h_scroll` and `max_content_width` are in character columns,
-        // but macOS works in pixels.  Convert with `current_char_width` so the
-        // returned `Scrollbar` track/thumb are in pixel units — matching what
-        // `macos::draw_list` paints and what mouse-event coords use.
-        let char_w = self.current_char_width as f32;
-        let max_w_chars = list.max_content_width? as f32;
-        let content_px = max_w_chars * char_w;
-        let border_inset = if list.bordered { char_w } else { 0.0 };
-        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
-        if content_px <= visible_px {
-            return None;
-        }
-        // Row pitch must match `draw_list`'s own (`resolved_row_height`
-        // over the chrome metric), or the thumb geometry drifts from the
-        // rows it is meant to track.
-        let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
-        let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
-        Some(crate::Scrollbar::horizontal(
-            list.id,
-            track,
-            list.h_scroll as f32 * char_w,
-            content_px,
-            visible_px,
-            row_h,
-        ))
-    }
-    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        // macOS ListView vertical-scrollbar rasteriser not yet implemented.
-        // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is `resolved_row_height` tall, matching `draw_list`'s
-        // own row pitch. `scrollbar_width` sets the track's column width so
-        // this hit-test agrees exactly with what `draw_list` paints.
-        let row_h = self.resolved_row_height(self.chrome_line_height() as f64) as f32;
-        list.vscrollbar_with_track_width(
-            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
-            row_h,
-            self.current_style.scrollbar_width,
-        )
-    }
-    fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // Lists are sidebar chrome — use the chrome metric so
-        // hit regions match `draw_list`'s painted row positions.
-        super::list::mac_list_layout(
-            list,
-            rect.width as f64,
-            rect.height as f64,
-            self.resolved_row_height(self.chrome_line_height),
-            self.chrome_char_width,
-        )
-    }
-
-    fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
-        let theme = self.current_theme;
-        let opacity = self.scrollbar_fade_opacity();
-        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
-            scrollbar, self, &theme, opacity,
-        );
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::progress::native_surface_paint::paint`].
-    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        let theme = self.current_theme;
-        let style = self.style();
-        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect, &style)
-    }
-    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        super::progress::mac_progress_layout(
-            bar,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-    /// Paint via the shared
-    /// [`crate::primitives::spinner::native_surface_paint::paint`].
-    /// `Spinner` is chrome, not editor content, so `self` (whose [`crate::paint_surface::PaintSurface`]
-    /// impl measures/draws through `chrome_font`) is the right surface.
-    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        let theme = self.current_theme;
-        crate::primitives::spinner::native_surface_paint::paint(
-            spinner, self, &theme, rect.x, rect.y,
-        )
-    }
-    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        // No-paint twin of `draw_spinner` — must agree with what that
-        // method painted.
-        let font = &self.chrome_font;
-        super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
     }
 
     // ─── Clipping ────────────────────────────────────────────────────────
@@ -3033,7 +2835,7 @@ impl PaintSurface for MacBackend {
     }
 
     /// `self` is the surface every non-editor-class primitive paints
-    /// through unwrapped (`draw_toast_overlay`, `draw_progress`, …), so
+    /// through unwrapped (toasts, progress bars, …), so
     /// this reads `chrome_font` unconditionally
     /// rather than `current_font` — see [`EditorSurface`]'s doc for the
     /// three editor-class primitives that opt back into `current_font`
@@ -3549,7 +3351,7 @@ mod tests {
     use crate::accelerator::{Accelerator, AcceleratorScope};
     use crate::event::Point;
     use crate::types::Modifiers;
-    use crate::KeyBinding;
+    use crate::{DrawsPrimitives, KeyBinding, ListView};
 
     fn acc(id: &str, key: &str) -> Accelerator {
         Accelerator {
@@ -4693,107 +4495,6 @@ mod tests {
     fn backend_caps_declares_native_dialogs() {
         let b = MacBackend::new();
         assert!(b.backend_caps().native_dialogs);
-    }
-
-    /// Build a flat `ListView` whose widest row is `content_width` chars
-    /// wide, scrolled to `h_scroll`, with `max_content_width` populated so
-    /// it always overflows a narrow viewport. Mirrors
-    /// `primitives::list::hscrollbar_tests::list`.
-    fn bordered_overflow_list(content_width: usize, h_scroll: usize, bordered: bool) -> ListView {
-        ListView {
-            id: crate::types::WidgetId::new("l"),
-            title: None,
-            items: vec![crate::ListItem {
-                text: crate::types::StyledText::plain("x".repeat(content_width)),
-                detail: None,
-                icon: None,
-                decoration: crate::types::Decoration::default(),
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered,
-            h_scroll,
-            max_content_width: Some(content_width),
-            show_v_scrollbar: false,
-            striped: false,
-        }
-    }
-
-    /// `MacBackend::list_hscrollbar` must inset the track for bordered
-    /// lists, matching the shared `primitives::list::hscrollbar_track`
-    /// helper and the GTK/Windows implementations. The vertical sibling
-    /// bug was fixed in #712, but the horizontal geometry was missed.
-    #[test]
-    fn list_hscrollbar_insets_track_for_bordered_list() {
-        let mut b = MacBackend::new();
-        b.current_char_width = 8.0;
-        b.current_line_height = 16.0;
-        // The hscrollbar's row pitch now follows `draw_list`'s own
-        // (`resolved_row_height` over the chrome metric, which defaults
-        // to `Style::row_height` on a pixel backend) — not the raw
-        // editor `current_line_height` set above, which this test keeps
-        // only for `track.x`/`track.width`'s char-width-based inset math.
-        let row_h = b.current_style.row_height;
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let flat = bordered_overflow_list(40, 0, false);
-        let flat_sb = b
-            .list_hscrollbar(rect, &flat)
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(flat_sb.track.x, 0.0);
-        assert_eq!(flat_sb.track.width, 200.0);
-
-        let bordered = bordered_overflow_list(40, 0, true);
-        let bordered_sb = b
-            .list_hscrollbar(rect, &bordered)
-            .expect("overflowing content should yield a scrollbar");
-        // Inset by one char width (8px) on each side, and the thumb
-        // (contained within the track) must therefore sit strictly inside
-        // the border rather than overpainting it.
-        assert_eq!(bordered_sb.track.x, 8.0);
-        assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
-        assert!(bordered_sb.track.x >= rect.x + 8.0);
-        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
-    }
-
-    // ── Style::row_height governs list/tree/table row pitch ────────────
-
-    /// On a pixel backend, `resolved_row_height` defaults to
-    /// `Style::row_height` (22, the default) rather than the raw chrome
-    /// line height, but never shrinks below it.
-    #[test]
-    fn resolved_row_height_defaults_to_style_token_but_never_shrinks_the_font_metric() {
-        let b = MacBackend::new();
-        assert_eq!(
-            b.resolved_row_height(10.0),
-            b.current_style.row_height as f64
-        );
-        assert_eq!(b.resolved_row_height(40.0), 40.0);
-        // A cell grid (TUI's architectural `1.0`) is a documented no-op.
-        assert_eq!(b.resolved_row_height(1.0), 1.0);
-    }
-
-    /// `Backend::set_style` overriding `row_height` changes the row pitch
-    /// `list_layout` resolves — the acceptance bar for this chrome metric.
-    #[test]
-    fn list_layout_row_pitch_follows_a_set_style_override() {
-        use crate::Backend;
-        let mut b = MacBackend::new();
-        b.chrome_line_height = 10.0;
-        let list = bordered_overflow_list(5, 0, false);
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let default_layout = b.list_layout(rect, &list);
-        assert_eq!(
-            default_layout.visible_items[0].bounds.height,
-            b.current_style.row_height
-        );
-
-        b.set_style(crate::Style::default().with_row_height(30.0));
-        let overridden_layout = b.list_layout(rect, &list);
-        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     // ── Minimap/Image paint real pixels on macOS ─────────────────────────
@@ -7682,7 +7383,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width
@@ -7712,7 +7413,9 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
-        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let default_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(
             default_sb.track.width,
@@ -7720,7 +7423,9 @@ mod tests {
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let overridden_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(overridden_sb.track.width, 24.0);
     }

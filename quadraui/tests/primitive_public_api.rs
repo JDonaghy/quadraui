@@ -26,9 +26,17 @@
 //!    `&mut dyn Backend` seam, not a concrete `&mut TuiBackend`.
 //!
 //! `Swatch::paint` records its call rather than issuing a paint verb: a live
-//! Cairo/Direct2D render target is needed to exercise the verbs themselves,
-//! and pixel output for a real `Primitive` impl is covered by
-//! `src/primitives/list.rs`'s `ListView` parity tests.
+//! Cairo/Direct2D render target is needed to exercise the verbs themselves.
+//!
+//! [`Counter`] carries the whole contract from outside the crate:
+//! `Primitive` with both `paint` and `paint_cells`, and `Interactive` with a
+//! focus stop, a `State` and an `Action`. Through public API only it lays
+//! out, paints in cells on TUI (a `TuiDriver` app pushing it as
+//! `Surface::Widget`) and in pixels on GTK (read back from a Cairo image) and
+//! Win, takes focus from Tab, handles a key and a click, and answers
+//! `route_widget_action` with the same event the click produces. The
+//! binding half, a runtime-registered kind reached through binding-core's
+//! wire decode, is `quadraui-binding-core/tests/out_of_crate_widget.rs`.
 
 #![cfg(any(feature = "tui", feature = "gtk", feature = "win"))]
 
@@ -410,4 +418,390 @@ fn an_external_primitive_reads_hover_and_press_from_its_paint_env() {
         *swatch.painted.borrow(),
         vec![theme.background, theme.hover_bg, theme.accent_bg]
     );
+}
+
+/// What [`Counter`] emits, as the payload of a [`quadraui::UiEvent::User`]:
+/// a widget outside the crate has no `UiEvent` variant of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CounterBumped {
+    id: quadraui::WidgetId,
+    /// The count the widget showed when it was bumped.
+    from: u32,
+}
+
+/// [`Counter`]'s semantic action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CounterAction {
+    Bumped { from: u32 },
+}
+
+impl quadraui::WidgetAction for CounterAction {
+    fn into_ui_event(self, id: quadraui::WidgetId) -> quadraui::UiEvent {
+        let CounterAction::Bumped { from } = self;
+        quadraui::UiEvent::User(quadraui::UserPayload::new(CounterBumped { id, from }))
+    }
+}
+
+/// [`Counter`]'s gesture state: how many bumps `handle` has produced.
+#[derive(Debug, Default)]
+struct CounterState {
+    bumps: u32,
+}
+
+/// A focusable counter built against the public contract only. The count
+/// it shows is descriptor data (controlled mode): the app owns it and
+/// increments it on each [`CounterBumped`].
+#[derive(Debug, Clone)]
+struct Counter {
+    id: quadraui::WidgetId,
+    count: u32,
+}
+
+/// The label [`Counter`] paints: `[n]`.
+fn counter_label(count: u32) -> String {
+    format!("[{count}]")
+}
+
+impl A11yPrimitive for Counter {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+impl Primitive for Counter {
+    type Layout = Rect;
+    type Event = CounterAction;
+
+    fn id(&self) -> Option<&quadraui::WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+        rect
+    }
+
+    fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, env: &quadraui::PaintEnv) {
+        let theme = env.theme();
+        surface.surface_fill_rect(*layout, theme.accent_bg);
+        surface.surface_draw_text_run(*layout, &counter_label(self.count), theme.accent_fg);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Rect,
+        cells: &mut dyn quadraui::CellSurface,
+        env: &quadraui::PaintEnv,
+    ) {
+        let theme = env.theme();
+        let style = quadraui::CellSurfaceStyle {
+            fg: Some(theme.accent_fg),
+            bg: Some(theme.accent_bg),
+            bold: true,
+            ..Default::default()
+        };
+        cells.fill(*layout, style);
+        cells.put_str_clipped(
+            layout.x as u16,
+            layout.y as u16,
+            &counter_label(self.count),
+            layout.width as u16,
+            style,
+        );
+    }
+}
+
+impl quadraui::Interactive for Counter {
+    type State = CounterState;
+    type Action = CounterAction;
+
+    fn focus(&self) -> quadraui::FocusSpec {
+        quadraui::FocusSpec::Stop
+    }
+
+    fn handle(
+        &self,
+        state: &mut CounterState,
+        event: &quadraui::RoutedEvent,
+        _layout: &Rect,
+        cx: &mut quadraui::EventCx,
+    ) -> quadraui::Handled<CounterAction> {
+        use quadraui::{Key, NamedKey, PointerKind, RoutedEvent};
+        let bump = match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(quadraui::MouseButton::Left),
+                ..
+            } => {
+                cx.request_focus(None);
+                true
+            }
+            RoutedEvent::Key(key) => {
+                matches!(key.key, Key::Named(NamedKey::Enter) | Key::Char('+'))
+            }
+            RoutedEvent::Action(quadraui::A11yAction::Click) => true,
+            _ => false,
+        };
+        if !bump {
+            return quadraui::Handled::Ignored;
+        }
+        state.bumps += 1;
+        quadraui::Handled::Event(CounterAction::Bumped { from: self.count })
+    }
+}
+
+/// Every [`CounterBumped`] payload in `events`, in order.
+#[cfg(feature = "tui")]
+fn counter_bumps(events: &[quadraui::UiEvent]) -> Vec<CounterBumped> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            quadraui::UiEvent::User(payload) => payload.downcast_ref::<CounterBumped>().copied(),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "tui")]
+mod counter_tui {
+    use super::*;
+    use quadraui::tui::testing::TuiDriver;
+    use quadraui::{
+        AppLogic, FrameTree, NamedKey, Reaction, ScreenLayout, Surface, UiEvent, WidgetId,
+    };
+
+    const AREA: Rect = Rect::new(2.0, 1.0, 6.0, 1.0);
+
+    fn counter_id() -> WidgetId {
+        WidgetId::new("outside:counter")
+    }
+
+    /// An app that owns the count and draws the counter as a
+    /// `Surface::Widget`, the way any in-crate widget is drawn.
+    struct CounterApp {
+        count: u32,
+        events: Vec<UiEvent>,
+    }
+
+    impl CounterApp {
+        fn new() -> Self {
+            Self {
+                count: 0,
+                events: Vec::new(),
+            }
+        }
+
+        fn counter(&self) -> Counter {
+            Counter {
+                id: counter_id(),
+                count: self.count,
+            }
+        }
+    }
+
+    impl AppLogic for CounterApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut frame = ScreenLayout::new();
+            frame.push(Surface::Widget {
+                rect: AREA,
+                widget: Box::new(self.counter()),
+            });
+            frame.draw(backend);
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            let mut tree = FrameTree::new();
+            tree.push(counter_id(), AREA, Box::new(self.counter()));
+            tree
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            vec![(counter_id(), AREA)]
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            if let [bump] = counter_bumps(std::slice::from_ref(&event)).as_slice() {
+                assert_eq!(
+                    bump.from, self.count,
+                    "the counter reports the count it showed"
+                );
+                self.count += 1;
+            }
+            self.events.push(event);
+            Reaction::Redraw
+        }
+    }
+
+    #[test]
+    fn an_outside_widget_paints_its_cells_through_surface_widget() {
+        let driver = TuiDriver::new(CounterApp::new(), 12, 3);
+        assert_eq!(
+            driver.find_bounds("[0]").map(|r| (r.x, r.y)),
+            Some((AREA.x, AREA.y)),
+            "{}",
+            driver.screen()
+        );
+        let style = driver
+            .style_at(AREA.x as u16, AREA.y as u16)
+            .expect("the counter's first cell is on screen");
+        assert!(
+            style
+                .modifiers
+                .contains(quadraui::tui::testing::Modifier::BOLD),
+            "paint_cells' style reaches the terminal buffer: {style:?}"
+        );
+        let blank = driver
+            .style_at((AREA.x + AREA.width - 1.0) as u16, AREA.y as u16)
+            .expect("the counter's last cell is on screen");
+        assert_eq!(
+            blank.bg, style.bg,
+            "paint_cells fills the whole rect, not only the label"
+        );
+    }
+
+    #[test]
+    fn tab_focuses_an_outside_widget_and_its_keys_reach_handle() {
+        let mut driver = TuiDriver::new(CounterApp::new(), 12, 3);
+
+        driver.press_named(NamedKey::Tab);
+        assert!(
+            driver
+                .app()
+                .events
+                .contains(&UiEvent::FocusChanged(Some(counter_id()))),
+            "Tab gives the outside widget's FocusSpec::Stop focus: {:?}",
+            driver.app().events
+        );
+        driver.press_named(NamedKey::Enter);
+        driver.press(quadraui::Key::Char('+'));
+        driver.press(quadraui::Key::Char('x'));
+
+        assert_eq!(
+            counter_bumps(&driver.app().events),
+            vec![
+                CounterBumped {
+                    id: counter_id(),
+                    from: 0
+                },
+                CounterBumped {
+                    id: counter_id(),
+                    from: 1
+                },
+            ]
+        );
+        assert!(driver.screen_contains("[2]"), "{}", driver.screen());
+    }
+
+    #[test]
+    fn a_click_on_an_outside_widget_focuses_it_and_reaches_handle() {
+        let mut driver = TuiDriver::new(CounterApp::new(), 12, 3);
+        driver.set_double_click_folding(false);
+
+        driver.click(AREA.x + 1.0, AREA.y);
+        assert_eq!(
+            counter_bumps(&driver.app().events),
+            vec![CounterBumped {
+                id: counter_id(),
+                from: 0
+            }]
+        );
+        assert!(driver.screen_contains("[1]"), "{}", driver.screen());
+
+        driver.press_named(NamedKey::Enter);
+        assert_eq!(
+            counter_bumps(&driver.app().events).len(),
+            2,
+            "the click focused the counter, so Enter reaches its handle with no Tab first"
+        );
+    }
+
+    /// The assistive-technology path reaches the same `handle` and
+    /// produces the same event a click does.
+    #[test]
+    fn an_a11y_click_on_an_outside_widget_matches_a_mouse_click() {
+        let mut driver = TuiDriver::new(CounterApp::new(), 12, 3);
+        driver.set_double_click_folding(false);
+        driver.click(AREA.x + 1.0, AREA.y);
+        let clicked = counter_bumps(&driver.app().events);
+
+        let app = CounterApp::new();
+        let tree = app.frame_tree(());
+        let mut states = quadraui::WidgetStateStore::new();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let routed = quadraui::route_widget_action(
+            &tree,
+            &mut states,
+            &ctx,
+            counter_id(),
+            quadraui::A11yAction::Click,
+        );
+
+        assert_eq!(counter_bumps(&routed), clicked);
+        assert_eq!(routed.len(), 1, "one action, one event: {routed:?}");
+    }
+}
+
+/// Paints a [`Counter`] through `draw_dyn` on a real Cairo image and reads
+/// the pixels back: the fill lands inside the rect and nothing outside it.
+#[cfg(feature = "gtk")]
+#[test]
+fn gtk_paints_an_outside_widget_in_pixels_through_draw_dyn() {
+    use gtk4::cairo::{Context as CairoContext, Format, ImageSurface};
+    use quadraui::gtk::backend::GtkBackend;
+
+    let mut surface = ImageSurface::create(Format::ARgb32, 120, 60).expect("create ImageSurface");
+    let area = Rect::new(10.0, 10.0, 60.0, 30.0);
+    let fill = {
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let mut backend = GtkBackend::new();
+        let counter = Counter {
+            id: quadraui::WidgetId::new("outside:counter"),
+            count: 7,
+        };
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let b: &mut dyn Backend = b;
+            let layout = b.draw_dyn(area, &counter, &());
+            assert_eq!(layout.downcast_ref::<Rect>(), Some(&area));
+            b.theme().accent_bg
+        })
+    };
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let data = surface.data().expect("image data");
+    // Cairo's ARGB32 is native-endian premultiplied; the fill is opaque.
+    let pixel = |x: usize, y: usize| {
+        let i = y * stride + x * 4;
+        let word = u32::from_ne_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
+        (
+            (word >> 16) as u8,
+            (word >> 8) as u8,
+            word as u8,
+            (word >> 24) as u8,
+        )
+    };
+    assert_eq!(
+        pixel(area.x as usize + 1, (area.y + area.height) as usize - 2),
+        (fill.r, fill.g, fill.b, 255),
+        "the counter's fill is painted inside its rect"
+    );
+    assert_eq!(pixel(2, 2).3, 0, "nothing is painted outside the rect");
+}
+
+#[cfg(feature = "win")]
+#[test]
+fn win_paints_an_outside_widget_through_draw_dyn() {
+    use quadraui::win::backend::WinBackend;
+
+    let mut backend = WinBackend::new();
+    let area = Rect::new(4.0, 8.0, 120.0, 40.0);
+    let counter = Counter {
+        id: quadraui::WidgetId::new("outside:counter"),
+        count: 3,
+    };
+    let b: &mut dyn Backend = &mut backend;
+    assert!(b.paint_surface().is_some(), "WinBackend paints in pixels");
+    let layout = b.draw_dyn(area, &counter, &());
+    assert_eq!(layout.downcast_ref::<Rect>(), Some(&area));
 }

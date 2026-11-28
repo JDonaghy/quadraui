@@ -9,14 +9,13 @@
 //! override; a terminal cell can't be subdivided, so TUI intentionally
 //! ignores it and always measures 1 cell per row.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color as RatatuiColor;
 
+use crate::cell_surface::{solid_style, CellStyle, CellSurface};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
-use crate::tui::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
-use crate::types::{Decoration, Icon, TreeStyle};
+use crate::tui::{draw_styled_text, styled_text_continuation_at};
+use crate::types::{Color, Decoration, Icon, TreeStyle};
 
 /// The chevron glyph a row at `indent` paints and the column just past it
 /// (unclipped). Shared by [`paint_tree_cell`] and the hit-test in
@@ -39,21 +38,21 @@ fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, u
 }
 
 /// Paint a tree cell — indent + chevron + icon, column 0 of a `TreeView`
-/// row — into the 1-cell-tall `row` of `buf`, which the caller has already
+/// row — into the 1-cell-tall `row` of `surface`, which the caller has already
 /// cleared to `bg`. Leaves get a 2-cell gap instead of a chevron. Returns
 /// the chevron's column range (`None` for a leaf or hidden chevron) and the
 /// label's start column, which always leaves at least one column for the
 /// label on a non-empty row.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_tree_cell(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     row: Rect,
     style: &TreeStyle,
     indent: u16,
     is_expanded: Option<bool>,
     icon: Option<&Icon>,
     nerd_fonts_enabled: bool,
-    (fg, bg): (RatatuiColor, RatatuiColor),
+    (fg, bg): (Color, Color),
 ) -> (Option<(usize, usize)>, usize) {
     let row_w = row.width as usize;
     let mut col = crate::primitives::tree::tree_cell::indent_offset(
@@ -67,7 +66,7 @@ pub(crate) fn paint_tree_cell(
             let (glyph, end) = chevron_glyph_end(style, indent, expanded);
             let end = end.min(row_w);
             for (c, ch) in (col..end).zip(glyph.chars()) {
-                set_cell(buf, row.x + c as u16, row.y, ch, fg, bg);
+                surface.put_char(row.x + c as u16, row.y, ch, solid_style(fg, bg));
             }
             chevron_cols = Some((col, end));
             col = (end + 1).min(row_w);
@@ -76,13 +75,13 @@ pub(crate) fn paint_tree_cell(
         None => col += 2.min(row_w.saturating_sub(col)),
     }
     if let Some(icon) = icon {
-        let icon_fg = icon.color.map(ratatui_color).unwrap_or(fg);
+        let icon_fg = icon.color.unwrap_or(fg);
         for ch in icon
             .resolve(nerd_fonts_enabled)
             .chars()
             .take(row_w.saturating_sub(col))
         {
-            set_cell(buf, row.x + col as u16, row.y, ch, icon_fg, bg);
+            surface.put_char(row.x + col as u16, row.y, ch, solid_style(icon_fg, bg));
             col += 1;
         }
         col = (col + 1).min(row_w);
@@ -90,7 +89,7 @@ pub(crate) fn paint_tree_cell(
     (chevron_cols, col.min(row_w.saturating_sub(1)))
 }
 
-/// Draw a [`TreeView`] into `area` on `buf`.
+/// Draw a [`TreeView`] into `area` on `surface`.
 ///
 /// # Visual contract
 ///
@@ -119,13 +118,13 @@ pub(crate) fn paint_tree_cell(
 /// Doesn't draw a scrollbar — scrollbars are a later primitive stage.
 #[cfg(test)]
 pub(crate) fn paint_tree_rows(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     tree: &TreeView,
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
-    paint_tree_rows_with_scroll_px(buf, area, tree, theme, nerd_fonts_enabled, None)
+    paint_tree_rows_with_scroll_px(surface, area, tree, theme, nerd_fonts_enabled, None)
 }
 
 /// Like [`paint_tree_rows`], but with an explicit pixel-precise scroll
@@ -140,7 +139,7 @@ pub(crate) fn paint_tree_rows(
 /// [`paint_tree_rows`] passes) resolves to exactly the pre-existing whole-row
 /// behaviour.
 pub(crate) fn paint_tree_rows_with_scroll_px(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     tree: &TreeView,
     theme: &Theme,
@@ -154,19 +153,19 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
         return;
     }
 
-    let row_bg = ratatui_color(theme.tab_bar_bg);
-    let hdr_bg = ratatui_color(theme.header_bg);
-    let hdr_fg = ratatui_color(theme.header_fg);
-    let item_fg = ratatui_color(theme.foreground);
-    let sel_bg = ratatui_color(theme.selected_bg);
-    let inactive_sel_bg = ratatui_color(theme.inactive_selected_bg);
-    let text_sel_bg = ratatui_color(theme.selection_bg);
-    let dim_fg = ratatui_color(theme.muted_fg);
+    let row_bg = theme.tab_bar_bg;
+    let hdr_bg = theme.header_bg;
+    let hdr_fg = theme.header_fg;
+    let item_fg = theme.foreground;
+    let sel_bg = theme.selected_bg;
+    let inactive_sel_bg = theme.inactive_selected_bg;
+    let text_sel_bg = theme.selection_bg;
+    let dim_fg = theme.muted_fg;
 
     let layout = tui_tree_layout_with_scroll_px(tree, area, scroll_px);
 
     if tree.style.bordered {
-        draw_tree_border(buf, area, ratatui_color(theme.border_fg), row_bg);
+        draw_tree_border(surface, area, theme.border_fg, row_bg);
     }
 
     for visible_row in &layout.visible_rows {
@@ -195,11 +194,11 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
         };
 
         for x in row_x..row_x + row_w {
-            set_cell(buf, x, y, ' ', default_fg, bg);
+            surface.put_char(x, y, ' ', solid_style(default_fg, bg));
         }
 
         let (_, text_start) = paint_tree_cell(
-            buf,
+            surface,
             Rect::new(row_x, y, row_w, 1),
             &tree.style,
             row.indent,
@@ -213,7 +212,7 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
 
         if let Some(ref edit) = row.edit {
             paint_edit_input(
-                buf,
+                surface,
                 row_area,
                 y,
                 text_start,
@@ -242,7 +241,7 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
 
             let text_area = Rect::new(row_x, area.y, max_text_col as u16, area.height);
             draw_styled_text(
-                buf,
+                surface,
                 text_area,
                 y,
                 text_start,
@@ -262,35 +261,44 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
                 // per-span colouring (e.g. a muted/error label) survives
                 // the clamp untouched.
                 let last_col = row_x + (max_text_col - 1) as u16;
-                // `Buffer::cell` is bounds-checked: the caller-supplied
-                // `area` may outrun the buffer after a resize race. If
-                // `last_col` is the empty continuation cell of a wide glyph,
-                // back up and overwrite the glyph itself, clearing the
-                // stale continuation, so the `…` is never half-painted.
-                let last_is_continuation = buf
-                    .cell((last_col, y))
-                    .map(|c| c.symbol().is_empty())
-                    .unwrap_or(false);
+                // The caller-supplied `area` may outrun the surface after a
+                // resize race, so a cell past its edge reads as no glyph at
+                // all. If `last_col` is the empty continuation cell of a
+                // wide glyph, back up and overwrite the glyph itself,
+                // clearing the stale continuation, so the `…` is never
+                // half-painted.
+                let last_is_continuation = surface.get(last_col, y).is_some()
+                    && styled_text_continuation_at(
+                        &row.text,
+                        text_start,
+                        0,
+                        max_text_col,
+                        max_text_col - 1,
+                    );
                 let ellipsis_col = if last_is_continuation && last_col > row_x {
                     last_col - 1
                 } else {
                     last_col
                 };
-                let (ellipsis_fg, ellipsis_bg) = buf
-                    .cell((ellipsis_col, y))
-                    .map(|existing| (existing.fg, existing.bg))
-                    .unwrap_or((default_fg, bg));
-                set_cell(buf, ellipsis_col, y, '…', ellipsis_fg, ellipsis_bg);
+                let ellipsis_style = surface
+                    .get(ellipsis_col, y)
+                    .map(|(_, existing)| CellStyle {
+                        fg: existing.fg,
+                        bg: existing.bg,
+                        ..CellStyle::default()
+                    })
+                    .unwrap_or(solid_style(default_fg, bg));
+                surface.put_char(ellipsis_col, y, '…', ellipsis_style);
                 if ellipsis_col != last_col {
-                    set_cell(buf, last_col, y, ' ', ellipsis_fg, ellipsis_bg);
+                    surface.put_char(last_col, y, ' ', ellipsis_style);
                 }
             }
 
             if let (true, Some(badge), Some(badge_start_col)) =
                 (draw_badge, row.badge.as_ref(), badge_start_col)
             {
-                let badge_fg = badge.fg.map(qc).unwrap_or(dim_fg);
-                let badge_bg = badge.bg.map(qc).unwrap_or(bg);
+                let badge_fg = badge.fg.unwrap_or(dim_fg);
+                let badge_bg = badge.bg.unwrap_or(bg);
                 let mut bx = badge_start_col;
                 for ch in badge.text.chars() {
                     if bx >= row_w as usize {
@@ -298,9 +306,9 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
                     }
                     let w = crate::text_util::char_cell_width(ch) as usize;
                     if w == 2 && bx + 1 < row_w as usize {
-                        set_cell_wide(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                        surface.put_wide(row_x + bx as u16, y, ch, solid_style(badge_fg, badge_bg));
                     } else {
-                        set_cell(buf, row_x + bx as u16, y, ch, badge_fg, badge_bg);
+                        surface.put_char(row_x + bx as u16, y, ch, solid_style(badge_fg, badge_bg));
                     }
                     bx += w;
                 }
@@ -314,12 +322,7 @@ pub(crate) fn paint_tree_rows_with_scroll_px(
 /// [`TreeView::layout`](crate::primitives::tree::TreeView::layout)
 /// insets `visible_rows`/`hit_regions` into when
 /// [`crate::types::TreeStyle::bordered`] is set.
-fn draw_tree_border(
-    buf: &mut Buffer,
-    area: Rect,
-    border_fg: ratatui::style::Color,
-    bg: ratatui::style::Color,
-) {
+fn draw_tree_border(surface: &mut dyn CellSurface, area: Rect, border_fg: Color, bg: Color) {
     let top_y = area.y;
     for col in 0..area.width {
         let cx = area.x + col;
@@ -330,7 +333,7 @@ fn draw_tree_border(
         } else {
             '─'
         };
-        set_cell(buf, cx, top_y, ch, border_fg, bg);
+        surface.put_char(cx, top_y, ch, solid_style(border_fg, bg));
     }
     if area.height >= 2 {
         let bot_y = area.y + area.height - 1;
@@ -343,13 +346,18 @@ fn draw_tree_border(
             } else {
                 '─'
             };
-            set_cell(buf, cx, bot_y, ch, border_fg, bg);
+            surface.put_char(cx, bot_y, ch, solid_style(border_fg, bg));
         }
     }
     if area.height >= 3 {
         for row in (area.y + 1)..(area.y + area.height - 1) {
-            set_cell(buf, area.x, row, '│', border_fg, bg);
-            set_cell(buf, area.x + area.width - 1, row, '│', border_fg, bg);
+            surface.put_char(area.x, row, '│', solid_style(border_fg, bg));
+            surface.put_char(
+                area.x + area.width - 1,
+                row,
+                '│',
+                solid_style(border_fg, bg),
+            );
         }
     }
 }
@@ -359,18 +367,18 @@ fn draw_tree_border(
 /// rendering logic.
 #[allow(clippy::too_many_arguments)]
 fn paint_edit_input(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     y: u16,
     start_col: usize,
     edit: &TreeRowEditState,
-    fg: ratatui::style::Color,
-    bg: ratatui::style::Color,
-    sel_bg: ratatui::style::Color,
-    dim_fg: ratatui::style::Color,
+    fg: Color,
+    bg: Color,
+    sel_bg: Color,
+    dim_fg: Color,
 ) {
     crate::tui::paint_inline_text_editor(
-        buf,
+        surface,
         area,
         y,
         start_col,
@@ -437,16 +445,19 @@ pub fn tui_tree_layout_with_scroll_px(
 mod tests {
     use super::*;
     use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::tui::ratatui_color;
     use crate::types::{StyledSpan, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
     fn cell(
         w: u16,
         indent: u16,
         exp: Option<bool>,
         icon: Option<&Icon>,
     ) -> (Option<(usize, usize)>, usize) {
-        let (r, c) = (Rect::new(0, 0, w, 1), ratatui::style::Color::Reset);
+        let (r, c) = (Rect::new(0, 0, w, 1), Color::rgb(0, 0, 0));
         let (s, mut b) = (TreeStyle::default(), Buffer::empty(r));
-        paint_tree_cell(&mut b, r, &s, indent, exp, icon, false, (c, c))
+        let mut surface = crate::tui::BufferCellSurface::new(&mut b);
+        paint_tree_cell(&mut surface, r, &s, indent, exp, icon, false, (c, c))
     }
 
     #[test]
@@ -503,7 +514,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let tree = make_tree();
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 30, 5),
             &tree,
             &Theme::default(),
@@ -538,7 +549,13 @@ mod tests {
             selected_bg: crate::types::Color::rgb(99, 0, 0),
             ..Theme::default()
         };
-        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 5),
+            &tree,
+            &theme,
+            false,
+        );
         // Row 1 ("main.rs") is selected — its bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
@@ -571,7 +588,13 @@ mod tests {
             header_bg: crate::types::Color::rgb(7, 7, 7),
             ..Theme::default()
         };
-        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 3), &tree, &theme, false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 3),
+            &tree,
+            &theme,
+            false,
+        );
         let bg = buf[(0u16, 0u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(7, 7, 7));
     }
@@ -581,7 +604,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let tree = make_tree();
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 0, 5),
             &tree,
             &Theme::default(),
@@ -603,7 +626,13 @@ mod tests {
 
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, true);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 5),
+            &tree,
+            &theme,
+            true,
+        );
 
         // Leaves: indent=1 → col 2 (indent_cells) + 2-cell leading gap = col 4.
         let icon_col = 2 + 2;
@@ -638,7 +667,7 @@ mod tests {
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, width, 5),
             &tree,
             &Theme::default(),
@@ -690,7 +719,7 @@ mod tests {
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, width, 5),
             &tree,
             &Theme::default(),
@@ -719,7 +748,7 @@ mod tests {
         // clamp the column to the buffer's actual bounds.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, 40, 5),
             &tree,
             &Theme::default(),
@@ -749,7 +778,7 @@ mod tests {
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
         paint_tree_rows(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             Rect::new(0, 0, width, 5),
             &tree,
             &Theme::default(),
@@ -847,7 +876,13 @@ mod tests {
         theme: &Theme,
         nerd_fonts_enabled: bool,
     ) -> TreeViewLayout {
-        paint_tree_rows(buf, area, tree, theme, nerd_fonts_enabled);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(buf),
+            area,
+            tree,
+            theme,
+            nerd_fonts_enabled,
+        );
         tui_tree_layout(tree, area)
     }
 
@@ -968,7 +1003,14 @@ mod tests {
         let tree = long_tree(50);
 
         let mut buf = Buffer::empty(area);
-        paint_tree_rows_with_scroll_px(&mut buf, area, &tree, &Theme::default(), false, Some(10.7));
+        paint_tree_rows_with_scroll_px(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &tree,
+            &Theme::default(),
+            false,
+            Some(10.7),
+        );
         let painted_y = find_row_with(&buf, "item-10")
             .expect("scroll_px=10.7 should quantise to row 10 at the top");
 
@@ -978,7 +1020,13 @@ mod tests {
         let mut via_offset = tree.clone();
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        paint_tree_rows(&mut buf2, area, &via_offset, &Theme::default(), false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf2),
+            area,
+            &via_offset,
+            &Theme::default(),
+            false,
+        );
         let painted_y_via_offset = find_row_with(&buf2, "item-10")
             .expect("scroll_offset=10 should paint 'item-10' at the top");
         assert_eq!(painted_y, painted_y_via_offset);
@@ -1176,7 +1224,13 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut tree = long_tree(3);
         tree.style.bordered = true;
-        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &tree,
+            &Theme::default(),
+            false,
+        );
 
         // Top-left corner is the border glyph, not row content.
         assert_eq!(cell_char(&buf, 0, 0), '╭');
@@ -1202,14 +1256,24 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut tree = long_tree(3);
         tree.style.bordered = true;
-        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &tree,
+            &Theme::default(),
+            false,
+        );
 
         let label_before: String = (3..3 + "item-00".len() as u16)
             .map(|x| cell_char(&buf, x, 1))
             .collect();
         assert_eq!(label_before, "item-00");
 
-        crate::tui::draw_focus_ring(&mut buf, area, &Theme::default());
+        crate::tui::draw_focus_ring(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            crate::Rect::new(0.0, 0.0, 30.0, 5.0),
+            &Theme::default(),
+        );
 
         // The ring repaints the same corner glyph; row content a cell in
         // is untouched.
@@ -1257,7 +1321,13 @@ mod tests {
             selection_anchor: None,
             placeholder: None,
         });
-        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &tree,
+            &Theme::default(),
+            false,
+        );
 
         // "renamed.rs" should appear.
         assert!(
@@ -1300,7 +1370,13 @@ mod tests {
             style: TreeStyle::default(),
         };
         let theme = Theme::default();
-        paint_tree_rows(&mut buf, area, &tree, &theme, false);
+        paint_tree_rows(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &tree,
+            &theme,
+            false,
+        );
         // The leaf has indent=0, no icon, no chevron → 2-cell gap then edit text.
         // Edit text "ab" at cols 2,3. Cursor at byte 2 → char index 2 → col 4.
         // Cursor cell should have inverted fg/bg.
@@ -1314,6 +1390,104 @@ mod tests {
         assert_eq!(
             cursor_cell.bg, row_fg,
             "cursor cell bg should be the row fg (inverted)"
+        );
+    }
+    /// The tree row painter over chevrons, icons, badges (with the
+    /// ellipsis clamp, including on a wide glyph), header rows, inline
+    /// rename editors, the border and scroll, cell for cell against the
+    /// golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::tree::TreeRowEditState;
+        use crate::tui::cell_surface::oracle;
+        use crate::types::Badge;
+
+        let theme = Theme::default();
+        let mut tree = make_tree();
+        tree.rows[0].decoration = Decoration::Header;
+        tree.rows[1].icon = Some(Icon::new("\u{e7a8}", "r"));
+        tree.rows[1].badge = Some(Badge {
+            text: "M".into(),
+            fg: Some(crate::Color::rgb(200, 180, 0)),
+            bg: None,
+        });
+        tree.rows.push(TreeRow {
+            badge: Some(Badge::plain("12")),
+            decoration: Decoration::Muted,
+            ..row(&[0, 2], 1, "a-label-long-enough-to-clamp.rs", None)
+        });
+        tree.rows.push(TreeRow {
+            badge: Some(Badge::plain("\u{4e2d}")),
+            icon: Some(Icon::new("\u{4e2d}", "w")),
+            ..row(
+                &[0, 3],
+                1,
+                "ab\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}",
+                None,
+            )
+        });
+        tree.rows.push(TreeRow {
+            edit: Some(TreeRowEditState {
+                text: "renamed.rs".into(),
+                cursor: 3,
+                selection_anchor: Some(7),
+                placeholder: None,
+            }),
+            ..row(&[0, 4], 1, "old.rs", None)
+        });
+        tree.rows.push(TreeRow {
+            edit: Some(TreeRowEditState {
+                text: String::new(),
+                cursor: 0,
+                selection_anchor: None,
+                placeholder: Some("new file".into()),
+            }),
+            ..row(&[0, 5], 1, "", None)
+        });
+        tree.rows.push(row(&[1], 0, "collapsed", Some(false)));
+        tree.rows.push(TreeRow {
+            text: StyledText {
+                spans: vec![
+                    StyledSpan::with_fg("red", crate::Color::rgb(220, 0, 0)),
+                    StyledSpan::plain(" plain"),
+                ],
+            },
+            ..row(&[2], 0, "", None)
+        });
+        let mut bordered = tree.clone();
+        bordered.style.bordered = true;
+        bordered.has_focus = false;
+        bordered.scroll_offset = 1;
+
+        let paint = |t: &TreeView, area: Rect, nerd: bool, scroll: Option<f32>, w, h| {
+            oracle::paint(w, h, |s| {
+                paint_tree_rows_with_scroll_px(s, area, t, &theme, nerd, scroll);
+            })
+        };
+        oracle::assert_golden(
+            "tree",
+            &[
+                (
+                    "plain",
+                    &paint(&tree, Rect::new(0, 0, 22, 10), true, None, 22, 10),
+                ),
+                (
+                    "fallback_offset",
+                    &paint(&tree, Rect::new(2, 1, 22, 10), false, None, 25, 12),
+                ),
+                (
+                    "narrow",
+                    &paint(&tree, Rect::new(0, 0, 9, 10), true, None, 9, 10),
+                ),
+                (
+                    "bordered",
+                    &paint(&bordered, Rect::new(0, 0, 24, 8), true, None, 24, 8),
+                ),
+                (
+                    "scroll_px",
+                    &paint(&tree, Rect::new(0, 0, 22, 5), false, Some(2.5), 22, 5),
+                ),
+            ],
         );
     }
 }

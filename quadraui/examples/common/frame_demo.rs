@@ -195,9 +195,9 @@ impl AppLogic for FrameDemo {
             rect: tab_rect,
             widget: Box::new(tab_bar),
         });
-        frame.push(Surface::List {
+        frame.push(Surface::Widget {
             rect: list_rect,
-            list,
+            widget: Box::new(list),
         });
         frame.push(Surface::Widget {
             rect: status_rect,
@@ -249,11 +249,14 @@ impl AppLogic for FrameDemo {
 
                 // The h-scrollbar thumb sits on the bottom row of the list
                 // rect, so hit-test it first. Geometry comes straight from
-                // the backend (`list_hscrollbar`) — the same `Scrollbar`
-                // the rasteriser painted — so the draggable thumb lines up
+                // the list's own `Primitive::layout` — the same `Scrollbar`
+                // the painter draws — so the draggable thumb lines up
                 // exactly with what's on screen.
                 let list = self.list_view();
-                if let Some(hsb) = backend.list_hscrollbar(list_rect, &list) {
+                if let Some(hsb) =
+                    quadraui::DrawsPrimitives::layout_primitive(backend, list_rect, &list)
+                        .hscrollbar
+                {
                     let on_row =
                         position.y >= hsb.track.y && position.y < hsb.track.y + hsb.track.height;
                     if on_row {

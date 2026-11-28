@@ -17,11 +17,9 @@
 //! `primitives::list`'s own unit tests for `ListView::handle`'s
 //! double-click arm exercised directly against a `RoutedEvent`.
 //!
-//! `ListView` still has its own bespoke `Backend::draw_list`, but this
-//! test routes it through `Backend::draw_primitive`, the same generic
-//! path every other `Primitive`-only widget goes through once it also
-//! joins `Interactive` — proving the paint half and the behaviour half
-//! agree on one `ListView`, not just byte-matching rasterisers.
+//! This test routes `ListView` through `Backend::draw_primitive`, the
+//! same generic path every widget goes through — proving the paint half
+//! and the behaviour half agree on one `ListView`.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{

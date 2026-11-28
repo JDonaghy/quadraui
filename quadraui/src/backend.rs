@@ -49,14 +49,10 @@ use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::editor::CursorShape as EditorCursorShape;
 use crate::primitives::image::ImageSource;
-use crate::primitives::list::{ListPaintState, ListViewLayout};
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::scrollbar::Scrollbar;
-use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
-use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar};
+use crate::{Accelerator, AcceleratorId, GlobalShortcutId, TabBar};
 use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.
@@ -2234,36 +2230,6 @@ pub trait Backend: sealed::Sealed {
     /// host to re-apply.
     fn set_current_char_width(&mut self, _char_width: f32) {}
 
-    /// The advance, in this backend's native units, of the font
-    /// [`Self::draw_list`] actually paints `ListView` row text with.
-    ///
-    /// This is **not** always the same number [`Self::char_width`]
-    /// returns. `char_width` reports the *editor* font's advance, but
-    /// `draw_list` paints chrome (list rows are UI content, not editor
-    /// content), and on a pixel backend "chrome
-    /// font" can be a proportional face (GTK's default `ui_font` is
-    /// `"Sans 11"`, macOS's is the CoreText system UI font) with a
-    /// different — usually narrower — average glyph advance than the
-    /// monospace editor face `char_width` measures. A consumer that
-    /// divides a list's pixel width by [`Self::char_width`] to decide
-    /// how many characters of row text fit under-fills the row by
-    /// whatever ratio separates the two fonts.
-    ///
-    /// Call this instead of [`Self::char_width`] when budgeting text for
-    /// a `ListView` row. It is still only an *average* advance — a
-    /// proportional font has no single width that wraps text exactly
-    /// the way a monospace grid does — but it is the right font's
-    /// average, which `char_width` is not.
-    ///
-    /// TUI returns the same `1.0` as `char_width` (one cell either way).
-    /// Win-GUI currently returns the same value as `char_width` too:
-    /// `draw_list` there still paints with the editor `DWrite` format,
-    /// not `chrome_dwrite` (see `WinBackend::chrome_dwrite`'s doc) — the
-    /// two will need to diverge together the day that rasteriser moves
-    /// to chrome text, so this method is required (no default) on every
-    /// backend rather than assumed equal to `char_width`.
-    fn list_char_width(&self) -> f32;
-
     /// [`Self::char_width`] and [`Self::line_height`] bundled into one
     /// [`Metrics`] value, for apps that need both instead of calling each
     /// method separately.
@@ -2309,27 +2275,6 @@ pub trait Backend: sealed::Sealed {
     /// back to a `char_width`-scaled estimate before a surface attaches,
     /// matching every other pre-attach degrade on that backend).
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32);
-
-    /// Width this backend reserves for its own native scrollbar overlay
-    /// alongside scrollable content — e.g. a GTK `ScrolledWindow`'s
-    /// overlay scrollbar, drawn on top of the content edge rather than
-    /// laid out beside it. A caller computing a content viewport width
-    /// (`rect.width - backend.scrollbar_reserve()`) gets the right
-    /// answer without asking which backend it's talking to.
-    ///
-    /// Distinct from a `Terminal`'s own scrollbar gutter
-    /// ([`crate::TerminalLayout::scrollbar`]), which the widget reserves
-    /// inside its own rect and applies even to TUI (which draws it as a
-    /// real column). This one is
-    /// surrounding OS/toolkit scrollbar chrome that no primitive
-    /// controls — TUI has none of that, so it reserves nothing.
-    ///
-    /// Default `0.0`, correct for TUI and any backend with no overlay
-    /// scrollbar chrome to dodge. GTK overrides this to reserve room for
-    /// its `ScrolledWindow` overlay scrollbar.
-    fn scrollbar_reserve(&self) -> f32 {
-        0.0
-    }
 
     /// Whether this backend can render individual text rows at a larger
     /// font size (per-line scale), so layouts should reserve taller
@@ -2428,85 +2373,6 @@ pub trait Backend: sealed::Sealed {
     /// no-op, mirroring that method.
     fn pop_clip(&mut self) {}
 
-    // ─── Drawing — one method per primitive ────────────────────────────
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
-    )]
-    fn draw_list(&mut self, rect: Rect, list: &ListView);
-
-    /// [`Self::draw_list`], tinting the hovered/pressed row's background
-    /// via [`crate::Theme::list_hover_bg`] / [`crate::Theme::list_pressed_bg`].
-    ///
-    /// Index-keyed rather than [`crate::InteractionState`]-keyed —
-    /// see `interaction.rs`'s module doc for why a list row has no
-    /// stable id to key off. Feed
-    /// [`crate::compose::ListHoverTracker`] from `MouseMoved` and pass
-    /// its `hovered_idx()` here.
-    ///
-    /// Additive over [`Self::draw_list`], not a replacement — the
-    /// default forwards to it (ignoring both indices and
-    /// `focus_ring_visible`), so every existing call site and
-    /// implementor keeps compiling unchanged.
-    ///
-    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
-    /// at `Style::focus_ring_width` around the row
-    /// [`crate::ListView::selected_idx`] points at. Not the same
-    /// signal as [`crate::ListView::has_focus`] — see that field's doc
-    /// for why some hosts set it as a persistent "currently showing"
-    /// indicator unrelated to real keyboard focus. Pass
-    /// `focus.is_focused(&list.id, None) && focus.is_focus_visible()`
-    /// from a host's own [`crate::FocusTree`] instead.
-    ///
-    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
-    /// a host has accumulated from fractional wheel/trackpad deltas — it
-    /// wins over [`ListView::scroll_offset`] and paints a partially
-    /// clipped first item instead of snapping to a whole one, via
-    /// [`ListView::layout_with_scroll_px`]. `None` (the default a
-    /// `state` built with [`ListPaintState::default`] carries) paints
-    /// exactly as [`Self::draw_list`] already does.
-    fn draw_list_with_state(
-        &mut self,
-        rect: Rect,
-        list: &ListView,
-        state: &ListPaintState,
-        _focus_ring_visible: bool,
-    ) {
-        let _ = state;
-        #[allow(deprecated)]
-        self.draw_list(rect, list)
-    }
-    /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
-    /// `None` when its content fits. Each backend supplies its native row
-    /// height; the resolved track + thumb are the same values the
-    /// rasteriser paints, so consumers hit-test the returned thumb to
-    /// implement drag without re-deriving geometry. See
-    /// [`ListView::hscrollbar`].
-    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
-    /// Vertical scrollbar geometry for `list` rendered into `rect`, or
-    /// `None` when `show_v_scrollbar` is `false` or all items fit. Each
-    /// backend supplies its native row height; the resolved track + thumb
-    /// are the same values the rasteriser paints, so consumers hit-test
-    /// the returned thumb to implement drag without re-deriving geometry.
-    /// Mirrors [`Backend::list_hscrollbar`]; see [`ListView::vscrollbar`].
-    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
-    /// Compute the list layout without painting — the no-paint twin of
-    /// [`Self::draw_list`]. `draw_list` and this method route through the
-    /// same backend-internal resolver (`tui_list_layout` / `gtk_list_layout`
-    /// / `win_list_layout` / `mac_list_layout`), so paint and no-paint
-    /// can't drift apart. Every pixel backend's resolver shares its
-    /// h-scrollbar row reservation via `primitives::layout_metrics::list_layout`.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
-    /// at `rect`'s top-left; does **not** account for
-    /// [`ListView::bordered`]'s 1-cell/1px border inset, matching every
-    /// backend's `draw_list`.
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
-    )]
-    fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
-
     /// Drive the terminal/OS **hardware** caret to match an
     /// [`crate::Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
     /// for Insert, underline for a pending replace-char command. This is
@@ -2531,32 +2397,6 @@ pub trait Backend: sealed::Sealed {
     /// write path at all — there is no real terminal under
     /// `TestBackend`).
     fn set_caret_shape(&mut self, _shape: EditorCursorShape) {}
-
-    /// Draw a [`Scrollbar`] (standalone primitive, vs the
-    /// per-section scrollbars MSV paints internally). The backend
-    /// pulls cell/pixel background from its current theme.
-    fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
-
-    /// Draw a [`ProgressBar`]. The backend paints the track, fill,
-    /// optional label, and optional cancel affordance. Returns the
-    /// [`ProgressBarLayout`] so hosts can route clicks. Same
-    /// coordinate frame as [`Self::progress_layout`] (ABSOLUTE).
-    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
-
-    /// Compute progress-bar layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout;
-
-    /// Draw a [`Spinner`] (indeterminate activity indicator). Returns
-    /// the [`SpinnerLayout`] for host hit-testing. Same coordinate
-    /// frame as [`Self::spinner_layout`] (ABSOLUTE).
-    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Compute spinner layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
 }
 
 /// `draw_*`-shaped entry point for any [`Primitive`]
@@ -2583,16 +2423,12 @@ pub trait DrawsPrimitives: Backend {
     /// [`Backend::chrome_line_height`], [`Backend::char_width`] and
     /// [`Backend::nerd_fonts_enabled`], and
     /// [`crate::primitive::LayoutCtx::text_width`] measures through this
-    /// backend's own [`Backend::measure_text`] — the same chrome-oriented
-    /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
-    /// before calling into
-    /// [`crate::primitives::list::native_surface_paint::paint`] — with
-    /// `line_height` additionally floored at the active
+    /// backend's own [`Backend::measure_text`] — chrome-oriented metrics,
+    /// with `line_height` additionally floored at the active
     /// [`crate::Style::row_height`] token via
-    /// [`crate::primitive::LayoutCtx::resolve_row_height`], the same
-    /// resolution the bespoke `draw_list` path applies through its own
-    /// private `resolved_row_height` helper, so a `Primitive`'s `layout()` never under-sizes a row
-    /// against a chrome font taller than that token.
+    /// [`crate::primitive::LayoutCtx::resolve_row_height`], so a
+    /// `Primitive`'s `layout()` never under-sizes a row against a chrome
+    /// font taller than that token.
     ///
     /// On the [`Backend::paint_surface`] path, paints inside a
     /// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`]

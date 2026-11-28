@@ -174,13 +174,13 @@ impl AppLogic for FocusDemo {
         let status = self.status_bar();
 
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::List {
+        frame.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, half_w, body_h),
-            list: left,
+            widget: Box::new(left),
         });
-        frame.push(Surface::List {
+        frame.push(Surface::Widget {
             rect: Rect::new(half_w, 0.0, vp.width - half_w, body_h),
-            list: right,
+            widget: Box::new(right),
         });
         frame.push(Surface::Widget {
             rect: Rect::new(0.0, body_h, vp.width, status_h),

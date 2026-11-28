@@ -24,10 +24,10 @@ use super::{
     arc_polyline, bezier_polyline, dash_segments, ellipse_polygon, polygon_fill_spans, Canvas,
     CanvasHit, CanvasLayout, DrawOp,
 };
+use crate::cell_surface::braille::{interpolate_dots, pack_braille_cell};
 use crate::cell_surface::{solid_style, CellSurface};
 use crate::event::{Point, Rect};
 use crate::theme::Theme;
-use crate::tui::braille::{interpolate_dots, pack_braille_cell};
 use crate::types::Color;
 
 /// Scanline band height (in canvas-local, cell-fractional units) used to

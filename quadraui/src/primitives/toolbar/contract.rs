@@ -329,10 +329,6 @@ impl Primitive for Toolbar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let options = self.layout_options();
         let (hovered, pressed) = self.interaction_ids(env);
@@ -341,7 +337,7 @@ impl Primitive for Toolbar {
             && options.orientation == super::ToolbarOrientation::Horizontal
         {
             let _ = super::cell_paint::draw_toolbar_with_options(
-                buf,
+                cells,
                 area,
                 self,
                 theme,
@@ -353,7 +349,7 @@ impl Primitive for Toolbar {
             );
         } else {
             let _ = super::cell_paint::draw_toolbar_with_overflow(
-                buf,
+                cells,
                 area,
                 self,
                 theme,
@@ -1498,7 +1494,7 @@ mod tests {
         let direct = |hovered: Option<&WidgetId>, pressed: Option<&WidgetId>| {
             let mut buf = blank();
             let _ = super::super::cell_paint::draw_toolbar_with_options(
-                &mut buf,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
                 area,
                 &bar,
                 &theme,

@@ -690,7 +690,7 @@ fn render_selection(
 mod tests {
     use super::super::{DiagnosticMark, SelectionKind, SpellMark};
     use super::*;
-    use crate::tui::{ratatui_color as qc, set_cell, BufferCellSurface};
+    use crate::tui::{ratatui_color as qc, BufferCellSurface};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as RtRect;
     use ratatui::style::Color as RColor;
@@ -885,7 +885,10 @@ mod tests {
         // this function skipped writing there.
         for y in 0..area.height {
             for x in 0..area.width {
-                set_cell(&mut buf, x, y, '?', RColor::Reset, RColor::Reset);
+                buf[(x, y)]
+                    .set_char('?')
+                    .set_fg(RColor::Reset)
+                    .set_bg(RColor::Reset);
             }
         }
 
@@ -1082,7 +1085,10 @@ mod tests {
         // paint skipped writing there.
         for y in 0..area.height {
             for x in 0..area.width {
-                set_cell(&mut buf, x, y, '?', RColor::Reset, RColor::Reset);
+                buf[(x, y)]
+                    .set_char('?')
+                    .set_fg(RColor::Reset)
+                    .set_bg(RColor::Reset);
             }
         }
 
