@@ -146,9 +146,9 @@ nothing bespoke), while keeping rendering logic in Rust.
 Server (Rust)                                  Browser (generic client)
 ─────────────                                  ────────────────────────
 CoordApp (unchanged)
-  draw_tree(rect, &tree) ─┐ each draw_* emits
-  draw_list(rect, &list) ─┤ semantic HTML +
-  draw_form(rect, &form) ─┤ records id → rect
+  paint tree widget  ─────┐ each widget's paint
+  paint list widget  ─────┤ emits semantic HTML +
+  paint form widget  ─────┤ records id → rect
 WebBackend.end_frame  ────┘
         │  ws ▼  HTML fragment(s)
         │                                       swap fragment(s) into DOM
@@ -170,13 +170,15 @@ re-lays-out for free. `AppLogic`/`ShellApp`/`Reaction` are unchanged.
 
 ### 4.2 `WebBackend` — semantic-HTML emitter
 
-Each `draw_*` method renders its primitive to semantic HTML and records
-the primitive's rect under each emitted `data-widget-id` in a per-frame
-**id → rect map**. Draw order = DOM order, so z-order (modals, toasts,
-tooltips pushed last by `ScreenLayout`) maps to stacking order directly.
-The layout-returning methods (`tree_layout`, `status_bar_layout`, …) still
-return real layouts (web metrics ≈ CSS px) — both for the app's own use
-and to populate the id → rect map.
+As written, the backend had one paint method per primitive, each
+rendering that primitive to semantic HTML and recording its rect under
+each emitted `data-widget-id` in a per-frame **id → rect map**. Draw
+order = DOM order, so z-order (modals, toasts, tooltips pushed last by
+`ScreenLayout`) maps to stacking order directly. Layouts are computed in
+web metrics (≈ CSS px), both for the app's own use and to populate the
+id → rect map. Under the widget contract there are no per-primitive
+backend methods, so a revival gets the id → rect map from the runtime's
+painted-widget record instead (see the status note at the top).
 
 ### 4.3 The browser client — generic, write-once
 

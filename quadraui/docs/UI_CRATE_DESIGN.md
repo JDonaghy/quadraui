@@ -78,16 +78,38 @@ Each frame:
 4. The app updates its state, and the next frame's descriptors show the
    result.
 
-**Who owns which state.** Visible content and selection (which tab is
-active, which rows exist, what text a field holds, whether a dropdown is
-open) are descriptor fields the app owns and sets every frame. A widget
-keeps only what it needs between events (hover, a pressed segment, an
-in-progress drag, a keyboard cursor inside the widget) in its
+**Who owns which state.** Content (which rows exist, what a label says)
+is descriptor data the app sends every frame. A widget keeps what it
+needs between events (hover, a pressed segment, an in-progress drag, a
+caret, its own selection, scroll, expansion or active tab) in its
 `Interactive::State`, which the runtime stores per `WidgetId` in
 `WidgetStateStore` so it survives the descriptor being rebuilt. A widget
-whose id stops appearing loses that state. The binding layer keeps the
+whose id stops appearing loses that state. Selection-like descriptor
+fields (`selected_idx`, `scroll_offset`, an `AppMenu`'s `view`) are
+controlled only when the app changes them: a value the app keeps
+resending unchanged leaves the widget to resolve it from its own state,
+and a new value moves the widget (D-035). Each move is still reported
+as the widget's event, so an app that wants to own the value can. The binding layer keeps the
 same store per binding host, so a widget painted from Python or Node.js
 remembers its caret or highlight the same way (§5).
+
+**Collections larger than a frame.** `ListView`, `TreeView`,
+`DataTable` and `TextDisplay` take `items_window: Option<ItemsWindow>`:
+the descriptor carries a slice of rows plus where it sits in the whole
+collection (`start`, `total`). The widget lays out and paints only a
+viewport-sized band, sizes its scrollbar from `total`, paints
+placeholders for rows outside the slice, and after input that reaches
+them reports `UiEvent::RowsRequested { id, start, count }` through
+`Interactive::data_requested`. `behaviour::row_window` holds the band
+arithmetic and the request latch, so a range is asked for once.
+
+**The app layer.** `quadraui::app` is a model-view-update layer over the
+same frame: an app implements `View` (`view` builds a `Node<Msg>` tree of
+`column`/`row` containers and leaves, `update` applies a message), and
+`Run` adapts it to `AppLogic`. It lays the tree out through the core
+stack solver, so the Python (`quadraui.app`) and Node
+(`@quadraui/node/app`) app layers, which build the same tree through
+binding-core, size and focus it the same way.
 
 **Why not retained mode with diffing (React, Relm)?** A simpler mental
 model, no stale-widget or identity-mismatch bugs, and far less work per
@@ -115,7 +137,11 @@ every backend:
   `RoutedEvent` against the same `Layout` paint used, `State` is what it
   remembers between events, and `popups` (with `OPENS_POPUPS`) declares
   dropdowns, calendars and submenus that paint and hit-test above the
-  frame. A widget with no behaviour uses `non_interactive!`.
+  frame. Defaulted hooks cover content the widget needs loaded
+  after an input (`data_requested`), a summary of the state it resolved
+  (`state_summary`), an app event that names it (`follow_event`) and
+  state a layout settled before paint (`settle`). A widget with no
+  behaviour uses `non_interactive!`.
 
 Text editing is one shared core, not per-widget code.
 `behaviour::text_edit` ([`src/behaviour/text_edit.rs`](../src/behaviour/text_edit.rs))
@@ -280,8 +306,8 @@ bindings possible; breaking one would break them.
    Python and Node.js packages share, decodes a widget leaf into a
    generic `LeafDescriptor::Widget` and paints, hit-tests and routes it
    through the widget's own `Primitive` and `Interactive` impls, with no
-   per-kind paint or event code. (Five kinds — text display, list, tree,
-   data table and tab bar — still decode to their own fixed leaf slots.) A kind
+   per-kind paint or event code; `LeafDescriptor::Widget` is the only leaf
+   variant, and a render frame carries one map of widgets. A kind
    is either in the static `WIDGET_KINDS` table or registered at runtime
    with `register_widget_kind`, so a binding or a crate linking
    binding-core adds a kind with no table edit. Each widget's

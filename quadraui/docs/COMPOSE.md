@@ -26,8 +26,9 @@ Most modules come in two parts:
   entry), and list it in `AppLogic::frame_tree`. The runtime routes input to
   it, keeps its gesture state (`Interactive::State`) between frames, and
   hands you its result as a `UiEvent` carrying the widget's id. Visible
-  state — which tab is active, whether the dropdown is open — stays a
-  descriptor field you own (controlled mode).
+  state — which tab is active, whether the dropdown is open — is a
+  descriptor field you may own (controlled mode): the widget follows a
+  value you change, and keeps its own while you leave the field alone.
 - **A controller** — `<Name>Controller`, holding the widget and its state
   for a host that feeds it raw `UiEvent`s itself instead of registering it
   in a `FrameTree`. Its `render` paints the widget and its `handle_event`
@@ -530,6 +531,13 @@ match dialog.handle_event(&mut state, &event, backend) {
 
 **Example:** `examples/tui_form_dialog.rs`
 (`examples/common/form_dialog_demo.rs`).
+
+A form outside a dialog needs no compose module: list the `Form` widget in
+`AppLogic::frame_tree` and the runtime routes Tab traversal and field
+editing to it. A host that routes raw events itself uses `ScrolledForm`
+(`src/primitives/form/scrolled.rs`), a `Form` with the scrollbar its fields
+need, through `ScrolledForm::draw` and `ScrolledForm::handle_event` with a
+`FormState` it keeps; `examples/tui_form_scroll.rs` shows it.
 
 ---
 

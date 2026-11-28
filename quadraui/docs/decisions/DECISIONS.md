@@ -13,7 +13,7 @@ time, plus what carries over; its full original text is in git history.
 Code blocks are the sketches agreed at the time, so they are marked
 `ignore` and are not checked against the current API.
 
-The current architecture is D-021 to D-029 and D-031 to D-036: one
+The current architecture is D-021 to D-029 and D-031 to D-038: one
 implementation per widget (`Primitive` + `Interactive`), painted through
 `DrawsPrimitives::draw_dyn` / `Surface::Widget`; a `Backend` of platform
 services only; and bindings that decode into the same widgets.
@@ -3070,9 +3070,9 @@ test keeps `ratatui_buffer` out.
 
 ## D-033 — binding-core: one generic widget leaf, a runtime kind registry, one widget-state model (issues #2976–#2979)
 
-**Status:** Decided and shipped 2026-11-27. Five kinds
-(`text_display`, `list`, `tree`, `data_table`, `tab_bar`) still decode
-to their own fixed leaf slots (`LEAF_KIND_KEYS`), which #2977 tracks.
+**Status:** Decided and shipped 2026-11-27; completed 2026-11-28, when
+`text_display`, `list`, `tree`, `data_table` and `tab_bar` moved onto the
+generic leaf (D-037).
 
 **Date:** 2026-11-27.
 
@@ -3088,7 +3088,7 @@ What is left for binding-core to do, and how does a binding add a kind?
 
 1. **One generic leaf.** A wire leaf whose kind is in
    `widget_kinds::WIDGET_KINDS` decodes through `quadraui::decode_widget`
-   into `LeafDescriptor::Widget`, a `Box<dyn DynWidget>`, and is laid
+   into `LeafDescriptor::Widget`, an `Rc<dyn DynWidget>`, and is laid
    out, painted, hit-tested and routed through the widget's own
    `Primitive` and `Interactive` impls. binding-core has no per-kind
    paint or event code for these kinds.
@@ -3234,3 +3234,88 @@ path down with it.
 - Every mainstream distribution with GTK 4.10 already has glibc 2.39, so
   the higher floor costs no reach. The design and its evidence are in
   `quadraui-py/docs/LINUX_NATIVE_WHEELS.md`.
+
+---
+
+## D-037 — Row windowing is a core widget seam (issues #2977, #2978)
+
+**Status:** Decided and shipped 2026-11-28.
+
+**Date:** 2026-11-28.
+
+### Question
+
+A list, tree, table or log with a million rows cannot be sent whole every
+frame. binding-core windowed these four kinds itself, in fixed leaf
+slots with their own cursor, scroll and request code, so a Rust app had
+no windowing and py/node windowing behaved differently from the Rust
+widgets. Where does windowing live?
+
+### Decision
+
+**In the widgets.** `ListView`, `TreeView`, `DataTable` and
+`TextDisplay` take `items_window: Option<ItemsWindow>` (`start`,
+`total`) beside a slice of rows. The widget lays out and paints a
+viewport-sized band, sizes its scrollbar from `total`, moves its cursor
+and scroll by absolute index, and paints placeholders for rows it does
+not have. After an input that reaches unloaded rows it reports
+`UiEvent::RowsRequested { id, start, count }` through the defaulted
+`Interactive::data_requested` hook, which the Rust runtime and the
+binding-core engine both ask after every input a widget handled.
+`behaviour::row_window` holds `ItemsWindow`, the band arithmetic,
+`HostLatch` and `RowsRequestLatch`, which asks for a range once. A widget
+asks only after input, never at paint time, so the app sends the first
+viewport's rows itself. With windowing in the widgets, binding-core's
+fixed leaf slots and their per-kind state are deleted and every leaf is
+the generic one (D-033).
+
+### Why
+
+- Windowing is behaviour, and under D-021 a widget's behaviour lives in
+  its `Interactive` impl; one implementation means Rust, Python and Node
+  page through a large collection identically.
+- Asking from input rather than from paint keeps paint free of side
+  effects and keeps a resize from flooding the app with requests.
+
+---
+
+## D-038 — A Rust app layer in the same shape as the Python and Node ones (issue #3106)
+
+**Status:** Decided and shipped 2026-11-28.
+
+**Date:** 2026-11-28.
+
+### Question
+
+Python and Node apps describe a view as a tree of `Column`/`Row` nodes
+with callbacks, rebuilt from the app's state each frame. A Rust app
+implemented `AppLogic` and laid out rects by hand, so the README showed
+three different programs for one counter. Should Rust get the same
+shape, and how does it attach handlers when a widget is plain,
+serialisable data that holds no closure?
+
+### Decision
+
+**Yes, as model-view-update.** `quadraui::app` has a `View` trait:
+`view(&self) -> Node<Msg>` builds the tree with `column`/`row` and the
+leaf constructors (`text`, `button`, `list`, `form` with `text_field`,
+`status_bar`, and `widget` for any type implementing `Leaf`), and
+`update(&mut self, Msg) -> Command` applies a message. A node maps its
+events to a `Msg` value instead of holding a callback, as in Elm and
+iced. Per-child `size`/`fixed`/`content`/`weight`/`percent`/`min`/`max`
+and per-container `gap`/`padding`/`justify`/`align` match the bindings'
+options. `run_tui(app)` and `run_native(app)` run it; `Run<V>` adapts a
+`View` to `AppLogic`, so test drivers and embedding hosts take it
+unchanged. The tree is laid out through the same core stack solver the
+bindings use (`NaturalSize::stacked`), and focus, Tab order and the quit
+keys follow the same rules in all three languages.
+
+### Why
+
+- One counter, one shape, three languages: the README and the parity
+  apps show the same program, and a reader moving between languages
+  learns the framework once.
+- Messages keep widgets as plain data: the closures live in the app's
+  `update`, not in any descriptor.
+- `AppLogic` stays for apps that need their own layout or hit-testing;
+  `View` is a layer over it, not a replacement.

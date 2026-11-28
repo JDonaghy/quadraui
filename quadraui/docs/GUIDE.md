@@ -36,14 +36,23 @@ front door.
 
 ## Step 0: which runner do I want?
 
-quadraui has two ways to plug your app into a backend, and picking the
+quadraui has three ways to plug your app into a backend, and picking the
 wrong one wastes the most time of anything in this guide. Decide before
 you write any code:
 
 | You want | Implement | Call | Feels like |
 |---|---|---|---|
+| The shortest path: state, a view of it, and messages that change it, the same shape as the Python and Node app layers | [`View`] (`quadraui::app`) | `run_tui(app)` / `run_native(app)` | Elm or iced: `view` builds a `column`/`row` tree of nodes each frame, a node maps its events to a `Msg`, and `update` applies it. The README's counter is this shape. |
 | Full control over every pixel/cell — you lay out everything yourself | [`AppLogic`] | `quadraui::tui::run(app)` / `quadraui::gtk::run(app)` | A blank canvas: one `render`, one `handle`, you own all of it. |
 | VS-Code-style chrome for free — activity bar, sidebar, title bar, status bar, bottom panel — and you fill in the *content* of each panel | [`ShellApp`] | `quadraui::tui::shell_runner::run_with_shell(app, config)` / the GTK equivalent | A window manager you configure, not one you build. |
+
+`View` covers apps built from `column`/`row` stacks of the leaves
+`quadraui::app` provides (`text`, `button`, `list`, `form`,
+`status_bar`) plus any widget wrapped with `widget` through the `Leaf`
+trait. Its `Run` adapter implements `AppLogic`, so a `View` app still
+runs under `TuiDriver` and every backend's `run`; when you need a split,
+your own hit-testing or direct control of each frame, write the
+`AppLogic` yourself, as below.
 
 **This guide uses `AppLogic`.** Our two-pane app is simple enough that
 building the split ourselves is less code than configuring a
@@ -292,6 +301,18 @@ conformance) once your app grows past one screen.
   resizable sidebar, or tabs, revisit Step 0. [`COMPOSE.md`](COMPOSE.md)
   documents `ShellView` and the other compose-layer widgets that
   coordinate several widgets.
+- **Collections too large to send whole**: `ListView`, `TreeView`,
+  `DataTable` and `TextDisplay` load rows on demand. Send only a slice
+  of rows and set `items_window: Some(ItemsWindow::new(start, total))`
+  to say where the slice sits in the whole collection. The widget sizes
+  its scrollbar from `total`, moves its cursor and scroll by absolute
+  index, and paints placeholders for rows it does not have. When a key,
+  click or wheel notch brings unloaded rows into view, `handle` receives
+  `UiEvent::RowsRequested { id, start, count }`: send rows `start..start
+  + count` and set `items_window.start = start`. A widget asks only
+  after input, so send the rows the first viewport shows yourself.
+  `quadraui/tests/row_window_driver.rs` drives all four widgets this
+  way; `quadraui::behaviour::row_window` holds the arithmetic.
 - **A second backend**: everything above is TUI-specific only in
   `main()`. Swap `quadraui::tui::run` for `quadraui::gtk::run` (behind
   the `gtk` feature) and the exact same `AppLogic` impl draws with
@@ -305,5 +326,6 @@ conformance) once your app grows past one screen.
 
 [`AppLogic`]: ../src/runner.rs
 [`ShellApp`]: ../src/shell.rs
+[`View`]: ../src/app/view.rs
 [`quadraui::tui::testing::TuiDriver`]: ../src/tui/testing.rs
 [`quadraui::testing::RecordingBackend`]: ../src/testing/mod.rs

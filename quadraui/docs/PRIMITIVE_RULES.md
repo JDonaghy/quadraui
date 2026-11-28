@@ -113,11 +113,27 @@ receives:
   the live pointer state; pass an `InteractionState` to pin hover/press (a
   screenshot, a test).
 
-**Controlled mode.** State the app reads or sets — the selected row, whether a
-dropdown is open, a scroll offset the app restores — stays a descriptor field.
-The widget reports a change as an `Action`, and the app applies it to the
-descriptor it builds next frame. `Interactive::State` holds only what the app
-never needs to see: a drag in progress, a press origin, a typeahead buffer.
+**Controlled mode.** State the app may read or set — the selected row, whether
+a dropdown is open, a scroll offset the app restores — is a descriptor field,
+and the widget reports every change to it as an `Action`. The widget also keeps
+that value in its own `Interactive::State` and paints from it while the
+descriptor field is unchanged: a field left at its default, or resent
+unchanged, leaves the widget uncontrolled, and a changed value moves it.
+`behaviour::row_window::HostLatch` is the shared rule (`ListView`, `TreeView`,
+`DataTable`, `TextDisplay`, `TabBar`, `CellGrid` use it; `AppMenu` keeps its
+open menu the same way). Test such a widget both with a host that echoes its
+events back and with one that never does. `Interactive::State` also holds what
+the app never needs to see: a drag in progress, a press origin, a typeahead
+buffer.
+
+**Content loaded on demand.** A widget whose content is too large to send
+whole carries a slice plus its place in the whole (`items_window:
+Option<ItemsWindow>` on the four row widgets), paints placeholders for what it
+does not have, and asks for more by returning an event from
+`Interactive::data_requested` (`UiEvent::RowsRequested`, a `CellGrid`'s
+`CellsRequested`). The runtime and binding-core ask it after every input the
+widget handled; it is never asked at paint time. Use `behaviour::row_window`
+for the band arithmetic and `RowsRequestLatch` so a range is asked for once.
 
 ## Popups
 

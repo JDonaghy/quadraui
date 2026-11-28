@@ -154,7 +154,7 @@ run it from a clone until 0.12 ships.
   implements two traits: `Primitive` (lay out and paint) and
   `Interactive` (focus, input, popups). The same code paints on all four
   backends; a backend supplies drawing verbs and platform services and
-  holds no per-widget code.
+  holds none of any widget's layout, paint or input logic.
 - **Paint and click share one layout.** A widget's `layout(...)` result
   is what it paints from and what its event handler hit-tests against.
   Mouse clicks cannot drift from what is on screen, because both read the
@@ -275,7 +275,9 @@ For sibling-checkout development, use
 Then:
 
 - Run the hero counter above:
-  `cargo run -p quadraui-hero --features tui --bin counter`. Then try
+  `cargo run -p quadraui-hero --features tui --bin counter`. It is a
+  `quadraui::app::View`; Step 0 of the guide compares that with the
+  `AppLogic` and `ShellApp` runners. Then try
   `hello` (`quadraui/examples/hello.rs`, the same idea on `ShellApp`) and
   `tui_demo` / `gtk_demo`, which use one `AppLogic` body under two runners.
 - Or start a new app from the `templates/app` starter —
@@ -474,8 +476,12 @@ common, so none of them re-derives its own: `ensure_visible` /
 into view), `FlatNav` (clamped or wrapping index movement with
 disabled-item skipping) and `TreeNavCore` (the row-type-agnostic core
 `TreeView` navigates with: selection by path, arrow/page/Home/End
-movement, scroll-follow and scrollbar drag over any flattened rows), and
-`Typeahead` (debounced type-to-jump).
+movement, scroll-follow and scrollbar drag over any flattened rows),
+`Typeahead` (debounced type-to-jump), `text_edit` (the one text-editing
+core, with undo, behind every editable widget) and `row_window` (the
+windowing that lets `ListView`, `TreeView`, `DataTable` and `TextDisplay`
+page through a collection the app sends a slice at a time, asking for
+more rows with `UiEvent::RowsRequested`).
 
 **Platform services:** clipboard, file open/save and folder dialogs,
 message dialogs, notifications, `open_url`, reveal-in-file-manager, move

@@ -540,8 +540,8 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   the press never reaches the leaf the list covers. A standalone
   `"slider"` press maps across its painted track rather than the whole
   leaf width.
-- A `"tab_bar"` leaf, a `"tabs"` node's strip and the fixed `"tab_bar"`
-  slot paint through the core `TabBar` (#2985), so `chrome`, `icons` and
+- A `"tab_bar"` leaf, a `"tabs"` node's strip and a flat render dict's
+  `"tab_bar"` key paint through the core `TabBar` (#2985), so `chrome`, `icons` and
   `glyphs` on the descriptor paint on every backend.
 
 ### Removed

@@ -73,8 +73,12 @@ to write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
    `Interactive::handle` with a `RoutedEvent` in widget-local coordinates.
    Persistent per-widget state is `Interactive::State`, kept by id in
    `WidgetStateStore` and handed back at paint as `PaintEnv::widget_state`.
-   Visible state the app owns (selection, open, scroll) stays a descriptor
-   field the app sets from the widget's events.
+   Visible state (selection, open, scroll, active tab) is a descriptor field
+   the app may control: the widget resolves it from its own `State` until
+   the app sends a changed value (`behaviour::row_window::HostLatch`), and
+   reports every move as its event. A collection too large to send whole
+   sets `items_window` and answers `UiEvent::RowsRequested`; windowing is
+   the widget's job (`Interactive::data_requested`), never the host's.
 3. **Hover and press come from `PaintEnv`** (`env.is_hovered(id)`,
    `env.pressed_sub(id)`, …), not from descriptor fields, hover trackers, or
    a per-widget hit map.
@@ -82,7 +86,9 @@ to write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
    outside the runtime resolves the same layout with
    `DrawsPrimitives::layout_primitive`, or reads the frame's painted record
    (`primitive::painted_hit`). It never re-derives geometry.
-5. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk,macos,win}::run`.**
+5. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk,macos,win}::run`**,
+   or through the `quadraui::app` layer (`View`, run with `run_tui`/`run_native`),
+   whose `Run` adapter is an `AppLogic`.
    Render code is backend-generic; one `AppLogic` drives every backend. An
    example with its own event loop means the trait is missing something —
    fix the trait. Examples pair by shape: one `AppLogic` in

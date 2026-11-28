@@ -267,6 +267,53 @@ binding author having to implement the choice itself. `scroll_offset`,
 `focused_index`, and `checked` across the leaf descriptors in the generated
 reference below are the common examples.
 
+### Selection and scroll on `list`, `tree`, `data_table`, `text_display` and `tab_bar`
+
+These widgets apply a stricter "controlled" test: a descriptor value wins
+only when it **changed** since the widget last saw it. A render callback
+that sends the same `selected_idx`, `selected_path`, `scroll_offset` or
+active tab every frame leaves the widget to keep its own selection and
+scroll, so a key or click moves it with no echo from the app. A new value
+moves the widget, and a selection the app moves out of view scrolls into
+view unless the same frame also sends a new `scroll_offset`. To pin a
+scroll, keep it in the app and send each change as a new value. Every
+move is still reported (`SelectionChanged`, `ScrollOffsetChanged`,
+`TabActivated`, ...), so an app that wants to own the value can.
+
+## Windowed collections: `items_window` and `RowsRequested`
+
+A `list`, `tree`, `data_table` or `text_display` too long to send whole
+sends a slice of its rows plus where the slice sits in the whole
+collection:
+
+```text
+{"id": "rows", "list": {"id": "rows", "items": [ ...rows 5000 to 5049... ],
+  "items_window": {"start": 5000, "total": 1000000}}}
+```
+
+`items` (or `rows`, `lines`) are rows `start..` of `total`. Every index on
+the wire is absolute: `selected_idx`, `scroll_offset` and the row index in
+every event count from the start of the whole collection, not of the
+slice. The widget sizes its scrollbar from `total` and paints a
+placeholder for each row outside the slice. When a key, click, wheel notch
+or scrollbar drag brings rows it does not have into view, the widget
+emits, once per new range:
+
+```json
+{"RowsRequested": {"id": "rows", "start": 4980, "count": 60}}
+```
+
+The app answers by sending rows `start..start + count` on the next frame
+with `items_window.start` set to `start`. `count` is bounded by a few
+viewports, never by `total`. A widget asks only after input, never at
+paint time, so the render callback sends the rows the first viewport
+shows itself; a viewport that grows on resize paints placeholders until
+the next input asks. `scroll_px` (on `list`, `tree` and `data_table`) is an
+optional scroll position finer than a whole row (see its field table).
+A `cell_grid` asks for its cells through its own
+`{"CellGrid": [id, {"CellsRequested": ...}]}` instead.
+`quadraui-py/examples/windowed_list_demo.py` is a runnable example.
+
 ### `Form.focused_field`
 
 A `"form"` leaf's own `focused_field` follows the rule above, with a

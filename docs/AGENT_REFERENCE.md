@@ -207,7 +207,7 @@ moved since — verify in `~/src/vimcode` before relying on one).
 
 | quadraui feature | vimcode reference code |
 |-----------------|----------------------|
-| Whole-frame paint (#199; today `ScreenLayout` + `Surface::Widget`) | `src/gtk/draw.rs::draw_editor()` — 3874-line orchestration function that paints each part of the window in z-order. It lists every layer a frame paint must cover. |
+| Whole-frame paint (#199; today `ScreenLayout` + `Surface::Widget`) | the whole-frame paint in `src/gtk/draw.rs` — a 3874-line orchestration function that paints each part of the window in z-order. It lists every layer a frame paint must cover. |
 | `FrameHitMap` / unified click dispatch (#197, #198) | `src/gtk/click.rs::pixel_to_click_target()` — zone detection pipeline using `screen_zone_hit_test` + `window_zone_hit_test`. Shows every click zone the hit map must cover. |
 | GTK widget tree (#202 Stage 1) | `src/gtk/mod.rs::fn init()` (~2122 lines) — creates every GTK widget, event controller, and draw closure. This is the mechanical boilerplate `AppShell` must generate. |
 | Event wiring (#202 Stage 2) | `src/gtk/mod.rs::fn init()` event controller blocks + `enum Msg` (~333 variants) + `fn update()` (~736-line dispatch). Shows every GDK event type that must be translated. |
