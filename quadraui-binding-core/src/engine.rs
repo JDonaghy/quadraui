@@ -21,14 +21,13 @@ use quadraui::primitive::DynWidget;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    wheel_row_delta, Backend,
-    CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
-    ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
-    FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
-    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupLayout,
-    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, Toast, ToastCorner,
-    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
-    UiEvent, WidgetId,
+    wheel_row_delta, Backend, CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu,
+    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float,
+    FloatLayout, FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers,
+    MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup,
+    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent,
+    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
+    TooltipMeasure, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -494,13 +493,19 @@ fn dyn_widget_layout(
     widget: &dyn DynWidget,
     area: Rect,
     backend: &mut dyn Backend,
-) -> (quadraui::primitive::Units, Box<dyn quadraui::primitive::PrimitiveLayout>) {
+) -> (
+    quadraui::primitive::Units,
+    Box<dyn quadraui::primitive::PrimitiveLayout>,
+) {
     let style = backend.style();
     let painted = quadraui::primitive::painted_state(&id);
     let backend_ref: &dyn Backend = backend;
     let measurer = |text: &str, role: quadraui::FontRole| backend_ref.measure_text(text, role).0;
     let ctx = quadraui::primitive::LayoutCtx::new(
-        quadraui::primitive::LayoutCtx::resolve_row_height(backend_ref.chrome_line_height(), &style),
+        quadraui::primitive::LayoutCtx::resolve_row_height(
+            backend_ref.chrome_line_height(),
+            &style,
+        ),
         backend_ref.char_width(),
         backend_ref.nerd_fonts_enabled(),
     )

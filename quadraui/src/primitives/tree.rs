@@ -2557,7 +2557,10 @@ impl crate::primitive::Primitive for TreeView {
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let live = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
             let state = state.and_then(|s| s.downcast_ref::<TreeViewState>());
-            state.map(|s| self.live(Some(s)).into_owned())
+            match self.live(state) {
+                std::borrow::Cow::Owned(live) => Some(live),
+                std::borrow::Cow::Borrowed(_) => None,
+            }
         });
         let live = live.as_ref().unwrap_or(self);
         // The paint state's `scroll_px` shifts the rows and the thumb
@@ -2766,7 +2769,8 @@ pub struct TreeViewState {
     /// Each branch row's expansion the widget toggled, against the
     /// descriptor's `is_expanded` for that row. Applied to an unwindowed
     /// tree only: a windowed tree's rows are flattened by the app.
-    pub expanded: std::collections::BTreeMap<TreePath, crate::behaviour::row_window::HostLatch<bool>>,
+    pub expanded:
+        std::collections::BTreeMap<TreePath, crate::behaviour::row_window::HostLatch<bool>>,
     /// Repeat suppression for a windowed tree's
     /// [`crate::UiEvent::RowsRequested`].
     pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
@@ -2817,10 +2821,12 @@ impl TreeView {
             None => state.selected.get(&self.selected_path),
         };
         let expansion_differs = self.items_window.is_none()
-            && self.rows.iter().any(|row| match (row.is_expanded, state.expanded.get(&row.path)) {
-                (Some(desc), Some(latch)) => latch.get(&desc) != desc,
-                _ => false,
-            });
+            && self.rows.iter().any(
+                |row| match (row.is_expanded, state.expanded.get(&row.path)) {
+                    (Some(desc), Some(latch)) => latch.get(&desc) != desc,
+                    _ => false,
+                },
+            );
         if scroll == self.scroll_offset && selected == self.selected_path && !expansion_differs {
             return std::borrow::Cow::Borrowed(self);
         }
@@ -2831,7 +2837,8 @@ impl TreeView {
         };
         if expansion_differs {
             for row in &mut live.rows {
-                if let (Some(desc), Some(latch)) = (row.is_expanded, state.expanded.get(&row.path)) {
+                if let (Some(desc), Some(latch)) = (row.is_expanded, state.expanded.get(&row.path))
+                {
                     row.is_expanded = Some(latch.get(&desc));
                 }
             }
@@ -2947,7 +2954,9 @@ impl TreeView {
             let scroll = state.nav.scroll_offset();
             state
                 .nav
-                .set_scroll_offset(crate::behaviour::scroll::ensure_visible(scroll, page, target));
+                .set_scroll_offset(crate::behaviour::scroll::ensure_visible(
+                    scroll, page, target,
+                ));
             return match self.loaded_row(target) {
                 Some(row) => {
                     state.nav.set_selected_path(Some(row.path.clone()));
@@ -3263,7 +3272,7 @@ impl crate::interactive::Interactive for TreeView {
         layout: &Self::Layout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TreeEvent> {
-        let live = self.live(Some(state)).into_owned();
+        let live = self.live(Some(state));
         state.sync(&live);
         let out = live.handle_live(state, event, layout, cx);
         live.latch(self, state, &out);
@@ -3520,7 +3529,9 @@ impl TreeView {
     /// for a windowed tree, so a placeholder never resolves to a row.
     fn hit_row(&self, layout: &TreeViewPrimitiveLayout, x: f32, y: f32) -> Option<&TreeRow> {
         match layout.hit_test(x, y) {
-            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => self.loaded_row(layout.abs_row(idx)),
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
+                self.loaded_row(layout.abs_row(idx))
+            }
             TreeViewHit::Empty => None,
         }
     }

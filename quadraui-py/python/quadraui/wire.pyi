@@ -449,9 +449,11 @@ class DataTable(TypedDict):
     h_scroll: NotRequired[float]  # Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
     min_total_width: NotRequired[Optional[float]]  # Minimum total width for all columns.
     rows: List[DataRow]
     scroll_offset: NotRequired[int]
+    scroll_px: NotRequired[Optional[float]]  # Pixel-precise scroll position; wins over `scroll_offset` when set.
     selected_idx: NotRequired[Optional[int]]
     show_scrollbar: NotRequired[bool]  # Show a vertical scrollbar when rows exceed the viewport.
     sort: NotRequired[Optional[Tuple[int, SortDirection]]]  # Which column is sorted, and in which direction.
@@ -484,15 +486,15 @@ class DataTableLeaf(TypedDict):
     h_scroll: NotRequired[float]  # Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]
     min_total_width: NotRequired[Optional[float]]  # Minimum total width for all columns.
     rows: List[DataRow]
     scroll_offset: NotRequired[int]
+    scroll_px: NotRequired[float]
     selected_idx: NotRequired[Optional[int]]
     show_scrollbar: NotRequired[bool]  # Show a vertical scrollbar when rows exceed the viewport.
     sort: NotRequired[Optional[Tuple[int, SortDirection]]]  # Which column is sorted, and in which direction.
     striped: NotRequired[bool]  # Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
 
 # How a `CalendarDate` renders as text.
 DateFormat = Literal['Iso8601', 'UsSlash', 'EuSlash']
@@ -886,9 +888,9 @@ class InlineInput(TypedDict):
     text: str
 
 class ItemsWindow(TypedDict):
-    """A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/ `"data_table"`/`"text_display"` leaf's own descriptor dict by `items_window_from_value` — `start` is the index, into the widget's true row/item/line count `total`, that this frame's `items`/`rows`/ `lines` payload begins at. Like `crate::scroll_px_from_value`, this is **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares: a render callback that never sets `"items_window"` is completely unaffected, and one that does only sends the slice of rows currently visible (plus whatever prefetch margin it chooses) instead of every row up front."""
-    start: int
-    total: int
+    """A windowed collection: the descriptor's rows/items/lines are the loaded slice starting at absolute index `start` of `total` real rows."""
+    start: int  # The absolute index of the descriptor's first loaded row.
+    total: int  # How many rows the real collection has.
 
 JustifyValue = Literal['start', 'center', 'end', 'space_between']
 
@@ -1182,8 +1184,10 @@ class ListView(TypedDict):
     has_focus: NotRequired[bool]  # Whether this list currently holds keyboard focus.
     id: WidgetId
     items: List[ListItem]
+    items_window: NotRequired[Optional[ItemsWindow]]  # The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
     max_content_width: NotRequired[Optional[int]]  # Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
     scroll_offset: NotRequired[int]
+    scroll_px: NotRequired[Optional[float]]  # Pixel-precise scroll position; wins over `scroll_offset` when set.
     selected_idx: int
     show_v_scrollbar: NotRequired[bool]  # When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
     striped: NotRequired[bool]  # Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
@@ -1203,14 +1207,14 @@ class ListViewLeaf(TypedDict):
     has_focus: NotRequired[bool]  # Whether this list currently holds keyboard focus.
     id: WidgetId
     items: List[ListItem]
+    items_window: NotRequired[Optional[ItemsWindow]]
     max_content_width: NotRequired[Optional[int]]  # Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
     scroll_offset: NotRequired[int]
+    scroll_px: NotRequired[float]
     selected_idx: int
     show_v_scrollbar: NotRequired[bool]  # When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
     striped: NotRequired[bool]  # Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
     title: NotRequired[Optional[StyledText]]  # Optional header row shown above the items.
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
 
 class Markdown(TypedDict):
     """A scrollable, read-only markdown viewer."""
@@ -2004,6 +2008,7 @@ class TextDisplay(TypedDict):
     auto_scroll: NotRequired[bool]  # When true, backends auto-scroll to keep the latest line visible.
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
     lines: List[TextDisplayLine]
     max_lines: NotRequired[int]  # Maximum lines to retain in the ring buffer.
     scroll_offset: NotRequired[int]  # Index of the first visible line.
@@ -2021,12 +2026,12 @@ class TextDisplayLeaf(TypedDict):
     auto_scroll: NotRequired[bool]  # When true, backends auto-scroll to keep the latest line visible.
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]
     lines: List[TextDisplayLine]
     max_lines: NotRequired[int]  # Maximum lines to retain in the ring buffer.
     scroll_offset: NotRequired[int]  # Index of the first visible line.
     show_scrollbar: NotRequired[bool]  # When true, a vertical scrollbar is rendered at the trailing edge of the viewport.
     title: NotRequired[Optional[StyledText]]  # Optional title row painted above the body.
-    items_window: NotRequired[Optional[ItemsWindow]]
 
 class TextDisplayLine(TypedDict):
     """One line in a `TextDisplay`. Carries styled spans plus an optional decoration tag (Error/Warning/Muted/Header) for log-level styling and an optional left-aligned timestamp string the backend renders in a dim colour."""
@@ -2218,8 +2223,10 @@ class TreeView(TypedDict):
     """Declarative description of a `TreeView` widget."""
     has_focus: NotRequired[bool]  # Whether this tree currently holds keyboard focus.
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
     rows: List[TreeRow]  # Pre-flattened, pre-expanded rows in visual order.
     scroll_offset: NotRequired[int]  # How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
+    scroll_px: NotRequired[Optional[float]]  # Pixel-precise scroll position; wins over `scroll_offset` when set.
     selected_path: NotRequired[Optional[List[int]]]
     selection_mode: SelectionMode
     style: TreeStyle
@@ -2227,13 +2234,13 @@ class TreeView(TypedDict):
 class TreeViewLeaf(TypedDict):
     has_focus: NotRequired[bool]  # Whether this tree currently holds keyboard focus.
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]
     rows: List[TreeRow]  # Pre-flattened, pre-expanded rows in visual order.
     scroll_offset: NotRequired[int]  # How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
+    scroll_px: NotRequired[float]
     selected_path: NotRequired[Optional[List[int]]]
     selection_mode: SelectionMode
     style: TreeStyle
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
 
 # Everything a user (or platform) can do that an app might care about.
 UiEvent = Union[Literal['WindowClose', 'DisplaysChanged', 'ContextMenuDismissed'], _UiEventDict]
@@ -3481,6 +3488,7 @@ class _UiEventDict(TypedDict):
     SystemThemeChanged: NotRequired[SystemTheme]  # The OS-level light/dark/accent/high-contrast preference changed while the app was running — the live counterpart to `PlatformServices::system_theme`'s poll-on-demand query.
     PowerStateChanged: NotRequired[_UiEventPowerStateChanged]  # A power-state transition occurred: the system is suspending or resumed, switched between battery and AC, or the screen locked or unlocked.
     ScrollOffsetChanged: NotRequired[_UiEventScrollOffsetChanged]  # A scrollbar drag or click resolved to a new offset.
+    RowsRequested: NotRequired[_UiEventRowsRequested]  # A windowed list, tree, table or text display (one whose descriptor sets `items_window`) scrolled or moved its cursor outside the rows it has loaded: re-render widget `id` with `items_window.start = start` and the `count` rows from there.
     ScrollbarMoved: NotRequired[_UiEventScrollbarMoved]  # A standalone `crate::Scrollbar` widget resolved a gesture — thumb drag, track page, or wheel — to a new thumb position, expressed as `fraction` of the thumb's available travel (`0.0` = start of the track, `1.0` = end).
     SwitchToggled: NotRequired[_UiEventSwitchToggled]  # A standalone `crate::Switch` flipped, via `crate::Switch::handle_key` (`Enter`/`Space` while focused) or `crate::Switch::click` (a left click, regardless of focus).
     RadioGroupSelectionChanged: NotRequired[_UiEventRadioGroupSelectionChanged]  # A standalone `crate::RadioGroup`'s selection changed, via `crate::RadioGroup::handle_key` (arrow-key cursor movement) or `crate::RadioGroup::select` (a click on a specific option).
@@ -3582,6 +3590,11 @@ class _UiEventPowerStateChanged(TypedDict):
 class _UiEventRadioGroupSelectionChanged(TypedDict):
     index: int
     widget: WidgetId
+
+class _UiEventRowsRequested(TypedDict):
+    count: int
+    id: WidgetId
+    start: int
 
 class _UiEventScroll(TypedDict):
     delta: ScrollDelta

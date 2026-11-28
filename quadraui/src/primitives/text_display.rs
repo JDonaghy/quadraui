@@ -1722,9 +1722,7 @@ impl crate::primitive::Primitive for TextDisplay {
         };
         let mut layout = base(&band_td);
         let offset = band.absolute(layout.layout.resolved_scroll_offset);
-        layout
-            .layout
-            .set_scroll_extent(total, offset, min_thumb);
+        layout.layout.set_scroll_extent(total, offset, min_thumb);
         layout.window = Some(Box::new(row_window::WindowedLayout {
             band,
             total,
@@ -1744,7 +1742,10 @@ impl crate::primitive::Primitive for TextDisplay {
     /// flattening of `lines` matches what every backend painted — a TUI
     /// copy reads the painted cells instead, and a pixel backend copies
     /// nothing rather than the wrong text.
-    fn text_region(&self, layout: &TextDisplayPrimitiveLayout) -> Option<crate::dispatch::TextRegion> {
+    fn text_region(
+        &self,
+        layout: &TextDisplayPrimitiveLayout,
+    ) -> Option<crate::dispatch::TextRegion> {
         let gutter_width = layout
             .layout
             .scrollbar_bounds
@@ -2068,7 +2069,9 @@ impl crate::interactive::Interactive for TextDisplay {
                     TextDisplayHit::ScrollbarTrackBefore => {
                         self.scroll_by(state, layout, -(page as isize))
                     }
-                    TextDisplayHit::ScrollbarTrackAfter => self.scroll_by(state, layout, page as isize),
+                    TextDisplayHit::ScrollbarTrackAfter => {
+                        self.scroll_by(state, layout, page as isize)
+                    }
                     _ => Handled::Consumed,
                 }
             }
@@ -2092,8 +2095,12 @@ impl crate::interactive::Interactive for TextDisplay {
                 cx.request_focus(None);
                 Handled::Consumed
             }
-            RoutedEvent::Action(crate::a11y::A11yAction::ScrollUp) => self.scroll_by(state, layout, -1),
-            RoutedEvent::Action(crate::a11y::A11yAction::ScrollDown) => self.scroll_by(state, layout, 1),
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollUp) => {
+                self.scroll_by(state, layout, -1)
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::ScrollDown) => {
+                self.scroll_by(state, layout, 1)
+            }
             _ => Handled::Ignored,
         }
     }

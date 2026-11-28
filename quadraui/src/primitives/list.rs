@@ -2986,7 +2986,12 @@ impl ListView {
     }
 
     /// Latch a cursor move to `target` and scroll it into view.
-    fn record_move(&self, state: &mut ListViewState, target: usize, layout: &ListViewPrimitiveLayout) {
+    fn record_move(
+        &self,
+        state: &mut ListViewState,
+        target: usize,
+        layout: &ListViewPrimitiveLayout,
+    ) {
         state.cursor = Some(target);
         state.selected.set(&self.selected_idx, target);
         let scroll = layout.scroll_row();

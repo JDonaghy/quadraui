@@ -77,6 +77,18 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- `RowsRequested` is now a core `UiEvent` variant, so the typed `UiEvent`
+  union in `wire.pyi` includes `{"RowsRequested": {"id", "start", "count"}}`
+  — the same dict a windowed `list`/`tree`/`data_table`/`text_display`
+  already delivered (#2977). `items_window` and `scroll_px` are typed
+  fields of the `ListView`/`TreeView`/`DataTable`/`TextDisplay` descriptor
+  types rather than leaf-only extra keys; the keys and their meaning are
+  unchanged.
+
+- A `text_display` leaf inside a layout tree registers its selectable text
+  region under the descriptor's own `id`, so `TextSelectionChanged`'s
+  `region` names the display rather than its tree-address id (#2977).
+
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input
   handling (#2977), with these visible changes:

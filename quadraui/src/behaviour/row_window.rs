@@ -296,7 +296,8 @@ impl<W> WindowedLayout<W> {
     /// The position in the descriptor's loaded slice of absolute row
     /// `abs`, or `None` when that row is a placeholder.
     pub fn loaded_index(&self, abs: usize) -> Option<usize> {
-        abs.checked_sub(self.loaded.0).filter(|i| *i < self.loaded.1)
+        abs.checked_sub(self.loaded.0)
+            .filter(|i| *i < self.loaded.1)
     }
 
     /// The window this layout was resolved against.
@@ -366,7 +367,13 @@ mod tests {
     fn band_is_bounded_by_its_rows_never_by_the_total() {
         let w = ItemsWindow::new(0, 10_000_000_000);
         let b = band(w, 0, 5_000, band_rows_for(20.0, 1.0));
-        assert_eq!(b, Band { start: 5_000, len: 28 });
+        assert_eq!(
+            b,
+            Band {
+                start: 5_000,
+                len: 28
+            }
+        );
     }
 
     #[test]
@@ -436,7 +443,10 @@ mod tests {
             })
         );
         assert_eq!(latch.request(id, w, 50, 100, 20), None, "no repeat");
-        assert!(latch.request(id, w, 50, 101, 20).is_some(), "a new range asks");
+        assert!(
+            latch.request(id, w, 50, 101, 20).is_some(),
+            "a new range asks"
+        );
         assert_eq!(latch.request(id, w, 50, 0, 20), None);
         assert!(latch.request(id, w, 50, 101, 20).is_some(), "re-armed");
     }

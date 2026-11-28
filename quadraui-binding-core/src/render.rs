@@ -14,8 +14,7 @@ use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
     ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
     Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout,
-    TextDisplayLine, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout,
-    WidgetId,
+    TextDisplayLine, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -1759,11 +1758,8 @@ fn windowed_leaf(
     line_height: f32,
     band_rows: usize,
 ) -> WindowedLeaf {
-    let (scroll_offset, scroll_px) = quadraui::behaviour::row_window::split_scroll_px(
-        descriptor_offset,
-        scroll_px,
-        line_height,
-    );
+    let (scroll_offset, scroll_px) =
+        quadraui::behaviour::row_window::split_scroll_px(descriptor_offset, scroll_px, line_height);
     let band = windowed_band(window, loaded_len, scroll_offset, band_rows);
     WindowedLeaf {
         band,
@@ -5699,7 +5695,10 @@ mod tests {
             24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
         );
         assert_eq!(
-            quadraui::behaviour::row_window::band_rows_for(24.0 * PIXEL_LINE_HEIGHT, PIXEL_LINE_HEIGHT),
+            quadraui::behaviour::row_window::band_rows_for(
+                24.0 * PIXEL_LINE_HEIGHT,
+                PIXEL_LINE_HEIGHT
+            ),
             24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
         );
         // A degenerate `line_height` can't divide by zero into an

@@ -751,7 +751,10 @@ mod tests {
             let decoded = widget
                 .downcast_ref::<crate::TextDisplay>()
                 .expect("a TextDisplay");
-            assert_eq!(decoded.items_window, Some(crate::ItemsWindow::new(10, 1_000)));
+            assert_eq!(
+                decoded.items_window,
+                Some(crate::ItemsWindow::new(10, 1_000))
+            );
 
             let view = crate::MultiSectionView {
                 id: "panel".into(),

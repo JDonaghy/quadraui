@@ -457,9 +457,11 @@ export interface DataTable {
   h_scroll?: number; // Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
   has_focus?: boolean;
   id: WidgetId;
+  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
   min_total_width?: number | null; // Minimum total width for all columns.
   rows: DataRow[];
   scroll_offset?: number;
+  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
   selected_idx?: number | null;
   show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
   sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
@@ -484,15 +486,15 @@ export interface DataTableLeaf {
   h_scroll?: number; // Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
   has_focus?: boolean;
   id: WidgetId;
+  items_window?: ItemsWindow | null;
   min_total_width?: number | null; // Minimum total width for all columns.
   rows: DataRow[];
   scroll_offset?: number;
+  scroll_px?: number;
   selected_idx?: number | null;
   show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
   sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
   striped?: boolean; // Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
-  items_window?: ItemsWindow | null;
-  scroll_px?: number;
 }
 
 /** How a `CalendarDate` renders as text. */
@@ -878,10 +880,10 @@ export interface InlineInput {
   text: string;
 }
 
-/** A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/ `"data_table"`/`"text_display"` leaf's own descriptor dict by `items_window_from_value` — `start` is the index, into the widget's true row/item/line count `total`, that this frame's `items`/`rows`/ `lines` payload begins at. Like `crate::scroll_px_from_value`, this is **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares: a render callback that never sets `"items_window"` is completely unaffected, and one that does only sends the slice of rows currently visible (plus whatever prefetch margin it chooses) instead of every row up front. */
+/** A windowed collection: the descriptor's rows/items/lines are the loaded slice starting at absolute index `start` of `total` real rows. */
 export interface ItemsWindow {
-  start: number;
-  total: number;
+  start: number; // The absolute index of the descriptor's first loaded row.
+  total: number; // How many rows the real collection has.
 }
 
 export type JustifyValue = "start" | "center" | "end" | "space_between";
@@ -1157,8 +1159,10 @@ export interface ListView {
   has_focus?: boolean; // Whether this list currently holds keyboard focus.
   id: WidgetId;
   items: ListItem[];
+  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
   max_content_width?: number | null; // Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
   scroll_offset?: number;
+  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
   selected_idx: number;
   show_v_scrollbar?: boolean; // When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
   striped?: boolean; // Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
@@ -1174,14 +1178,14 @@ export interface ListViewLeaf {
   has_focus?: boolean; // Whether this list currently holds keyboard focus.
   id: WidgetId;
   items: ListItem[];
+  items_window?: ItemsWindow | null;
   max_content_width?: number | null; // Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
   scroll_offset?: number;
+  scroll_px?: number;
   selected_idx: number;
   show_v_scrollbar?: boolean; // When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
   striped?: boolean; // Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
   title?: StyledText | null; // Optional header row shown above the items.
-  items_window?: ItemsWindow | null;
-  scroll_px?: number;
 }
 
 /** A scrollable, read-only markdown viewer. */
@@ -1972,6 +1976,7 @@ export interface TextDisplay {
   auto_scroll?: boolean; // When true, backends auto-scroll to keep the latest line visible.
   has_focus?: boolean;
   id: WidgetId;
+  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
   lines: TextDisplayLine[];
   max_lines?: number; // Maximum lines to retain in the ring buffer.
   scroll_offset?: number; // Index of the first visible line.
@@ -1986,12 +1991,12 @@ export interface TextDisplayLeaf {
   auto_scroll?: boolean; // When true, backends auto-scroll to keep the latest line visible.
   has_focus?: boolean;
   id: WidgetId;
+  items_window?: ItemsWindow | null;
   lines: TextDisplayLine[];
   max_lines?: number; // Maximum lines to retain in the ring buffer.
   scroll_offset?: number; // Index of the first visible line.
   show_scrollbar?: boolean; // When true, a vertical scrollbar is rendered at the trailing edge of the viewport.
   title?: StyledText | null; // Optional title row painted above the body.
-  items_window?: ItemsWindow | null;
 }
 
 /** One line in a `TextDisplay`. Carries styled spans plus an optional decoration tag (Error/Warning/Muted/Header) for log-level styling and an optional left-aligned timestamp string the backend renders in a dim colour. */
@@ -2161,8 +2166,10 @@ export interface TreeTableNode {
 export interface TreeView {
   has_focus?: boolean; // Whether this tree currently holds keyboard focus.
   id: WidgetId;
+  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
   rows: TreeRow[]; // Pre-flattened, pre-expanded rows in visual order.
   scroll_offset?: number; // How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
+  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
   selected_path?: number[] | null;
   selection_mode: SelectionMode;
   style: TreeStyle;
@@ -2171,13 +2178,13 @@ export interface TreeView {
 export interface TreeViewLeaf {
   has_focus?: boolean; // Whether this tree currently holds keyboard focus.
   id: WidgetId;
+  items_window?: ItemsWindow | null;
   rows: TreeRow[]; // Pre-flattened, pre-expanded rows in visual order.
   scroll_offset?: number; // How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
+  scroll_px?: number;
   selected_path?: number[] | null;
   selection_mode: SelectionMode;
   style: TreeStyle;
-  items_window?: ItemsWindow | null;
-  scroll_px?: number;
 }
 
 /** Everything a user (or platform) can do that an app might care about. */
@@ -3535,7 +3542,7 @@ export interface _UiEventCommandCenterActivated {
   widget: WidgetId;
 }
 
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; } | { GlobalShortcut: GlobalShortcutId; } | { KeyPressed: _UiEventKeyPressed; } | { CharTyped: string; } | { MouseDown: _UiEventMouseDown; } | { MouseUp: _UiEventMouseUp; } | { MouseMoved: _UiEventMouseMoved; } | { MouseEntered: _UiEventMouseEntered; } | { MouseLeft: _UiEventMouseLeft; } | { DoubleClick: _UiEventDoubleClick; } | { Scroll: _UiEventScroll; } | { WindowResized: _UiEventWindowResized; } | { WindowFocused: boolean; } | { DpiChanged: number; } | { WindowStateChanged: _UiEventWindowStateChanged; } | { FilesDropped: _UiEventFilesDropped; } | { ClipboardPaste: string; } | { OpenRequested: _UiEventOpenRequested; } | { TextCopied: string; } | { FocusChanged: WidgetId | null; } | { SystemThemeChanged: SystemTheme; } | { PowerStateChanged: _UiEventPowerStateChanged; } | { ScrollOffsetChanged: _UiEventScrollOffsetChanged; } | { ScrollbarMoved: _UiEventScrollbarMoved; } | { SwitchToggled: _UiEventSwitchToggled; } | { RadioGroupSelectionChanged: _UiEventRadioGroupSelectionChanged; } | { ButtonActivated: _UiEventButtonActivated; } | { CommandCenterActivated: _UiEventCommandCenterActivated; } | { TextSelectionChanged: _UiEventTextSelectionChanged; } | { SplitDividerDragged: _UiEventSplitDividerDragged; } | { MenuActivated: WidgetId; } | { ContextMenuItemActivated: WidgetId; } | { MessageDialogResolved: WidgetId; } | { ToastActionClicked: WidgetId; } | { CompletionItemActivated: [WidgetId, number]; } | { RichTextLinkClicked: [WidgetId, string]; } | { TrayClicked: _UiEventTrayClicked; } | { NotificationActivated: _UiEventNotificationActivated; } | { Tree: [WidgetId, TreeEvent]; } | { List: [WidgetId, ListViewEvent]; } | { Form: [WidgetId, FormEvent]; } | { Palette: [WidgetId, PaletteEvent]; } | { TabBar: [WidgetId, TabBarEvent]; } | { StatusBar: [WidgetId, StatusBarEvent]; } | { ActivityBar: [WidgetId, ActivityBarEvent]; } | { Terminal: [WidgetId, TerminalEvent]; } | { TextDisplay: [WidgetId, TextDisplayEvent]; } | { Chart: [WidgetId, ChartEvent]; } | { DataTable: [WidgetId, DataTableEvent]; } | { TreeTable: [WidgetId, TreeTableEvent]; } | { TreeTableController: [WidgetId, TreeTableControllerWireEvent]; } | { CellGrid: [WidgetId, CellGridEvent]; } | { MultiSectionView: [WidgetId, MultiSectionViewEvent]; } | { Chat: [WidgetId, ChatEvent]; } | { Sidebar: [WidgetId, SidebarAction]; } | { TabGroup: [WidgetId, TabGroupEvent]; } | { ScrollView: [WidgetId, ScrollViewEvent]; } | { Editor: [WidgetId, EditorEvent]; } | { Minimap: [WidgetId, MinimapEvent]; } | { Board: [WidgetId, BoardAction]; } | { PipelineView: [WidgetId, PipelineEvent]; } | { DiffView: [WidgetId, DiffViewEvent]; } | { MessageList: [WidgetId, MessageListEvent]; } | { FindReplace: [WidgetId, FindReplaceEvent]; } | { HelpOverlay: [WidgetId, HelpOverlayAction]; } | { PathPicker: [WidgetId, PathPickerAction]; } | { DualModePalette: [WidgetId, DualModePaletteAction]; } | { AppMenu: [WidgetId, AppMenuEvent]; } | { ShellView: [WidgetId, ShellEvent]; } | { BottomPanel: [WidgetId, BottomPanelEvent]; } | { Workspace: [WidgetId, WorkspaceEvent]; } | { Toolbar: [WidgetId, ToolbarEvent]; } | { Canvas: [WidgetId, CanvasEvent]; } | { BackendNative: BackendNativeEvent; } | { User: UserPayload; };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; } | { GlobalShortcut: GlobalShortcutId; } | { KeyPressed: _UiEventKeyPressed; } | { CharTyped: string; } | { MouseDown: _UiEventMouseDown; } | { MouseUp: _UiEventMouseUp; } | { MouseMoved: _UiEventMouseMoved; } | { MouseEntered: _UiEventMouseEntered; } | { MouseLeft: _UiEventMouseLeft; } | { DoubleClick: _UiEventDoubleClick; } | { Scroll: _UiEventScroll; } | { WindowResized: _UiEventWindowResized; } | { WindowFocused: boolean; } | { DpiChanged: number; } | { WindowStateChanged: _UiEventWindowStateChanged; } | { FilesDropped: _UiEventFilesDropped; } | { ClipboardPaste: string; } | { OpenRequested: _UiEventOpenRequested; } | { TextCopied: string; } | { FocusChanged: WidgetId | null; } | { SystemThemeChanged: SystemTheme; } | { PowerStateChanged: _UiEventPowerStateChanged; } | { ScrollOffsetChanged: _UiEventScrollOffsetChanged; } | { RowsRequested: _UiEventRowsRequested; } | { ScrollbarMoved: _UiEventScrollbarMoved; } | { SwitchToggled: _UiEventSwitchToggled; } | { RadioGroupSelectionChanged: _UiEventRadioGroupSelectionChanged; } | { ButtonActivated: _UiEventButtonActivated; } | { CommandCenterActivated: _UiEventCommandCenterActivated; } | { TextSelectionChanged: _UiEventTextSelectionChanged; } | { SplitDividerDragged: _UiEventSplitDividerDragged; } | { MenuActivated: WidgetId; } | { ContextMenuItemActivated: WidgetId; } | { MessageDialogResolved: WidgetId; } | { ToastActionClicked: WidgetId; } | { CompletionItemActivated: [WidgetId, number]; } | { RichTextLinkClicked: [WidgetId, string]; } | { TrayClicked: _UiEventTrayClicked; } | { NotificationActivated: _UiEventNotificationActivated; } | { Tree: [WidgetId, TreeEvent]; } | { List: [WidgetId, ListViewEvent]; } | { Form: [WidgetId, FormEvent]; } | { Palette: [WidgetId, PaletteEvent]; } | { TabBar: [WidgetId, TabBarEvent]; } | { StatusBar: [WidgetId, StatusBarEvent]; } | { ActivityBar: [WidgetId, ActivityBarEvent]; } | { Terminal: [WidgetId, TerminalEvent]; } | { TextDisplay: [WidgetId, TextDisplayEvent]; } | { Chart: [WidgetId, ChartEvent]; } | { DataTable: [WidgetId, DataTableEvent]; } | { TreeTable: [WidgetId, TreeTableEvent]; } | { TreeTableController: [WidgetId, TreeTableControllerWireEvent]; } | { CellGrid: [WidgetId, CellGridEvent]; } | { MultiSectionView: [WidgetId, MultiSectionViewEvent]; } | { Chat: [WidgetId, ChatEvent]; } | { Sidebar: [WidgetId, SidebarAction]; } | { TabGroup: [WidgetId, TabGroupEvent]; } | { ScrollView: [WidgetId, ScrollViewEvent]; } | { Editor: [WidgetId, EditorEvent]; } | { Minimap: [WidgetId, MinimapEvent]; } | { Board: [WidgetId, BoardAction]; } | { PipelineView: [WidgetId, PipelineEvent]; } | { DiffView: [WidgetId, DiffViewEvent]; } | { MessageList: [WidgetId, MessageListEvent]; } | { FindReplace: [WidgetId, FindReplaceEvent]; } | { HelpOverlay: [WidgetId, HelpOverlayAction]; } | { PathPicker: [WidgetId, PathPickerAction]; } | { DualModePalette: [WidgetId, DualModePaletteAction]; } | { AppMenu: [WidgetId, AppMenuEvent]; } | { ShellView: [WidgetId, ShellEvent]; } | { BottomPanel: [WidgetId, BottomPanelEvent]; } | { Workspace: [WidgetId, WorkspaceEvent]; } | { Toolbar: [WidgetId, ToolbarEvent]; } | { Canvas: [WidgetId, CanvasEvent]; } | { BackendNative: BackendNativeEvent; } | { User: UserPayload; };
 
 export interface _UiEventDoubleClick {
   position: Point;
@@ -3596,6 +3603,12 @@ export interface _UiEventPowerStateChanged {
 export interface _UiEventRadioGroupSelectionChanged {
   index: number;
   widget: WidgetId;
+}
+
+export interface _UiEventRowsRequested {
+  count: number;
+  id: WidgetId;
+  start: number;
 }
 
 export interface _UiEventScroll {

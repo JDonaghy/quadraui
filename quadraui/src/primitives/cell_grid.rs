@@ -1711,7 +1711,9 @@ impl CellGrid {
 
     fn live_at(&self, scroll: Option<(usize, usize)>) -> std::borrow::Cow<'_, Self> {
         match scroll {
-            Some((row_scroll, col_scroll)) if (row_scroll, col_scroll) != (self.row_scroll, self.col_scroll) => {
+            Some((row_scroll, col_scroll))
+                if (row_scroll, col_scroll) != (self.row_scroll, self.col_scroll) =>
+            {
                 std::borrow::Cow::Owned(Self {
                     row_scroll,
                     col_scroll,
@@ -2352,9 +2354,10 @@ impl Interactive for CellGrid {
             ..
         }) = &out
         {
-            state
-                .navigated
-                .set(&(self.row_scroll, self.col_scroll), (*row_scroll, *col_scroll));
+            state.navigated.set(
+                &(self.row_scroll, self.col_scroll),
+                (*row_scroll, *col_scroll),
+            );
         }
         out
     }

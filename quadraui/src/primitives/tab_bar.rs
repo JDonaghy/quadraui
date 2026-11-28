@@ -3718,7 +3718,8 @@ impl Interactive for TabBar {
     }
 
     fn state_summary(&self, state: &TabBarState) -> crate::interactive::StateSummary {
-        crate::interactive::StateSummary::default().with_active_tab(self.resolved_active(Some(state)))
+        crate::interactive::StateSummary::default()
+            .with_active_tab(self.resolved_active(Some(state)))
     }
 }
 
@@ -3755,6 +3756,45 @@ mod interactive_tests {
         fn units(&self) -> Units {
             Units::Cells
         }
+    }
+
+    #[test]
+    fn an_activation_the_app_never_echoes_still_resolves_and_shifts_on_close() {
+        let b = bar(&["a", "b", "c"], 0);
+        let mut state = TabBarState::default();
+        assert_eq!(b.resolved_active(Some(&state)), Some(0));
+        state.activate(&b, 2);
+        assert_eq!(
+            b.resolved_active(Some(&state)),
+            Some(2),
+            "the descriptor still marks tab 0, so the click stands"
+        );
+        assert!(b.live(Some(&state)).tabs[2].is_active);
+        assert!(!b.live(Some(&state)).tabs[0].is_active);
+        let echoed = bar(&["a", "b", "c"], 1);
+        assert_eq!(
+            echoed.resolved_active(Some(&state)),
+            Some(1),
+            "a descriptor that changed wins"
+        );
+
+        let b = bar(&["a", "b", "c"], 2);
+        let mut state = TabBarState::default();
+        state.activate(&b, 1);
+        state.close(0);
+        let after_close = bar(&["b", "c"], 1);
+        assert_eq!(
+            after_close.resolved_active(Some(&state)),
+            Some(0),
+            "closing an earlier tab renumbers the clicked tab and the descriptor's alike"
+        );
+        state.close(0);
+        let after_second = bar(&["c"], 0);
+        assert_eq!(
+            after_second.resolved_active(Some(&state)),
+            None,
+            "closing the active tab leaves nothing active"
+        );
     }
 
     fn bar(labels: &[&str], active: usize) -> TabBar {

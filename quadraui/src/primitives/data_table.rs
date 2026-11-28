@@ -2702,7 +2702,12 @@ impl DataTable {
         layout.vscrollbar = layout.layout.v_scrollbar_track.and_then(|track| {
             row_window::extent_scrollbar(
                 self.id,
-                Rect::new(rect.x + track.x, rect.y + track.y, track.width, track.height),
+                Rect::new(
+                    rect.x + track.x,
+                    rect.y + track.y,
+                    track.width,
+                    track.height,
+                ),
                 total,
                 band.start,
                 rem,
