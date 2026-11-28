@@ -46,6 +46,7 @@ jobs:
       # on `ubuntu-latest`) rather than installing a TOML dependency just
       # for this one field.
       - name: Read pyproject.toml version and compare against the tag
+        id: read
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
