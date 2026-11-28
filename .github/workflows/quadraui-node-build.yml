@@ -1,54 +1,36 @@
 name: quadraui-node build
 
-# Builds `@quadraui/node`'s native addon from source, type-checks
-# `examples/*.ts` under `tsc --strict --noEmit` (`package.json`'s
-# `typecheck:examples` script) and runs each of them headlessly, separately
-# type-checks the hand-maintained `js/index.d.ts` the package actually
-# publishes (`typecheck:dist-types`) -- `examples/*.ts` only ever reaches
-# it indirectly through an untyped `require()`, so this is the one step
-# that reads it as a real consumer's type checker would -- runs this
-# package's own black-box `node --test` suite (headless
-# `QuiApp`/`QuiShellApp` surface, the `QuadrauiError` subclass export check
-# and the `js/index.d.ts` drift check in `tests/public_api.test.ts`), then
-# `npm pack`s the result and
-# `require()`s the packed tarball from a separate throwaway directory --
-# proving the package a consumer would actually install loads and raises
-# typed errors, not just that this workspace's own build-tree layout
-# happens to resolve. Mirrors `quadraui-py-tests` (`ci.yml`) for the test
-# half and `quadraui-py-wheels.yml`'s "build artifact, then prove it is
-# loadable" shape for the pack half.
+# Builds `@quadraui/node`'s native addon from source, compiles `js/**` to
+# `dist/` (`build:dist`: CommonJS plus a generated `.d.ts` per module, the
+# files every `exports` entry points at), type-checks `examples/*.ts` and
+# the generated declarations under `tsc --strict --noEmit`, runs this
+# package's own black-box `node --test` suite and every example headlessly
+# (in-repo, the tests and examples import the package by its own name, so
+# they run against that same `dist/` build), then runs
+# `scripts/pack_smoke.ts`: `npm pack` of the root and the three platform
+# packages, a clean install of the root plus this host's platform tarball
+# into a temp project, `require()` and `import` of every subpath from
+# `node_modules`, `tsc --strict --module node16` of a typed
+# `@quadraui/node/app` consumer, and the hero counter run headless and in a
+# live TUI. Mirrors `quadraui-py-tests` (`ci.yml`) for the test half and
+# `quadraui-py-wheels.yml`'s "build artifact, then prove it is loadable"
+# shape for the pack half.
 #
 # One platform (`ubuntu-latest`), build-from-source only: this workflow is
 # the push/PR smoke test, not the release build. `quadraui-node-release.yml`
 # is the tag-triggered workflow that builds and publishes the prebuilt
 # `.node` binary for each of the three platforms `@quadraui/node` ships
-# (macOS arm64, Linux x86_64, Windows x86_64) -- a consumer who installs
-# from npm gets one of those, and a consumer on any other platform builds
-# from source the same way this job does, via `napi build`'s own
-# per-platform target detection.
+# (macOS arm64, Linux x86_64, Windows x86_64) and runs the same pack smoke
+# test on each of them before anything is published.
 #
-# `npm pack`'s own `prepack` lifecycle hook (`package.json`'s `build:dist`
-# script) compiles `js/index.ts` to `dist/index.js` and copies its
-# hand-maintained sibling declaration (`js/index.d.ts`) to
-# `dist/index.d.ts` before packing -- this package's `main`/`types` point
-# there, so a consumer's `require("@quadraui/node")` resolves one compiled
-# entry point rather than the `.ts` source tree, reconciled with the
-# native, napi-generated `index.d.ts` (`js/index.d.ts`'s own header doc).
-# `build:dist` depends on that native `index.d.ts` already existing
-# (`js/index.ts`'s own `typeof import("../index.js")`), which only a prior
-# `napi build`/`build:debug`/`build` run produces -- it is gitignored, not
-# checked in -- so `npm pack`/`npm publish` on a clean clone needs one of
-# those run first; this job always runs `build:debug` before `npm pack`
-# for exactly that reason.
+# `build:dist` needs the napi-generated `index.d.ts` (`js/index.ts` imports
+# `../index.js`), which only a prior `napi build`/`build:debug`/`build` run
+# produces -- it is gitignored, not checked in -- so this job always runs
+# `build:debug` first.
 #
-# Node >= 23.6 is pinned below because every *other* subpath export
-# (`./app`, `./app/*`, `./testing`, `./jsx-runtime`, `./jsx-dev-runtime`)
-# still points straight at its own `.ts` source, `require()`d directly
-# (see `js/index.ts`'s own header doc for why) -- Node's type-stripping
-# only erases TypeScript syntax from a `.ts` file by default from that
-# version on; an older Node needs `--experimental-strip-types` explicitly,
-# which neither this package's own `npm test`/example scripts nor a
-# consumer's plain `require()` pass.
+# Node 24 runs this package's own `.ts` tests, examples and scripts
+# directly (type stripping); the published package itself is compiled
+# JavaScript and needs only the `engines` floor.
 on:
   push:
     branches: [main, develop]
@@ -57,6 +39,7 @@ on:
       - "quadraui-binding-core/**"
       - "quadraui/src/**"
       - "quadraui/Cargo.toml"
+      - "examples/hero/**"
       - ".github/workflows/quadraui-node-build.yml"
   pull_request:
     branches: [main, develop]
@@ -65,6 +48,7 @@ on:
       - "quadraui-binding-core/**"
       - "quadraui/src/**"
       - "quadraui/Cargo.toml"
+      - "examples/hero/**"
       - ".github/workflows/quadraui-node-build.yml"
   workflow_dispatch: {}
 
@@ -136,9 +120,11 @@ jobs:
         run: npm ci
       - name: Build the native addon (plain/debug build)
         run: npm run build:debug
+      - name: Compile js/ to dist/
+        run: npm run build:dist
       - name: Type-check examples (tsc --strict --noEmit)
         run: npm run typecheck:examples
-      - name: Type-check the published declaration (tsc --strict --noEmit)
+      - name: Type-check the generated declarations (tsc --strict --noEmit)
         run: npm run typecheck:dist-types
       - name: npm test
         run: npm test
@@ -151,53 +137,7 @@ jobs:
             node "$example"
             echo "::endgroup::"
           done
-      - name: npm pack
-        run: npm pack --pack-destination "$RUNNER_TEMP"
-      - name: Verify the packed tarball is loadable, round-trips the layout tree and raises typed errors
-        shell: bash
-        run: |
-          set -euo pipefail
-          pkg_dir="$RUNNER_TEMP/quadraui-node-pack-check"
-          mkdir -p "$pkg_dir"
-          tar -xf "$RUNNER_TEMP"/quadraui-node-*.tgz -C "$pkg_dir"
-          node -e "
-          const quadraui = require('$pkg_dir/package');
-          const app = new quadraui.QuiApp(40, 20);
-
-          // setRender -> screen() -> pushEvent round-trip through the
-          // layout-tree API: a clicked switch leaf emits the
-          // FocusChanged/SwitchToggled semantic events it produces
-          // in-repo (quadraui-node/tests/descriptors.test.ts's
-          // 'switch' INLINE_LEAF_CASES entry).
-          app.setRender(() => ({
-            row: [{ id: 'leaf:1', switch: { id: 'sw:embedded', value: false } }],
-          }));
-          // setRender itself never repaints -- force the first render
-          // so the hit map reflects this leaf before the click below.
-          app.screen();
-          const received = [];
-          app.setHandler((event) => received.push(event));
-          app.pushEvent({ MouseDown: { button: 'Left', position: { x: 1.0, y: 1.0 }, modifiers: {} } });
-          app.run(1);
-          if (received.length !== 2) {
-            throw new Error('expected 2 events from the switch round-trip, got: ' + JSON.stringify(received));
-          }
-          if (!received[0].FocusChanged || received[0].FocusChanged !== 'leaf:1') {
-            throw new Error('expected FocusChanged for leaf:1, got: ' + JSON.stringify(received[0]));
-          }
-          if (!received[1].SwitchToggled || received[1].SwitchToggled.widget !== 'leaf:1' || received[1].SwitchToggled.value !== true) {
-            throw new Error('expected a SwitchToggled event for leaf:1, got: ' + JSON.stringify(received[1]));
-          }
-
-          // A malformed leaf still raises a typed, subclassable error.
-          app.setRender(() => ({ button: { not: 'a button' } }));
-          try {
-            app.screen();
-            throw new Error('screen() with a malformed button leaf did not raise');
-          } catch (err) {
-            if (!(err instanceof quadraui.InvalidDescriptorError) || !(err instanceof quadraui.QuadrauiError)) {
-              throw new Error('malformed button leaf did not raise an InvalidDescriptorError/QuadrauiError: ' + err);
-            }
-          }
-          console.log('packed @quadraui/node is loadable, round-trips the layout tree and raises typed errors');
-          "
+      - name: Install tmux for the live TUI check
+        run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Pack all four packages, install into a clean project, run the hero counter
+        run: node scripts/pack_smoke.ts --live

@@ -41,7 +41,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const fm = require("../examples/file_manager_app.ts");
-const { harness } = require("../js/testing.ts");
+const { harness } = require("@quadraui/node/testing");
 
 const createdTmpDirs: string[] = [];
 after(() => {

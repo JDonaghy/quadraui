@@ -27,7 +27,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 test("clipboard bindings are present", () => {
   const app: any = new QuiApp(40, 20);

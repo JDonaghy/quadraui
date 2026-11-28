@@ -16,7 +16,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 /** One "text_display" leaf -- the probe for a plain "bg" override, since a
  * text display reads Theme.background for its own fill. */

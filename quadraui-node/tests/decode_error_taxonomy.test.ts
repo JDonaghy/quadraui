@@ -27,7 +27,7 @@ const {
   UnknownKeyError,
   UnknownVariantError,
   VersionMismatchError,
-} = require("../js/index.ts");
+} = require("@quadraui/node");
 
 function button(id: string, label: string) {
   return { id, button: { id, label } };

@@ -21,7 +21,7 @@
 
 import type { LayoutLeafNode } from "../js/wire";
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const WIDTH = 48;
 const HEIGHT = 1;

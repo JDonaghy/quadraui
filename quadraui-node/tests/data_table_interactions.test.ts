@@ -19,7 +19,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // Two `Native(8.0)` columns keep every coordinate below exact: the header
 // occupies row 0 (TUI header height is one cell); body rows start at row 1.

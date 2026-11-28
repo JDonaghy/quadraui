@@ -6,28 +6,14 @@
 // any future TS-only ergonomics (overloads, a narrower public type) have
 // exactly one place to be added without touching the generated file.
 //
-// This package's published `main`/`types` entry is `dist/index.js`/
-// `dist/index.d.ts` instead of this file directly: `npm pack`/`npm
-// publish`'s own `prepack` hook (`package.json`'s `build:dist` script)
-// compiles this file with `tsc` into `dist/index.js`, and copies
-// `index.d.ts` -- this file's own hand-maintained sibling declaration,
-// not a `tsc --declaration` output; see that file's own header doc for
-// why -- next to it as `dist/index.d.ts`. In-repo, every direct consumer
-// (`js/app/runtime.ts`, every example, every test) still `require()`s
-// this file by its own `.ts` path unchanged, so it still needs to run
-// standalone under Node's native TypeScript support with no compile step
-// at all; the paragraph below's constraint exists for that path, not the
-// packaged one.
-//
-// Runtime exports go through `require`/`exports` rather than `import`/
-// `export`: Node's native TypeScript support determines a `.ts` file's
-// module format the same way it would a `.js` file with this package's
-// `"type": "commonjs"`, so top-level `import`/runtime `export` syntax here
-// would be a hard parse error, not silently transpiled, when this file
-// runs standalone (every in-repo consumer's own path). `export type`
-// below is exempt: it is erasable (type-only, no runtime value), so it
-// disappears entirely rather than needing ESM semantics.
-const native: typeof import("../index.js") = require("../index.js");
+// `npm run build:dist` (also the `prepack` hook) compiles every module
+// under `js/` with `tsconfig.build.json` into `dist/`: CommonJS JavaScript
+// plus a generated `.d.ts` for each one. Every `exports` entry in
+// `package.json` points into `dist/`, so the root entry and the app layer
+// load this one compiled module and share one set of error classes. The
+// in-repo tests and examples import the package by its own name and run
+// against that same `dist/` build.
+import native = require("../index.js");
 
 // ─── Error subclasses ───────────────────────────────────────────────────
 //
@@ -63,7 +49,7 @@ const native: typeof import("../index.js") = require("../index.js");
  * analog of `quadraui-py`'s own `QuadrauiError` (see that package's
  * `src/lib.rs`).
  */
-class QuadrauiError extends Error {
+export class QuadrauiError extends Error {
   constructor(message: string) {
     super(message);
     // `new.target` reflects the subclass actually being constructed even
@@ -72,7 +58,6 @@ class QuadrauiError extends Error {
     this.name = new.target.name;
   }
 }
-exports.QuadrauiError = QuadrauiError;
 
 /**
  * A descriptor/event shape this binding's decode adapter rejected --
@@ -91,74 +76,60 @@ exports.QuadrauiError = QuadrauiError;
  * raised directly for a non-`DecodeError` failure (e.g. "render callback
  * must return a dict") leaves it `undefined`.
  */
-class InvalidDescriptorError extends QuadrauiError {
+export class InvalidDescriptorError extends QuadrauiError {
   declare path?: string;
 }
-exports.InvalidDescriptorError = InvalidDescriptorError;
 
 /** A descriptor dict was missing a field this decoder requires -- mirrors `quadraui_binding_core::DecodeError::MissingField` (and `quadraui-py`'s `MissingFieldError`). `code` is `"missing_field"`. */
-class MissingFieldError extends InvalidDescriptorError {
+export class MissingFieldError extends InvalidDescriptorError {
   readonly code = "missing_field";
 }
-exports.MissingFieldError = MissingFieldError;
 
 /** A field held a value outside the specific set this decoder accepts -- mirrors `quadraui_binding_core::DecodeError::UnknownVariant` (and `quadraui-py`'s `UnknownVariantError`). `code` is `"unknown_variant"`. */
-class UnknownVariantError extends InvalidDescriptorError {
+export class UnknownVariantError extends InvalidDescriptorError {
   readonly code = "unknown_variant";
 }
-exports.UnknownVariantError = UnknownVariantError;
 
 /** A field held a value of the wrong JSON shape -- mirrors `quadraui_binding_core::DecodeError::TypeMismatch` (and `quadraui-py`'s `TypeMismatchError`). `code` is `"type_mismatch"`. */
-class TypeMismatchError extends InvalidDescriptorError {
+export class TypeMismatchError extends InvalidDescriptorError {
   readonly code = "type_mismatch";
 }
-exports.TypeMismatchError = TypeMismatchError;
 
 /** A dict carried a key this decoder does not recognize there -- mirrors `quadraui_binding_core::DecodeError::UnknownKey` (and `quadraui-py`'s `UnknownKeyError`). `code` is `"unknown_key"`. */
-class UnknownKeyError extends InvalidDescriptorError {
+export class UnknownKeyError extends InvalidDescriptorError {
   readonly code = "unknown_key";
 }
-exports.UnknownKeyError = UnknownKeyError;
 
 /** A render callback's `"wire_version"` is newer than this host understands -- mirrors `quadraui_binding_core::DecodeError::VersionMismatch` (and `quadraui-py`'s `VersionMismatchError`). `code` is `"version_mismatch"`. */
-class VersionMismatchError extends InvalidDescriptorError {
+export class VersionMismatchError extends InvalidDescriptorError {
   readonly code = "version_mismatch";
 }
-exports.VersionMismatchError = VersionMismatchError;
 
 /** A decode failure none of the subclasses above names -- a bespoke cross-field validation this crate's own decoders perform (a duplicate leaf id, an out-of-range ratio), or a lower-level `serde` error neither of them diagnosed further -- mirrors `quadraui_binding_core::DecodeError::Borrow` (and `quadraui-py`'s `DecodeFailedError`). `code` is `"borrow"`. */
-class DecodeFailedError extends InvalidDescriptorError {
+export class DecodeFailedError extends InvalidDescriptorError {
   readonly code = "borrow";
 }
-exports.DecodeFailedError = DecodeFailedError;
 
 /** A zero width/height, or a byte buffer whose length does not match the width/height it is supposed to encode -- mirrors `quadraui-py`'s `InvalidDimensionsError`. */
-class InvalidDimensionsError extends QuadrauiError {}
-exports.InvalidDimensionsError = InvalidDimensionsError;
+export class InvalidDimensionsError extends QuadrauiError {}
 
 /** A `pushKeyEvent` code point that is not a valid Unicode scalar value -- mirrors `quadraui-py`'s `InvalidCharError`. */
-class InvalidCharError extends QuadrauiError {}
-exports.InvalidCharError = InvalidCharError;
+export class InvalidCharError extends QuadrauiError {}
 
 /** A Rust panic caught at this app's `guarded` boundary -- mirrors `quadraui-py`'s `PanicError`. The app is poisoned afterwards; every later call raises {@link PoisonedError} instead. */
-class PanicError extends QuadrauiError {}
-exports.PanicError = PanicError;
+export class PanicError extends QuadrauiError {}
 
 /** Raised by every method on an app an earlier caught panic poisoned -- mirrors `quadraui-py`'s `PoisonedError`. */
-class PoisonedError extends QuadrauiError {}
-exports.PoisonedError = PoisonedError;
+export class PoisonedError extends QuadrauiError {}
 
 /** A failure internal to this binding rather than caused by caller input -- mirrors `quadraui-py`'s `InternalError`. */
-class InternalError extends QuadrauiError {}
-exports.InternalError = InternalError;
+export class InternalError extends QuadrauiError {}
 
 /** A `role` string `measureText` does not recognize -- mirrors `quadraui-py`'s `InvalidFontRoleError`. */
-class InvalidFontRoleError extends QuadrauiError {}
-exports.InvalidFontRoleError = InvalidFontRoleError;
+export class InvalidFontRoleError extends QuadrauiError {}
 
 /** A `RenderCtx`'s `measureText`/`lineHeight`/`charWidth` was called after the render call that handed it out already returned -- mirrors `quadraui-py`'s `StaleRenderCtxError`. */
-class StaleRenderCtxError extends QuadrauiError {}
-exports.StaleRenderCtxError = StaleRenderCtxError;
+export class StaleRenderCtxError extends QuadrauiError {}
 
 /**
  * One of `QuiApp`'s methods restricted to top-level script code (the ones
@@ -175,32 +146,25 @@ exports.StaleRenderCtxError = StaleRenderCtxError;
  * recognizes PyO3's own equally generic `RuntimeError: Already borrowed`
  * the same way, via `guard_against_reentrant_call`.
  */
-class ReentrantCallError extends QuadrauiError {}
-exports.ReentrantCallError = ReentrantCallError;
+export class ReentrantCallError extends QuadrauiError {}
 
 /** A `QuiApp` method called while `startTui`/`startNative` is live. */
-class LiveRunnerActiveError extends QuadrauiError {}
-exports.LiveRunnerActiveError = LiveRunnerActiveError;
+export class LiveRunnerActiveError extends QuadrauiError {}
 
 /** `step`/`run` called after a live `startTui`/`startNative` session this app once held has already ended. */
-class LiveRunnerExitedError extends QuadrauiError {}
-exports.LiveRunnerExitedError = LiveRunnerExitedError;
+export class LiveRunnerExitedError extends QuadrauiError {}
 
 /** `startNative` called on a binary built with none of the `gtk`/`macos`/`win` features -- there is no native runner to open a window with. */
-class NoNativeBackendError extends QuadrauiError {}
-exports.NoNativeBackendError = NoNativeBackendError;
+export class NoNativeBackendError extends QuadrauiError {}
 
 /** `startNative` on the `gtk` feature found no display to open a window on (no `DISPLAY`/`WAYLAND_DISPLAY`) -- mirrors `quadraui-py`'s `NoDisplayError`. */
-class NoDisplayError extends QuadrauiError {}
-exports.NoDisplayError = NoDisplayError;
+export class NoDisplayError extends QuadrauiError {}
 
 /** `startNative` on the `gtk` feature was given an `appId` that is not a valid `GApplication` id -- mirrors `quadraui-py`'s `InvalidAppIdError`. */
-class InvalidAppIdError extends QuadrauiError {}
-exports.InvalidAppIdError = InvalidAppIdError;
+export class InvalidAppIdError extends QuadrauiError {}
 
 /** A `quadraui_binding_core::services` call (`checkForUpdate`, `setLoginItem`, `setDockMenu`, `setJumpList`, ...) this backend has no implementation for at all -- distinct from {@link InternalError}, which `setTrayIcon`/`setTrayMenu`/`setDocumentEdited`/`setRepresentedFilename` raise instead for the same "no implementation" reason (their own `WindowControl`/`TrayService` seam reports it differently), and from `setCursor`, which raises neither and instead returns `false` -- mirrors `quadraui-py`'s `UnsupportedError`. */
-class UnsupportedError extends QuadrauiError {}
-exports.UnsupportedError = UnsupportedError;
+export class UnsupportedError extends QuadrauiError {}
 
 /**
  * Every subclass above, keyed by both its own name and the tag its native
@@ -233,7 +197,7 @@ const ERROR_CLASSES_BY_TAG: Record<string, new (message: string) => QuadrauiErro
   InvalidAppIdError,
   UnsupportedError,
 };
-exports.ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
+export const ERROR_CLASSES = Object.freeze({ ...ERROR_CLASSES_BY_TAG });
 
 const ERROR_TAG_PATTERN = /^([A-Za-z]+Error): /;
 
@@ -263,7 +227,7 @@ const PATH_SUFFIX_MARKER = "\u0000";
  * suffix). The same rewrite is applied to `.stack`'s first line, so the
  * marker and path suffix never leak into either.
  */
-function toQuadrauiError(err: unknown): unknown {
+export function toQuadrauiError(err: unknown): unknown {
   if (!(err instanceof Error) || err instanceof QuadrauiError) {
     return err;
   }
@@ -285,7 +249,6 @@ function toQuadrauiError(err: unknown): unknown {
   }
   return wrapped;
 }
-exports.toQuadrauiError = toQuadrauiError;
 
 /**
  * `QuiApp` methods restricted to top-level script code -- the ones with a
@@ -418,27 +381,25 @@ wrapNativeErrors(native.RenderCtx.prototype);
  * {@link setAppIdentifier} last set, and raises {@link UnsupportedError}
  * until one has been.
  */
-function appPath(kind: string): string {
+export function appPath(kind: string): string {
   try {
     return native.appPath(kind);
   } catch (err) {
     throw toQuadrauiError(err);
   }
 }
-exports.appPath = appPath;
 
 /**
  * Sets the app identifier scoping {@link appPath}'s app-scoped kinds. A
  * process-global setting, not per-`QuiApp`.
  */
-function setAppIdentifier(identifier: string): void {
+export function setAppIdentifier(identifier: string): void {
   try {
     native.setAppIdentifier(identifier);
   } catch (err) {
     throw toQuadrauiError(err);
   }
 }
-exports.setAppIdentifier = setAppIdentifier;
 
 /**
  * Installs a crash handler that writes a crash record on an uncaught
@@ -450,14 +411,13 @@ exports.setAppIdentifier = setAppIdentifier;
  * no `camelCase` remap). No live `QuiApp` is needed: this installs a
  * process-global Rust panic hook.
  */
-function installCrashHandler(cfg: unknown): void {
+export function installCrashHandler(cfg: unknown): void {
   try {
     native.installCrashHandler(cfg);
   } catch (err) {
     throw toQuadrauiError(err);
   }
 }
-exports.installCrashHandler = installCrashHandler;
 
 /**
  * The {@link RenderCtx} for whichever `render`/`view` callback is currently
@@ -470,14 +430,13 @@ exports.installCrashHandler = installCrashHandler;
  * binding's own doc comment (`quadraui-node/src/lib.rs`'s "Render context
  * for script widgets" module section) for the full contract.
  */
-function getCurrentCtx(): RenderCtx | null {
+export function getCurrentCtx(): RenderCtx | null {
   try {
     return native.getCurrentCtx() ?? null;
   } catch (err) {
     throw toQuadrauiError(err);
   }
 }
-exports.getCurrentCtx = getCurrentCtx;
 
 /**
  * Wraps `measure`/`paint`/`onEvent`/`a11y` -- plain JS functions, each
@@ -493,7 +452,7 @@ exports.getCurrentCtx = getCurrentCtx;
  * directly only when bypassing that wrapper entirely (a raw
  * `QuiApp.setRender` script, say).
  */
-function registerScriptedWidget(
+export function registerScriptedWidget(
   id: string,
   measure: (packed: unknown) => unknown,
   paint: (packed: unknown) => unknown,
@@ -507,7 +466,6 @@ function registerScriptedWidget(
     throw toQuadrauiError(err);
   }
 }
-exports.registerScriptedWidget = registerScriptedWidget;
 
 /**
  * Render-time capabilities a script `render`/`view` callback needs from
@@ -541,7 +499,7 @@ export type RenderCtx = InstanceType<typeof native.RenderCtx>;
  * unchanged -- see this file's own "Error subclasses" section doc for why
  * it stays unwrapped.
  */
-class QuiApp extends native.QuiApp {
+export class QuiApp extends native.QuiApp {
   constructor(width: number, height: number) {
     try {
       super(width, height);
@@ -563,7 +521,6 @@ class QuiApp extends native.QuiApp {
     return super.widgetState(id) as WidgetState | null;
   }
 }
-exports.QuiApp = QuiApp;
 
 /**
  * The resolved widget-state shape `QuiApp.widgetState(id)` returns -- a
@@ -677,7 +634,7 @@ export interface PumpHandle {
  * Rust-side live runner's own cleanup never runs on an abrupt process
  * exit.
  */
-function pump(
+export function pump(
   app: { step(): boolean; stopLive?(): boolean },
   intervalMs = 16,
 ): PumpHandle {
@@ -698,7 +655,6 @@ function pump(
     },
   };
 }
-exports.pump = pump;
 
 /** The type of {@link pump} -- lets a TS consumer `import type { PumpFn }` to name it, since `pump` itself is exported only at runtime (see this file's own doc comment on why this module has no runtime `export`). */
 export type PumpFn = typeof pump;
@@ -750,7 +706,7 @@ export interface RunHandle {
  * timer. On `step()` throwing, mirrors `pump`'s own cleanup-then-rethrow
  * contract (see that function's own doc) exactly.
  */
-function run(app: RunnableApp, fallbackIntervalMs = 250): RunHandle {
+export function run(app: RunnableApp, fallbackIntervalMs = 250): RunHandle {
   let stopped = false;
   let fallback: ReturnType<typeof setInterval> | undefined;
 
@@ -783,7 +739,6 @@ function run(app: RunnableApp, fallbackIntervalMs = 250): RunHandle {
 
   return { stop };
 }
-exports.run = run;
 
 /** The type of {@link run} -- lets a TS consumer `import type { RunFn }` to name it, since `run` itself is exported only at runtime (see this file's own doc comment on why this module has no runtime `export`). */
 export type RunFn = typeof run;

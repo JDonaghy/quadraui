@@ -11,7 +11,7 @@ through all three.
 
 | | Rust | Python | Node / TSX |
 |---|---|---|---|
-| Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `require("@quadraui/node/app")` |
+| Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `import { App, ... } from "@quadraui/node/app"` |
 | State | struct fields | object attributes | class fields |
 | View | `fn view(&self)` returning `column([...])` | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
 | Update | `.on_click(Msg::Inc)` + `fn update(&mut self, Msg)` | `on_click=self.inc` | `onClick={() => this.count++}` |
@@ -41,8 +41,7 @@ has the table.
   `quit_keys=False` and Node with `quitKeys: false`. Python and Node quit
   from any callback with `app.quit()`; a Rust `update` returns
   `Command::Exit`.
-- **Node from npm.** `@quadraui/node` is first published with 0.12, and its
-  app and JSX entry points need #2801 to load from `node_modules`; until
+- **Node from npm.** `@quadraui/node` is first published with 0.12; until
   then Node apps run from a clone ([Node quick start](quick-start/node.md)).
 - **Text.** Rust has `text("...")`, Python `Text("...")` and Node `<text>` /
   `Text()`, all sized to their content. A span's `fg`/`bg` are optional

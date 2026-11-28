@@ -10,9 +10,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField } = require("../js/app/index.ts");
-const { run } = require("../js/index.ts");
-const { harness } = require("../js/testing.ts");
+const { App, Button, Column, Form, List, Row, Text, TextDisplay, TextInputField } = require("@quadraui/node/app");
+const { run } = require("@quadraui/node");
+const { harness } = require("@quadraui/node/testing");
 const { load } = require("../../examples/hero/node/load_jsx.ts");
 
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };

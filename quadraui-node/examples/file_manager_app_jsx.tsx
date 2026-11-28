@@ -26,7 +26,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { App, Tab, Toolbar, keyName } = require("../js/app/index.ts");
+const { App, Tab, Toolbar, keyName } = require("@quadraui/node/app");
 
 import type { Renderable } from "../js/app/index";
 import type { QuiAppActions } from "../js/index";

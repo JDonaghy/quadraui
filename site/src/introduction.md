@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App } = require("@quadraui/node/app");
+import { App } from "@quadraui/node/app";
 
 class Counter {
   count = 0;

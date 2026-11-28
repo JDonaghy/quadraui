@@ -10,7 +10,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 function locate(app: any, needle: string): [number, number] {
   const lines = app.screen().split("\n");

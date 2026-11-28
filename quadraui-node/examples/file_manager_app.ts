@@ -38,7 +38,7 @@ const {
   Toolbar,
   Tree,
   keyName,
-} = require("../js/app/index.ts");
+} = require("@quadraui/node/app");
 
 import type { Renderable } from "../js/app/index";
 import type { QuiAppActions } from "../js/index";

@@ -1,0 +1,15 @@
+{
+  "//": "Compiles js/** to dist/ for the published package: CommonJS JavaScript plus a .d.ts for every module (npm run build:dist, run by prepack and pretest). Needs a built native addon first, since js/index.ts imports the napi-generated ../index.d.ts.",
+  "compilerOptions": {
+    "strict": true,
+    "module": "node16",
+    "moduleResolution": "node16",
+    "target": "es2020",
+    "declaration": true,
+    "rootDir": "js",
+    "outDir": "dist",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["js/**/*.ts"]
+}

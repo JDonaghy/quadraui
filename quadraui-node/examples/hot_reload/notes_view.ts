@@ -9,7 +9,7 @@
 // Runtime exports go through `exports.X = ...` rather than `export`, the
 // same reason `../../js/index.ts`'s own header comment gives.
 
-const { Button, Column, Component, StatusBar, TextDisplay, Tree } = require("../../js/app/index.ts");
+const { Button, Column, Component, StatusBar, TextDisplay, Tree } = require("@quadraui/node/app");
 
 function line(text: string) {
   return { spans: [{ text, fg: null, bg: null, bold: false, italic: false, underline: false }] };

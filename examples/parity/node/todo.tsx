@@ -1,4 +1,4 @@
-const { App, TextInputField } = require("@quadraui/node/app");
+import { App, TextInputField } from "@quadraui/node/app";
 
 const item = (text: string) => ({ text: { spans: [{ text }] } });
 const grey = { r: 220, g: 220, b: 220, a: 255 };

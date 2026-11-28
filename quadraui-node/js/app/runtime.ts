@@ -29,16 +29,13 @@
 // render callback is registered (see `../index.ts`'s own `run`/`pump`
 // doc), so the mutation a callback makes is already visible by the time
 // that same `step()` returns.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives.
 
 import type { Node, Renderable, ComponentLike } from "./nodes";
 import type { QuiAppActions, RenderCtx, WidgetState, RunHandle } from "../index";
 import type { Poller, ReboundPrototypes, Watcher } from "./hotReload";
 
-const { QuiApp, run, getCurrentCtx } = require("../index.ts");
-const hr = require("./hotReload.ts");
+import { QuiApp, run, getCurrentCtx } from "../index";
+import * as hr from "./hotReload";
 
 type AnyCallback = (...args: unknown[]) => void;
 type Registry = Record<string, Record<string, AnyCallback>>;
@@ -66,13 +63,13 @@ function autoId(path: ReadonlyArray<string | number>): string {
  * constant at import time), so it needs a matching bump by hand if that
  * constant ever changes.
  *
- * Read back through `exports.WIRE_VERSION` (not the module-local binding)
- * at stamping time below, so a test can force a mismatch by reassigning
- * `runtime.WIRE_VERSION` on the already-`require`d module -- the same
- * trick `quadraui-py`'s own test suite plays on its module-level
- * `WIRE_VERSION`, which Node's `const` would otherwise block.
+ * A `let`, not a `const`: the CommonJS build reads it back through
+ * `exports.WIRE_VERSION` at stamping time below, so a test can force a
+ * mismatch by reassigning `WIRE_VERSION` on the `@quadraui/node/app/runtime`
+ * module -- the same trick `quadraui-py`'s own test suite plays on its
+ * module-level `WIRE_VERSION`.
  */
-exports.WIRE_VERSION = 1;
+export let WIRE_VERSION = 1;
 
 function isNode(value: unknown): value is Node {
   return (
@@ -201,7 +198,7 @@ function rawKeyName(key: unknown): string | null {
  * layer ever sees them. Returns `null` for anything else, including a
  * bare-string event.
  */
-function keyName(event: unknown): string | null {
+export function keyName(event: unknown): string | null {
   if (typeof event !== "object" || event === null) {
     return null;
   }
@@ -220,7 +217,6 @@ function keyName(event: unknown): string | null {
   }
   return null;
 }
-exports.keyName = keyName;
 
 /**
  * The `KeyPressed` payload out of a key event in either shape {@link keyName}
@@ -429,7 +425,7 @@ export interface HotReloadOptions {
  * trees, with events dispatched to the `on*` callbacks those trees
  * carried on their last render rather than a hand-written `handle`.
  */
-class App {
+export class App {
   qui: InstanceType<typeof QuiApp>;
   /**
    * A `QuiAppActions` handle, shared with every render/event/tick callback
@@ -743,7 +739,7 @@ class App {
     this._registry = registry;
     this._componentStates = newStates;
     if (typeof wire === "object" && wire !== null && !Array.isArray(wire) && !("wire_version" in (wire as object))) {
-      wire = { ...(wire as Record<string, unknown>), wire_version: exports.WIRE_VERSION };
+      wire = { ...(wire as Record<string, unknown>), wire_version: WIRE_VERSION };
     }
     return wire;
   }
@@ -1038,4 +1034,3 @@ class App {
     this.qui.disarmWakeNotify();
   }
 }
-exports.App = App;

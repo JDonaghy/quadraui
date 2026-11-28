@@ -13,8 +13,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
-const { Scroll, TextDisplay } = require("../js/app/index.ts");
+const { QuiApp } = require("@quadraui/node");
+const { Scroll, TextDisplay } = require("@quadraui/node/app");
 
 function buttons(count: number) {
   return Array.from({ length: count }, (_, i) => ({

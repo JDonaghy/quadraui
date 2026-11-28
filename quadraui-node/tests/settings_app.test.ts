@@ -16,7 +16,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
 const settingsExample = require("../examples/settings_app.ts");
-const { harness } = require("../js/testing.ts");
+const { harness } = require("@quadraui/node/testing");
 
 function ui(width = 70, height = 20): { settings: InstanceType<typeof settingsExample.SettingsApp>; h: any } {
   const settings = new settingsExample.SettingsApp(width, height);

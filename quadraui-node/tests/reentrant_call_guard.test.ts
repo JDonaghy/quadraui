@@ -28,7 +28,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { InvalidDescriptorError, QuiApp, ReentrantCallError } = require("../js/index.ts");
+const { InvalidDescriptorError, QuiApp, ReentrantCallError } = require("@quadraui/node");
 
 const RESTRICTED_METHOD_CALLS: Array<[string, unknown[]]> = [
   ["showOverlay", ["message_dialog", { title: "Title", body: "Body", buttons: [{ id: "ok", label: "OK" }] }, null]],

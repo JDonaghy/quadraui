@@ -15,7 +15,7 @@
 //
 //     node examples/appshell_demo.ts
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 import type { ListItem, ListView as ListViewDescriptor } from "../js/wire";
 

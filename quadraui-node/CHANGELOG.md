@@ -36,6 +36,14 @@ fragment step for this package (that mechanism, and
   TUI cell is 8x16), `"N%"`, `"Nfr"`, `"content"` or a raw wire
   `SectionSize`, and sets how much of its parent `Column`/`Row` the node
   takes. New exported types `LayoutOptions` and `SizeSpec` (#3107).
+- `scripts/pack_smoke.ts` (`npm run smoke:pack`) packs `@quadraui/node` and
+  its three platform packages, installs the root and this host's platform
+  tarball into a clean project, and from that `node_modules` `require()`s
+  and `import`s every entry point, type-checks a typed `@quadraui/node/app`
+  consumer under `tsc --strict --module node16`, and runs the hero counter
+  compiled by `tsc` headless and in a live TUI (#3079). CI runs it on every
+  push, and the release workflow runs it on Linux, macOS and Windows before
+  publishing.
 
 - `QuiAppActions.showOverlay(kind, descriptor, anchor)`/
   `.dismissOverlay(id)` -- the same nine `kind`s and anchor semantics as
@@ -124,6 +132,19 @@ fragment step for this package (that mechanism, and
   `App.quit()`) instead of throwing a native borrow error (#3107).
 - `AppOptions.onEvent` may return `boolean | void`; `true` keeps a default
   quit key from quitting (#3107).
+- **Breaking:** every entry point is compiled to `dist/` with a generated
+  `.d.ts` (#2801). `@quadraui/node/app`, `/app/*`, `/testing`,
+  `/jsx-runtime` and `/jsx-dev-runtime` now load from `node_modules` with
+  both `require()` and `import`, and TypeScript sees their real types: `App`,
+  `Button` and the rest are no longer `any`, so a wrong argument fails
+  `tsc`. The app layer and the root entry load one compiled module and
+  share one set of error classes, so `instanceof QuadrauiError` holds across
+  them. The `./js/*` export is removed, along with every export that named
+  a `.ts` file; `@quadraui/node/wire` (types only) now points at
+  `dist/wire.d.ts`. TypeScript consumers need `"module"`/`"moduleResolution"`
+  `"node16"`, `"nodenext"` or `"bundler"` for the subpaths to resolve. The
+  root tarball no longer carries a `.node` binary; the native addon comes
+  from the platform package (or a local `npm run build` in a clone).
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input
@@ -401,6 +422,11 @@ fragment step for this package (that mechanism, and
   | `dismissRichTextPopup()` | `dismissOverlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
 ### Fixed
+
+- `QuiApp.cellColors`'s declared return type is the
+  `[[r, g, b], [r, g, b]] | null` tuple it returns, instead of an undeclared
+  `CellColors` name that failed `tsc` for any consumer without
+  `skipLibCheck` (#2801).
 
 - While a modal overlay (`showOverlay("message_dialog", ...)` and the
   other modal kinds) is open, a click, pointer move or key it does not use

@@ -25,7 +25,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 test("style: a \"bg\" override on a row changes a background-reading leaf's cell", () => {
   // A "text_display" leaf reads Theme.background for its own fill

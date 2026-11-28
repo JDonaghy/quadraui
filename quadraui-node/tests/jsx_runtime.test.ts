@@ -6,24 +6,13 @@
 // (`../examples/file_manager_app_jsx.tsx`) through `tsc --strict`, the
 // acceptance bar `../package.json`'s own `typecheck:jsx` script names.
 //
-// Neither runtime file can be `require()`d directly under Node's own
-// native TypeScript support -- both are genuine ES modules (real
-// `export`, not this package's usual `exports.X = ...`; see
-// `../js/jsx-runtime.ts`'s own header doc for why) -- so each is run here
-// through `esbuild.transformSync` first (down-leveling `export`/`import`
-// into a `module.exports`/`require` a plain `new Function` can execute),
-// never `bundle`d: bundling would also try to inline `../js/app/nodes.ts`
-// (this package's usual `exports.X = ...` convention, which esbuild's own
-// module-type inference mishandles once a sibling `export interface`
-// makes it think the whole file is ESM) -- transform-only is both
-// sufficient (`jsx-runtime.ts`'s own logic is what this file tests) and
-// the one mode that sidesteps that unrelated problem. Each transformed
-// module's own `require` calls are intercepted by a small shim below
-// instead, so this test needs no built native addon and no real
-// `./app/nodes` -- it is pure unit coverage of the adapter/dispatch logic
-// in `createElement`.
+// Each runtime is loaded from its compiled `dist/` module and executed in
+// a `new Function` wrapper rather than through a plain `require()`, so the
+// module's own `require` calls go through a small shim below instead: the
+// stub-based cases need no native addon and no real `./app/nodes` -- they
+// are pure unit coverage of the adapter/dispatch logic in `createElement`.
 //
-// Run with `npm test` (no addon build needed for this file specifically).
+// Run with `npm test`, which builds `dist/` first.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -31,8 +20,8 @@ const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const esbuild = require("esbuild");
 
-const JSX_RUNTIME_PATH = path.join(__dirname, "..", "js", "jsx-runtime.ts");
-const JSX_DEV_RUNTIME_PATH = path.join(__dirname, "..", "js", "jsx-dev-runtime.ts");
+const JSX_RUNTIME_PATH = require.resolve("@quadraui/node/jsx-runtime");
+const JSX_DEV_RUNTIME_PATH = require.resolve("@quadraui/node/jsx-dev-runtime");
 const REPO_ROOT = path.join(__dirname, "..");
 
 type RequireShim = (id: string) => unknown;
@@ -45,7 +34,7 @@ type RequireShim = (id: string) => unknown;
  */
 function loadTransformed(absPath: string, shim: RequireShim): Record<string, unknown> {
   const source = fs.readFileSync(absPath, "utf8");
-  const loader = absPath.endsWith(".tsx") ? "tsx" : "ts";
+  const loader = absPath.endsWith(".tsx") ? "tsx" : absPath.endsWith(".js") ? "js" : "ts";
   // `jsx`/`jsxImportSource` matter only for the `.tsx` branch (a `.ts`
   // file has no JSX syntax to transform), and must match the package
   // README's own documented config (`"jsx": "react-jsx"`,
@@ -94,8 +83,8 @@ function stubNodeConstructors(): Record<string, (...args: unknown[]) => unknown>
 /**
  * Fake `../js/app/widget.ts`: `widgetFromIntrinsic` records exactly the
  * args it was called with, the same shape {@link stubNodeConstructors}'
- * own stubs record -- real `./app/widget.ts` would `require("../index.ts")`
- * at load time, pulling in the native addon this test file's own header
+ * own stubs record -- real `./app/widget` imports `../index` at load
+ * time, pulling in the native addon this test file's own header
  * doc says most of its cases need none of.
  */
 function stubWidgetModule(): Record<string, (...args: unknown[]) => unknown> {
@@ -105,19 +94,19 @@ function stubWidgetModule(): Record<string, (...args: unknown[]) => unknown> {
 }
 
 /**
- * `jsx-runtime.ts`'s own `require("./app/nodes.ts")`/`require("./app/widget.ts")`
+ * The compiled `jsx-runtime`'s own `require("./app/nodes")`/`require("./app/widget")`
  * resolved against {@link stubNodeConstructors}/{@link stubWidgetModule};
  * anything else falls through to real `require`.
  */
 function requireShim(stubs: Record<string, unknown>): RequireShim {
   return (id: string) => {
-    if (id === "./app/nodes.ts") {
+    if (id === "./app/nodes") {
       return stubs;
     }
-    if (id === "./app/widget.ts") {
+    if (id === "./app/widget") {
       return stubWidgetModule();
     }
-    if (id === "./jsx-runtime" || id === "./jsx-runtime.ts") {
+    if (id === "./jsx-runtime") {
       return loadJsxRuntime();
     }
     return require(id);
@@ -439,7 +428,7 @@ test("a wrong prop name on an intrinsic element fails tsc --strict", { skip: !fs
 // lists in the wrong order): a bug like that type-checks and passes every
 // stub-based test above, then silently renders wrong. This test drives the
 // real `../examples/file_manager_app_jsx.tsx` -- transformed through this
-// runtime's own real `require("./app/nodes.ts")`, no stub -- through the
+// runtime's own real `require("./app/nodes")`, no stub -- through the
 // same scripted actions as its non-JSX twin, `../examples/
 // file_manager_app.ts`, and asserts the two headless screens stay
 // byte-for-byte identical after every step: the behavioural half of the
@@ -451,7 +440,7 @@ const REAL_JSX_RUNTIME_SPECIFIER = "@quadraui/node/jsx-runtime";
 
 let cachedRealRuntime: Record<string, unknown> | null = null;
 
-/** `../js/jsx-runtime.ts`, transformed the same way as {@link loadJsxRuntime} above, but with its own `require("./app/nodes.ts")` resolved to the real module -- what actually builds real wire nodes, not a `{__call, args}` stub. */
+/** The compiled `jsx-runtime`, loaded the same way as {@link loadJsxRuntime} above, but with its own `require("./app/nodes")` resolved to the real module -- what actually builds real wire nodes, not a `{__call, args}` stub. */
 function loadRealJsxRuntime(): Record<string, unknown> {
   if (cachedRealRuntime === null) {
     cachedRealRuntime = loadTransformed(JSX_RUNTIME_PATH, realRequireShim(JSX_RUNTIME_PATH));
@@ -459,7 +448,7 @@ function loadRealJsxRuntime(): Record<string, unknown> {
   return cachedRealRuntime;
 }
 
-/** `require`, with every relative id resolved against `fromAbsPath`'s own directory and handed to Node's real `require` (so a plain `.ts` file like `./app/nodes.ts` resolves through Node's own native TypeScript support, the same way every non-JSX `*.test.ts` file in this directory already requires one), and `@quadraui/node/jsx-runtime` resolved to {@link loadRealJsxRuntime} -- exactly the specifier a real `tsc`/esbuild/Bun consumer's own automatic-JSX import would resolve, per the package's `exports` map. */
+/** `require`, with every relative id resolved against `fromAbsPath`'s own directory and handed to Node's real `require` (so `./app/nodes` resolves to the compiled sibling module in `dist/`), and `@quadraui/node/jsx-runtime` resolved to {@link loadRealJsxRuntime} -- exactly the specifier a real `tsc`/esbuild/Bun consumer's own automatic-JSX import would resolve, per the package's `exports` map. */
 function realRequireShim(fromAbsPath: string): RequireShim {
   const fromDir = path.dirname(fromAbsPath);
   return (id: string) => {
@@ -498,7 +487,7 @@ test(
       FileManager: FileManagerCtor;
     };
     const plainExample = require("../examples/file_manager_app.ts") as { FileManager: FileManagerCtor };
-    const { harness } = require("../js/testing.ts") as { harness: (app: unknown) => any };
+    const { harness } = require("@quadraui/node/testing") as { harness: (app: unknown) => any };
 
     const root = exampleTreeRoot();
     try {

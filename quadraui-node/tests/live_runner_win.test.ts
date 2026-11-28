@@ -30,7 +30,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const nativeBackend: string | null = QuiApp.nativeBackend();
 const skip =
@@ -54,7 +54,7 @@ function runWinScript(body: string): { stdout: string; stderr: string; status: n
   return { stdout: result.stdout ?? "", stderr: result.stderr ?? "", status: result.status };
 }
 
-const indexPath = require.resolve("../js/index.ts");
+const indexPath = require.resolve("@quadraui/node");
 
 test(
   "startNative opens a real window, steps it, and tears it down via stopLive()",

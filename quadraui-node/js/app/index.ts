@@ -79,53 +79,45 @@
 // a JS view must call *through* the preserved object or the module
 // exports (`{view: () => myApp.view()}`) rather than capture a function.
 //
-// **Testing.** `require("../testing.ts").harness(app)` wraps an `App` for
+// **Testing.** `require("@quadraui/node/testing").harness(app)` wraps an `App` for
 // a test that queries by widget id/role/text, synthesises the clicks and
 // keys a user performs, and asserts on the rendered frame -- without a
 // test ever spelling out a wire event or a coordinate. See that module's
 // own doc; it mirrors `quadraui.testing` the same way this file mirrors
 // `quadraui.app`.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives.
 
-const nodes = require("./nodes.ts");
-const { Component } = require("./component.ts");
-const { App, WIRE_VERSION, keyName } = require("./runtime.ts");
-const { defineWidget } = require("./widget.ts");
-
-exports.App = App;
-exports.WIRE_VERSION = WIRE_VERSION;
-exports.keyName = keyName;
-exports.Component = Component;
-exports.defineWidget = defineWidget;
-exports.Split = nodes.Split;
-exports.Column = nodes.Column;
-exports.Row = nodes.Row;
-exports.SidebarPanel = nodes.SidebarPanel;
-exports.Scroll = nodes.Scroll;
-exports.Tab = nodes.Tab;
-exports.Tabs = nodes.Tabs;
-exports.Tree = nodes.Tree;
-exports.Table = nodes.Table;
-exports.List = nodes.List;
-exports.StatusBar = nodes.StatusBar;
-exports.TextDisplay = nodes.TextDisplay;
-exports.Text = nodes.Text;
-exports.Button = nodes.Button;
-exports.Toolbar = nodes.Toolbar;
-exports.Form = nodes.Form;
-exports.TextInputField = nodes.TextInputField;
-exports.DropdownField = nodes.DropdownField;
-exports.ToggleField = nodes.ToggleField;
-exports.SliderField = nodes.SliderField;
-exports.PasswordField = nodes.PasswordField;
-exports.TextAreaField = nodes.TextAreaField;
-exports.Checkbox = nodes.Checkbox;
-exports.Slider = nodes.Slider;
-exports.Select = nodes.Select;
-exports.Password = nodes.Password;
-exports.TextArea = nodes.TextArea;
+export { App, WIRE_VERSION, keyName } from "./runtime";
+export { Component } from "./component";
+export { defineWidget } from "./widget";
+export {
+  Split,
+  Column,
+  Row,
+  SidebarPanel,
+  Scroll,
+  Tab,
+  Tabs,
+  Tree,
+  Table,
+  List,
+  StatusBar,
+  TextDisplay,
+  Text,
+  Button,
+  Toolbar,
+  Form,
+  TextInputField,
+  DropdownField,
+  ToggleField,
+  SliderField,
+  PasswordField,
+  TextAreaField,
+  Checkbox,
+  Slider,
+  Select,
+  Password,
+  TextArea,
+} from "./nodes";
 
 export type { Node, Renderable, ComponentLike, LayoutOptions, SizeSpec } from "./nodes";
 export type {

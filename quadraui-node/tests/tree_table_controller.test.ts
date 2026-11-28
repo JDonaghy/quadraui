@@ -20,7 +20,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { isDeepStrictEqual } = require("node:util");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };
 const key = (k: unknown) => ({ KeyPressed: { key: k, modifiers: NO_MODS, repeat: false } });

@@ -1,13 +1,12 @@
 // Black-box coverage for the published TypeScript surface of the error
 // taxonomy: `package.json`'s `"types"` points at `dist/index.d.ts`, which
-// `build:dist` copies verbatim from `js/index.d.ts`, so that hand-maintained
-// file -- not `js/index.ts` -- is what a TypeScript consumer type-checks
-// against. A runtime error class with no matching `export declare class` is
-// invisible to `vimcode`/`coord-tui`: naming it, or narrowing a `catch` onto
-// it under `--strict`, fails with `TS2305: Module has no exported member`.
+// `build:dist` generates from `js/index.ts`. A runtime error class with no
+// matching `export declare class` is invisible to `vimcode`/`coord-tui`:
+// naming it, or narrowing a `catch` onto it under `--strict`, fails with
+// `TS2305: Module has no exported member`.
 //
-// These tests read both files as text rather than importing them, so they
-// pin the declaration surface even without a built addon.
+// These tests read both files as text rather than importing them. Run with
+// `npm test`, which builds `dist/` first.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -19,7 +18,7 @@ const runtimeSource: string = readFileSync(
   "utf8",
 );
 const typesSource: string = readFileSync(
-  join(__dirname, "..", "js", "index.d.ts"),
+  join(__dirname, "..", "dist", "index.d.ts"),
   "utf8",
 );
 
@@ -27,9 +26,9 @@ function matchAll(source: string, pattern: RegExp): string[][] {
   return [...source.matchAll(pattern)].map((m) => [...m]);
 }
 
-/** Every `exports.<Name>Error = ...` the runtime facade publishes. */
+/** Every `export class <Name>Error` the runtime facade publishes. */
 function runtimeErrorClasses(): string[] {
-  return matchAll(runtimeSource, /^exports\.([A-Z]\w*Error)\s*=\s*\w+;$/gm)
+  return matchAll(runtimeSource, /^export class ([A-Z]\w*Error)\b/gm)
     .map((m) => m[1])
     .sort();
 }
@@ -61,7 +60,7 @@ test("DecodeFailedError is part of the published type surface", () => {
 
 test("declared code tags match the runtime code tags", () => {
   const runtime = codeTags(runtimeSource, " =");
-  const declared = codeTags(typesSource, ":");
+  const declared = codeTags(typesSource, "(?: =|:)");
   assert.deepEqual([...declared].sort(), [...runtime].sort());
   // Guard against both sides matching because neither parsed: the
   // `DecodeError` taxonomy pins six codes.
