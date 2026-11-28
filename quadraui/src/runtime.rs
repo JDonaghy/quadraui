@@ -1378,6 +1378,18 @@ where
     // via `WidgetRouteOutcome::Bubble` — the same channel a hover
     // Enter/Leave repaint already travels back on — so the original,
     // un-routed event still reaches every later step and `app.handle`.
+    // The content the input just brought into view
+    // (`Interactive::data_requested`), asked against a layout of the state
+    // `handle` wrote and delivered after the widget's own event.
+    let requested = if matches!(outcome, Handled::Ignored) {
+        None
+    } else {
+        let after = crate::backend::layout_like_paint(&*backend, node.widget.as_ref(), node.rect);
+        crate::widget_state::with_widget_states(|states| {
+            let state = states.state_for(id, node.widget.as_ref());
+            node.widget.data_requested(state, &*after)
+        })
+    };
     let result = match outcome {
         Handled::Event(ui_event) => {
             WidgetRouteOutcome::Claimed(extra_reaction.merge(app.handle(ui_event, backend)))
@@ -1386,6 +1398,12 @@ where
             WidgetRouteOutcome::Claimed(extra_reaction.merge(EventOutcome::Redraw))
         }
         Handled::Ignored => WidgetRouteOutcome::Bubble(extra_reaction),
+    };
+    let result = match (result, requested) {
+        (WidgetRouteOutcome::Claimed(outcome), Some(requested)) => {
+            WidgetRouteOutcome::Claimed(outcome.merge(app.handle(requested, backend)))
+        }
+        (result, _) => result,
     };
 
     // `EventHost::request_redraw` is a request made *during* `handle`,

@@ -1822,6 +1822,8 @@ fn windowed_data_table(table: &DataTable, window: ItemsWindow, leaf: WindowedLea
     DataTable {
         rows,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         selected_idx: band_relative(table.selected_idx, leaf.band),
         ..table.clone()
     }
@@ -1843,6 +1845,8 @@ fn windowed_list(list: &ListView, window: ItemsWindow, leaf: WindowedLeaf) -> Li
     ListView {
         items,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         selected_idx: band_relative(Some(list.selected_idx), leaf.band).unwrap_or(leaf.band.len),
         ..list.clone()
     }
@@ -1883,6 +1887,8 @@ fn windowed_tree(tree: &TreeView, window: ItemsWindow, leaf: WindowedLeaf) -> Tr
     TreeView {
         rows,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         ..tree.clone()
     }
 }
@@ -1903,6 +1909,7 @@ fn windowed_text_display(td: &TextDisplay, window: ItemsWindow, leaf: WindowedLe
     TextDisplay {
         lines,
         scroll_offset: 0,
+        items_window: None,
         ..td.clone()
     }
 }
