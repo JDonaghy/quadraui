@@ -11,9 +11,10 @@ name: quadraui-py wheels
 #     frameworks every Mac already has -- no bundling problem.
 #   - Windows: `win` (Direct2D/DirectWrite) links against system DLLs every
 #     Windows install already has -- same story.
-#   - Linux: two wheels. The `build` job's `manylinux: auto` wheel carries
-#     no native feature and covers every glibc >= 2.17 host for `run_tui`
-#     and the headless driver. The `linux-gtk` job builds a second,
+#   - Linux: two wheels per architecture (x86_64 and aarch64). The `build`
+#     job's `manylinux: auto` wheel carries no native feature and covers
+#     every glibc >= 2.17 host for `run_tui` and the headless driver. The
+#     `linux-gtk` job builds a second,
 #     `manylinux_2_39` wheel that carries the same GTK-free extension plus
 #     a GTK-enabled variant (`_quadraui_gtk`) linking the system GTK 4
 #     stack dynamically; `python/quadraui/_ext.py` loads the GTK variant
@@ -80,7 +81,7 @@ jobs:
       # job for why a promotion PR must never skip real checks.
       is_bump: ${{ github.base_ref != 'main' && steps.detect.outputs.bump_shape }}
       # The OS legs `build` runs on this PR, as a JSON list. Empty on every
-      # non-PR event, where `build` falls back to all three.
+      # non-PR event, where `build` falls back to all four.
       wheel_os: ${{ steps.legs.outputs.wheel_os }}
     steps:
       - uses: actions/checkout@v4
@@ -99,20 +100,20 @@ jobs:
       # (`quadraui-py`, `quadraui-binding-core`, or this workflow). A
       # `quadraui/src` change is compiled for macOS by the Test stage on a
       # Mac before review, and every `develop`/`main` push and every
-      # promotion PR into `main` still builds all three wheels.
+      # promotion PR into `main` still builds every wheel.
       - name: Pick wheel OS legs
         id: legs
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          all='["ubuntu-latest","macos-latest","windows-latest"]'
+          all='["ubuntu-latest","ubuntu-24.04-arm","macos-latest","windows-latest"]'
           if [ "${{ github.base_ref }}" = main ] \
             || git diff --name-only "$BASE...$HEAD" \
               | grep -qE '^(quadraui-py/|quadraui-binding-core/|\.github/workflows/quadraui-py-wheels\.yml$)'; then
             echo "wheel_os=$all" >> "$GITHUB_OUTPUT"
           else
-            echo 'wheel_os=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
+            echo 'wheel_os=["ubuntu-latest","ubuntu-24.04-arm","windows-latest"]' >> "$GITHUB_OUTPUT"
           fi
 
   build:
@@ -131,7 +132,8 @@ jobs:
         # settings are derived from `matrix.os` in the job `env:` below rather
         # than attached with `include:`, because an `include:` entry for an
         # OS missing from this list would add that OS back as a new leg.
-        os: ${{ fromJSON(needs.bump-shape.outputs.wheel_os || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+        # `ubuntu-24.04-arm` builds the aarch64 Linux wheel natively.
+        os: ${{ fromJSON(needs.bump-shape.outputs.wheel_os || '["ubuntu-latest","ubuntu-24.04-arm","macos-latest","windows-latest"]') }}
     env:
       # `pyo3/extension-module` is listed explicitly in every leg's
       # features (duplicating `pyproject.toml`'s `[tool.maturin] features`)
@@ -142,7 +144,7 @@ jobs:
       # job's Linux wheel has no native feature; the GTK-enabled Linux wheel
       # comes from the `linux-gtk` job below.
       CARGO_FEATURES: ${{ matrix.os == 'macos-latest' && 'pyo3/extension-module,macos' || (matrix.os == 'windows-latest' && 'pyo3/extension-module,win' || 'pyo3/extension-module') }}
-      HAS_RUN_NATIVE: ${{ matrix.os != 'ubuntu-latest' }}
+      HAS_RUN_NATIVE: ${{ !startsWith(matrix.os, 'ubuntu') }}
     runs-on: ${{ matrix.os }}
     # Sized generously for a cold Rust + maturin build; a healthy run is a
     # few minutes once dependencies are warm.
@@ -158,6 +160,7 @@ jobs:
         with:
           working-directory: quadraui-py
           args: --release --out dist --features ${{ env.CARGO_FEATURES }}
+          target: ${{ matrix.os == 'ubuntu-24.04-arm' && 'aarch64' || '' }}
           # `auto` picks the oldest manylinux maturin supports on Linux and
           # is a no-op on macOS/Windows; there is no GTK dependency here to
           # make manylinux's older glibc/toolchain a problem.
@@ -236,23 +239,35 @@ jobs:
     # enables `v4_10` (it calls `GtkFileDialog`/`GtkAlertDialog`), so the
     # build needs GTK >= 4.10 headers and pkg-config metadata, which no
     # manylinux image's package repositories carry. glibc 2.39 is then the
-    # wheel's floor, and it is tagged `manylinux_2_39` to match.
-    name: wheel (linux, gtk)
+    # wheel's floor, and it is tagged `manylinux_2_39` to match. Each
+    # architecture builds natively on its own Ubuntu 24.04 runner.
+    name: wheel (linux, gtk, ${{ matrix.arch }})
     needs: bump-shape
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     env:
+      PLAT: manylinux_2_39_${{ matrix.arch }}
       # The GTK variant's `DT_NEEDED` system libraries. `auditwheel repair`
       # would otherwise copy them (and everything they load) into the
       # wheel; they must come from the host so they match its GTK, display
       # server and fonts. `Check the wheel's layout` fails the job if a new
-      # dependency shows up that is not listed here.
+      # dependency shows up that is not listed here. The aarch64 build also
+      # needs `libcairo-gobject.so.2` directly; excluding a library a build
+      # does not need is a no-op.
       GTK_SYSTEM_LIBS: >-
         libgtk-4.so.1 libgdk_pixbuf-2.0.so.0 libpango-1.0.so.0
         libpangocairo-1.0.so.0 libpangoft2-1.0.so.0 libcairo.so.2
-        libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
-        libfontconfig.so.1
+        libcairo-gobject.so.2 libgobject-2.0.so.0 libglib-2.0.so.0
+        libgio-2.0.so.0 libfontconfig.so.1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -277,20 +292,22 @@ jobs:
             --features pyo3/extension-module
           excludes=""
           for lib in $GTK_SYSTEM_LIBS; do excludes="$excludes --exclude $lib"; done
-          auditwheel repair --plat manylinux_2_39_x86_64 $excludes -w dist raw/*.whl
+          auditwheel repair --plat "$PLAT" $excludes -w dist raw/*.whl
       - name: Check the wheel's layout
         working-directory: quadraui-py
         run: |
           python - <<'PY'
           import glob
+          import os
           import subprocess
           import sys
           import tempfile
           import zipfile
 
-          wheels = glob.glob("dist/*manylinux_2_39_x86_64.whl")
+          plat = os.environ["PLAT"]
+          wheels = glob.glob(f"dist/*{plat}.whl")
           if len(wheels) != 1:
-              sys.exit(f"::error::expected one manylinux_2_39 wheel, found {wheels}")
+              sys.exit(f"::error::expected one {plat} wheel, found {wheels}")
           with zipfile.ZipFile(wheels[0]) as zf:
               names = zf.namelist()
               vendored = [n for n in names if n.startswith("quadraui.libs/")]
@@ -315,7 +332,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: quadraui-py-wheel-linux-gtk
+          name: quadraui-py-wheel-linux-gtk-${{ matrix.arch }}
           path: quadraui-py/dist/*.whl
           if-no-files-found: error
 
@@ -323,10 +340,11 @@ jobs:
     # Installs from a directory holding both Linux wheels into clean distro
     # containers, so pip's own tag choice is under test as well as what the
     # chosen wheel does on that host (see `quadraui-py/ci/linux_wheel_smoke.py`).
+    # aarch64 rows run on an arm runner against that architecture's wheels.
     name: linux smoke (${{ matrix.name }})
     needs: [bump-shape, build, linux-gtk]
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' && needs.build.result == 'success' && needs.linux-gtk.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -334,12 +352,14 @@ jobs:
         include:
           - name: ubuntu-24.04 + gtk4
             image: ubuntu:24.04
+            arch: x86_64
             mode: gtk
             install: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
               python3 python3-venv libgtk-4-1 xvfb dbus fonts-dejavu-core
           - name: fedora-40 + gtk4
             image: fedora:40
+            arch: x86_64
             mode: gtk
             # Fedora 40 is end-of-life: its packages live only on the archive
             # host, which the image's metalinks no longer point at.
@@ -351,22 +371,47 @@ jobs:
               dbus-daemon dejavu-sans-fonts
           - name: fedora-42 + gtk4
             image: fedora:42
+            arch: x86_64
             mode: gtk
             install: >-
               dnf install -y python3 gtk4 xorg-x11-server-Xvfb dbus-daemon
               dejavu-sans-fonts
           - name: ubuntu-24.04 without gtk4
             image: ubuntu:24.04
+            arch: x86_64
             mode: missing-gtk
             install: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
               python3 python3-venv
           - name: fedora-42 without gtk4
             image: fedora:42
+            arch: x86_64
             mode: missing-gtk
             install: dnf install -y python3
           - name: debian-12 (glibc 2.36)
             image: debian:12
+            arch: x86_64
+            mode: tui-only
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv
+          - name: ubuntu-24.04 aarch64 + gtk4
+            image: ubuntu:24.04
+            arch: aarch64
+            mode: gtk
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv libgtk-4-1 xvfb dbus fonts-dejavu-core
+          - name: ubuntu-24.04 aarch64 without gtk4
+            image: ubuntu:24.04
+            arch: aarch64
+            mode: missing-gtk
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv
+          - name: debian-12 aarch64 (glibc 2.36)
+            image: debian:12
+            arch: aarch64
             mode: tui-only
             install: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
@@ -378,11 +423,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: quadraui-py-wheel-ubuntu-latest
+          name: quadraui-py-wheel-${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
           path: wheels
       - uses: actions/download-artifact@v4
         with:
-          name: quadraui-py-wheel-linux-gtk
+          name: quadraui-py-wheel-linux-gtk-${{ matrix.arch }}
           path: wheels
       - name: Install and check
         shell: bash

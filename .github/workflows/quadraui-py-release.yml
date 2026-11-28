@@ -46,6 +46,7 @@ jobs:
       # on `ubuntu-latest`) rather than installing a TOML dependency just
       # for this one field.
       - name: Read pyproject.toml version and compare against the tag
+        id: read
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -99,10 +100,10 @@ jobs:
     name: Install the built wheel into a clean venv and verify it
     # `quadraui-py-wheels.yml`'s own build job already imports `quadraui`
     # right after building each OS's wheel, so a wheel that can't load at
-    # all never gets this far. This job runs against both Linux wheels --
-    # the GTK-free `manylinux_2_17` one and the `manylinux_2_39` GTK one,
-    # which pip installs on every glibc 2.39+ x86_64 host -- and checks
-    # the three things that job doesn't: the
+    # all never gets this far. This job runs against every Linux wheel --
+    # per architecture, the GTK-free `manylinux_2_17` one and the
+    # `manylinux_2_39` GTK one, which pip installs on every glibc 2.39+
+    # host -- and checks the three things that job doesn't: the
     # `quadraui.asyncio` submodule actually resolves (not just the `aio`
     # attribute alias -- see `python/quadraui/__init__.py`'s own comment
     # on why those are different import paths), `AGENTS.md` made it into
@@ -112,10 +113,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        artifact: [quadraui-py-wheel-ubuntu-latest, quadraui-py-wheel-linux-gtk]
-    # ubuntu-24.04 ships glibc 2.39, the floor the GTK wheel's
-    # `manylinux_2_39` tag asks for.
-    runs-on: ubuntu-24.04
+        # Ubuntu 24.04 ships glibc 2.39, the floor the GTK wheels'
+        # `manylinux_2_39` tag asks for.
+        include:
+          - artifact: quadraui-py-wheel-ubuntu-latest
+            runner: ubuntu-24.04
+          - artifact: quadraui-py-wheel-linux-gtk-x86_64
+            runner: ubuntu-24.04
+          - artifact: quadraui-py-wheel-ubuntu-24.04-arm
+            runner: ubuntu-24.04-arm
+          - artifact: quadraui-py-wheel-linux-gtk-aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/setup-python@v5

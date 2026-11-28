@@ -101,7 +101,7 @@ Change the last line's `.run_tui()` to `.run_native(title="Counter")`.
 
 - **macOS and Windows:** that is all. The wheels from PyPI include the
   native backend.
-- **Linux (x86_64, glibc 2.39+: Ubuntu 24.04+, Fedora 40+, Debian 13+):**
+- **Linux (x86_64 or aarch64, glibc 2.39+: Ubuntu 24.04+, Fedora 40+, Debian 13+):**
   the PyPI wheel uses the system GTK 4 (4.10 or newer). Install it once:
 
   ```sh
@@ -109,8 +109,8 @@ Change the last line's `.run_tui()` to `.run_native(title="Counter")`.
   sudo dnf install gtk4          # Fedora
   ```
 
-- **Other Linux hosts** (aarch64, which has no prebuilt wheel, or an older
-  glibc such as Ubuntu 22.04) get a terminal-only build. Build from source with the GTK backend instead
+- **Other Linux hosts** (an older glibc such as Ubuntu 22.04, or another
+  architecture) get a terminal-only build. Build from source with the GTK backend instead
   (needs `libgtk-4-dev` or `gtk4-devel`, GTK 4.10 or newer, and a Rust
   toolchain):
 

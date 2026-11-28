@@ -8,7 +8,7 @@ depending on which feature the extension was built with (`gtk` wins over
 `macos`, and both win over `win`, if more than one is enabled), and this
 demo's `title`-only call works unchanged on every backend. Requires the
 extension to be built with the `gtk`, `macos`, or `win` feature. The
-PyPI wheels already are: on Linux, the x86_64 glibc-2.39 wheel plus the
+PyPI wheels already are: on Linux, the x86_64/aarch64 glibc-2.39 wheel plus the
 system GTK 4.10+ is enough. For a source build:
 
     maturin develop --features gtk     # Linux
