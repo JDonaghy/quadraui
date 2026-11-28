@@ -132,8 +132,16 @@ impl Demo for PaletteDemo {
         let bar_rect = Rect::new(area.x, area.y + area.height - bar_h, area.width, bar_h);
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
 
+        // The picker's state lives on this demo, not in the runtime's
+        // store, so it is lent to the store for the paint, which draws the
+        // caret from it.
         let popup_rect = Self::popup_rect(variant, area, backend);
+        let id = self.picker.id;
+        quadraui::with_widget_states(|states| {
+            states.insert(id, Box::new(self.picker_state.clone()))
+        });
         let _ = backend.draw_dyn(popup_rect, &self.picker, &());
+        quadraui::with_widget_states(|states| states.remove(&id));
     }
 
     fn handle(
@@ -179,11 +187,6 @@ impl Demo for PaletteDemo {
         };
         if let Handled::Event(action) = &ev {
             self.picker.apply(action, visible_rows);
-        }
-        // A caret-only key (Left, Home, ...) answers `Consumed` yet moves
-        // the live caret, so the painted caret follows every handled key.
-        if !matches!(ev, Handled::Ignored) {
-            self.picker.sync_caret(&self.picker_state);
         }
 
         match ev {

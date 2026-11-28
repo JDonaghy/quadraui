@@ -193,14 +193,6 @@ impl DualModePalette {
         }
     }
 
-    /// Move [`Self::query_cursor`] to `state`'s live caret — for a host
-    /// that keeps the palette's state itself
-    /// ([`crate::compose::drive_ui_event`]) and so paints without the
-    /// runtime handing that state to the paint.
-    pub fn sync_caret(&mut self, state: &DualModePaletteState) {
-        self.query_cursor = self.caret(Some(&state.palette)).min(self.query.len());
-    }
-
     /// The other mode.
     fn toggled(&self) -> PaletteMode {
         match self.mode {
@@ -461,9 +453,6 @@ mod tests {
         ) -> Handled<DualModePaletteAction> {
             if let Handled::Event(action) = &handled {
                 self.palette.apply(action, VISIBLE_ROWS);
-            }
-            if !matches!(handled, Handled::Ignored) {
-                self.palette.sync_caret(&self.state);
             }
             match handled {
                 Handled::Event(DualModePaletteAction::SelectionChanged { .. }) => Handled::Consumed,
@@ -812,10 +801,14 @@ mod tests {
         for ch in ['a', 'b', 'c'] {
             let _ = ctrl.key(&key_ev(Key::Char(ch)));
         }
-        assert_eq!(ctrl.palette.query_cursor, 3);
+        let painted = |ctrl: &Host| {
+            let caret = ctrl.palette.caret(Some(&ctrl.state.palette));
+            ctrl.palette.palette(caret).query_cursor
+        };
+        assert_eq!(painted(&ctrl), 3);
         let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Left)));
         assert_eq!(ev, Handled::Consumed);
-        assert_eq!(ctrl.palette.query_cursor, 2);
+        assert_eq!(painted(&ctrl), 2);
     }
 
     #[test]

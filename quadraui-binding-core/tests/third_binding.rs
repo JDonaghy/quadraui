@@ -513,6 +513,35 @@ fn a_stateful_kind_keeps_its_state_across_freshly_decoded_frames() {
     );
 }
 
+/// A host reads a widget's stored `Interactive::State` through the
+/// engine, keyed by the widget's id: after `End`, the text input's state
+/// holds the caret at the end of its value.
+#[test]
+fn a_host_reads_a_widgets_stored_state_through_the_engine() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "name", "text_input": {"id": "name", "lines": ["hello"], "has_focus": true}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 24, 8);
+    driver.render();
+    let (x, y) = driver.find("hello").expect("the input paints its value");
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::End);
+    driver.render();
+
+    let id = WidgetId::new("name");
+    let caret = driver.app().engine.with_widget_states(|states| {
+        states
+            .get(&id)
+            .and_then(|state| {
+                state.downcast_ref::<quadraui::primitives::text_input::TextInputState>()
+            })
+            .and_then(|state| state.caret)
+    });
+    assert_eq!(caret, Some((0, 5)));
+}
+
 /// The engine's widget state is installed only for the paint pass: the
 /// thread's own store is back in place once it returns.
 #[test]
