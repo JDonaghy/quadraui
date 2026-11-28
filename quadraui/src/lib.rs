@@ -456,12 +456,10 @@ pub mod run_error;
 pub mod paint_surface;
 
 // ── CellSurface ─────────────────────────────────────────────────────────
-// `PaintSurface`'s cell-grid counterpart — the ~9-verb drawing seam
-// underneath the TUI backend, formalising the informal `set_cell`/
-// `set_cell_wide`/`draw_styled_text` API `tui/mod.rs` already has.
-// Compiled unconditionally, same rationale as `paint_surface` above:
-// every type it trades in is already feature-independent, and only its
-// one `ratatui`-naming method is gated on `feature = "tui"`.
+// `PaintSurface`'s cell-grid counterpart — the drawing seam every cell
+// painter writes through. Compiled unconditionally, same rationale as
+// `paint_surface` above: every type it trades in is already
+// feature-independent.
 pub mod cell_surface;
 
 // ── Primitive ──────────────────────────────────────────────────────────────
@@ -603,6 +601,11 @@ mod text_selection;
 ))]
 mod backend_core;
 
+/// Routes an assistive-technology action straight to a live
+/// `Surface::Widget`'s `Interactive::handle`, so a widget defined outside
+/// this crate answers assistive technology through the same `handle` its
+/// mouse and keyboard input reach.
+pub use a11y::route_widget_action;
 pub use a11y::{
     backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, markdown_a11y_children, A11yAction,
     A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,
@@ -711,10 +714,7 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
     ListViewLayout, ListViewSubPart, VisibleListItem,
 };
-// `ListView`'s `Primitive::Layout` — defined on every feature set the
-// pilot `impl Primitive for ListView` itself is (see that impl's own
-// `cfg`): the three pixel backends via `native_surface_paint`, plus
-// `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
+// `ListView`'s `Primitive::Layout`.
 pub use primitives::checkbox::{Checkbox, CheckboxAction};
 #[cfg(any(
     feature = "gtk",
@@ -922,7 +922,9 @@ pub use paint_surface::{AlphaSheet, PaintSurface, PathVerb, TextRunStyle};
 // `CursorShape`/`CursorPos` are above (`EditorCursorShape`,
 // `EditorCursorPos`): `primitives::cell_grid` already has an unrelated,
 // unaliased `CellStyle` (spreadsheet-cell formatting) at this crate root.
-pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
+pub use cell_surface::{
+    BorderSet, CellModifier, CellStyle as CellSurfaceStyle, CellSurface, CursorShape,
+};
 // The `Primitive` trait — see that module's doc.
 pub use primitive::{LayoutCtx, PaintEnv, Placed, Primitive};
 // The behaviour half of the widget contract — see `interactive`'s module
@@ -990,11 +992,11 @@ pub use compose::{
     BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
     ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
     FilePickerMode, FormController, FormControllerAction, FormDialogAction, GroupLayout, Handled,
-    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef,
-    NavigationMode, PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellEvent,
-    ShellLayout, ShellPosition, ShellRegion, ShellView, ShellViewLayout, ShellViewState, Sidebar,
-    SidebarAction, SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome,
-    SidebarSection, SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
+    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, MenuDef, NavigationMode,
+    PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout,
+    ShellPosition, ShellRegion, ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction,
+    SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
+    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
     TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
     ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc,
     WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,

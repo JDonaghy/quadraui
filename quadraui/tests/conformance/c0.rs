@@ -30,10 +30,7 @@
 //! — is exempt only by being named, with its reason, in
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
-use quadraui::{
-    AppLogic, Backend, Decoration, ListItem, ListView, ProgressBar, Reaction, Rect, ScrollAxis,
-    Scrollbar, Spinner, StyledText, UiEvent, WidgetId,
-};
+use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent};
 
 use super::runner::{DriverFactory, DynDriver};
 
@@ -42,10 +39,6 @@ use super::runner::{DriverFactory, DynDriver};
 /// be reporting the fixture, not the backend.
 const VIEWPORT: quadraui::testing::LogicalViewport =
     quadraui::testing::LogicalViewport::new(80, 24);
-
-fn id(suffix: &str) -> WidgetId {
-    WidgetId::new(format!("c0:{suffix}"))
-}
 
 /// One primitive's C0 case.
 pub struct Case {
@@ -68,116 +61,8 @@ pub struct Case {
 /// ever stops being true in either direction. Adding a primitive to the
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
-    Case {
-        method: "draw_list",
-        needle: Some("c0list"),
-        paint: |b, area| {
-            let list = ListView {
-                id: id("list"),
-                title: None,
-                items: vec![ListItem {
-                    text: StyledText::plain("c0list"),
-                    icon: None,
-                    detail: None,
-                    decoration: Decoration::Normal,
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                has_focus: false,
-                bordered: false,
-                h_scroll: 0,
-                max_content_width: None,
-                show_v_scrollbar: false,
-                striped: false,
-            };
-            #[allow(deprecated)]
-            b.draw_list(area, &list);
-        },
-    },
-    // `draw_list_with_state` is an additive trait default that forwards to
-    // `draw_list`, ignoring both indices, until a backend overrides it to
-    // tint hover/pressed. This row proves the default reaches a rasteriser
-    // and still paints observable content on every backend.
-    Case {
-        method: "draw_list_with_state",
-        needle: Some("c0listhv"),
-        paint: |b, area| {
-            let list = ListView {
-                id: id("list-hover"),
-                title: None,
-                items: vec![ListItem {
-                    text: StyledText::plain("c0listhv"),
-                    icon: None,
-                    detail: None,
-                    decoration: Decoration::Normal,
-                }],
-                selected_idx: usize::MAX,
-                scroll_offset: 0,
-                has_focus: false,
-                bordered: false,
-                h_scroll: 0,
-                max_content_width: None,
-                show_v_scrollbar: false,
-                striped: false,
-            };
-            b.draw_list_with_state(
-                area,
-                &list,
-                &quadraui::ListPaintState::default().with_hovered_idx(Some(0)),
-                false,
-            );
-        },
-    },
-    Case {
-        method: "draw_spinner",
-        needle: Some("c0spin"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let spinner = Spinner {
-                id: id("spinner"),
-                label: "c0spin".to_string(),
-                frame_idx: 0,
-                accent: None,
-            };
-            let _ = b.draw_spinner(Rect::new(0.0, 0.0, cw * 20.0, lh), &spinner);
-            let _ = area;
-        },
-    },
-    Case {
-        method: "draw_progress",
-        needle: Some("c0prog"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let bar = ProgressBar {
-                id: id("progress"),
-                label: "c0prog".to_string(),
-                value: Some(0.5),
-                frame_idx: 0,
-                cancellable: false,
-                accent: None,
-            };
-            let _ = b.draw_progress(Rect::new(0.0, 0.0, cw * 30.0, lh * 2.0), &bar);
-            let _ = area;
-        },
-    },
     // ── Chrome-only primitives — no text, so the only way the frame can
     // report them at all is a registered zone (contract §5b's sharp end).
-    Case {
-        method: "draw_scrollbar",
-        needle: None,
-        paint: |b, area| {
-            let cw = b.char_width();
-            let track = Rect::new(area.width - cw, 0.0, cw, area.height);
-            let mut sb = Scrollbar::default();
-            sb.id = id("scrollbar");
-            sb.axis = ScrollAxis::Vertical;
-            sb.track = track;
-            sb.thumb_len = area.height / 2.0;
-            b.draw_scrollbar(track, &sb);
-        },
-    },
     Case {
         method: "draw_focus_ring",
         needle: None,
@@ -357,7 +242,7 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 5,
+            !trait_methods.is_empty(),
             "sanity check failed: expected many `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",

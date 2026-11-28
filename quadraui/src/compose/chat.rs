@@ -1389,12 +1389,12 @@ impl Chat {
         layout: &ChatLayout,
         cx: &mut EventCx,
     ) -> Handled<ChatEvent> {
-        let (list, list_layout) = &layout.transcript;
+        let (list, transcript_layout) = &layout.transcript;
         let rect = local_rect(layout, layout.zones.transcript);
         let routed = widget_host::child_event(event, Point::new(rect.x, rect.y), None);
         let mut host = ChildHost::new(cx, Some(SUB_TRANSCRIPT));
         let mut list_cx = EventCx::new(list.id, &mut host);
-        match Interactive::handle(list, &mut (), &routed, list_layout, &mut list_cx) {
+        match Interactive::handle(list, &mut (), &routed, transcript_layout, &mut list_cx) {
             Handled::Event(MessageListEvent::Scrolled {
                 scroll_top,
                 at_bottom,
@@ -1868,9 +1868,8 @@ mod tests {
     use super::*;
     use crate::testing::RecordingBackend;
 
-    // Tests use `RecordingBackend` for its `draw_text_input`/`text_input_layout`
-    // and `draw_spinner`/`spinner_layout` implementations, which return real layouts
-    // rather than panicking, as required by click-routing and render tests.
+    // Tests use `RecordingBackend`, which lays widgets out without a real
+    // surface, as click-routing and render tests require.
 
     fn make_rect() -> Rect {
         Rect::new(0.0, 0.0, 80.0, 24.0)

@@ -307,7 +307,7 @@ impl GalleryApp {
     /// Build the sidebar's [`ListView`] for `rows` (the demo indices in
     /// the active group, in display order) — shared by `render_content`
     /// (paint) and `handle_inner` (click hit-test via
-    /// [`Backend::list_layout`]) so the two can never disagree about
+    /// [`DrawsPrimitives::layout_primitive`]) so the two can never disagree about
     /// which row a click landed on.
     fn sidebar_list(&self, rows: &[usize]) -> ListView {
         // `self.selected` is only `None` when the active group is empty,
@@ -499,10 +499,10 @@ impl ShellApp for GalleryApp {
                     show_v_scrollbar: false,
                     striped: false,
                 };
-                backend.draw_list(sb, &list);
+                let _ = backend.draw_dyn(sb, &list, &());
             } else {
                 let list = self.sidebar_list(&rows);
-                backend.draw_list(sb, &list);
+                let _ = backend.draw_dyn(sb, &list, &());
 
                 // Register each visible row's real painted bounds under
                 // its own `demo_zone_id` — `ListItem` carries no
@@ -511,8 +511,8 @@ impl ShellApp for GalleryApp {
                 // zone `quadraui::testing::ConformanceDriver::inventory()`
                 // reports, on every backend.
                 let local = Rect::new(0.0, 0.0, sb.width, sb.height);
-                let list_layout = backend.list_layout(local, &list);
-                for visible in &list_layout.visible_items {
+                let rows_layout = backend.layout_primitive(local, &list).layout;
+                for visible in &rows_layout.visible_items {
                     if let Some(&idx) = rows.get(visible.item_idx) {
                         let bounds = Rect::new(
                             sb.x + visible.bounds.x,
@@ -777,9 +777,9 @@ impl GalleryApp {
                     if !rows.is_empty() {
                         let list = self.sidebar_list(&rows);
                         let local = Rect::new(0.0, 0.0, sb.width, sb.height);
-                        #[allow(deprecated)]
                         let hit = backend
-                            .list_layout(local, &list)
+                            .layout_primitive(local, &list)
+                            .layout
                             .hit_test(position.x - sb.x, position.y - sb.y);
                         if let ListViewHit::Item(pos) = hit {
                             if let Some(&idx) = rows.get(pos) {

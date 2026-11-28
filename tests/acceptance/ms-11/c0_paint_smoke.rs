@@ -229,7 +229,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_list",
+            method: "draw_dyn(ListView)",
             needle: Some("c0list"),
             paint: |b, area| {
                 let list = ListView {
@@ -250,7 +250,7 @@ mod ms11_492_c0_paint_smoke {
                     show_v_scrollbar: false,
                     striped: false,
                 };
-                b.draw_list(area, &list);
+                let _ = b.draw_dyn(area, &list, &());
             },
         },
         PrimitiveCase {
@@ -346,7 +346,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_spinner",
+            method: "draw_dyn(Spinner)",
             needle: Some("c0spin"),
             paint: |b, area| {
                 let cw = b.char_width();
@@ -357,12 +357,12 @@ mod ms11_492_c0_paint_smoke {
                     frame_idx: 0,
                     accent: None,
                 };
-                let _ = b.draw_spinner(Rect::new(0.0, 0.0, cw * 20.0, lh), &spinner);
+                let _ = b.draw_dyn(Rect::new(0.0, 0.0, cw * 20.0, lh), &spinner, &());
                 let _ = area;
             },
         },
         PrimitiveCase {
-            method: "draw_progress",
+            method: "draw_dyn(ProgressBar)",
             needle: Some("c0prog"),
             paint: |b, area| {
                 let cw = b.char_width();
@@ -375,7 +375,7 @@ mod ms11_492_c0_paint_smoke {
                     cancellable: false,
                     accent: None,
                 };
-                let _ = b.draw_progress(Rect::new(0.0, 0.0, cw * 30.0, lh * 2.0), &bar);
+                let _ = b.draw_dyn(Rect::new(0.0, 0.0, cw * 30.0, lh * 2.0), &bar, &());
                 let _ = area;
             },
         },
@@ -387,7 +387,7 @@ mod ms11_492_c0_paint_smoke {
         // cannot see them is a C0 tier that cannot tell "drew the
         // scrollbar" from "took the no-op default".
         PrimitiveCase {
-            method: "draw_scrollbar",
+            method: "draw_dyn(Scrollbar)",
             needle: None,
             paint: |b, area| {
                 let cw = b.char_width();
@@ -401,7 +401,8 @@ mod ms11_492_c0_paint_smoke {
                     hovered: false,
                     dragging: false,
                 };
-                b.draw_scrollbar(track, &sb);
+                let _ = b.draw_dyn(track, &sb, &());
+                b.register_zone(id("scrollbar"), track);
             },
         },
         PrimitiveCase {

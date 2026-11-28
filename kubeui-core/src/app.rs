@@ -237,8 +237,7 @@ impl AppLogic for KubeApp {
         // here, not an explicit per-call argument.
         backend.set_theme(self.theme);
         let list = build_list(&self.state, &self.theme);
-        #[allow(deprecated)]
-        backend.draw_list(list_rect, &list);
+        backend.draw_dyn(list_rect, &list, &());
 
         let yaml = build_yaml_view(&self.state, &self.theme);
         backend.set_theme(Self::yaml_pane_theme(&self.theme));

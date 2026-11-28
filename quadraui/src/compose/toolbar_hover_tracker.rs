@@ -3,17 +3,10 @@
 //! needs, without the host hand-rolling screen-space-to-layout
 //! conversion itself.
 //!
-//! Every tracker here ([`ToolbarHoverTracker`], [`ListHoverTracker`])
-//! is a thin, item-typed wrapper over the same
+//! [`ToolbarHoverTracker`] is a thin, item-typed wrapper over the
 //! private [`HoverCore`] engine: feed it a layout's `hit_test` result
 //! on every mouse move, and it tells you whether the hovered item
-//! changed (so you know to redraw) and what it is now. The item type
-//! differs per primitive — [`crate::Toolbar`] buttons have a stable
-//! [`WidgetId`], but [`crate::ListView`] rows don't
-//! (see `interaction.rs`'s module doc for why [`crate::InteractionState`]
-//! stays `WidgetId`-keyed and the list tracker uses a row index
-//! instead) — so each wrapper picks the item type its primitive's
-//! `*Hit` enum actually produces.
+//! changed (so you know to redraw) and what it is now.
 //!
 //! ## Usage
 //!
@@ -42,7 +35,6 @@
 //! }
 //! ```
 
-use crate::primitives::list::{ListViewHit, ListViewLayout};
 use crate::primitives::toolbar::ToolbarLayout;
 use crate::types::WidgetId;
 
@@ -140,52 +132,6 @@ impl ToolbarHoverTracker {
     }
 }
 
-/// Tracks the [`crate::ListView`] row index currently under the mouse.
-///
-/// Row-index-keyed rather than [`WidgetId`]-keyed — a `ListItem` has no
-/// stable id of its own (see `interaction.rs`'s module doc) — so this
-/// is the dedicated tracker [`crate::Backend::draw_list_with_state`]
-/// hosts feed instead of an [`crate::InteractionState`].
-#[derive(Debug, Default, Clone)]
-pub struct ListHoverTracker {
-    core: HoverCore<usize>,
-}
-
-impl ListHoverTracker {
-    /// Construct an empty tracker. No row is hovered initially.
-    pub fn new() -> Self {
-        Self {
-            core: HoverCore::new(),
-        }
-    }
-
-    /// Update the hover state from a mouse position + the current
-    /// list layout. Returns `true` if the hovered row changed (caller
-    /// should redraw), `false` if it stayed the same. Hovering the
-    /// title row or empty space below the last item clears the hover,
-    /// same as the cursor leaving the list entirely.
-    pub fn update(&mut self, layout: &ListViewLayout, x: f32, y: f32) -> bool {
-        let new_hover = match layout.hit_test(x, y) {
-            ListViewHit::Item(idx) => Some(idx),
-            ListViewHit::Title | ListViewHit::Empty => None,
-        };
-        self.core.set(new_hover)
-    }
-
-    /// Clear the hover state — call from `MouseLeft` handlers so the
-    /// highlight doesn't stick after the cursor has left the list.
-    pub fn clear(&mut self) -> bool {
-        self.core.clear()
-    }
-
-    /// The currently hovered item index, ready to pass straight to
-    /// `ListPaintState::with_hovered_idx` for
-    /// `Backend::draw_list_with_state`.
-    pub fn hovered_idx(&self) -> Option<usize> {
-        self.core.current().copied()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,76 +206,6 @@ mod tests {
         assert!(t.clear());
         assert!(t.hovered_id().is_none());
         // Clearing an already-empty tracker is a no-op (returns false).
-        assert!(!t.clear());
-    }
-}
-
-#[cfg(test)]
-mod list_tests {
-    use super::*;
-    use crate::primitives::list::{ListItem, ListItemMeasure, ListView};
-    use crate::types::{Decoration, StyledText};
-
-    fn item(label: &str) -> ListItem {
-        ListItem {
-            text: StyledText::plain(label.to_string()),
-            icon: None,
-            detail: None,
-            decoration: Decoration::Normal,
-        }
-    }
-
-    fn sample_layout() -> ListViewLayout {
-        let list = ListView {
-            id: WidgetId::new("l"),
-            title: None,
-            items: vec![item("a"), item("b"), item("c")],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        list.layout(40.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0))
-    }
-
-    #[test]
-    fn update_records_row_under_cursor() {
-        let layout = sample_layout();
-        let mut t = ListHoverTracker::new();
-        assert!(t.update(&layout, 1.0, 1.0));
-        assert_eq!(t.hovered_idx(), Some(1));
-    }
-
-    #[test]
-    fn update_returns_false_when_unchanged() {
-        let layout = sample_layout();
-        let mut t = ListHoverTracker::new();
-        assert!(t.update(&layout, 1.0, 0.0));
-        assert!(!t.update(&layout, 2.0, 0.0));
-    }
-
-    #[test]
-    fn update_clears_when_cursor_leaves_rows() {
-        let layout = sample_layout();
-        let mut t = ListHoverTracker::new();
-        assert!(t.update(&layout, 1.0, 0.0));
-        // Below the last row (3 rows of height 1.0 inside a 10.0-tall
-        // viewport) is the empty tail.
-        assert!(t.update(&layout, 1.0, 9.0));
-        assert!(t.hovered_idx().is_none());
-    }
-
-    #[test]
-    fn clear_resets_hover_state() {
-        let layout = sample_layout();
-        let mut t = ListHoverTracker::new();
-        t.update(&layout, 1.0, 0.0);
-        assert!(t.clear());
-        assert!(t.hovered_idx().is_none());
         assert!(!t.clear());
     }
 }

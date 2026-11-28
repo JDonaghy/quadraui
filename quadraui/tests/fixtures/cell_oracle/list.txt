@@ -1,0 +1,174 @@
+== plain
+area 0 0 24 10
+| Title 中␀               |
+|  alpha                 |
+|▶ beta                  |
+|  gamma                 |
+|   red on-green tail t…|
+|  中␀ 中␀文␀中␀文␀中␀文␀中␀文␀中␀…|
+|  header row            |
+|  warn                  |
+|  mod                   |
+|  filler 0              |
+0 0..24 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..24 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+3 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 0..4 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 4..8 fg=Rgb(200, 30, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 8..16 fg=Rgb(120, 122, 135) bg=Rgb(10, 60, 10) mod=NONE ul=Reset
+4 16..24 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 0..24 fg=Rgb(220, 80, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+6 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+7 0..24 fg=Rgb(220, 180, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+8 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+9 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== clip_fallback
+area 0 0 26 12
+|                          |
+|  Title 中␀                |
+|   alpha                  |
+| ▶ beta                   |
+|   gamma                  |
+|   F red on-green tail th |
+|   * 中␀文␀中␀文␀中␀文␀中␀文␀中␀文␀ |
+|   header row             |
+|   warn                   |
+|   mod                    |
+|   filler 0               |
+|                          |
+0 0..26 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+1 1..25 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+2 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+2 1..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+3 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+3 1..25 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+3 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+4 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+4 1..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+5 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+5 1..5 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 5..9 fg=Rgb(200, 30, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 9..17 fg=Rgb(120, 122, 135) bg=Rgb(10, 60, 10) mod=NONE ul=Reset
+5 17..25 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+6 1..25 fg=Rgb(220, 80, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+6 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+7 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+7 1..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+7 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+8 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+8 1..25 fg=Rgb(220, 180, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+8 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+9 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+9 1..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+9 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+10 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+10 1..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+10 25..26 fg=Reset bg=Reset mod=NONE ul=Reset
+11 0..26 fg=Reset bg=Reset mod=NONE ul=Reset
+== bordered_striped
+area 0 0 22 9
+|╭─ Title 中␀ ─────────╮|
+|│  alpha            █│|
+|│▶ beta             █│|
+|│  gamma            █│|
+|│   red on-green t…█│|
+|│  中␀ 中␀文␀中␀文␀中␀文␀… ░│|
+|│  header row       ░│|
+|│  warn             ░│|
+|╰────────────────────╯|
+0 0..2 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+0 2..12 fg=Rgb(180, 200, 230) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+0 12..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+1 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+1 1..20 fg=Rgb(220, 220, 220) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+1 20..21 fg=Rgb(110, 115, 130) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+1 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+2 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+2 1..20 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+2 20..21 fg=Rgb(110, 115, 130) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+2 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+3 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+3 1..20 fg=Rgb(220, 220, 220) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+3 20..21 fg=Rgb(110, 115, 130) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+3 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+4 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+4 1..5 fg=Rgb(120, 122, 135) bg=Rgb(36, 40, 51) mod=NONE ul=Reset
+4 5..9 fg=Rgb(200, 30, 30) bg=Rgb(36, 40, 51) mod=NONE ul=Reset
+4 9..17 fg=Rgb(120, 122, 135) bg=Rgb(10, 60, 10) mod=NONE ul=Reset
+4 17..20 fg=Rgb(120, 122, 135) bg=Rgb(36, 40, 51) mod=NONE ul=Reset
+4 20..21 fg=Rgb(110, 115, 130) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+4 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+5 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+5 1..20 fg=Rgb(220, 80, 80) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+5 20..21 fg=Rgb(40, 44, 56) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+5 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+6 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+6 1..20 fg=Rgb(220, 220, 220) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+6 20..21 fg=Rgb(40, 44, 56) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+6 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+7 0..1 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+7 1..20 fg=Rgb(220, 180, 80) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+7 20..21 fg=Rgb(40, 44, 56) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+7 21..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+8 0..22 fg=Rgb(120, 160, 200) bg=Rgb(28, 32, 44) mod=NONE ul=Reset
+== hscrolled
+area 0 0 18 8
+|lpha              |
+|eta               |
+|amma              |
+| red on-green tai…|
+|  中␀文␀中␀文␀中␀文␀中␀… |
+|eader row         |
+|arn               |
+|▄▄▄▄▄▄▁▁▁▁▁▁▁▁▁▁▁▁|
+0 0..18 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 0..18 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..18 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 0..1 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 1..5 fg=Rgb(200, 30, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 5..13 fg=Rgb(120, 122, 135) bg=Rgb(10, 60, 10) mod=NONE ul=Reset
+3 13..18 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 0..18 fg=Rgb(220, 80, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 0..18 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+6 0..18 fg=Rgb(220, 180, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+7 0..6 fg=Rgb(110, 115, 130) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+7 6..18 fg=Rgb(40, 44, 56) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== offset_scroll_px
+area 0 0 20 6
+| Title 中␀           |
+|  gamma            █|
+|  F red on-green t…█|
+|  * 中␀文␀中␀文␀中␀文␀中␀…░|
+|  header row       ░|
+|  warn             ░|
+0 0..20 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 0..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 19..20 fg=Rgb(110, 115, 130) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..4 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 4..8 fg=Rgb(200, 30, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 8..16 fg=Rgb(120, 122, 135) bg=Rgb(10, 60, 10) mod=NONE ul=Reset
+2 16..19 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 19..20 fg=Rgb(110, 115, 130) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 0..19 fg=Rgb(220, 80, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 19..20 fg=Rgb(40, 44, 56) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 0..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 19..20 fg=Rgb(40, 44, 56) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 0..19 fg=Rgb(220, 180, 80) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 19..20 fg=Rgb(40, 44, 56) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== narrow
+area 0 0 3 4
+| Ti|
+|  …|
+|▶ …|
+|  …|
+0 0..3 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 0..3 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..3 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+3 0..3 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset

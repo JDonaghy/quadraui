@@ -1,67 +1,61 @@
-//! The [`Primitive`] trait — a single `layout()` + `paint()` pair a
-//! widget outside this crate implements to compose with every pixel
-//! [`crate::Backend`] through one generic entry point,
-//! [`crate::DrawsPrimitives::draw_primitive`], instead of needing a bespoke
-//! `draw_*`/`*_layout` pair added to the sealed [`crate::Backend`]
-//! trait itself.
+//! The widget contract's paint half: [`Primitive`] (layout + paint) and
+//! the type-erased [`DynWidget`] every backend paints through.
 //!
-//! # Why this exists
+//! # The contract
 //!
-//! Every built-in primitive (`ListView`, `TreeView`, `DataTable`, …)
-//! gets its own pair of [`crate::Backend`] methods — `draw_list` /
-//! `list_layout`, and so on — because
-//! `Backend` is sealed and each pair is a deliberate, versioned
-//! addition reviewed per primitive (see `docs/decisions/
-//! BACKEND_TRAIT_PROPOSAL.md` §4). A consumer that wants to paint its
-//! own widget through the same pixel backends GTK/macOS/Win already
-//! implement has had no portable way to do that without one of those
-//! three backends growing a method for it.
+//! A widget is a plain descriptor type that implements two traits:
 //!
-//! `Primitive` is that seam, one level up from [`crate::PaintSurface`]
-//! ("the unsealed paint seam"): a widget built against `Primitive`
-//! composes `layout()` + `paint()` the same way every built-in
-//! primitive's `native_surface_paint::paint` helper already does
-//! internally, and [`crate::DrawsPrimitives::draw_primitive`]'s provided
-//! default runs both against [`crate::Backend::paint_surface`] for any
-//! backend that implements [`crate::PaintSurface`] (today: GTK, macOS,
-//! Win) — zero new `Backend` methods, zero per-backend opt-in.
+//! - [`Primitive`] — `layout()` resolves every geometry decision for a
+//!   rect up front and returns a `Self::Layout` the painters read
+//!   verbatim; `paint()` draws that layout onto a pixel
+//!   [`crate::PaintSurface`], and `paint_cells()` onto a terminal
+//!   [`crate::CellSurface`].
+//! - [`crate::interactive::Interactive`] — event handling: focus, keys,
+//!   pointer, with its own `State` for gesture data the descriptor does
+//!   not carry.
 //!
-//! # Design — `layout()` bakes in what `paint()` needs
+//! Every `Primitive + Interactive` type is a [`DynWidget`] through a
+//! blanket impl, and [`crate::DrawsPrimitives::draw_dyn`] is the one
+//! entry point every backend paints a widget through: it lays the widget
+//! out against the backend's metrics ([`LayoutCtx`]), paints it on
+//! whichever surface the backend offers, and records the painted layout
+//! so events can be routed back to it. [`crate::frame::Surface::Widget`]
+//! is the declarative form of the same call. There is no per-widget
+//! method on [`crate::Backend`]: the backend trait is platform plumbing
+//! only, and a widget defined outside this crate composes with every
+//! backend exactly as a built-in one does.
 //!
-//! Per Decision D6, a primitive's `layout()` call resolves every
-//! geometry decision up front and returns a fully-resolved `Layout` a
-//! backend rasterises verbatim. `Primitive` carries that one step
-//! further: [`Primitive::paint`] takes only `Self::Layout`, `&mut dyn
-//! PaintSurface`, `&Theme` and `&Style` — no `Rect`, no font metrics —
-//! so a `Layout` type must bake in whatever absolute geometry (the
-//! painted area's origin, the resolved row height, …) its own
-//! `paint()` needs. [`crate::ListView`]'s impl does this via
-//! [`crate::primitives::list::ListViewPrimitiveLayout`], which pairs
-//! its existing list-local [`crate::ListViewLayout`] with the absolute
-//! area it was laid out into.
+//! # Paint inputs: `PaintEnv`
+//!
+//! `paint()` takes the layout, the surface and a [`PaintEnv`]: the theme
+//! and style, the caller's [`PaintState`] (`scroll_px`, striping, the
+//! focus-visible ring, row hover/press), the runtime's
+//! [`InteractionState`] for this widget and its sub-parts, and the
+//! widget's own persistent state. A `Layout` type bakes in whatever
+//! absolute geometry its paint needs (the painted area's origin, the
+//! resolved row height, …), so `paint()` needs no `Rect` or font metrics
+//! of its own — see [`crate::primitives::list::ListViewPrimitiveLayout`].
 //!
 //! # Hit-testing lives on `Layout`, not on this trait
 //!
-//! Every built-in `*Layout` type already carries its own `hit_test`
-//! (e.g. [`crate::ListViewLayout::hit_test`]) because the right
-//! hit-testing *shape* (a flat index, a tree path, a column/row pair,
-//! …) differs per primitive — forcing one signature onto this trait
-//! would either lose information or force every implementor through a
-//! lossy common type. A `Primitive` impl's `Layout` is expected to
-//! expose its own `hit_test`-shaped method the same way; see
-//! [`crate::primitives::list::ListViewPrimitiveLayout::hit_test`].
+//! Every `*Layout` type carries its own `hit_test`, because the right
+//! hit-testing *shape* (a flat index, a tree path, a column/row pair, …)
+//! differs per widget; see
+//! [`crate::primitives::list::ListViewPrimitiveLayout::hit_test`]. The
+//! runtime reaches named sub-parts through
+//! [`crate::interactive::Interactive::sub_regions`].
 //!
 //! # `A11yPrimitive` supertrait
 //!
-//! [`Primitive`] requires [`A11yPrimitive`] — a widget painted through
-//! this trait reports accessibility info through the same
-//! [`crate::a11y`] machinery every built-in primitive already does,
-//! rather than a parallel opt-in a consumer could forget to implement.
+//! [`Primitive`] requires [`A11yPrimitive`] — a widget reports
+//! accessibility info through the same [`crate::a11y`] machinery every
+//! built-in widget does, rather than a parallel opt-in a consumer could
+//! forget to implement.
 //!
 //! # Example — a third-party widget
 //!
 //! A type defined entirely outside this crate, with no change to
-//! `quadraui::Backend`/`quadraui::gtk`/`quadraui::macos`/`quadraui::win`:
+//! `quadraui::Backend` or any backend module:
 //!
 //! ```
 //! use quadraui::primitive::{LayoutCtx, PaintEnv, Primitive};
@@ -114,8 +108,8 @@
 //! #     }
 //! # }
 //! // Any `&mut dyn PaintSurface` paints it — this is what
-//! // `DrawsPrimitives::draw_primitive`'s default body does internally, against
-//! // whatever `Backend::paint_surface` hands back.
+//! // `DrawsPrimitives::draw_dyn` does internally, against whatever
+//! // `Backend::paint_surface` hands back.
 //! let swatch = Swatch { color: Color::rgb(255, 0, 0) };
 //! let ctx = LayoutCtx::new(16.0, 8.0, false);
 //! let mut surface = NullSurface::default();
@@ -434,12 +428,9 @@ impl<'a> LayoutCtx<'a> {
         }
     }
 
-    /// Floor `line_height` at `style.row_height`, the same row-pitch
-    /// resolution every pixel backend's own private `resolved_row_height`
-    /// helper already applies on its bespoke `draw_list` path (e.g. `GtkBackend::resolved_row_height`,
-    /// `MacBackend::resolved_row_height`) before laying out rows — a
-    /// chrome font taller than the theme's `row_height` token must never
-    /// be clipped.
+    /// Floor `line_height` at `style.row_height` before laying out rows —
+    /// a chrome font taller than the theme's `row_height` token must
+    /// never be clipped.
     ///
     /// [`crate::backend::DrawsPrimitives::draw_primitive`] applies this to
     /// the raw [`crate::Backend::chrome_line_height`] it measures before
@@ -746,14 +737,6 @@ pub struct PaintEnv<'a> {
     /// widget paints as `State::default()`.
     pub widget_state: Option<&'a dyn std::any::Any>,
 }
-
-/// The panic message for a cell painter that delegates to a `ratatui`
-/// rasteriser when its [`CellSurface`] has no `ratatui` buffer behind it.
-#[cfg(feature = "tui")]
-#[doc(hidden)]
-pub const CELL_BUFFER_REQUIRED: &str =
-    "this cell painter needs a ratatui-backed CellSurface (TuiBackend inside \
-     enter_frame_scope, or quadraui::tui::BufferCellSurface)";
 
 /// The empty interaction [`PaintEnv::new`] starts from.
 static NO_INTERACTION: InteractionState = InteractionState::new();
@@ -1149,7 +1132,7 @@ pub trait Primitive: A11yPrimitive {
     ///
     /// A real prototype (`crate::primitives::list::ListView`'s pilot
     /// impl) ruled out a `TuiBackend: PaintSurface` impl that reproduces
-    /// `crate::tui::draw_list`'s output byte-for-byte: `ListView::bordered`'s
+    /// the list's terminal rendering byte-for-byte: `ListView::bordered`'s
     /// frame is painted as literal box-drawing glyphs (`╭─╮│╰─╯`) chosen
     /// per-corner — a choice [`PaintSurface`]'s verbs have no way to
     /// express, since none of them picks a glyph, only a rect or a path
@@ -1164,19 +1147,14 @@ pub trait Primitive: A11yPrimitive {
     /// run has no "how many terminal columns wide" concept to quantise
     /// to. Both gaps are structural, not missing verbs that a future
     /// `PaintSurface` addition could close, so TUI gets this second,
-    /// cell-buffer-flavored method instead — mirroring how
-    /// [`crate::tui::draw_list`] itself already exists as a parallel
-    /// rasteriser to the shared `native_surface_paint` helper, not a
-    /// `PaintSurface` implementor.
+    /// cell-grid method instead.
     ///
     /// Takes the backend-neutral [`CellSurface`], so a widget reaches the
     /// cursor ([`CellSurface::set_cursor`]) and inline graphics
     /// ([`CellSurface::emit_graphics`]) verbs, and no `ratatui` type
-    /// appears in this trait. A painter that still delegates to a
-    /// `crate::tui` rasteriser over a `ratatui` buffer reaches it through
-    /// [`CellSurface::ratatui_buffer`], marked `// CSR:` at the call. A
-    /// caller with a bare buffer and no backend wraps it in
-    /// `quadraui::tui::BufferCellSurface`.
+    /// appears in this trait: every cell painter writes through
+    /// [`CellSurface`] verbs alone. A caller with a bare buffer and no
+    /// backend wraps it in `quadraui::tui::BufferCellSurface`.
     ///
     /// `#[cfg(feature = "tui")]`: unlike [`Self::paint`], which exists
     /// unconditionally because every pixel backend needs it, only a

@@ -644,8 +644,8 @@ pub trait ConformanceDriver: Sized {
 ///
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
-/// (`backend.calls.contains(&"draw_list")`) without a real
-/// rasteriser. Layout getters (`list_layout`, …) are not recorded: they're queries, not paint events, and controllers
+/// (`backend.calls.contains(&"draw_focus_ring")`) without a real
+/// rasteriser. Layout queries are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.
 ///
@@ -1079,16 +1079,8 @@ impl crate::Backend for RecordingBackend {
     fn set_style(&mut self, style: crate::Style) {
         self.current_style = style;
     }
-    fn list_char_width(&self) -> f32 {
-        // `RecordingBackend` only records call shape, not real font
-        // metrics (see `char_width`/`line_height` above) — no separate
-        // chrome-font notion to model, so this just aliases `char_width`
-        // like TUI's real backend does.
-        self.char_width
-    }
     fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
-        // Same rationale as `list_char_width` above: no real font to
-        // measure against, just the same char-cell arithmetic every
+        // No real font to measure against, just the same char-cell arithmetic every
         // caller used before `Backend::measure_text` existed.
         (
             text.chars().count() as f32 * self.char_width,
@@ -1104,8 +1096,7 @@ impl crate::Backend for RecordingBackend {
     }
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         // `RecordingBackend` only records call shape, not real font
-        // metrics — same rationale as `list_char_width` above. No
-        // platform to default fonts against, so this is the same
+        // metrics. No platform to default fonts against, so this is the same
         // all-sentinel value TUI's real backend returns.
         crate::backend::PlatformFontDefaults {
             editor_family: String::new(),
@@ -1113,41 +1104,6 @@ impl crate::Backend for RecordingBackend {
             ui_family: String::new(),
             ui_size_pt: 0.0,
         }
-    }
-    fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {
-        self.record("draw_list");
-    }
-    fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-        None
-    }
-    fn list_vscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
-        None
-    }
-    fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
-        l.layout(r.width, r.height, 0.0, |_| {
-            crate::primitives::list::ListItemMeasure::new(1.0)
-        })
-    }
-    fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
-        self.record("draw_scrollbar");
-    }
-    fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-        self.record("draw_progress");
-        unimplemented!("RecordingBackend has no ProgressBar layout algorithm")
-    }
-    fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
-        unimplemented!("RecordingBackend has no ProgressBar layout algorithm")
-    }
-    /// Union note: the chat tests' `MockBackend` was the only one with a
-    /// real body (trivial `SpinnerLayout { bounds: r }`, needed so its
-    /// render tests don't panic); the other two `unimplemented!()`d.
-    fn draw_spinner(&mut self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-        self.record("draw_spinner");
-        crate::SpinnerLayout { bounds: r }
-    }
-    /// Union note: see `draw_spinner` above.
-    fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-        crate::SpinnerLayout { bounds: r }
     }
 }
 

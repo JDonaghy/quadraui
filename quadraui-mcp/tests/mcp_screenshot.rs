@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 /// Same minimal list app as `tests/mcp_tui_roundtrip.rs`: the selected
 /// row paints a `▶ ` prefix no other row has
-/// (`quadraui::tui::list::draw_list`'s own tests document this), so a
+/// (the list cell painter's own tests document this), so a
 /// screenshot's text grid visibly differs before/after a selection
 /// change, not just its style.
 struct ListApp {
@@ -41,9 +41,9 @@ impl quadraui::AppLogic for ListApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::List {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            list: ListView {
+            widget: Box::new(ListView {
                 id: WidgetId::new("rows"),
                 title: None,
                 items: self
@@ -64,7 +64,7 @@ impl quadraui::AppLogic for ListApp {
                 max_content_width: None,
                 show_v_scrollbar: false,
                 striped: false,
-            },
+            }),
         });
         layout.draw(backend);
     }

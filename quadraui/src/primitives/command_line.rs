@@ -1593,3 +1593,339 @@ mod cell_test_paint {
         layout
     }
 }
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::command_line::CommandLine;
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+    use crate::Backend;
+
+    const W: u32 = 320;
+    const H: u32 = 60;
+
+    fn sample(text: &str, cursor: Option<usize>, right_align: bool) -> CommandLine {
+        CommandLine {
+            id: WidgetId::new("cmdline"),
+            text: text.into(),
+            cursor_offset: cursor,
+            right_align,
+            selection: None,
+        }
+    }
+
+    /// Paint through the real `DrawsPrimitives::draw_primitive` path —
+    /// the same call chain the live `drawRect:` runner uses.
+    fn paint_via_backend(cmd: &CommandLine, rect: QRect) -> (BitmapSurface, f64) {
+        let surface = BitmapSurface::new(W, H);
+        // Known non-theme background so "did the bar fill happen here?"
+        // is answerable per pixel.
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        let line_height = backend.line_height() as f64;
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(rect, cmd);
+        });
+        backend.end_frame();
+        (surface, line_height)
+    }
+
+    #[test]
+    fn fills_the_bar_background_at_origin() {
+        let cmd = sample(":wq", None, false);
+        let (surface, lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, 20.0));
+        let theme = Theme::default();
+        // Probe well right of the ":wq" glyphs but inside the bar.
+        let probe_y = (lh / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(W - 4, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.command_line_bg.r,
+                theme.command_line_bg.g,
+                theme.command_line_bg.b
+            ),
+            "command line background should cover the full bar width",
+        );
+    }
+
+    /// Non-zero-origin regression guard (LESSONS.md:159-181): the bar
+    /// must paint where it was asked to, and must leave the rows above
+    /// it untouched.
+    #[test]
+    fn fills_the_bar_background_at_nonzero_origin() {
+        let origin_x = 24.0_f32;
+        let origin_y = 30.0_f32;
+        let cmd = sample(":wq", None, false);
+        let (surface, _lh) = paint_via_backend(
+            &cmd,
+            QRect::new(origin_x, origin_y, W as f32 - origin_x, 20.0),
+        );
+        let theme = Theme::default();
+
+        let (r, g, b, _) = surface.pixel(W - 4, origin_y as u32 + 4);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.command_line_bg.r,
+                theme.command_line_bg.g,
+                theme.command_line_bg.b
+            ),
+            "bar should paint at the requested origin",
+        );
+
+        // Left of `origin_x` and above `origin_y`: untouched white.
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(4, origin_y as u32 + 4);
+                (r, g, b)
+            },
+            (255, 255, 255),
+            "nothing should paint left of the bar origin",
+        );
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(W - 4, origin_y as u32 - 4);
+                (r, g, b)
+            },
+            (255, 255, 255),
+            "nothing should paint above the bar origin",
+        );
+    }
+
+    /// The cursor bar paints at the shared
+    /// [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
+    /// column — the same rect [`DrawsPrimitives::layout_primitive`] would
+    /// hand back for hit-testing that column, not a hand-measured Core
+    /// Text prefix width.
+    #[test]
+    fn cursor_paints_cursor_colour_after_the_prefix() {
+        let cmd = sample(":wq", Some(1), false);
+        let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
+        let (surface, lh) = paint_via_backend(&cmd, rect);
+        let theme = Theme::default();
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        let layout = backend.layout_primitive(rect, &cmd).layout;
+        let cursor_rect = layout.char_bounds(1);
+
+        let px = (cursor_rect.x + 1.0) as u32;
+        let py = (lh / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (theme.cursor.r, theme.cursor.g, theme.cursor.b),
+            "insert cursor should paint at char_bounds(1)'s column",
+        );
+    }
+
+    /// Selection highlight paints behind text through the shared
+    /// `native_surface_paint::paint`, same as `gtk::command_line`'s
+    /// `gtk_command_line_selection_paints_highlight_behind_text` twin.
+    #[test]
+    fn selection_paints_highlight_behind_text() {
+        // A space character deliberately, so the probed pixel carries no
+        // glyph ink and the highlight colour (alpha 1.0, an opaque
+        // replace over the white background) can be asserted exactly.
+        let cmd = CommandLine {
+            selection: Some((0, 1)),
+            ..sample("  x", None, false)
+        };
+        let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
+        let theme = Theme {
+            // `paint()` fills the *entire* bar rect with `command_line_bg`
+            // before painting the selection highlight, so this must match
+            // the white the surface was primed with below — otherwise the
+            // "unselected column stays plain background" assertion checks
+            // against the wrong colour. Mirrors the GTK twin
+            // (`gtk_command_line_selection_paints_highlight_behind_text`),
+            // which sets this explicitly for the same reason.
+            command_line_bg: crate::types::Color::rgb(255, 255, 255),
+            selection: crate::types::Color::rgb(0, 0, 255),
+            selection_alpha: 1.0,
+            ..Theme::default()
+        };
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend.set_theme(theme);
+        let line_height = backend.line_height() as f64;
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(rect, &cmd);
+        });
+        backend.end_frame();
+
+        let layout = backend.layout_primitive(rect, &cmd).layout;
+        let sel_rect = layout
+            .selection_bounds((0, 1))
+            .expect("non-empty selection should produce a rect");
+
+        let px = (sel_rect.x + sel_rect.width / 2.0) as u32;
+        let py = (line_height / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 255),
+            "selected column should paint the highlight colour",
+        );
+
+        // Unselected column (second space) stays plain background.
+        let unsel_px = (sel_rect.x + sel_rect.width + sel_rect.width / 2.0) as u32;
+        let (r, g, b, _) = surface.pixel(unsel_px, py);
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "unselected column should not paint the highlight",
+        );
+    }
+
+    /// Regression for the multibyte panic the GTK twin fixed under
+    /// A `cursor_offset` landing mid-character must snap,
+    /// not slice a `str` at a non-boundary.
+    #[test]
+    fn multibyte_cursor_offset_does_not_panic() {
+        let text = ":éditer";
+        assert!(!text.is_char_boundary(2));
+        let cmd = sample(text, Some(2), false);
+        let _ = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, 20.0));
+    }
+
+    #[test]
+    fn right_aligned_text_is_pushed_to_the_right_edge() {
+        // The right-aligned string's glyphs must land in the right half.
+        // Probe: with the bar filled, at least one pixel in the right
+        // quarter differs from the bar background (a glyph), while the
+        // left quarter is pure background.
+        //
+        // `native_surface_paint::paint` also strokes a 1px `border_fg`
+        // frame around the whole `rect`: the top/bottom edge covers every
+        // column (row 0 and row `bar_height - 1`), and the left/right
+        // edge covers every row (column 0 and column `W - 1`). Every probe
+        // below dodges those four frame lines so this test still proves
+        // something about the *glyphs*, not the frame — same convention
+        // as `gtk::command_line`'s `col_y_range` inset.
+        let cmd = sample("3/17", None, true);
+        let bar_height = 20.0_f32;
+        let (surface, lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, W as f32, bar_height));
+        let theme = Theme::default();
+        let bg = (
+            theme.command_line_bg.r,
+            theme.command_line_bg.g,
+            theme.command_line_bg.b,
+        );
+        let row = (lh / 2.0) as u32;
+        let bottom_border_row = bar_height as u32 - 1;
+
+        let left_quarter_all_bg = (1..W / 4).all(|x| {
+            let (r, g, b, _) = surface.pixel(x, row);
+            (r, g, b) == bg
+        });
+        assert!(
+            left_quarter_all_bg,
+            "right-aligned text must not paint into the left quarter",
+        );
+
+        let right_quarter_has_glyph = (W - W / 4..W - 1).any(|x| {
+            (1..(lh as u32).min(bottom_border_row)).any(|dy| {
+                let (r, g, b, _) = surface.pixel(x, dy);
+                (r, g, b) != bg
+            })
+        });
+        assert!(
+            right_quarter_has_glyph,
+            "right-aligned text should paint glyphs in the right quarter",
+        );
+    }
+
+    #[test]
+    fn zero_width_rect_is_a_no_op() {
+        let cmd = sample(":wq", Some(1), false);
+        let (surface, _lh) = paint_via_backend(&cmd, QRect::new(0.0, 0.0, 0.0, 20.0));
+        assert_eq!(
+            {
+                let (r, g, b, _) = surface.pixel(1, 1);
+                (r, g, b)
+            },
+            (255, 255, 255),
+            "a zero-width command line should paint nothing at all",
+        );
+    }
+
+    /// Paint/click round-trip: paint through the real
+    /// `DrawsPrimitives::draw_primitive` path, find the actual painted
+    /// (non-background) pixel for two different characters, then
+    /// `hit_test` those exact pixels via
+    /// `DrawsPrimitives::layout_primitive` and assert they resolve to the
+    /// right byte offsets. `MacBackend` derives
+    /// `current_char_width` from the same Menlo font metrics `draw_text` paints
+    /// with, so paint and layout share one ground-truth measurement here.
+    ///
+    /// Non-zero-origin to catch LOCAL/ABSOLUTE mixups (invisible at `rect.x == 0`).
+    #[test]
+    fn command_line_layout_hit_test_matches_painted_glyph_at_nonzero_origin() {
+        let origin_x = 24.0_f32;
+        let origin_y = 30.0_f32;
+        let rect = QRect::new(origin_x, origin_y, W as f32 - origin_x, 20.0);
+        let cmd = sample(":wq", None, false);
+
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(rect, &cmd);
+        });
+        backend.end_frame();
+
+        let layout = backend.layout_primitive(rect, &cmd).layout;
+        let char_width = backend.char_width();
+        assert!(char_width > 1.0, "Menlo char_width should be several px");
+
+        let y0 = origin_y as u32;
+        let y1 = (origin_y + rect.height).min(H as f32) as u32;
+
+        let find_painted = |x0: u32, x1: u32| -> Option<u32> {
+            for x in x0..x1.min(W) {
+                for y in y0..y1 {
+                    let (r, g, b, _) = surface.pixel(x, y);
+                    if (r, g, b) != (255, 255, 255) {
+                        return Some(x);
+                    }
+                }
+            }
+            None
+        };
+
+        // Column 0 (':') interior — inset 1px from the left cell edge to
+        // dodge antialiasing at the boundary (mirrors the GTK twin's
+        // round-trip test).
+        let col0_x0 = origin_x as u32 + 1;
+        let col0_x1 = (origin_x + char_width).floor() as u32;
+        let px0 = find_painted(col0_x0, col0_x1)
+            .unwrap_or_else(|| panic!("column 0 (':') painted no pixel in {col0_x0}..{col0_x1}"));
+        assert_eq!(layout.hit_test(px0 as f32), 0);
+
+        // Column 1 ('w').
+        let col1_x0 = (origin_x + char_width).ceil() as u32 + 1;
+        let col1_x1 = (origin_x + 2.0 * char_width).floor() as u32;
+        let px1 = find_painted(col1_x0, col1_x1)
+            .unwrap_or_else(|| panic!("column 1 ('w') painted no pixel in {col1_x0}..{col1_x1}"));
+        assert_eq!(layout.hit_test(px1 as f32), 1);
+
+        // A click left of the bar clamps to the first column's byte offset.
+        assert_eq!(layout.hit_test(0.0), 0);
+        assert_eq!(layout.hit_test(origin_x), 0);
+    }
+}

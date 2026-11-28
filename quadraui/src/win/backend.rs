@@ -17,14 +17,11 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::scrollbar::Scrollbar;
-use crate::primitives::spinner::{Spinner, SpinnerLayout};
 // Only named by the Windows tests below.
 #[cfg(all(test, target_os = "windows"))]
 use crate::primitives::toolbar::ToolbarButton;
 use crate::types::WidgetId;
-use crate::{Accelerator, AcceleratorId, Key, ListView, Modifiers, UserPayload};
+use crate::{Accelerator, AcceleratorId, Key, Modifiers, UserPayload};
 // `ActivityBar`, `MenuBar`, `StatusBar` and `TabBar` are only named by
 // `#[cfg(test)]` code below — each paints through its widget contract, not a
 // method on this backend. `ContextMenu` is named only by the Windows-host
@@ -109,21 +106,6 @@ fn focus_ring_band_overlaps(rect: Rect, stroke_width: f32, overlay: Rect) -> boo
     [top, bottom, left, right]
         .into_iter()
         .any(|band| rects_overlap(band, overlay))
-}
-
-/// [`super::spinner::SpinnerMeasureSource`] impl backed by
-/// [`nominal_text_width`] for the width and a fixed `line_height` for the
-/// height (`DWrite::measure_text` isn't available yet) — matches the
-/// pre-#1078 `win_spinner_nominal_layout`'s behaviour exactly.
-struct NominalSpinnerMeasure {
-    char_width: f32,
-    line_height: f32,
-}
-
-impl super::spinner::SpinnerMeasureSource for NominalSpinnerMeasure {
-    fn measure(&self, text: &str) -> (f32, f32) {
-        (nominal_text_width(text, self.char_width), self.line_height)
-    }
 }
 
 // ─── Direct2D bootstrap ─────────────────────────────────────────────────
@@ -935,7 +917,7 @@ impl WinBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// Opacity multiplier the overlay scrollbars paint the track
     /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -946,18 +928,6 @@ impl WinBackend {
         match self.scroll_fade_last_interaction {
             Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
             None => 0.0,
-        }
-    }
-
-    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), floored at the font's own line
-    /// height so a chrome font taller than the token isn't clipped — see
-    /// `MacBackend::resolved_row_height`'s identical rationale.
-    fn resolved_row_height(&self, candidate_line_height: f32) -> f32 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.row_height)
-        } else {
-            candidate_line_height
         }
     }
 
@@ -2703,21 +2673,6 @@ impl Backend for WinBackend {
         WinBackend::set_current_char_width(self, char_width);
     }
 
-    /// Same value as [`Self::char_width`] (the *editor* font's advance)
-    /// even though [`Self::draw_list`] (`super::list::draw_list`) now
-    /// paints row text through `self.chrome_dwrite` — this
-    /// backend has no `chrome_char_width` field of its own to report
-    /// instead (unlike `GtkBackend::current_chrome_char_width`, a real
-    /// per-frame Pango re-measurement of `ui_font`). A consumer budgeting
-    /// `ListView` row width against this value may therefore get a
-    /// slightly wrong estimate when the chrome and editor fonts differ
-    /// in advance width; adding a real `chrome_char_width` field
-    /// (mirroring GTK's) is tracked separately, unchanged by this
-    /// issue.
-    fn list_char_width(&self) -> f32 {
-        self.current_char_width
-    }
-
     /// Real DirectWrite measurement via `DWrite::measure_text` against
     /// `chrome_dwrite`/`dwrite` — the same per-role handle
     /// [`Self::surface_draw_text_run_with_role`] already resolves,
@@ -2782,236 +2737,6 @@ impl Backend for WinBackend {
         {
             let _ = (family, size_pt);
         }
-    }
-
-    // ─── Drawing ──────────────────────────────────────────────────────
-
-    /// see the [`WinBackend`] "Before a surface is attached" doc. `List` is
-    /// `ChromePrimitive::List` — see `TreeView`'s paint's note for the
-    /// font-swap shape.
-    fn draw_list(&mut self, rect: Rect, list: &ListView) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::list::draw_list(
-                &surface.target,
-                dwrite,
-                rect,
-                list,
-                self.resolved_row_height(self.current_line_height),
-                &self.current_style,
-            );
-            return;
-        }
-        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, list);
-    }
-
-    /// [`Self::draw_list`], plus hover/press row tinting, a
-    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
-    /// pixel-precise scroll position instead of only
-    /// [`ListView::scroll_offset`]'s whole-row value, via
-    /// [`super::list::draw_list_with_state`]. `state.scroll_px: None`
-    /// paints pixel-identically to [`Self::draw_list`].
-    fn draw_list_with_state(
-        &mut self,
-        rect: Rect,
-        list: &ListView,
-        state: &crate::primitives::list::ListPaintState,
-        focus_ring_visible: bool,
-    ) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::list::draw_list_with_state(
-                &surface.target,
-                dwrite,
-                rect,
-                list,
-                self.resolved_row_height(self.current_line_height),
-                &self.current_style,
-                state,
-                focus_ring_visible,
-            );
-            return;
-        }
-        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, list, state, focus_ring_visible);
-    }
-
-    /// GTK's twin (`GtkBackend::list_hscrollbar`) builds the
-    /// `Scrollbar` directly from `self.current_char_width` rather than
-    /// delegating to [`ListView::hscrollbar`] — that primitive method
-    /// treats `max_content_width` as already being in the caller's
-    /// native unit (correct for TUI's 1-char-per-cell grid, wrong for a
-    /// pixel backend where chars must first be scaled by char width).
-    /// Cross-platform: no Direct2D/DirectWrite call needed, so this
-    /// compiles (and is exercised by `cargo check --features win`) on
-    /// every host, not just `target_os = "windows"`.
-    fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        let char_w = self.current_char_width;
-        let max_w_chars = list.max_content_width? as f32;
-        let content_px = max_w_chars * char_w;
-        let border_inset = if list.bordered { char_w } else { 0.0 };
-        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
-        if content_px <= visible_px {
-            return None;
-        }
-        // Row pitch must match `draw_list`'s own (`resolved_row_height`),
-        // or the thumb geometry drifts from the rows it tracks.
-        let row_h = self.resolved_row_height(self.current_line_height);
-        let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
-        Some(crate::Scrollbar::horizontal(
-            list.id,
-            track,
-            list.h_scroll as f32 * char_w,
-            content_px,
-            visible_px,
-            row_h,
-        ))
-    }
-
-    /// `vscrollbar_with_track_width` deals purely in row counts/row-height
-    /// plus an explicit track width, so unlike [`Self::list_hscrollbar`] the
-    /// primitive's own geometry method is unit-correct for every backend —
-    /// see [`ListView::vscrollbar_with_track_width`]. `scrollbar_width` sets
-    /// the track's column width so this hit-test agrees exactly with what
-    /// the shared painter paints.
-    fn list_vscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
-        list.vscrollbar_with_track_width(
-            rect,
-            self.resolved_row_height(self.current_line_height),
-            self.current_style.scrollbar_width,
-        )
-    }
-
-    fn list_layout(&self, rect: Rect, list: &ListView) -> crate::ListViewLayout {
-        // `win_list_layout` is pure geometry — no Direct2D/DirectWrite type
-        // in its signature — so it can be called directly instead of being
-        // duplicated inline here.
-        super::list::win_list_layout(
-            list,
-            rect,
-            self.resolved_row_height(self.current_line_height),
-            self.current_char_width,
-        )
-    }
-
-    /// Real Direct2D rasteriser via `win::scrollbar` once a surface
-    /// is attached. See the [`WinBackend`] "Before a surface is attached" doc for the "surface
-    /// not attached yet" fallback posture. `rect` is unused on the
-    /// painted path — `scrollbar.track` is authoritative, mirroring
-    /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`. Paints
-    /// through [`crate::primitives::scrollbar::native_surface_paint::paint_with_opacity`]
-    /// at [`Self::scrollbar_fade_opacity`] so the bar follows the same
-    /// overlay idle-fade curve as the macOS leg, rather than staying
-    /// permanently opaque.
-    fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let _ = rect;
-            let theme = self.current_theme;
-            let opacity = self.scrollbar_fade_opacity();
-            crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
-                scrollbar, self, &theme, opacity,
-            );
-            return;
-        }
-        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, scrollbar);
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::progress::native_surface_paint::paint`] once
-    /// a surface is attached. The
-    /// Windows backend now passes `self.current_theme` instead of painting
-    /// `Theme::default()`, matching the macOS and GTK backends. See
-    /// the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
-    /// fallback posture.
-    fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let theme = self.current_theme;
-            let style = self.style();
-            return crate::primitives::progress::native_surface_paint::paint(
-                bar, self, &theme, rect, &style,
-            );
-        }
-        // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `progress_layout` and paint nothing.
-        self.progress_layout(rect, bar)
-    }
-
-    /// Pure geometry — `ProgressBar::layout` needs no measurer at all
-    /// (uniform cancel-affordance width), so this needs no
-    /// `self.dwrite`/surface at all.
-    ///
-    /// This used to duplicate `super::progress`'s `CANCEL_WIDTH_DIP`
-    /// constant by value (per `PRIMITIVE_RULES.md`#713, to avoid reaching
-    /// into that Windows-only module).
-    /// [`crate::primitives::layout_metrics::pixel_progress_layout`] is
-    /// plain, platform-independent geometry, so it can be called directly
-    /// here instead — one shared constant.
-    fn progress_layout(&self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
-        crate::primitives::layout_metrics::pixel_progress_layout(
-            bar,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::spinner::native_surface_paint::paint`] once
-    /// a surface and a text handle are attached — mirrors
-    /// [`Self::draw_progress`]. `self`'s
-    /// [`crate::paint_surface::PaintSurface`] impl (`surface_measure_text`
-    /// / `surface_draw_text_run`) already prefers `chrome_dwrite` over
-    /// `dwrite` for chrome text, so the handle resolution happens inside that impl.
-    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached
-    /// yet" fallback posture.
-    fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && (self.chrome_dwrite.is_some() || self.dwrite.is_some()) {
-            let theme = self.current_theme;
-            return crate::primitives::spinner::native_surface_paint::paint(
-                spinner, self, &theme, rect.x, rect.y,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `spinner_layout` falls back to, and paint
-        // nothing.
-        super::spinner::win_spinner_layout(
-            &NominalSpinnerMeasure {
-                char_width: self.current_char_width,
-                line_height: self.current_line_height,
-            },
-            rect,
-            spinner,
-        )
-    }
-
-    /// Pure measurement — only needs `self.dwrite`, not a live
-    /// render target, so this works as soon as a surface has ever been
-    /// attached. Prefers
-    /// `chrome_dwrite`, matching [`Self::draw_spinner`]'s paint font.
-    fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::spinner::win_spinner_layout(dwrite, rect, spinner);
-        }
-        super::spinner::win_spinner_layout(
-            &NominalSpinnerMeasure {
-                char_width: self.current_char_width,
-                line_height: self.current_line_height,
-            },
-            rect,
-            spinner,
-        )
     }
 }
 
@@ -4224,6 +3949,8 @@ mod tests {
     // this file's own coverage of the methods it deprecates.
     #![allow(deprecated)]
     use super::*;
+    use crate::backend::DrawsPrimitives;
+    use crate::ListView;
 
     /// Build a flat tree of `n_rows` leaf rows for the tree paint tests,
     /// which run only on Windows.
@@ -4476,7 +4203,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width
@@ -4507,7 +4234,9 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
-        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let default_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(
             default_sb.track.width,
@@ -4515,7 +4244,9 @@ mod tests {
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let overridden_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(overridden_sb.track.width, 24.0);
     }
@@ -4620,99 +4351,6 @@ mod tests {
             WindowControl::set_decorated(&mut b, false),
             Err(BackendError::Unsupported)
         ));
-    }
-
-    /// Pins the Windows column of the shared `hscrollbar_track` fix
-    /// as the reference behaviour macOS's copy had silently dropped —
-    /// `list_hscrollbar` insets the track by one char width on each side
-    /// (and moves it up one row) for a `bordered` list, so the thumb sits
-    /// inside the border rather than overpainting it. Pure geometry, no
-    /// `target_os = "windows"` gate needed.
-    #[test]
-    fn win_backend_list_hscrollbar_insets_track_for_bordered_list() {
-        let mut b = WinBackend::new();
-        b.set_current_char_width(8.0);
-        b.set_current_line_height(16.0);
-        // The hscrollbar's row pitch now follows `draw_list`'s own
-        // (`resolved_row_height`, which defaults to `Style::row_height`
-        // on a pixel backend) — not the raw `current_line_height` set
-        // above, which this test keeps only for the char-width-based
-        // inset math on `track.x`/`track.width`.
-        let row_h = b.current_style().row_height;
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let list = |bordered: bool| -> ListView {
-            ListView {
-                id: WidgetId::new("l"),
-                title: None,
-                items: vec![crate::ListItem {
-                    text: crate::types::StyledText::plain(&"x".repeat(40)),
-                    detail: None,
-                    icon: None,
-                    decoration: crate::types::Decoration::default(),
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                has_focus: true,
-                bordered,
-                h_scroll: 0,
-                max_content_width: Some(40),
-                show_v_scrollbar: false,
-                striped: false,
-            }
-        };
-
-        let flat_sb = b
-            .list_hscrollbar(rect, &list(false))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(flat_sb.track.x, 0.0);
-        assert_eq!(flat_sb.track.width, 200.0);
-
-        let bordered_sb = b
-            .list_hscrollbar(rect, &list(true))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(bordered_sb.track.x, 8.0);
-        assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
-        assert!(bordered_sb.track.x >= rect.x + 8.0);
-        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
-    }
-
-    /// `Backend::set_style` overriding `row_height` changes the row
-    /// pitch `list_layout` resolves — the acceptance bar for this chrome
-    /// metric, mirrored from `MacBackend`'s equivalent test.
-    #[test]
-    fn win_backend_list_layout_row_pitch_follows_a_set_style_override() {
-        let mut b = WinBackend::new();
-        b.set_current_line_height(10.0);
-        let list = ListView {
-            id: WidgetId::new("l"),
-            title: None,
-            items: vec![crate::ListItem {
-                text: crate::types::StyledText::plain("row"),
-                detail: None,
-                icon: None,
-                decoration: crate::types::Decoration::default(),
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let default_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(
-            default_layout.visible_items[0].bounds.height,
-            b.current_style().row_height
-        );
-
-        b.set_style(crate::Style::default().with_row_height(30.0));
-        let overridden_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     /// The stash-then-reuse pattern this issue exists to
@@ -7268,12 +6906,12 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_list(Rect::new(0.0, 0.0, 200.0, 120.0), &list);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 200.0, 120.0), &list, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_list must paint row text through chrome_dwrite, not the \
+            "#1266: a list must paint row text through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
@@ -7520,7 +7158,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
@@ -7532,18 +7170,18 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_spinner(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner, &());
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_spinner must paint its label through chrome_dwrite, not the \
+             a spinner must paint its label through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
 
-    /// `Backend::set_theme` must reach `Self::draw_spinner`'s shared
+    /// `Backend::set_theme` must reach the spinner's shared
     /// painter, not just be stored and ignored. A spinner's glyph is text (no solid-fill
     /// region to probe pixel-exact like `set_theme_reaches_the_rasterisers`
     /// does for the terminal divider), so this finds the most-inked pixel
@@ -7568,7 +7206,7 @@ mod tests {
              hardcoded `Theme::default()` would pass this test too"
         );
 
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
@@ -7587,7 +7225,7 @@ mod tests {
             backend.set_theme(theme);
 
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let _ = backend.draw_spinner(rect, &spinner);
+            let _ = backend.draw_dyn(rect, &spinner, &());
             backend.end_frame();
 
             let bg = surface.pixel_at(0, 0);
@@ -8275,13 +7913,12 @@ mod tests {
         );
     }
 
-    /// `spinner_layout` must measure the spinner's label against the
-    /// same `chrome_dwrite`-preferring handle `Self::draw_spinner` paints
-    /// with — see that method's doc.
+    /// The spinner's layout must measure its label against the
+    /// same `chrome_dwrite`-preferring handle its paint uses.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_spinner_layout_measures_label_in_the_chrome_fonts_size() {
-        let spinner = Spinner {
+        let spinner = crate::Spinner {
             id: WidgetId::new("spinner"),
             label: "Indexing…".to_string(),
             frame_idx: 0,
@@ -8292,14 +7929,14 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
                 backend
-                    .spinner_layout(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner)
+                    .layout_primitive(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner)
                     .bounds
                     .width
             },
         );
         assert!(
             big > small * 2.0,
-            "spinner_layout must measure the label through chrome_dwrite, not \
+            "the spinner layout must measure the label through chrome_dwrite, not \
              the (unchanged) editor dwrite handle: small={small}, big={big}"
         );
     }

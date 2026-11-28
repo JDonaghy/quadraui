@@ -25,9 +25,9 @@ use quadraui::{
 use serde_json::json;
 
 fn list_surface() -> Surface {
-    Surface::List {
+    Surface::Widget {
         rect: Rect::new(0.0, 0.0, 30.0, 5.0),
-        list: ListView {
+        widget: Box::new(ListView {
             id: WidgetId::new("files"),
             title: Some(StyledText::plain("Files")),
             items: vec![ListItem {
@@ -44,7 +44,7 @@ fn list_surface() -> Surface {
             max_content_width: None,
             show_v_scrollbar: false,
             striped: false,
-        },
+        }),
     }
 }
 

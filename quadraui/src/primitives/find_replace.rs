@@ -939,10 +939,6 @@ impl crate::primitive::Primitive for FindReplacePanel {
     type Layout = FindReplaceLayout;
     type Event = FindReplaceEvent;
 
-    fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::FindReplace
-    }
-
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }

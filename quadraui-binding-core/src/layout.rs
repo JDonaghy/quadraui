@@ -978,8 +978,8 @@ pub struct LayoutLeaf {
     /// [`crate::scroll_px_from_value`] — `None` unless the dict set a
     /// numeric `"scroll_px"` key, and always `None` for a `descriptor`
     /// that isn't one of those three kinds. [`crate::render::paint_leaf`]
-    /// passes it to the matching `Backend::draw_*_with_state`; a dict
-    /// that never sets the key paints exactly as before.
+    /// passes it in the paint state the leaf is painted with; a dict that
+    /// never sets the key paints exactly as before.
     pub scroll_px: Option<f32>,
 }
 

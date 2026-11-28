@@ -75,7 +75,7 @@ impl AppLogic for ListApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let state = ListPaintState::default().with_scroll_px(self.scroll_px);
-        backend.draw_list_with_state(VIEWPORT, &self.list, &state, false);
+        let _ = backend.draw_dyn(VIEWPORT, &self.list, &state);
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

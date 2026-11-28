@@ -62,7 +62,7 @@
 //!   (or read the [`SidebarPanelBodyLayout`] `render` returns),
 //!   build a [`crate::Scrollbar`] with `track` set to
 //!   `layout.scrollbar_rect`, and paint it via
-//!   [`crate::Backend::draw_scrollbar`] — a two-step
+//!   [`crate::DrawsPrimitives::draw_dyn`] — a two-step
 //!   layout-then-paint split.
 //!
 //! `unit_h` (row height for chrome rows) is the

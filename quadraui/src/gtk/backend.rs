@@ -56,7 +56,7 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ListView, ModalStack,
+    Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ModalStack,
     PlatformServices, PointerShape, Rect as QRect, ResizeEdge, SystemTheme, UiEvent, UserPayload,
     Viewport,
 };
@@ -277,11 +277,11 @@ pub struct GtkBackend {
     /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
     scroll_fade_clock_override: Option<std::time::Instant>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
-    /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
-    /// `draw_list` paints row text in `ui_font`, not the editor font
-    /// `current_char_width` measures, so a consumer sizing
-    /// list content from `current_char_width` under-fills the row
-    /// whenever the two fonts' advances differ. Refreshed once
+    /// `current_char_width`), in DIPs — backs `measure_text`'s chrome-role
+    /// fallback. Chrome rows paint in `ui_font`, not the editor font
+    /// `current_char_width` measures, so sizing chrome content from
+    /// `current_char_width` under-fills the row whenever the two fonts'
+    /// advances differ. Refreshed once
     /// per frame by `gtk::run::render_frame` via
     /// [`Self::refresh_chrome_char_width`], the same way
     /// `current_char_width` is refreshed from the editor font.
@@ -533,8 +533,8 @@ impl GtkBackend {
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
             // `GtkBackend` built directly by a test and never entered
-            // into a frame scope just gets this placeholder back from
-            // `list_char_width()`, same posture as `current_char_width`.
+            // into a frame scope just gets this placeholder back, same
+            // posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
             frame_pango_ctx: None,
@@ -658,8 +658,7 @@ impl GtkBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] (and the
-    /// `DataTable` rasteriser's own scrollbars) paint the track and
+    /// Opacity multiplier the overlay scrollbars paint the track and
     /// thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -890,18 +889,6 @@ impl GtkBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), floored at the font's own line
-    /// height so a chrome font taller than the token isn't clipped — see
-    /// `MacBackend::resolved_row_height`'s identical rationale.
-    fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.row_height as f64)
-        } else {
-            candidate_line_height
-        }
-    }
-
     /// Push the app's chosen theme into GTK's own
     /// `gtk-application-prefer-dark-theme` setting, so native GTK chrome
     /// that this crate doesn't rasterise itself (the file dialog, as of
@@ -966,21 +953,19 @@ impl GtkBackend {
     }
 
     /// Re-measure and cache `ui_font`'s real Pango advance into
-    /// `current_chrome_char_width`, backing [`Backend::list_char_width`]
-    /// — the chrome twin of [`Self::set_current_char_width`].
+    /// `current_chrome_char_width` — the chrome twin of
+    /// [`Self::set_current_char_width`].
     ///
     /// Takes a live `layout` (the same shared per-frame layout every
     /// `draw_*` method borrows via `current_frame_refs`) because Pango
     /// text measurement needs a `pango::Context`-backed layout to read
     /// real hinted advances from, not just a font description. Saves and
-    /// restores `layout`'s font description around the measurement, the
-    /// same save/swap/restore shape [`Backend::draw_list`]'s own
-    /// [`crate::gtk::GtkBackend`] impl uses to paint in `ui_font` without
-    /// leaving it stuck on the shared layout afterward — so calling this
-    /// mid-frame never disturbs whatever the caller had `layout` set to.
+    /// restores `layout`'s font description around the measurement, so
+    /// calling this mid-frame never disturbs whatever the caller had
+    /// `layout` set to.
     ///
     /// Called once per frame by `gtk::run::render_frame`, right alongside
-    /// [`Self::set_current_char_width`], so `list_char_width()` can never
+    /// [`Self::set_current_char_width`], so the chrome advance can never
     /// go stale after a runtime [`Backend::set_ui_font`] call the way a
     /// value cached only at `set_ui_font` time would (GTK's `ui_font` is
     /// a plain string, not a live `pango::FontDescription` with metrics
@@ -2302,16 +2287,6 @@ impl Backend for GtkBackend {
         GtkBackend::set_current_char_width(self, char_width as f64);
     }
 
-    /// `current_chrome_char_width`, not `current_char_width` —
-    /// [`Self::draw_list`] paints row text with `ui_font`,
-    /// and `current_chrome_char_width` is that font's real Pango
-    /// advance, refreshed every frame by [`Self::refresh_chrome_char_width`]
-    /// the same way `current_char_width` is refreshed from the editor
-    /// font. See the field's doc for why the two can disagree.
-    fn list_char_width(&self) -> f32 {
-        self.current_chrome_char_width as f32
-    }
-
     /// Real Pango measurement against a fresh `pango::Layout` built from
     /// `role`'s `FontDescription` — `crate::gtk::
     /// chrome_font_description(&self.ui_font)` for [`crate::FontRole::Chrome`],
@@ -2354,228 +2329,11 @@ impl Backend for GtkBackend {
         (w as f32, h as f32)
     }
 
-    /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
-    /// content edge. CSS requests 4px but GTK may allocate slightly
-    /// more; 8px is a safe reserve so text never renders behind it.
-    fn scrollbar_reserve(&self) -> f32 {
-        8.0
-    }
-
     /// GTK applies per-line font scale via a Pango scale attr, so scaled
     /// rows (e.g. markdown headings) draw taller and layouts must
     /// reserve the extra height.
     fn scales_text_rows(&self) -> bool {
         true
-    }
-
-    fn draw_list(&mut self, rect: QRect, list: &ListView) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_list called outside enter_frame_scope");
-        // Row labels and icon glyphs (`Icon::glyph`) are chrome, not
-        // editor content — mirrors `Self::with_chrome_surface`'s save/swap/restore
-        // above. Before this, `draw_list` painted with whatever font the
-        // shared layout happened to carry into the frame (typically the
-        // editor font), which has no Nerd-Font fallback family, so an
-        // icon glyph could render as tofu/blank depending on what else is
-        // installed.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_list(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            list,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    fn draw_list_with_state(
-        &mut self,
-        rect: QRect,
-        list: &ListView,
-        state: &crate::primitives::list::ListPaintState,
-        focus_ring_visible: bool,
-    ) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_list_with_state called outside enter_frame_scope");
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_list_with_state(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            list,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-            state.hovered_idx,
-            state.pressed_idx,
-            focus_ring_visible,
-            state.scroll_px,
-            state.striped,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
-        // `ListView::h_scroll` and `max_content_width` are in character columns,
-        // but GTK works in pixels.  Convert with `current_char_width` so the
-        // returned `Scrollbar` track/thumb are in pixel units — matching what
-        // `gtk::draw_list` paints and what mouse-event coords use.
-        let char_w = self.current_char_width as f32;
-        let max_w_chars = list.max_content_width? as f32;
-        let content_px = max_w_chars * char_w;
-        let border_inset = if list.bordered { char_w } else { 0.0 };
-        let visible_px = (rect.width - 2.0 * border_inset).max(0.0);
-        if content_px <= visible_px {
-            return None;
-        }
-        // Row pitch must match `draw_list`'s own (`resolved_row_height`),
-        // or the thumb geometry drifts from the rows it tracks.
-        let row_h = self.resolved_row_height(self.line_height() as f64) as f32;
-        let track = crate::primitives::list::hscrollbar_track(rect, list.bordered, char_w, row_h);
-        Some(crate::Scrollbar::horizontal(
-            list.id,
-            track,
-            list.h_scroll as f32 * char_w,
-            content_px,
-            visible_px,
-            row_h,
-        ))
-    }
-
-    fn list_vscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
-        // GTK ListView vertical-scrollbar rasteriser not yet implemented.
-        // Delegate to the primitive's geometry method using pixel units:
-        // each "row" is `resolved_row_height` tall, matching `draw_list`'s
-        // own row pitch. `scrollbar_width` sets the track's column width so
-        // this hit-test agrees exactly with what `draw_list` paints.
-        list.vscrollbar_with_track_width(
-            rect,
-            self.resolved_row_height(self.line_height() as f64) as f32,
-            self.current_style.scrollbar_width,
-        )
-    }
-
-    fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
-        crate::gtk::gtk_list_layout(
-            rect.width as f64,
-            rect.height as f64,
-            list,
-            self.resolved_row_height(self.current_line_height),
-            self.current_char_width,
-        )
-    }
-
-    // ─── Layout-passthrough primitives ─────────────────────────────────────
-    //
-    // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
-    // `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The current GTK rasterisers
-    // recompute their own
-    // layout internally, so the `_layout` parameter is currently
-    // ignored — kept for forward compatibility when the GTK
-    // rasterisers are updated to consume it. Behaviour is unchanged.
-
-    // ─── #13: trait coverage for the rest of the rasterised primitives ──
-
-    fn draw_scrollbar(
-        &mut self,
-        _rect: QRect,
-        scrollbar: &crate::primitives::scrollbar::Scrollbar,
-    ) {
-        let theme = self.current_theme;
-        let opacity = self.scrollbar_fade_opacity();
-        crate::primitives::scrollbar::native_surface_paint::paint_with_opacity(
-            scrollbar, self, &theme, opacity,
-        );
-        // A scrollbar strokes/fills only — no text — so on this
-        // pixel backend it would otherwise be indistinguishable from the
-        // no-op default. Register the primitive's own id at its own
-        // track bounds (not `_rect`, which the primitive ignores).
-        self.register_zone(scrollbar.id, scrollbar.track);
-    }
-
-    /// Paint via the shared [`crate::primitives::progress::native_surface_paint::paint`].
-    fn draw_progress(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::progress::ProgressBar,
-    ) -> crate::primitives::progress::ProgressBarLayout {
-        let theme = self.current_theme;
-        let style = self.style();
-        crate::primitives::progress::native_surface_paint::paint(bar, self, &theme, rect, &style)
-    }
-
-    fn progress_layout(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::progress::ProgressBar,
-    ) -> crate::primitives::progress::ProgressBarLayout {
-        crate::gtk::gtk_progress_layout(
-            bar,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-
-    fn draw_spinner(
-        &mut self,
-        rect: QRect,
-        spinner: &crate::primitives::spinner::Spinner,
-    ) -> crate::primitives::spinner::SpinnerLayout {
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
-        // Spinner's label (e.g. "Indexing…") is chrome, not editor
-        // content — save the editor font on the shared layout, paint in
-        // `ui_font`, then restore, matching `Self::with_chrome_surface`'s
-        // save/swap/restore.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let spinner_layout = crate::gtk::draw_spinner(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            spinner,
-            &theme,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        spinner_layout
-    }
-
-    fn spinner_layout(
-        &self,
-        rect: QRect,
-        spinner: &crate::primitives::spinner::Spinner,
-    ) -> crate::primitives::spinner::SpinnerLayout {
-        spinner.layout(
-            rect.x,
-            rect.y,
-            crate::primitives::spinner::SpinnerMeasure::new(
-                rect.width,
-                self.current_line_height as f32,
-            ),
-        )
     }
 }
 
@@ -3502,6 +3260,7 @@ mod tests {
     use super::*;
     use crate::backend::DrawsPrimitives;
     use crate::primitives::status_bar::{StatusBar, StatusBarPrimitiveLayout};
+    use crate::ListView;
     use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
@@ -3509,7 +3268,7 @@ mod tests {
     /// `tui_main::backend::tests::paint_overlays`.
     fn paint_overlays<B: Backend>(backend: &mut B, palette: &crate::Palette, list: &ListView) {
         crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
-        backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(0.0, 20.0, 80.0, 4.0), list, &());
     }
 
     #[test]
@@ -3680,98 +3439,6 @@ mod tests {
         h1.borrow_mut()
             .push(WidgetId::new("test:popup"), QRect::new(0.0, 0.0, 10.0, 5.0));
         assert_eq!(h2.borrow().len(), 1);
-    }
-
-    /// Pins the GTK column of the shared `hscrollbar_track` helper
-    /// as the reference behaviour the macOS `list_hscrollbar` copy had
-    /// silently dropped — a `bordered` list insets the track by one char
-    /// width on each side (and moves it up one row) so the thumb sits
-    /// inside the border rather than overpainting it.
-    #[test]
-    fn gtk_backend_list_hscrollbar_insets_track_for_bordered_list() {
-        let mut b = GtkBackend::new();
-        b.set_current_char_width(8.0);
-        b.set_current_line_height(16.0);
-        // The hscrollbar's row pitch now follows `draw_list`'s own
-        // (`resolved_row_height`, which defaults to `Style::row_height`
-        // on a pixel backend) — not the raw `current_line_height` set
-        // above, which this test keeps only for the char-width-based
-        // inset math on `track.x`/`track.width`.
-        let row_h = b.current_style().row_height;
-        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
-        let list = |bordered: bool| -> ListView {
-            ListView {
-                id: WidgetId::new("l"),
-                title: None,
-                items: vec![crate::ListItem {
-                    text: crate::types::StyledText::plain(&"x".repeat(40)),
-                    detail: None,
-                    icon: None,
-                    decoration: crate::types::Decoration::default(),
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                has_focus: true,
-                bordered,
-                h_scroll: 0,
-                max_content_width: Some(40),
-                show_v_scrollbar: false,
-                striped: false,
-            }
-        };
-
-        let flat_sb = b
-            .list_hscrollbar(rect, &list(false))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(flat_sb.track.x, 0.0);
-        assert_eq!(flat_sb.track.width, 200.0);
-
-        let bordered_sb = b
-            .list_hscrollbar(rect, &list(true))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(bordered_sb.track.x, 8.0);
-        assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
-        assert!(bordered_sb.track.x >= rect.x + 8.0);
-        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
-    }
-
-    /// `Backend::set_style` overriding `row_height` changes the row
-    /// pitch `list_layout` resolves — the acceptance bar for this chrome
-    /// metric, mirrored from `MacBackend`'s equivalent test.
-    #[test]
-    fn gtk_backend_list_layout_row_pitch_follows_a_set_style_override() {
-        let mut b = GtkBackend::new();
-        b.set_current_line_height(10.0);
-        let list = ListView {
-            id: WidgetId::new("l"),
-            title: None,
-            items: vec![crate::ListItem {
-                text: crate::types::StyledText::plain("row"),
-                detail: None,
-                icon: None,
-                decoration: crate::types::Decoration::default(),
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
-
-        let default_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(
-            default_layout.visible_items[0].bounds.height,
-            b.current_style().row_height
-        );
-
-        b.set_style(crate::Style::default().with_row_height(30.0));
-        let overridden_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     #[test]
@@ -4061,17 +3728,6 @@ mod tests {
             "the thread-local's clone must be released with the backend"
         );
         assert!(super::wake_callback_for(wake_id).is_none());
-    }
-
-    /// GTK reserves room for its `ScrolledWindow` overlay
-    /// scrollbar so a caller's content viewport width
-    /// (`rect.width - backend.scrollbar_reserve()`) never renders text
-    /// behind the overlay — see the trait default (0.0) that TUI relies
-    /// on instead.
-    #[test]
-    fn gtk_backend_scrollbar_reserve_is_nonzero() {
-        let backend = GtkBackend::new();
-        assert_eq!(Backend::scrollbar_reserve(&backend), 8.0);
     }
 
     /// With no window set (the state of every unit test and every
@@ -5366,8 +5022,8 @@ mod tests {
     }
 
     /// `TreeStyle`/`ListView` row pitch is a fixed [`crate::Style::row_height`]
-    /// token (22px), resolved via [`GtkBackend::resolved_row_height`] from
-    /// the *editor* font's line height — independent of `ui_font`'s size,
+    /// token (22px), resolved via [`crate::primitive::LayoutCtx::resolve_row_height`]
+    /// from the *editor* font's line height — independent of `ui_font`'s size,
     /// so moving the chrome font's install point from `11` to
     /// [`DEFAULT_UI_FONT_SIZE_PT`] (`9.75`, smaller in points, but larger
     /// in rendered pixels) cannot perturb it. Pinned here via the real
@@ -5378,7 +5034,10 @@ mod tests {
         assert_eq!(backend.current_style.row_height, 22.0);
         // A plausible chrome/editor line height (comfortably under 22px)
         // must resolve up to the style token, not be clipped down to it.
-        assert_eq!(backend.resolved_row_height(16.0), 22.0);
+        assert_eq!(
+            crate::primitive::LayoutCtx::resolve_row_height(16.0, &backend.current_style),
+            22.0
+        );
     }
 
     /// `monospace`/`sans-serif` (and Pango's own `Monospace`/`Sans`
@@ -6220,7 +5879,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width
@@ -6250,7 +5909,9 @@ mod tests {
         };
         let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
 
-        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let default_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(
             default_sb.track.width,
@@ -6258,12 +5919,14 @@ mod tests {
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let overridden_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(overridden_sb.track.width, 24.0);
     }
 
-    /// `draw_list` paints item labels and icon glyphs with `ui_font`, not
+    /// A list paints item labels and icon glyphs with `ui_font`, not
     /// the editor-content layout's font. Paint the same single-item list
     /// under two wildly different "editor" font sizes with `ui_font` left
     /// at its default — the painted extent must be identical — then change
@@ -6317,7 +5980,7 @@ mod tests {
                     Backend::set_ui_font(&mut backend, f);
                 }
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_list(rect, &list);
+                    let _ = b.draw_dyn(rect, &list, &());
                 });
             }
             surface.flush();
@@ -6350,122 +6013,6 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted row label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
-        );
-    }
-
-    /// A consumer that budgets `ListView` row text from
-    /// [`Backend::char_width`] under-fills the row, because `draw_list`
-    /// paints in `ui_font`, not the editor font `char_width` measures.
-    /// [`Backend::list_char_width`] exists so a consumer has a metric that
-    /// agrees with what got painted. This test ties the two together
-    /// mechanically, through the real per-frame `gtk::run::render_frame`
-    /// path, so they can never silently diverge. Renders a real
-    /// English-prose row label (proportional fonts don't wrap a synthetic
-    /// `"MMMM…"` run the same way they wrap prose) with the editor font
-    /// forced to a size wildly different from the [`DEFAULT_UI_FONT_SIZE_PT`]
-    /// chrome default, then compares the label's actual painted width against
-    /// both `list_char_width() * chars` and `char_width() * chars`.
-    #[test]
-    fn list_char_width_matches_what_draw_list_actually_paints() {
-        use crate::runner::{AppLogic, Reaction};
-
-        const ROW_TEXT: &str = "the quick brown fox jumps over";
-
-        struct Fixture;
-        impl AppLogic for Fixture {
-            type AreaId = ();
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let vp = backend.viewport();
-                let list = ListView {
-                    id: WidgetId::new("test:912:list-char-width"),
-                    title: None,
-                    items: vec![crate::primitives::list::ListItem {
-                        text: crate::types::StyledText::plain(ROW_TEXT.to_string()),
-                        icon: None,
-                        detail: None,
-                        decoration: crate::types::Decoration::Normal,
-                    }],
-                    selected_idx: 0,
-                    scroll_offset: 0,
-                    has_focus: false,
-                    bordered: false,
-                    h_scroll: 0,
-                    max_content_width: None,
-                    show_v_scrollbar: false,
-                    striped: false,
-                };
-                let rect = QRect::new(0.0, 0.0, vp.width, vp.height);
-                backend.draw_list(rect, &list);
-            }
-            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-                Reaction::Continue
-            }
-        }
-
-        const W: i32 = 800;
-        const H: i32 = 60;
-        let surface =
-            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
-                .expect("create ImageSurface");
-        let mut backend = GtkBackend::new();
-        backend.set_painted_text_recording(true);
-        // Force the editor font to a wildly different size than the
-        // default chrome size — a bare "Monospace 11" vs. "Sans 9.75"
-        // pairing isn't guaranteed to differ on every host (a
-        // minimal fontconfig setup can resolve both generic aliases to
-        // the same fallback face), which would make both assertions
-        // below vacuously true. A 40pt/9.75pt size gap is guaranteed to
-        // produce different advances regardless of which family either
-        // alias resolves to, while `draw_list`'s painted width — which
-        // paints in `ui_font`, not the editor font — must stay
-        // exactly where it was.
-        Backend::set_editor_font(&mut backend, "Monospace", 40.0);
-        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
-        crate::gtk::run::render_frame(&mut backend, &Fixture, &cr, W, H);
-
-        let bounds = backend
-            .painted_text_for_test()
-            .iter()
-            .find(|p| p.text == ROW_TEXT)
-            .unwrap_or_else(|| {
-                panic!("expected {ROW_TEXT:?} to have been recorded as painted text")
-            })
-            .bounds;
-
-        let list_cw = Backend::list_char_width(&backend);
-        let editor_cw = Backend::char_width(&backend);
-        let chars = ROW_TEXT.chars().count() as f32;
-
-        // Fixture assumption: the (forced-huge) editor font and the
-        // default chrome font must actually have visibly different
-        // advances, or neither assertion below proves anything (they'd
-        // both look "right" by accident).
-        assert!(
-            (editor_cw - list_cw).abs() > 0.5,
-            "test fixture assumption broken: the editor font (forced to \
-             \"Monospace 40\" above) and chrome font (default) must \
-             have visibly different advances for this test to prove \
-             anything — editor_cw={editor_cw}, list_cw={list_cw}"
-        );
-
-        // `list_char_width()` — the font `draw_list` really painted with —
-        // must predict the row's painted width at least as well as the
-        // *editor* font's `char_width()` does. This is what regresses if
-        // `draw_list`'s font ever changes without `list_char_width()`
-        // following it (or vice versa): the naive `char_width()` budget would
-        // silently start winning again.
-        let list_predicted = list_cw * chars;
-        let editor_predicted = editor_cw * chars;
-        let list_err = (bounds.width - list_predicted).abs();
-        let editor_err = (bounds.width - editor_predicted).abs();
-        assert!(
-            list_err < editor_err,
-            "list_char_width() must predict draw_list's painted row width \
-             better than char_width() does (quadraui#912) for {ROW_TEXT:?}: \
-             painted_width={}, list_char_width()*{chars}={list_predicted} \
-             (err={list_err}), char_width()*{chars}={editor_predicted} \
-             (err={editor_err})",
-            bounds.width,
         );
     }
 
@@ -6816,7 +6363,7 @@ mod tests {
     /// *role*-appropriate cached advance (`current_chrome_char_width` for
     /// [`crate::FontRole::Chrome`], `current_char_width` for
     /// [`crate::FontRole::Editor`]) rather than the same one for both.
-    /// The same mismatch hazard [`Backend::list_char_width`]'s doc describes.
+    /// The same mismatch hazard `current_chrome_char_width`'s doc describes.
     #[test]
     fn measure_text_fallback_picks_the_role_appropriate_char_width() {
         use crate::{Backend, FontRole};
@@ -6889,114 +6436,6 @@ mod tests {
         assert_eq!(
             at_origin.hit_regions, shifted.hit_regions,
             "LOCAL form_layout must not shift hit regions by rect.x/rect.y"
-        );
-    }
-
-    /// `list_layout` is documented **LOCAL** — `GtkBackend`'s impl ignores
-    /// `rect.x`/`rect.y` and calls `gtk_list_layout(rect.width, rect.height, ..)`.
-    /// A non-zero origin must produce byte-identical geometry to the zero-origin
-    /// case and match the exact `gtk_list_layout` helper `draw_list` uses.
-    #[test]
-    fn gtk_backend_list_layout_ignores_rect_origin_and_matches_helper() {
-        let list = ListView {
-            id: WidgetId::new("test:list"),
-            title: None,
-            items: vec![crate::primitives::list::ListItem {
-                text: crate::types::StyledText::plain("only"),
-                icon: None,
-                detail: None,
-                decoration: crate::types::Decoration::Normal,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        let backend = GtkBackend::new();
-
-        let at_origin = Backend::list_layout(&backend, QRect::new(0.0, 0.0, 200.0, 100.0), &list);
-        let shifted = Backend::list_layout(&backend, QRect::new(7.0, 13.0, 200.0, 100.0), &list);
-        assert_eq!(
-            at_origin, shifted,
-            "LOCAL list_layout must not shift geometry by rect.x/rect.y"
-        );
-
-        let via_helper = crate::gtk::gtk_list_layout(
-            200.0,
-            100.0,
-            &list,
-            backend.resolved_row_height(backend.current_line_height),
-            backend.current_char_width,
-        );
-        assert_eq!(
-            at_origin, via_helper,
-            "list_layout must equal the exact helper draw_list uses internally"
-        );
-        assert!(
-            !at_origin.visible_items.is_empty(),
-            "sanity: the sample list has an item to lay out"
-        );
-    }
-
-    /// The h-scrollbar row reservation must actually shrink the
-    /// returned layout — not just avoid crashing — and `Backend::list_layout`
-    /// must still equal the exact helper `draw_list` uses internally once
-    /// that reservation is active. Companion to
-    /// `gtk_backend_list_layout_ignores_rect_origin_and_matches_helper`
-    /// above but with `max_content_width` forcing a scrollbar, so this
-    /// specifically exercises the row-reservation math GTK now shares
-    /// with macOS via `primitives::layout_metrics::list_layout` — a
-    /// regression here would mean the two backends drifted apart again.
-    #[test]
-    fn gtk_backend_list_layout_reserves_hscrollbar_row_and_matches_helper() {
-        let list = ListView {
-            id: WidgetId::new("test:list"),
-            title: None,
-            items: (0..12)
-                .map(|i| crate::primitives::list::ListItem {
-                    text: crate::types::StyledText::plain(format!("row {i}")),
-                    icon: None,
-                    detail: None,
-                    decoration: crate::types::Decoration::Normal,
-                })
-                .collect(),
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            // Way past any plausible visible width at the default 8px
-            // char width, so this reliably forces the scrollbar.
-            max_content_width: Some(1000),
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        let backend = GtkBackend::new();
-        let rect = QRect::new(0.0, 0.0, 200.0, 100.0);
-
-        let via_backend = Backend::list_layout(&backend, rect, &list);
-        let row_h = backend.resolved_row_height(backend.current_line_height);
-        let via_helper =
-            crate::gtk::gtk_list_layout(200.0, 100.0, &list, row_h, backend.current_char_width);
-        assert_eq!(
-            via_backend, via_helper,
-            "list_layout must equal the exact helper draw_list uses internally, \
-             even when an h-scrollbar row is reserved"
-        );
-
-        // Sanity: the reservation actually happened — content stops
-        // before filling the full 100px viewport height.
-        let last = via_backend.visible_items.last().expect("has items");
-        assert!(
-            last.bounds.y + last.bounds.height <= 100.0 - row_h as f32,
-            "h-scrollbar row must be reserved: last row bottom = {}, \
-             viewport height = 100, row_height = {}",
-            last.bounds.y + last.bounds.height,
-            row_h,
         );
     }
 
@@ -8807,12 +8246,13 @@ mod tests {
     fn gtk_backend_draw_text_display_scrollbar_gutter_and_thumb_paint() {
         let td = make_td(100, true);
         let mut surface = paint_td_via_backend(&td);
-        let layout = crate::gtk::gtk_text_display_layout(
+        let layout = crate::primitives::text_display::pixel_layout(
             &td,
             QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32),
             16.0,
             8.0,
-        );
+        )
+        .layout;
         let theme = crate::Theme::default();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");

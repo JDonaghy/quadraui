@@ -54,7 +54,7 @@
 //! scope. A primitive is intentionally absent from this file if it is
 //! editor-class (paints in the editor font on purpose —
 //! `crate::font_role::EditorClassPrimitive::ALL`) or if it paints no
-//! text of its own (`Split`, `SplitTree`, `draw_scrollbar`).
+//! text of its own (`Split`, `SplitTree`, `Scrollbar`).
 
 #![cfg(feature = "gtk")]
 
@@ -421,19 +421,17 @@ fn draw_completions_paints_in_chrome_font() {
 }
 
 /// `Spinner`'s label (e.g. "Indexing…") is chrome — a status indicator,
-/// not editor content. Its GTK call site (`GtkBackend::draw_spinner`)
-/// paints through its own `(cr, pango_layout)` pair rather than
-/// `PaintSurface`.
+/// not editor content.
 #[test]
-fn draw_spinner_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_spinner", |b, area| {
+fn spinner_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_dyn(Spinner)", |b, area| {
         let spinner = Spinner {
             id: id("spinner"),
             label: LABEL.to_string(),
             frame_idx: 0,
             accent: None,
         };
-        let _ = b.draw_spinner(area, &spinner);
+        let _ = quadraui::DrawsPrimitives::draw_dyn(b, area, &spinner, &());
     });
 }
 

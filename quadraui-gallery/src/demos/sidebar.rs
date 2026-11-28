@@ -445,7 +445,8 @@ impl Demo for SidebarDemo {
                         visible,
                         line_h,
                     );
-                    backend.draw_scrollbar(sb_rect, &sb);
+                    let _ = backend.draw_dyn(sb.track, &sb, &());
+                    backend.register_zone(sb.id, sb.track);
                 }
                 let hint = Rect::new(area.x, area.y + panel_rect.height, area.width, lh);
                 let bar = StatusBar {

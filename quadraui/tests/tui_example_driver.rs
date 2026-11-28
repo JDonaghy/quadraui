@@ -6778,7 +6778,7 @@ fn chart_grouped_bar_view_paints_series_side_by_side() {
 // ─── IndicatorsApp: toggling cancellable paints/clears '×' ─────────────────
 //
 // `IndicatorsApp::handle`'s `'c'` arm flips `self.cancellable`, which
-// `tui::progress::draw_progress` uses to decide whether to reserve a
+// the progress bar's cell painter uses to decide whether to reserve a
 // 3-cell cancel affordance and paint the '×' glyph into it. This is the
 // "toggle indicator state, assert symbol change" scenario named in the
 // issue — a dropped `cancellable` flag (or a cancel-bounds calc that never
@@ -10670,10 +10670,9 @@ fn focus_demo_ring_overlays_without_erasing_the_focused_widget() {
 
 /// A minimal `AppLogic` + two local `Interactive` widgets, built only to
 /// drive `ScreenLayout::tab_stops()`/the runner's shared Tab-cycle through
-/// three real `Surface::Widget` entries — the generic widget-contract path
-/// `FocusDemo` above never exercises, since every one of its stops is a
-/// built-in primitive (`Surface::List`/`Surface::StatusBar`), not a
-/// `Surface::Widget`.
+/// three `Surface::Widget` entries built from widgets defined outside the
+/// crate, complementing `FocusDemo` above, whose stops are all built-in
+/// widgets.
 mod three_widget_focus_demo {
     use quadraui::interactive::SubTarget;
     use quadraui::{

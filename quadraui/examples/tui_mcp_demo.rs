@@ -176,9 +176,9 @@ impl AppLogic for McpDemo {
         let text_w = (vp.width - list_w - detail_w).max(16.0);
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::List {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, list_w, vp.height),
-            list: ListView {
+            widget: Box::new(ListView {
                 id: WidgetId::new("items"),
                 title: Some(StyledText::plain("Items")),
                 items: self
@@ -199,7 +199,7 @@ impl AppLogic for McpDemo {
                 max_content_width: None,
                 show_v_scrollbar: false,
                 striped: false,
-            },
+            }),
         });
 
         let detail_lines = match self.selected_item() {
