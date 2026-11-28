@@ -11,6 +11,8 @@ members = [
     "kubeui",
     "kubeui-gtk",
     "tools/lint",
+    "examples/hero/rust",
+    "examples/parity/rust",
 ]
 # `templates/app` is a `cargo generate` starter template, not a crate
 # this repo itself builds. Its manifest uses `{{project-name}}` /

@@ -27,11 +27,13 @@ name: Deploy site
 #      on `develop`, and macOS's on every `macos.yml` run on `develop`
 #      (each push touching `quadraui/src/**`, plus the weekly cron).
 #   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
-#      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
+#      and `site/src/SUMMARY.md` (the hand-written navigation in
+#      `site/SUMMARY.template.md` with the gallery spliced in; its
+#      `--capture` is repeatable and keys
 #      rows by `(demo, group, variant, backend)`, preferring a real
 #      capture over a pending row), which `mdbook build` then turns into
-#      the deployed HTML alongside the hand-maintained
-#      `site/src/introduction.md` / `site/src/getting-started.md`.
+#      the deployed HTML alongside the hand-written pages in `site/src/`.
+#      `scripts/site_gallery.sh` runs the same steps locally.
 on:
   push:
     branches: [develop]
@@ -168,10 +170,14 @@ jobs:
             --registry target/site/registry.json \
             --capture target/site/capture-tui \
             "${extra[@]}" \
+            --summary-template site/SUMMARY.template.md \
             --out site/src
 
       - name: Build mdBook
         run: mdbook build site
+
+      - name: Check links in the built site
+        run: python3 tools/check_site_links.py site/book
 
       # No `actions/configure-pages@v5` step here: that action's only
       # output is `base_url`/`origin` metadata, neither of which this job

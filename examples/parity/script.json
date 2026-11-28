@@ -1,0 +1,12 @@
+[
+  {"click": [10, 0]},
+  {"type": "Buy milk"},
+  {"key": "Enter"},
+  {"click": [3, 7]},
+  {"click": [10, 0]},
+  {"type": "Tea"},
+  {"click": [3, 7]},
+  {"click": [6, 4]},
+  {"key": "Down"},
+  {"click": [24, 7]}
+]

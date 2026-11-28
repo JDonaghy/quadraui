@@ -274,6 +274,20 @@ class GenerateTest(unittest.TestCase):
         self.assertIn("[Toast](gallery/toast.md)", summary)
         self.assertIn("[Activity Bar](gallery/activity-bar.md)", summary)
 
+    def test_group_page_shows_each_demo_on_every_backend(self):
+        page = (self.out_dir / "gallery" / "group-overlays.md").read_text()
+        self.assertIn("| Widget | TUI | GTK | macOS | Windows |", page)
+        self.assertIn("[Toast](toast.md)", page)
+        self.assertIn(
+            "[![TUI](images/tui__overlays__toast__default.svg)](images/tui__overlays__toast__default.svg)",
+            page,
+        )
+
+    def test_gallery_index_links_every_group_page(self):
+        index = (self.out_dir / "gallery" / "index.md").read_text()
+        self.assertIn("## [Overlays](group-overlays.md)", index)
+        self.assertIn("## [Chrome](group-chrome.md)", index)
+
     def test_rerunning_generate_cleans_up_stale_pages(self):
         # A demo removed from the registry between two runs must not
         # leave behind a stale page from the previous run.
@@ -329,6 +343,52 @@ class GenerateTest(unittest.TestCase):
             # newline.
             self.assertEqual(row_line.count("|") - row_line.count("\\|"), 6)
             self.assertIn("panic at row 1 \\| col 2 second line", row_line)
+
+
+class SummaryTemplateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.registry_path = self.root / "registry.json"
+        self.registry_path.write_text(json.dumps(FIXTURE_REGISTRY))
+        self.capture_dir = self.root / "capture"
+        write_fixture_capture(self.capture_dir)
+        self.out_dir = self.root / "site-src"
+
+    def generate_with(self, template: str) -> str:
+        path = self.root / "SUMMARY.template.md"
+        path.write_text(template)
+        site_gen.generate(self.registry_path, [self.capture_dir], self.out_dir, path)
+        return (self.out_dir / "SUMMARY.md").read_text()
+
+    def test_marker_line_becomes_the_gallery_and_the_rest_is_kept(self):
+        summary = self.generate_with(
+            "# Summary\n\n[Introduction](introduction.md)\n\n# Widgets\n\n"
+            "<!-- site_gen:gallery -->\n\n# Reference\n\n- [Links](links.md)\n"
+        )
+        self.assertIn("[Introduction](introduction.md)", summary)
+        self.assertIn("- [Links](links.md)", summary)
+        self.assertNotIn("site_gen:gallery", summary)
+        lines = summary.splitlines()
+        self.assertIn("- [Widget gallery](gallery/index.md)", lines)
+        self.assertIn("    - [Overlays](gallery/group-overlays.md)", lines)
+        self.assertIn("        - [Toast](gallery/toast.md)", lines)
+        # The gallery lands where the marker was: after "# Widgets", before "# Reference".
+        self.assertLess(lines.index("# Widgets"), lines.index("- [Widget gallery](gallery/index.md)"))
+        self.assertLess(lines.index("- [Widget gallery](gallery/index.md)"), lines.index("# Reference"))
+
+    def test_marker_indentation_nests_the_gallery(self):
+        summary = self.generate_with("# Summary\n\n- [Widgets](widgets.md)\n    <!-- site_gen:gallery -->\n")
+        self.assertIn("    - [Widget gallery](gallery/index.md)", summary.splitlines())
+
+    def test_template_without_marker_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.generate_with("# Summary\n\n[Introduction](introduction.md)\n")
+
+    def test_the_real_site_template_has_the_marker(self):
+        template = Path(__file__).resolve().parent.parent / "site" / "SUMMARY.template.md"
+        self.assertIn(site_gen.GALLERY_MARKER, template.read_text())
 
 
 class SlugCollisionTest(unittest.TestCase):
