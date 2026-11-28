@@ -442,9 +442,9 @@ fn classify_c0_case(
 ///
 /// A registered backend with nothing to say for a given primitive prints
 /// as a row here, same as a tier-1 `FAIL` — never silence. A backend this
-/// build doesn't compile in simply has no column. `win` is registered as
-/// [`runner::Gating::BurnDown`] rather than blocking; see `docs/TESTING.md`
-/// → *Burn-down columns* for why a half-built backend gets a column.
+/// build doesn't compile in simply has no column. Every column gates; see
+/// `docs/TESTING.md` → *Burn-down columns* for how a half-built backend
+/// joins as [`runner::Gating::BurnDown`] until its column passes.
 ///
 /// ## What this tier does *not* yet catch
 ///
@@ -485,16 +485,11 @@ fn c0_paint_smoke() {
         outcomes: c0::run::<GtkFactory>(),
         gating: Gating::Blocking,
     });
-    // Win-GUI: registered burn-down, not blocking. `WinFactory`/`WinDriver`
-    // exist, but `WinBackend`'s painted-text-run recording and `register_zone`
-    // are stubs and several `draw_*` methods are still `todo!()`. Gating on
-    // that would red windows-latest for every unrelated PR; the row detail
-    // below is the burn-down checklist this registration produces.
     #[cfg(all(feature = "win", target_os = "windows"))]
     columns.push(Column {
         name: "win",
         outcomes: c0::run::<WinFactory>(),
-        gating: Gating::BurnDown,
+        gating: Gating::Blocking,
     });
 
     // With a C0 driver compiled in, an empty column set means the
