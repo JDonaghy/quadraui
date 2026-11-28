@@ -338,6 +338,17 @@ jobs:
             install: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
               python3 python3-venv libgtk-4-1 xvfb dbus fonts-dejavu-core
+          - name: fedora-40 + gtk4
+            image: fedora:40
+            mode: gtk
+            # Fedora 40 is end-of-life: its packages live only on the archive
+            # host, which the image's metalinks no longer point at.
+            install: >-
+              sed -i -e 's|^metalink=|#metalink=|'
+              -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|'
+              /etc/yum.repos.d/fedora.repo /etc/yum.repos.d/fedora-updates.repo &&
+              dnf install -y --disablerepo='*cisco*' python3 gtk4 xorg-x11-server-Xvfb
+              dbus-daemon dejavu-sans-fonts
           - name: fedora-42 + gtk4
             image: fedora:42
             mode: gtk
