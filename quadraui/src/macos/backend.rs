@@ -6504,6 +6504,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
