@@ -3504,6 +3504,7 @@ mod tests {
         let ev = s.handle(
             &UiEvent::DoubleClick {
                 widget: None,
+                button: crate::MouseButton::Left,
                 position: p,
             },
             &backend,
@@ -3546,6 +3547,7 @@ mod tests {
         let ev = s.handle(
             &UiEvent::DoubleClick {
                 widget: None,
+                button: crate::MouseButton::Left,
                 position: p,
             },
             &backend,
@@ -3578,6 +3580,7 @@ mod tests {
         let ev = s.handle(
             &UiEvent::DoubleClick {
                 widget: None,
+                button: crate::MouseButton::Left,
                 position: outside,
             },
             &RecordingBackend::new(),

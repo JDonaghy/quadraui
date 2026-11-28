@@ -50,6 +50,8 @@ fn tree_table() -> TreeTable {
     }
     TreeTable::new(
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tree_table:contract"),
             columns: vec![
                 Column {

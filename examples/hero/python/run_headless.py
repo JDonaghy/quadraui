@@ -1,5 +1,6 @@
-"""Drives the hero counter headless on the TUI backend: click `+`, `-`, `+`
-by their on-screen labels, then check the rendered frame. The Rust
+"""Drives the hero counter headless on the TUI backend: click `+`, `+`, `-`
+by their on-screen labels (the two `+` clicks land on one spot inside the
+double-click interval, and each one counts), then check the rendered frame. The Rust
 test (`examples/hero/rust/tests/headless.rs`) and the Node runner
 (`examples/hero/node/run_headless.ts`) drive the identical script.
 
@@ -18,11 +19,10 @@ from quadraui.testing import harness  # noqa: E402
 counter = Counter()
 h = harness(App(30, 5, view=counter.view))
 assert h.contains("Count: 0"), h.screen()
-# `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-# DoubleClick, which a Button does not treat as a second activation (see
-# examples/hero/README.md, "Gaps").
-for label in ("+", "-", "+"):
+for label in ("+", "+"):
     h.click_text(label)
+assert h.contains("Count: 2"), h.screen()
+h.click_text("-")
 print(h.screen())
 assert h.contains("Count: 1"), h.screen()
 assert counter.count == 1

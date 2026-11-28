@@ -148,10 +148,9 @@ const { harness } = require(SUBPATHS["@quadraui/node/testing"]);
 const counter = new Counter();
 const h = harness(new App(30, 5, { view: () => counter.view() }));
 if (!h.contains("Count: 0")) throw new Error(h.screen());
-// `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-// DoubleClick, which a Button does not treat as a second activation (see
-// examples/hero/README.md, "Gaps").
-for (const label of ["+", "-", "+"]) h.clickText(label);
+for (const label of ["+", "+"]) h.clickText(label);
+if (!h.contains("Count: 2")) throw new Error(h.screen());
+h.clickText("-");
 console.log(h.screen());
 if (!h.contains("Count: 1")) throw new Error(h.screen());
 ```
@@ -170,12 +169,11 @@ The harness methods you will use most:
 | `screen()`, `screenLines()` | The frame as text. |
 | `find({ id, role, text })` | A widget, to read or act on (`.click()`, `.focus()`, `.row(...)`). |
 
-**Two clicks on the same spot count once.** Clicks less than 400 ms and
-1.5 cells apart fold into a double-click, and a button ignores the second
-half of one. This is why the test clicks `+ - +` rather than `+ + -`. To
-press the same button twice, click it once (which also focuses it) and
-then `h.press("Enter")`. A user clicking quickly in a live app hits the
-same limit today.
+**Two quick clicks are two clicks.** Clicks less than 400 ms and 1.5
+cells apart fold into a double-click, which a list, table or tree row
+treats as "open"; a button, or any widget with no double-click meaning,
+sees both presses, so the two quick `+` clicks above count twice. Only the
+left button folds: two quick right-clicks are two context-menu requests.
 
 ## 6. Next: a text field and a list
 

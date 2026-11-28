@@ -48,7 +48,9 @@ use crate::host::{
 };
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
-use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent};
+use crate::semantic::{
+    focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent, Press, Selections,
+};
 use crate::wire::DragRole;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
@@ -130,30 +132,15 @@ impl LayoutContent {
         tab_stops_from_hits(&self.hits.borrow())
     }
 
-    /// Routes `event` into the subtree, exactly as the main tree's own
+    /// Routes `event` into the subtree as the main tree's
     /// `event -> hit -> semantic` dispatch would: a positioned
-    /// `MouseDown`/`DoubleClick` click-focuses the leaf it landed on
-    /// (mirroring [`InteractionEngine::handle`]'s own click-to-focus
-    /// convention) and then resolves through the leaf itself — a generic
-    /// [`crate::layout::LeafDescriptor::Widget`] leaf through its own
-    /// [`DynWidget::handle`] (via `engine`), every other leaf through
-    /// [`crate::semantic::semantic_event_for_hit`]; a
-    /// `KeyPressed`/`CharTyped`/`ClipboardPaste` routes to whichever leaf
-    /// holds keyboard focus, through `engine`'s generic widget dispatch
-    /// for a [`crate::layout::LeafDescriptor::Widget`] leaf (a text
-    /// input's caret, selection and undo state, a form's field focus,
-    /// live in `engine`'s per-widget store like any main-tree leaf's), and
-    /// through [`crate::semantic::focus_scoped_key_event`] for every other
-    /// kind.
-    ///
-    /// Escape a focused generic leaf has no use for, and Escape on any
-    /// other leaf, is left unclaimed: the overlay itself owns Escape —
-    /// dismissing a popover, resolving a dialog to its cancel button —
-    /// and only a leaf that answers it (an open `ComboBox`, a form field)
-    /// outranks that.
-    ///
-    /// `None` means nothing in the subtree claimed `event`, leaving the
-    /// caller's own fallback (Escape dismissal, modal swallowing) to run.
+    /// `MouseDown`/`DoubleClick` click-focuses the leaf it hit, then resolves
+    /// through a generic `Widget` leaf's [`DynWidget::handle`] (via `engine`)
+    /// or [`crate::semantic::semantic_event_for_hit`]; a key, text or paste
+    /// goes to the focused leaf the same two ways (generic leaves keep their
+    /// caret, selection and undo state in `engine`'s per-widget store).
+    /// Escape is left to the overlay (dismiss, or a dialog's cancel) unless a
+    /// leaf answers it. `None` means nothing in the subtree claimed `event`.
     fn dispatch(
         &self,
         event: &UiEvent,
@@ -167,13 +154,12 @@ impl LayoutContent {
             UiEvent::MouseDown { position, .. } | UiEvent::DoubleClick { position, .. } => {
                 let position = *position;
                 let double_click = matches!(event, UiEvent::DoubleClick { .. });
-                let modifiers = match event {
-                    UiEvent::MouseDown { modifiers, .. } => *modifiers,
-                    _ => Modifiers::default(),
-                };
-                let button = match event {
-                    UiEvent::MouseDown { button, .. } => *button,
-                    _ => MouseButton::default(),
+                let (modifiers, button) = match event {
+                    UiEvent::MouseDown {
+                        modifiers, button, ..
+                    } => (*modifiers, *button),
+                    UiEvent::DoubleClick { button, .. } => (Modifiers::default(), *button),
+                    _ => (Modifiers::default(), MouseButton::default()),
                 };
                 let (id, detail, is_focusable) = {
                     let hits = self.hits.borrow();
@@ -217,12 +203,18 @@ impl LayoutContent {
                         );
                     }
                 }
+                let press = Press {
+                    position,
+                    button,
+                    modifiers,
+                    double_click,
+                };
                 let semantic = semantic_event_for_hit(
                     id,
                     &detail,
-                    modifiers,
-                    double_click,
+                    press,
                     &self.hits.borrow(),
+                    &mut engine.selections.borrow_mut(),
                 );
                 let resolved = semantic.unwrap_or_else(|| event.clone());
                 Some(
@@ -248,8 +240,13 @@ impl LayoutContent {
                 if matches!(key, Key::Named(NamedKey::Escape)) {
                     return None;
                 }
-                let resolved =
-                    focus_scoped_key_event(focused, key, *modifiers, &self.hits.borrow());
+                let resolved = focus_scoped_key_event(
+                    focused,
+                    key,
+                    *modifiers,
+                    &self.hits.borrow(),
+                    &mut engine.selections.borrow_mut(),
+                );
                 // `focus_scoped_key_event` echoes the original
                 // `KeyPressed` back when `focused` names no leaf in this
                 // subtree at all (or one with no key semantics of its
@@ -1072,6 +1069,8 @@ pub struct InteractionEngine {
     /// `resolve_*` helpers. [`Self::set_hits`] runs the store's frame
     /// sweep every frame.
     widget_state: RefCell<quadraui::WidgetStateStore>,
+    /// Each `DataTable`/`List`/`Tree` leaf's multi-selection.
+    selections: RefCell<Selections>,
     /// This engine's claim on the thread's runtime
     /// [`quadraui::WidgetStateStore`], where it keeps every generic
     /// [`DynWidget`] leaf's `Interactive::State` — the store
@@ -1153,18 +1152,6 @@ struct DynWidgetClickOutcome {
     consumed: bool,
     /// Every `Reaction` already dispatched/resolved by this call.
     reaction: quadraui::Reaction,
-}
-
-/// The pointer-click facts [`InteractionEngine::handle`] has already
-/// resolved by the time a hit reaches
-/// [`InteractionEngine::dispatch_dyn_widget_click`] — bundled into one
-/// value so that method stays under `clippy::too_many_arguments` without
-/// losing any of them.
-struct PointerClick {
-    position: Point,
-    button: MouseButton,
-    modifiers: Modifiers,
-    double_click: bool,
 }
 
 impl Default for DynWidgetClickOutcome {
@@ -2840,11 +2827,11 @@ impl InteractionEngine {
     fn dispatch_dyn_widget_click(
         &self,
         id: WidgetId,
-        click: PointerClick,
+        click: Press,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
-        let PointerClick {
+        let Press {
             position,
             button,
             modifiers,
@@ -3877,7 +3864,13 @@ impl InteractionEngine {
                 } else {
                     false
                 };
-                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
+                event = focus_scoped_key_event(
+                    focused,
+                    key,
+                    *modifiers,
+                    &self.hit_map.borrow(),
+                    &mut self.selections.borrow_mut(),
+                );
                 if nav_applied {
                     // A windowed leaf's cursor move can scroll past the
                     // slice its app has loaded — ask for the rows that
@@ -4076,9 +4069,7 @@ impl InteractionEngine {
                 UiEvent::MouseDown {
                     modifiers, button, ..
                 } => Some((*modifiers, false, *button)),
-                UiEvent::DoubleClick { .. } => {
-                    Some((Modifiers::default(), true, MouseButton::default()))
-                }
+                UiEvent::DoubleClick { button, .. } => Some((Modifiers::default(), true, *button)),
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
@@ -4086,7 +4077,7 @@ impl InteractionEngine {
                     if let Some(position) = event_position(&event) {
                         let outcome = self.dispatch_dyn_widget_click(
                             *id,
-                            PointerClick {
+                            Press {
                                 position,
                                 button,
                                 modifiers,
@@ -4259,13 +4250,22 @@ impl InteractionEngine {
                         }
                     }
                     attach_hit = false;
-                } else if let Some(semantic) = semantic_event_for_hit(
-                    *id,
-                    detail,
-                    modifiers,
-                    double_click,
-                    &self.hit_map.borrow(),
-                ) {
+                } else if let Some(semantic) = event_position(&event).and_then(|position| {
+                    let press = Press {
+                        position,
+                        button,
+                        modifiers,
+                        double_click,
+                    };
+                    let mut selections = self.selections.borrow_mut();
+                    semantic_event_for_hit(
+                        *id,
+                        detail,
+                        press,
+                        &self.hit_map.borrow(),
+                        &mut selections,
+                    )
+                }) {
                     event = semantic;
                     attach_hit = false;
                 }
@@ -7778,13 +7778,12 @@ mod tests {
 
         driver.app().sink.borrow_mut().dispatched.clear();
 
-        // A double-click on the same button must activate it only once:
-        // `Button::handle` only matches `PointerKind::Down` on the main
-        // tree, ignoring `PointerKind::DoubleClick` outright, so this
-        // subtree's own click arm must not fire `ButtonActivated` for a
-        // `DoubleClick` either.
+        // The second press of a quick pair reaches the button as the
+        // `DoubleClick` it folded into, which a button with no double-click
+        // meaning takes as one more press: exactly one more activation.
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(
                 submit_rect.x + submit_rect.width * 0.5,
                 submit_rect.y + submit_rect.height * 0.5,
@@ -7792,13 +7791,13 @@ mod tests {
         });
         {
             let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                !dispatched
-                    .iter()
-                    .any(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. })),
-                "a double-click on the popover button must not emit a \
-                 second ButtonActivated: {:?}",
-                dispatched
+            let activations = dispatched
+                .iter()
+                .filter(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. }))
+                .count();
+            assert_eq!(
+                activations, 1,
+                "a double-click on the popover button is one more press: {dispatched:?}"
             );
         }
 
@@ -8581,6 +8580,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         assert_eq!(
@@ -8689,6 +8689,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         driver.dispatch(UiEvent::Scroll {
@@ -8972,6 +8973,8 @@ mod tests {
         use quadraui::{Column, ColumnWidth, DataRow, StyledText};
 
         let data_table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 Column {
@@ -9335,6 +9338,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: row_point,
         });
 
@@ -9847,6 +9851,8 @@ mod tests {
         use quadraui::{Column, DataRow, StyledText};
 
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table-cursor"),
             columns: vec![Column {
                 title: "Col".to_string(),

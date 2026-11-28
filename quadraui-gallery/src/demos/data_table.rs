@@ -170,6 +170,8 @@ impl DataTableDemo {
                 });
             }
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("gallery:data-table:pods"),
                 columns: self.columns.clone(),
                 rows,
@@ -201,6 +203,8 @@ impl DataTableDemo {
             }
         } else {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("gallery:data-table:keybindings"),
                 columns: vec![
                     Column {

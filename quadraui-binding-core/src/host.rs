@@ -5174,6 +5174,8 @@ mod tests {
         scroll_offset: usize,
     ) -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("host-test:table"),
             columns: vec![Column {
                 title: "Col".to_string(),

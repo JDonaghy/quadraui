@@ -778,9 +778,9 @@ where
             modifiers,
             repeat,
         } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, tree),
-        UiEvent::DoubleClick { position, .. } => {
-            route_widget_double_click(*position, backend, app, tree)
-        }
+        UiEvent::DoubleClick {
+            position, button, ..
+        } => route_widget_double_click(*position, *button, backend, app, tree),
         UiEvent::Scroll {
             position, delta, ..
         } => route_widget_wheel(*position, *delta, backend, app, tree),
@@ -920,13 +920,13 @@ where
 }
 
 /// `DoubleClick` arm of [`route_widget_event`]: hit-test, then deliver
-/// [`PointerKind::DoubleClick`] — the same hit-test-and-deliver shape as
-/// [`route_widget_pointer_down`], except [`UiEvent::DoubleClick`] carries
-/// no button or modifiers of its own, so this always resolves
-/// [`MouseButton::Left`] with [`Modifiers::default`]. `Bubble(Continue)`
-/// when the click landed on no widget.
+/// [`PointerKind::DoubleClick`] with the event's own `button` — the same
+/// hit-test-and-deliver shape as [`route_widget_pointer_down`], with
+/// [`Modifiers::default`] since [`UiEvent::DoubleClick`] carries no
+/// modifiers. `Bubble(Continue)` when the click landed on no widget.
 fn route_widget_double_click<B, A>(
     position: Point,
+    button: MouseButton,
     backend: &mut B,
     app: &mut A,
     tree: &FrameTree,
@@ -940,7 +940,7 @@ where
     };
     let id = node.id;
     let routed = RoutedEvent::Pointer {
-        kind: PointerKind::DoubleClick(MouseButton::Left),
+        kind: PointerKind::DoubleClick(button),
         sub: None,
         local: local_point(position, node.rect),
         mods: Modifiers::default(),
@@ -2236,6 +2236,7 @@ mod widget_routing_tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }
@@ -2453,6 +2454,7 @@ mod widget_routing_tests {
     fn double_click_at(x: f32, y: f32) -> UiEvent {
         UiEvent::DoubleClick {
             widget: None,
+            button: crate::MouseButton::Left,
             position: Point::new(x, y),
         }
     }
@@ -2501,6 +2503,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2547,6 +2550,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2727,6 +2731,7 @@ mod widget_routing_tests {
                 UiEvent::TextCopied("exit-marker".into()),
                 UiEvent::DoubleClick {
                     widget: Some(app.id),
+                    button: crate::MouseButton::Left,
                     position: Point::default(),
                 },
             ]

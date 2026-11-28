@@ -696,9 +696,124 @@ pub struct SelectionCore {
     /// The selected set, sorted and de-duplicated. Empty until the first
     /// gesture.
     pub selected: Vec<usize>,
+    /// The descriptor's painted set (`selected_indices`) as of the last
+    /// [`Self::sync_painted`] — what tells a change the app made apart
+    /// from the app echoing this core's own set back.
+    pub painted: Vec<usize>,
+}
+
+/// What one pointer press on a row of a row-oriented widget (`DataTable`,
+/// `ListView`, `TreeView`, `TreeTable`) means — resolved by
+/// [`SelectionCore::press`] for every widget and every binding alike.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowPress {
+    /// A primary press that selects this row alone: a plain click, or any
+    /// primary click outside [`SelectionMode::Multi`].
+    Select,
+    /// A Ctrl/Cmd or Shift primary press in [`SelectionMode::Multi`]: the
+    /// complete new selection.
+    Set(Vec<usize>),
+    /// A secondary (right) press: the row's context menu.
+    ContextMenu,
+    /// Any other button — middle, back/forward (`X1`/`X2`), or a
+    /// backend-specific one — reported with that button so an app can bind
+    /// "open in new tab" or history navigation to it.
+    Click(crate::event::MouseButton),
 }
 
 impl SelectionCore {
+    /// Adopts `painted`, the set the widget's descriptor paints, when it
+    /// differs from the set the last call saw: an app that selects or
+    /// clears rows itself is followed, while an app that never paints a
+    /// set (or echoes this core's own set back) leaves it alone.
+    pub fn sync_painted(&mut self, painted: &[usize]) {
+        if self.painted != painted {
+            self.painted = painted.to_vec();
+            self.selected = painted.to_vec();
+        }
+    }
+
+    /// Resolves a press of `button` with `mods` on row `idx`. `current` is
+    /// the widget's cursor row before the press. A primary press updates
+    /// the set (to `[idx]` for [`RowPress::Select`]); every other button
+    /// leaves it alone.
+    pub fn press(
+        &mut self,
+        mode: SelectionMode,
+        current: Option<usize>,
+        idx: usize,
+        button: crate::event::MouseButton,
+        mods: Modifiers,
+    ) -> RowPress {
+        use crate::event::MouseButton;
+        match button {
+            MouseButton::Left => {}
+            MouseButton::Right => return RowPress::ContextMenu,
+            other => return RowPress::Click(other),
+        }
+        let gesture = SelectionGesture::from_modifiers(mods);
+        if mode == SelectionMode::Multi && gesture != SelectionGesture::Replace {
+            return RowPress::Set(self.on_gesture(current, idx, gesture));
+        }
+        self.on_gesture(current, idx, SelectionGesture::Replace);
+        RowPress::Select
+    }
+
+    /// Shift+Up/Down with no cursor of the widget's own to move: grows the
+    /// range from the anchor by `delta` rows past its moving end — the end
+    /// of the set opposite the anchor, or `current` before any range —
+    /// clamped to `total` rows, and returns the complete new set.
+    pub fn extend_by(&mut self, current: Option<usize>, delta: isize, total: usize) -> Vec<usize> {
+        let end = match (self.anchor, self.selected.first(), self.selected.last()) {
+            (Some(anchor), Some(&lo), Some(&hi)) => {
+                if lo == anchor {
+                    hi
+                } else {
+                    lo
+                }
+            }
+            _ => current.unwrap_or(0),
+        };
+        let target = end
+            .saturating_add_signed(delta)
+            .min(total.saturating_sub(1));
+        self.on_gesture(current, target, SelectionGesture::Range)
+    }
+
+    /// The keyboard multi-select chords of a focused row widget in
+    /// [`SelectionMode::Multi`]: Ctrl/Cmd+A selects all `total` rows, and
+    /// Ctrl+Space or Insert toggles the `cursor` row. Returns the complete
+    /// new set, or `None` for any other key, outside `Multi`, or with no
+    /// row to act on. Plain Space is deliberately not a toggle: apps bind
+    /// it to activation or preview, and type-ahead text can contain it.
+    pub fn key(
+        &mut self,
+        mode: SelectionMode,
+        key: &crate::event::Key,
+        mods: Modifiers,
+        cursor: Option<usize>,
+        total: usize,
+    ) -> Option<Vec<usize>> {
+        use crate::event::{Key, NamedKey};
+        if mode != SelectionMode::Multi || total == 0 {
+            return None;
+        }
+        match key {
+            Key::Char('a' | 'A') if mods.ctrl || mods.cmd => {
+                self.selected = (0..total).collect();
+                self.anchor = Some(total - 1);
+                Some(self.selected.clone())
+            }
+            Key::Char(' ') if mods.ctrl => {
+                Some(self.on_gesture(cursor, cursor?, SelectionGesture::Toggle))
+            }
+            Key::Named(NamedKey::Insert) => {
+                Some(self.on_gesture(cursor, cursor?, SelectionGesture::Toggle))
+            }
+            _ => None,
+        }
+    }
+
     /// Apply `gesture` targeting row `index` and return the new selection
     /// set. `current` is the widget's cursor row before the gesture: it
     /// seeds the set and the anchor when no gesture has grown them yet, so
@@ -1199,6 +1314,110 @@ mod tests {
             vec![1, 2, 3]
         );
         assert_eq!(core.anchor, Some(3));
+    }
+
+    #[test]
+    fn selection_core_press_resolves_each_button() {
+        use crate::event::MouseButton;
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let mut core = SelectionCore::default();
+        let multi = SelectionMode::Multi;
+        assert_eq!(
+            core.press(multi, None, 1, MouseButton::Left, Modifiers::default()),
+            RowPress::Select
+        );
+        assert_eq!(
+            core.press(multi, Some(1), 3, MouseButton::Left, ctrl),
+            RowPress::Set(vec![1, 3])
+        );
+        assert_eq!(
+            core.press(multi, Some(1), 2, MouseButton::Right, ctrl),
+            RowPress::ContextMenu
+        );
+        assert_eq!(
+            core.press(multi, Some(1), 2, MouseButton::Middle, ctrl),
+            RowPress::Click(MouseButton::Middle)
+        );
+        assert_eq!(
+            core.selected,
+            vec![1, 3],
+            "only a left press changes the set"
+        );
+        assert_eq!(
+            core.press(SelectionMode::Single, Some(1), 2, MouseButton::Left, ctrl),
+            RowPress::Select
+        );
+    }
+
+    #[test]
+    fn selection_core_follows_a_set_the_app_changes() {
+        let mut core = SelectionCore::default();
+        core.sync_painted(&[]);
+        core.on_gesture(None, 2, SelectionGesture::Replace);
+        core.sync_painted(&[]);
+        assert_eq!(
+            core.selected,
+            vec![2],
+            "an unchanged empty paint keeps the set"
+        );
+        core.sync_painted(&[4, 5]);
+        assert_eq!(core.selected, vec![4, 5]);
+        core.sync_painted(&[]);
+        assert!(
+            core.selected.is_empty(),
+            "an app clearing its set clears it"
+        );
+    }
+
+    #[test]
+    fn selection_core_keys_and_extension() {
+        use crate::event::{Key, NamedKey};
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let multi = SelectionMode::Multi;
+        let mut core = SelectionCore::default();
+        assert_eq!(
+            core.key(multi, &Key::Char('a'), ctrl, Some(0), 3),
+            Some(vec![0, 1, 2])
+        );
+        assert_eq!(
+            core.key(multi, &Key::Char(' '), ctrl, Some(1), 3),
+            Some(vec![0, 2])
+        );
+        assert_eq!(
+            core.key(
+                multi,
+                &Key::Named(NamedKey::Insert),
+                Modifiers::default(),
+                Some(1),
+                3
+            ),
+            Some(vec![0, 1, 2])
+        );
+        assert_eq!(
+            core.key(multi, &Key::Char(' '), Modifiers::default(), Some(1), 3),
+            None
+        );
+        assert_eq!(
+            core.key(SelectionMode::Single, &Key::Char('a'), ctrl, Some(0), 3),
+            None
+        );
+
+        let mut core = SelectionCore::default();
+        core.on_gesture(None, 1, SelectionGesture::Replace);
+        assert_eq!(core.extend_by(Some(1), 1, 4), vec![1, 2]);
+        assert_eq!(core.extend_by(Some(1), 1, 4), vec![1, 2, 3]);
+        assert_eq!(
+            core.extend_by(Some(1), 1, 4),
+            vec![1, 2, 3],
+            "clamped to the last row"
+        );
+        assert_eq!(core.extend_by(Some(1), -1, 4), vec![1, 2]);
     }
 
     #[test]

@@ -724,6 +724,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_DataTableEventContextMenuRequested`](#wire-_datatableeventcontextmenurequested)
 - [`_DataTableEventHeaderClicked`](#wire-_datatableeventheaderclicked)
 - [`_DataTableEventRowActivated`](#wire-_datatableeventrowactivated)
+- [`_DataTableEventRowClicked`](#wire-_datatableeventrowclicked)
 - [`_DataTableEventRowDoubleClicked`](#wire-_datatableeventrowdoubleclicked)
 - [`_DataTableEventRowSelected`](#wire-_datatableeventrowselected)
 - [`_DataTableEventScroll`](#wire-_datatableeventscroll)
@@ -829,7 +830,9 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_Icon2`](#wire-_icon2)
 - [`_KeyBindingDict`](#wire-_keybindingdict)
 - [`_LayoutLeafNodeScriptedWidget`](#wire-_layoutleafnodescriptedwidget)
+- [`_ListViewEventContextMenuRequested`](#wire-_listvieweventcontextmenurequested)
 - [`_ListViewEventItemActivated`](#wire-_listvieweventitemactivated)
+- [`_ListViewEventItemClicked`](#wire-_listvieweventitemclicked)
 - [`_ListViewEventItemDoubleClicked`](#wire-_listvieweventitemdoubleclicked)
 - [`_ListViewEventKeyPressed`](#wire-_listvieweventkeypressed)
 - [`_ListViewEventSelectionChanged`](#wire-_listvieweventselectionchanged)
@@ -952,6 +955,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_TreeTableEventColumnResized`](#wire-_treetableeventcolumnresized)
 - [`_TreeTableEventContextMenuRequested`](#wire-_treetableeventcontextmenurequested)
 - [`_TreeTableEventRowActivated`](#wire-_treetableeventrowactivated)
+- [`_TreeTableEventRowClicked`](#wire-_treetableeventrowclicked)
 - [`_TreeTableEventRowDoubleClicked`](#wire-_treetableeventrowdoubleclicked)
 - [`_TreeTableEventRowSelected`](#wire-_treetableeventrowselected)
 - [`_TreeTableEventScroll`](#wire-_treetableeventscroll)
@@ -1358,7 +1362,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `RegionClicked` | `_CanvasEventRegionClicked` | A declared region was clicked (any mouse button — see `button`). |
-| `RegionDoubleClicked` | `_CanvasEventRegionDoubleClicked` | A declared region was double-clicked. |
+| `RegionDoubleClicked` | `_CanvasEventRegionDoubleClicked` | A declared region was double-clicked with `button` — the button `UiEvent::DoubleClick` carries. |
 | `RegionHovered` | `_CanvasEventRegionHovered` | The hovered region changed, including to/from no region at all. |
 
 <a id="wire-canvasfontrole"></a>
@@ -1757,7 +1761,9 @@ Declarative description of a `DataTable` widget.
 | `min_total_width` | `number \| null` | no | Minimum total width for all columns. |
 | `rows` | `DataRow[]` | yes |  |
 | `scroll_offset` | `number` | no |  |
-| `selected_idx` | `number \| null` | no |  |
+| `selected_idx` | `number \| null` | no | The cursor row, and the anchor a Shift range grows from. |
+| `selected_indices` | `number[]` | no | The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back. |
+| `selection_mode` | `SelectionMode` | no | `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`. |
 | `show_scrollbar` | `boolean` | no | Show a vertical scrollbar when rows exceed the viewport. |
 | `sort` | `[number, SortDirection] \| null` | no | Which column is sorted, and in which direction. |
 | `striped` | `boolean` | no | Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling. |
@@ -1781,6 +1787,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ScrollChanged` | `_DataTableEventScrollChanged` | The widget scrolled — a wheel, a scrollbar gesture, or a cursor move brought its row into view. |
 | `ColumnFocused` | `_DataTableEventColumnFocused` | Left/Right moved the keyboard's column cursor to `col`. |
 | `ContextMenuRequested` | `_DataTableEventContextMenuRequested` | The user asked for row `idx`'s context menu (right-click); `position` is where, in the same coordinates the table was laid out in. |
+| `RowClicked` | `_DataTableEventRowClicked` | Row `idx` was pressed with a button other than the primary and secondary ones — middle (open in a new tab), `X1`/`X2` (back / forward) or a backend-specific button. |
 
 <a id="wire-datatableglyphs"></a>
 #### `DataTableGlyphs`
@@ -1808,7 +1815,9 @@ Optional app-supplied override for the sort-direction glyphs `native_surface_pai
 | `min_total_width` | `number \| null` | no | Minimum total width for all columns. |
 | `rows` | `DataRow[]` | yes |  |
 | `scroll_offset` | `number` | no |  |
-| `selected_idx` | `number \| null` | no |  |
+| `selected_idx` | `number \| null` | no | The cursor row, and the anchor a Shift range grows from. |
+| `selected_indices` | `number[]` | no | The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back. |
+| `selection_mode` | `SelectionMode` | no | `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`. |
 | `show_scrollbar` | `boolean` | no | Show a vertical scrollbar when rows exceed the viewport. |
 | `sort` | `[number, SortDirection] \| null` | no | Which column is sorted, and in which direction. |
 | `striped` | `boolean` | no | Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling. |
@@ -1994,7 +2003,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 <a id="wire-draggesturewireevent"></a>
 #### `DragGestureWireEvent`
 
-Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
+Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` (which by default ignores it, returning `Continue`, until a binding overrides it). `Serialize` only: `HitDetail`, which every `*_detail` field reuses, has no reverse (host -> engine) decode path either.
 
 Alias for `_DragGestureWireEventDragStarted | _DragGestureWireEventDragOver | _DragGestureWireEventDropped`.
 
@@ -2880,6 +2889,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ItemDoubleClicked` | `_ListViewEventItemDoubleClicked` | User double-clicked a row — distinct from `SelectionChanged` (a plain click) so an app can tell "select" apart from "open" without both folding into `ItemActivated`. |
 | `KeyPressed` | `_ListViewEventKeyPressed` | A key was pressed while the list had focus and the primitive did not consume it. |
 | `SelectionSet` | `_ListViewEventSelectionSet` | The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd click toggled a row, Shift click/extend selected a range, or a keyboard extension grew the set. |
+| `ContextMenuRequested` | `_ListViewEventContextMenuRequested` | The user asked for item `idx`'s context menu (right-click); `position` is where, in the coordinates the list was laid out in. |
+| `ItemClicked` | `_ListViewEventItemClicked` | Item `idx` was pressed with a button other than the primary and secondary ones — middle, `X1`/`X2` or a backend-specific button. |
 
 <a id="wire-listviewleaf"></a>
 #### `ListViewLeaf`
@@ -4389,7 +4400,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Tag | Payload type | Description |
 | --- | --- | --- |
-| `RowClicked` | `_TreeEventRowClicked` | Single-click (or Enter on the keyboard) on a row. |
+| `RowClicked` | `_TreeEventRowClicked` | A press on a row with any button but the secondary (right) one, which asks for `Self::ContextMenuRequested` instead. |
 | `RowDoubleClicked` | `_TreeEventRowDoubleClicked` | Double-click on a row (typically "open" / "activate"). |
 | `RowToggleExpand` | `_TreeEventRowToggleExpand` | The chevron was clicked, or Space/arrow-keys expanded/collapsed a branch. |
 | `SelectionChanged` | `_TreeEventSelectionChanged` | Keyboard selection moved to a new row. |
@@ -4522,6 +4533,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ToggleExpanded` | `_TreeTableEventToggleExpanded` | The chevron was clicked, or Left/Right/Space resolved to an expand/collapse. |
 | `ChildrenRequested` | `_TreeTableEventChildrenRequested` | Expanding a `TreeTableNode::children_pending` branch: the app should load its children and supply them, clearing the flag. |
 | `ContextMenuRequested` | `_TreeTableEventContextMenuRequested` | The user asked for row `idx`'s context menu (right-click); `position` is where, in the coordinates the table was laid out in. |
+| `RowClicked` | `_TreeTableEventRowClicked` | Row `idx` was pressed with a button other than the primary and secondary ones. |
 
 <a id="wire-treetablenode"></a>
 #### `TreeTableNode`
@@ -4736,6 +4748,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `region` | `WidgetId` | yes |  |
 | `x` | `number` | yes |  |
 | `y` | `number` | yes |  |
@@ -4981,6 +4994,15 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `idx` | `number` | yes |  |
+
+<a id="wire-_datatableeventrowclicked"></a>
+#### `_DataTableEventRowClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
 
 <a id="wire-_datatableeventrowdoubleclicked"></a>
 #### `_DataTableEventRowDoubleClicked`
@@ -5903,12 +5925,29 @@ The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was reg
 | `id` | `string` | yes |  |
 | `props` | `unknown` | no |  |
 
+<a id="wire-_listvieweventcontextmenurequested"></a>
+#### `_ListViewEventContextMenuRequested`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `idx` | `number` | yes |  |
+| `position` | `Point` | yes |  |
+
 <a id="wire-_listvieweventitemactivated"></a>
 #### `_ListViewEventItemActivated`
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `idx` | `number` | yes |  |
+
+<a id="wire-_listvieweventitemclicked"></a>
+#### `_ListViewEventItemClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
 
 <a id="wire-_listvieweventitemdoubleclicked"></a>
 #### `_ListViewEventItemDoubleClicked`
@@ -6780,6 +6819,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `modifiers` | `Modifiers` | yes |  |
 | `path` | `number[]` | yes |  |
 
@@ -6913,6 +6953,16 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `idx` | `number` | yes |  |
 | `path` | `number[]` | yes |  |
 
+<a id="wire-_treetableeventrowclicked"></a>
+#### `_TreeTableEventRowClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
+| `path` | `number[]` | yes |  |
+
 <a id="wire-_treetableeventrowdoubleclicked"></a>
 #### `_TreeTableEventRowDoubleClicked`
 
@@ -6999,7 +7049,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `MouseMoved` | `_UiEventMouseMoved` |  |
 | `MouseEntered` | `_UiEventMouseEntered` | Optional capability — hover state is a real, likely-future desktop need (tooltip auto-show, hover highlighting) that has no substitute mechanism. |
 | `MouseLeft` | `_UiEventMouseLeft` | See `Self::MouseEntered` — same optional-capability status, same rationale, always emitted/not-emitted as a pair. |
-| `DoubleClick` | `_UiEventDoubleClick` |  |
+| `DoubleClick` | `_UiEventDoubleClick` | The second press of a quick primary-button pair at one spot. |
 | `Scroll` | `_UiEventScroll` | Scroll-wheel event. |
 | `WindowResized` | `_UiEventWindowResized` |  |
 | `WindowFocused` | `boolean` |  |
@@ -7071,6 +7121,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `position` | `Point` | yes |  |
 | `widget` | `WidgetId \| null` | no |  |
 

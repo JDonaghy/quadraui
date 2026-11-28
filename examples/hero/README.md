@@ -131,12 +131,6 @@ binding-only ones.
 
    Proposal: `TextDisplayLine::plain(s)`, a `Text("...")` node in the app
    layer, and a `<text>` JSX intrinsic.
-4. **Fast clicks on the same spot are lost.** Two clicks at one position
-   inside the double-click interval fold into a `DoubleClick`, and a
-   `Button` does not activate on it. Clicking `+` twice quickly counts
-   once. This happens in Rust (`TuiDriver`), Python and Node. The runners
-   click `+ - +` to work around it. A button should activate on every
-   press.
 5. **Python and Node can't quit the same way Rust does.**
    - Rust returns `Reaction::Exit`. Python raises `SystemExit` from
      `on_event`, which works.

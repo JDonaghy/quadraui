@@ -748,12 +748,18 @@ def Tree(
     on_toggle_expand: Optional[Callable[[list[int]], None]] = None,
     on_activate: Optional[Callable[[list[int]], None]] = None,
     on_select: Optional[Callable[[list[int]], None]] = None,
+    on_selection: Optional[Callable[[list[list[int]]], None]] = None,
+    on_context_menu: Optional[Callable[[list[int], Dict[str, float]], None]] = None,
 ) -> Node:
     """A `TreeRowDescriptor` list. `on_row_click` fires on `RowClicked`
-    (a row body click -- select it); `on_toggle_expand` on
-    `RowToggleExpand` (the chevron); `on_activate` on `RowDoubleClicked`;
-    `on_select` on `SelectionChanged`. Scroll is framework-owned; nothing
-    here ever needs to read or write it."""
+    (a row body press with any button but the right one -- the event's
+    `button` tells them apart); `on_toggle_expand` on `RowToggleExpand`
+    (the chevron); `on_activate` on `RowDoubleClicked`; `on_select` on
+    `SelectionChanged`; `on_selection(paths)` on `SelectionSet` (with
+    `selection_mode="Multi"`, a Ctrl/Cmd or Shift click);
+    `on_context_menu(path, position)` on `ContextMenuRequested` (a
+    right-click). Scroll is framework-owned; nothing here ever needs to
+    read or write it."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -771,6 +777,8 @@ def Tree(
         on_toggle_expand=on_toggle_expand,
         on_activate=on_activate,
         on_select=on_select,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
     )
     return Node("tree", id, callbacks, {}, build)
 
@@ -780,25 +788,45 @@ def Table(
     rows: list["DataRowDescriptor"],
     *,
     id: Optional[str] = None,
+    selection_mode: str = "Single",
+    selected_indices: Optional[list[int]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
     on_select: Optional[Callable[[int], None]] = None,
     on_header_click: Optional[Callable[[int], None]] = None,
+    on_selection: Optional[Callable[[list[int]], None]] = None,
+    on_context_menu: Optional[Callable[[int, Dict[str, float]], None]] = None,
+    on_click: Optional[Callable[[int, str], None]] = None,
 ) -> Node:
     """A `DataTable`. `on_activate` fires on either
     `RowDoubleClicked` or `RowActivated` (a mouse double-click and an
     Enter-to-activate both mean "open this row"); `on_select` on
-    `RowSelected`; `on_header_click` on `HeaderClicked`."""
+    `RowSelected`; `on_header_click` on `HeaderClicked`.
+
+    With `selection_mode="Multi"`, Ctrl/Cmd and Shift clicks, Shift+Up/Down,
+    Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection and fire
+    `on_selection(indices)` (`SelectionSet`); pass the set back as
+    `selected_indices` to paint it. `on_context_menu(idx, position)` fires
+    on a right-click (`ContextMenuRequested`), and `on_click(idx, button)`
+    on a middle or back/forward press (`RowClicked`)."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        table: Dict[str, Any] = {
             "id": node_id,
-            "data_table": {"id": node_id, "columns": columns, "rows": rows},
+            "columns": columns,
+            "rows": rows,
+            "selection_mode": selection_mode,
         }
+        if selected_indices is not None:
+            table["selected_indices"] = selected_indices
+        return {"id": node_id, "data_table": table}
 
     callbacks = _callbacks(
         on_activate=on_activate,
         on_select=on_select,
         on_header_click=on_header_click,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
+        on_click=on_click,
     )
     return Node("data_table", id, callbacks, {}, build)
 
@@ -813,6 +841,9 @@ def List(
     bordered: Optional[bool] = None,
     on_select: Optional[Callable[[int], None]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
+    on_selection: Optional[Callable[[list[int]], None]] = None,
+    on_context_menu: Optional[Callable[[int, Dict[str, float]], None]] = None,
+    on_click: Optional[Callable[[int, str], None]] = None,
 ) -> Node:
     """A `ListView`. `on_select` fires on `SelectionChanged` (a
     plain click, or `j`/`k` moving the keyboard selection); `on_activate`
@@ -826,8 +857,11 @@ def List(
     shape `Tree`'s `selected_path` follows; pass a non-zero `selected` on
     every render only to pin the cursor from app state, and once sent it
     latches as controlled for this widget id and does not go back.
-    `KeyPressed`/`SelectionSet` on a `List` are not routed to either
-    callback and fall through to `on_event` instead."""
+    `on_selection(indices)` fires on `SelectionSet` (a Ctrl/Cmd or Shift
+    click, Ctrl/Cmd+A, Ctrl+Space/Insert), `on_context_menu(idx,
+    position)` on a right-click (`ContextMenuRequested`) and `on_click(idx,
+    button)` on a middle or back/forward press (`ItemClicked`).
+    `KeyPressed` falls through to `on_event`."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -842,7 +876,13 @@ def List(
             payload["bordered"] = bordered
         return {"id": node_id, "list": payload}
 
-    callbacks = _callbacks(on_select=on_select, on_activate=on_activate)
+    callbacks = _callbacks(
+        on_select=on_select,
+        on_activate=on_activate,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
+        on_click=on_click,
+    )
     return Node("list", id, callbacks, {}, build)
 
 

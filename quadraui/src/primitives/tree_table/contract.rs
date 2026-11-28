@@ -632,6 +632,17 @@ impl TreeTable {
                 state.nav.set_scroll_offset(scroll_offset);
                 Handled::Event(TreeTableEvent::ScrollChanged { scroll_offset })
             }
+            DataTableEvent::RowClicked {
+                idx,
+                button,
+                modifiers,
+            } if !self.is_placeholder(idx) => Handled::Event(TreeTableEvent::RowClicked {
+                idx,
+                path: self.path_of(idx),
+                button,
+                modifiers,
+            }),
+            DataTableEvent::RowClicked { .. } => Handled::Consumed,
             DataTableEvent::ColumnFocused { .. } => Handled::Consumed,
         }
     }
@@ -862,6 +873,8 @@ mod tests {
         tree.extend((2..n).map(|i| TreeTableNode::new(vec![i as u16 - 1], 0)));
         TreeTable::new(
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("tt:unit"),
                 columns: vec![
                     Column {

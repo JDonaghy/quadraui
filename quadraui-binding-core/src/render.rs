@@ -295,6 +295,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
                 // See the `List` slot above.
                 loaded_rows: None,
+                selection_mode: tree.selection_mode,
             });
         }
     }
@@ -316,6 +317,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 viewport_rows,
                 // See the `List` slot above.
                 loaded_rows: None,
+                multi: multi_selection(data_table),
             });
         }
     }
@@ -1927,8 +1929,16 @@ fn windowed_data_table(table: &DataTable, window: ItemsWindow, leaf: WindowedLea
         rows,
         scroll_offset: 0,
         selected_idx: band_relative(table.selected_idx, leaf.band),
+        selected_indices: (table.selected_indices.iter())
+            .filter_map(|&i| band_relative(Some(i), leaf.band))
+            .collect(),
         ..table.clone()
     }
+}
+
+/// [`crate::hit::PaintedHit::DataTable::multi`] for `table`.
+fn multi_selection(table: &DataTable) -> Option<Vec<usize>> {
+    (table.selection_mode == quadraui::SelectionMode::Multi).then(|| table.selected_indices.clone())
 }
 
 /// [`windowed_vec`] for a [`ListView`]'s own `items` — an empty-text
@@ -2431,6 +2441,7 @@ pub fn paint_leaf_windowed(
                     .iter()
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
                 loaded_rows: windowed.map(|windowed| windowed.loaded),
+                selection_mode: tree.selection_mode,
             });
         }
         LeafDescriptor::DataTable(data_table) => {
@@ -2473,6 +2484,7 @@ pub fn paint_leaf_windowed(
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
                 loaded_rows: windowed.map(|windowed| windowed.loaded),
+                multi: multi_selection(data_table),
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
@@ -4433,6 +4445,8 @@ mod tests {
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let table = DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("table"),
                 columns: vec![Column {
                     title: "col".to_string(),

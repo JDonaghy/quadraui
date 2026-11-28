@@ -9871,6 +9871,7 @@ def handle(event):
 
             let click = UiEvent::DoubleClick {
                 widget: None,
+                button: quadraui::MouseButton::Left,
                 position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
             };
             let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
@@ -10196,6 +10197,7 @@ def handle(event):
 
             let click = UiEvent::DoubleClick {
                 widget: None,
+                button: quadraui::MouseButton::Left,
                 position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
             };
             let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");

@@ -1426,7 +1426,7 @@ test("canvas region double-click emits a typed RegionDoubleClicked event", () =>
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 1.0, y: 0.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 1.0, y: 0.0 } } });
   app.run(1);
 
   assert.equal(received.length, 1, JSON.stringify(received));

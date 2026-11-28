@@ -393,7 +393,7 @@ test("showOverlay completions click selects and double-click activates", () => {
   ]);
   assert.ok(app.screenContains("filter"));
 
-  app.pushEvent({ DoubleClick: { position: { x: col, y: row } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: col, y: row } } });
   app.run(1);
 
   assert.deepEqual(received[received.length - 1], {

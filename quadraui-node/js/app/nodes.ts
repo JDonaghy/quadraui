@@ -32,7 +32,9 @@ import type {
   LabelPosition,
   LayoutScrollPayload,
   ListItem as ListItemDescriptor,
+  MouseButton,
   PaddingValue,
+  Point,
   RowAlign,
   SelectionMode,
   StatusBarSegment,
@@ -388,14 +390,19 @@ export interface TreeOptions {
   onToggleExpand?: (path: TreePath) => void;
   onActivate?: (path: TreePath) => void;
   onSelect?: (path: TreePath) => void;
+  onSelection?: (paths: TreePath[]) => void;
+  onContextMenu?: (path: TreePath, position: Point) => void;
 }
 
 /**
  * A `TreeRowDescriptor` list. `onRowClick` fires on `RowClicked` (a row
- * body click -- select it); `onToggleExpand` on `RowToggleExpand` (the
- * chevron); `onActivate` on `RowDoubleClicked`; `onSelect` on
- * `SelectionChanged`. Scroll is framework-owned; nothing here ever needs to
- * read or write it.
+ * body press with any button but the right one -- the event's `button`
+ * tells them apart); `onToggleExpand` on `RowToggleExpand` (the chevron);
+ * `onActivate` on `RowDoubleClicked`; `onSelect` on `SelectionChanged`;
+ * `onSelection(paths)` on `SelectionSet` (with `selectionMode: "Multi"`, a
+ * Ctrl/Cmd or Shift click); `onContextMenu(path, position)` on
+ * `ContextMenuRequested` (a right-click). Scroll is framework-owned;
+ * nothing here ever needs to read or write it.
  */
 function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
   const {
@@ -408,6 +415,8 @@ function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
     onToggleExpand,
     onActivate,
     onSelect,
+    onSelection,
+    onContextMenu,
   } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
@@ -427,6 +436,8 @@ function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node {
     on_toggle_expand: onToggleExpand as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
   });
   return { kind: "tree", id, callbacks, children: {}, build };
 }
@@ -434,9 +445,15 @@ exports.Tree = Tree;
 
 export interface TableOptions {
   id?: string;
+  selectionMode?: SelectionMode;
+  /** The multi-selection to paint -- usually `onSelection`'s last set. */
+  selectedIndices?: number[];
   onActivate?: (idx: number) => void;
   onSelect?: (idx: number) => void;
   onHeaderClick?: (col: number) => void;
+  onSelection?: (indices: number[]) => void;
+  onContextMenu?: (idx: number, position: Point) => void;
+  onClick?: (idx: number, button: MouseButton) => void;
 }
 
 /**
@@ -444,18 +461,40 @@ export interface TableOptions {
  * or `RowActivated` (a mouse double-click and an Enter-to-activate both
  * mean "open this row"); `onSelect` on `RowSelected`; `onHeaderClick` on
  * `HeaderClicked`.
+ *
+ * With `selectionMode: "Multi"`, Ctrl/Cmd and Shift clicks, Shift+Up/Down,
+ * Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection and fire
+ * `onSelection(indices)` (`SelectionSet`); pass the set back as
+ * `selectedIndices` to paint it. `onContextMenu(idx, position)` fires on a
+ * right-click (`ContextMenuRequested`), and `onClick(idx, button)` on a
+ * middle or back/forward press (`RowClicked`).
  */
 function Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options: TableOptions = {}): Node {
-  const { id = null, onActivate, onSelect, onHeaderClick } = options;
+  const {
+    id = null,
+    selectionMode = "Single",
+    selectedIndices,
+    onActivate,
+    onSelect,
+    onHeaderClick,
+    onSelection,
+    onContextMenu,
+    onClick,
+  } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
-    return { id: nodeId, data_table: { id: nodeId, columns, rows } };
+    const table: Record<string, unknown> = { id: nodeId, columns, rows, selection_mode: selectionMode };
+    if (selectedIndices !== undefined) table.selected_indices = selectedIndices;
+    return { id: nodeId, data_table: table };
   }
 
   const callbacks = callbacksFrom({
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,
     on_header_click: onHeaderClick as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
   });
   return { kind: "data_table", id, callbacks, children: {}, build };
 }
@@ -478,6 +517,9 @@ export interface ListOptions {
   bordered?: boolean;
   onSelect?: (idx: number) => void;
   onActivate?: (idx: number) => void;
+  onSelection?: (indices: number[]) => void;
+  onContextMenu?: (idx: number, position: Point) => void;
+  onClick?: (idx: number, button: MouseButton) => void;
 }
 
 /**
@@ -485,12 +527,26 @@ export interface ListOptions {
  * click, or `j`/`k` moving the keyboard selection); `onActivate` fires on
  * either `ItemDoubleClicked` (a mouse double-click) or `ItemActivated`
  * (Enter while a row holds the selection) -- the same "open this row"
- * pairing {@link Table}'s own `onActivate` documents. `KeyPressed`/
- * `SelectionSet` on a `List` are not routed to either callback and fall
- * through to `onEvent` instead.
+ * pairing {@link Table}'s own `onActivate` documents. `onSelection(indices)`
+ * fires on `SelectionSet` (a Ctrl/Cmd or Shift click, Ctrl/Cmd+A,
+ * Ctrl+Space/Insert), `onContextMenu(idx, position)` on a right-click
+ * (`ContextMenuRequested`) and `onClick(idx, button)` on a middle or
+ * back/forward press (`ItemClicked`). `KeyPressed` falls through to
+ * `onEvent`.
  */
 function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
-  const { id = null, selected, title, hasFocus = false, bordered, onSelect, onActivate } = options;
+  const {
+    id = null,
+    selected,
+    title,
+    hasFocus = false,
+    bordered,
+    onSelect,
+    onActivate,
+    onSelection,
+    onContextMenu,
+    onClick,
+  } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
     const payload: Record<string, unknown> = {
@@ -507,6 +563,9 @@ function List(items: ListItemDescriptor[], options: ListOptions = {}): Node {
   const callbacks = callbacksFrom({
     on_select: onSelect as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
+    on_selection: onSelection as AnyCallback | undefined,
+    on_context_menu: onContextMenu as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
   });
   return { kind: "list", id, callbacks, children: {}, build };
 }

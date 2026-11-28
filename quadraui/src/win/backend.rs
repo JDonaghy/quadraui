@@ -7410,6 +7410,8 @@ mod tests {
     #[test]
     fn win_backend_draw_data_table_paints_cell_text_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![crate::Column {
                 title: "col".to_string(),
@@ -7741,6 +7743,8 @@ mod tests {
     #[test]
     fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 crate::Column {

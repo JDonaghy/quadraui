@@ -196,6 +196,8 @@ const CELL: &str = "日本";
 
 fn wide_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("fidelity:table"),
         columns: vec![
             Column {

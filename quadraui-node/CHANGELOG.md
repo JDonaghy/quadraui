@@ -18,6 +18,18 @@ fragment step for this package (that mechanism, and
 
 ### Added
 
+- Multi-select reaches the app (#2551). `data_table` descriptors take
+  `selection_mode` (`"Single"`/`"Multi"`) and `selected_indices`; in
+  `"Multi"`, Ctrl/Cmd-click, Shift-click, Shift+Up/Down, Ctrl/Cmd+A and
+  Ctrl+Space/Insert emit `DataTable.SelectionSet{indices}` and the set
+  paints back from `selected_indices`. A `list` emits
+  `List.SelectionSet{indices}` for Ctrl/Cmd/Shift clicks, Ctrl/Cmd+A and
+  Ctrl+Space/Insert, and a `"Multi"` `tree` emits `Tree.SelectionSet{paths}`
+  for Ctrl/Cmd/Shift clicks. App layer: `Table(cols, rows, { selectionMode,
+  selectedIndices, onSelection, onContextMenu, onClick })`,
+  `List(items, { onSelection, onContextMenu, onClick })` and
+  `Tree(rows, { onSelection, onContextMenu })`.
+
 - `QuiAppActions.showOverlay(kind, descriptor, anchor)`/
   `.dismissOverlay(id)` -- the same nine `kind`s and anchor semantics as
   `QuiApp.showOverlay`/`QuiApp.dismissOverlay`, callable from inside a
@@ -100,6 +112,17 @@ fragment step for this package (that mechanism, and
   runnable 5-star rating control.
 
 ### Changed
+
+- Mouse events changed shape (#3074, #2555). `DoubleClick` carries a
+  `button` (`{"DoubleClick": {"button": "Left", "position": ...}}`; a pushed
+  `DoubleClick` must now name it), and only the left button folds, so two
+  quick right-clicks are two context-menu requests. Two quick clicks on a
+  `Button` call `onClick` twice. A right-click on a `DataTable`, `List` or
+  `Tree` row emits `ContextMenuRequested{idx|path, position}` instead of a
+  selection, and a middle or back/forward press emits
+  `DataTable.RowClicked`/`List.ItemClicked{idx, button, modifiers}`;
+  `Tree.RowClicked` gains `button`. A header or chevron reacts to the left
+  button only.
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input

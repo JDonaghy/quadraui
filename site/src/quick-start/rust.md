@@ -151,16 +151,15 @@ fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
 }
 
 #[test]
-fn plus_minus_plus_counts_to_one() {
+fn plus_plus_minus_counts_to_one() {
     let mut driver = TuiDriver::new(hero::Counter::default(), 30, 5);
     driver.render();
     assert!(driver.screen_contains("Count: 0"), "{}", driver.screen());
-    // `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
-    // DoubleClick, which a Button does not treat as a second activation
-    // (see examples/hero/README.md, "Gaps").
-    for label in ["+", "-", "+"] {
+    for label in ["+", "+"] {
         click_label(&mut driver, label);
     }
+    assert!(driver.screen_contains("Count: 2"), "{}", driver.screen());
+    click_label(&mut driver, "-");
 ```
 
 - The `#[path]` line compiles `src/main.rs` into the test as module
@@ -171,11 +170,12 @@ fn plus_minus_plus_counts_to_one() {
   text. `press(key)`, `type_char(c)`, `screen()` and `app()` do what their
   names say. Tab and bar parts have helpers by id, such as
   `tab_center(&bar_id, 2)`.
-- **Two clicks on the same spot count once**: clicks less than 400 ms and
-  1.5 cells apart fold into a double-click, which a button does not treat
-  as a second press. A test that means two separate clicks calls
-  `driver.set_double_click_folding(false)` first. A user clicking quickly
-  in a live app hits the same limit today.
+- **Two quick clicks are two clicks**: clicks less than 400 ms and 1.5
+  cells apart fold into a left `UiEvent::DoubleClick`, which a list, table
+  or tree row treats as "open"; a button, or any widget with no
+  double-click meaning, sees both presses. Only the left button folds. A
+  test that needs two plain `MouseDown`s on a row calls
+  `driver.set_double_click_folding(false)` first.
 
 `GtkDriver`, `MacDriver` and `WinDriver` do the same off screen in pixels.
 
