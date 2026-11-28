@@ -322,7 +322,11 @@ impl InteractionState {
                 button: MouseButton::Left,
                 ..
             }
-            | UiEvent::DoubleClick { widget, position } => {
+            | UiEvent::DoubleClick {
+                widget,
+                position,
+                button: MouseButton::Left,
+            } => {
                 let hit = crate::primitive::painted_hit(position.x, position.y);
                 let hovered = self.set_hovered_target(hit);
                 let pressed = self.set_pressed_target(press_target(*widget, hit));
@@ -669,6 +673,7 @@ mod tests {
             ],
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
     }
 
@@ -739,6 +744,7 @@ mod tests {
         let mut state = InteractionState::new();
         assert!(state.track_painted(&UiEvent::DoubleClick {
             widget: None,
+            button: crate::MouseButton::Left,
             position: Point::new(12.0, 0.0),
         }));
         assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(1)))));

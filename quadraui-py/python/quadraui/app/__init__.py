@@ -23,8 +23,20 @@ list index relies on anywhere else. `Toolbar` is the one exception --
 see its own docstring for why it falls back to a weaker, call-order-based
 default instead.
 
+**Layout.** `Column`/`Row` share their space equally between children
+unless a child says otherwise: every node constructor except `Slider`
+(whose `min`/`max` are its value range) takes `size=` (an `int` fixed size
+in portable pixels, where a TUI cell is 8x16, `"30%"`, `"2fr"` or
+`"content"`) and `min=`/`max=` in the same pixels. `Text("...")` is a
+one-line label sized to its content.
+
+**Quitting.** `App.quit()` ends the run from any callback. `q`/Escape
+quit unless the focused widget takes the key (a text field types `q`, a
+list keeps it), and Ctrl-C quits unless a focused text field takes it;
+`App(quit_keys=False)` turns that off.
+
 **Callbacks.** `Button("Save", on_click=self.save)`, `Tree(rows,
-on_row_click=self.select, on_activate=self.open)` -- each node's own
+on_select=self.select, on_activate=self.open)` -- each node's own
 constructor documents which raw `UiEvent` shape each `on_*` keyword
 answers (a tree row click, a double-click, …). `App` rebuilds an
 id -> callback registry on every render and dispatches a later event by
@@ -97,6 +109,7 @@ from .nodes import (
     Tabs,
     TextArea,
     TextAreaField,
+    Text,
     TextDisplay,
     TextInputField,
     ToggleField,
@@ -124,6 +137,7 @@ __all__ = [
     "List",
     "StatusBar",
     "TextDisplay",
+    "Text",
     "Button",
     "Toolbar",
     "Form",

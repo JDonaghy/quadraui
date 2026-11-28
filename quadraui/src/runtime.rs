@@ -778,9 +778,9 @@ where
             modifiers,
             repeat,
         } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, tree),
-        UiEvent::DoubleClick { position, .. } => {
-            route_widget_double_click(*position, backend, app, tree)
-        }
+        UiEvent::DoubleClick {
+            position, button, ..
+        } => route_widget_double_click(*position, *button, backend, app, tree),
         UiEvent::Scroll {
             position, delta, ..
         } => route_widget_wheel(*position, *delta, backend, app, tree),
@@ -920,13 +920,13 @@ where
 }
 
 /// `DoubleClick` arm of [`route_widget_event`]: hit-test, then deliver
-/// [`PointerKind::DoubleClick`] — the same hit-test-and-deliver shape as
-/// [`route_widget_pointer_down`], except [`UiEvent::DoubleClick`] carries
-/// no button or modifiers of its own, so this always resolves
-/// [`MouseButton::Left`] with [`Modifiers::default`]. `Bubble(Continue)`
-/// when the click landed on no widget.
+/// [`PointerKind::DoubleClick`] with the event's own `button` — the same
+/// hit-test-and-deliver shape as [`route_widget_pointer_down`], with
+/// [`Modifiers::default`] since [`UiEvent::DoubleClick`] carries no
+/// modifiers. `Bubble(Continue)` when the click landed on no widget.
 fn route_widget_double_click<B, A>(
     position: Point,
+    button: MouseButton,
     backend: &mut B,
     app: &mut A,
     tree: &FrameTree,
@@ -940,7 +940,7 @@ where
     };
     let id = node.id;
     let routed = RoutedEvent::Pointer {
-        kind: PointerKind::DoubleClick(MouseButton::Left),
+        kind: PointerKind::DoubleClick(button),
         sub: None,
         local: local_point(position, node.rect),
         mods: Modifiers::default(),
@@ -1044,12 +1044,49 @@ where
     let Some(node) = tree.find(&focused) else {
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     };
+    if tab_leaves_children(&key, modifiers, node, backend, app) {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    }
     let routed = RoutedEvent::Key(KeyEvent {
         key,
         modifiers,
         repeat,
     });
     dispatch_widget_routed_event(focused, node, &routed, backend, app)
+}
+
+/// A plain Tab (or Shift+Tab) on a focused widget with per-child focus
+/// stops whose focused child is its last (or first) stop, while the
+/// app's tab order names the widget among other stops: the key skips the
+/// widget so the Tab focus-cycling step moves focus on to the next stop,
+/// rather than the widget wrapping round its own children.
+fn tab_leaves_children<B, A>(
+    key: &Key,
+    modifiers: Modifiers,
+    node: &FrameTreeNode,
+    backend: &B,
+    app: &A,
+) -> bool
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let forward = match key {
+        Key::Named(NamedKey::Tab) => !modifiers.shift,
+        Key::Named(NamedKey::BackTab) => false,
+        _ => return false,
+    };
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return false;
+    }
+    let Some(&(_, sub)) = backend.focus_tree().focused() else {
+        return false;
+    };
+    if !node.widget.focus().child_at_edge(sub, forward) {
+        return false;
+    }
+    let stops = all_tab_stops(app, A::AreaId::default());
+    stops.len() > 1 && stops.iter().any(|(id, _)| *id == node.id)
 }
 
 /// `MouseMoved` arm of [`route_widget_event`]: while a widget holds an
@@ -1427,16 +1464,22 @@ fn all_tab_stops<A: AppLogic>(app: &A, area: A::AreaId) -> Vec<(WidgetId, crate:
     stops
 }
 
-/// The screen [`Rect`] of whichever tab stop currently has focus, or
-/// `None` — the per-frame lookup every runner (`gtk::run`, `macos::run`,
-/// `win::run`, `tui::run`) performs just before painting the focus-ring
-/// convention: `backend.focus_tree().focused()` for the focused id, then
-/// a linear scan of [`all_tab_stops`] for the matching rect.
+/// The screen [`Rect`] the focus ring traces this frame, or `None` — the
+/// per-frame lookup every runner (`gtk::run`, `macos::run`, `win::run`,
+/// `tui::run`) performs just before painting the focus-ring convention.
 ///
-/// Returns `None` both when nothing is focused and when the focused id
-/// isn't among this frame's tab stops (e.g. it scrolled out of view) —
-/// callers treat both the same way: skip `Backend::draw_focus_ring` for
-/// this frame.
+/// The focused id (`backend.focus_tree().focused()`) must be a stop this
+/// frame: one of [`all_tab_stops`], or a node of [`AppLogic::frame_tree`]
+/// that takes focus. When the widget painted through the widget contract
+/// this frame, its recorded [`crate::interactive::FocusIndicator`] decides the
+/// rect — the control's own extent rather than its whole layout cell, or
+/// no ring at all for a widget that shows its own focus
+/// ([`crate::primitive::painted_focus_ring`]); otherwise the stop's rect.
+///
+/// Returns `None` when nothing is focused, when the focused id isn't a
+/// stop this frame (e.g. it scrolled out of view), and when the widget
+/// draws its own focus — callers skip `Backend::draw_focus_ring` for the
+/// frame in each case.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -1452,16 +1495,18 @@ where
     B: crate::Backend,
     A: AppLogic,
 {
-    backend
-        .focus_tree()
-        .focused()
-        .map(|(id, _)| *id)
-        .and_then(|id| {
-            all_tab_stops(app, area)
-                .into_iter()
-                .find(|(stop_id, _)| *stop_id == id)
-                .map(|(_, rect)| rect)
-        })
+    let id = backend.focus_tree().focused()?.0;
+    let stop = all_tab_stops(app, area)
+        .into_iter()
+        .find(|(stop_id, _)| *stop_id == id)
+        .map(|(_, rect)| rect)
+        .or_else(|| {
+            app.frame_tree(area)
+                .find(&id)
+                .filter(|node| !matches!(node.widget.focus(), FocusSpec::None))
+                .map(|node| node.rect)
+        })?;
+    crate::primitive::painted_focus_ring(&id).unwrap_or(Some(stop))
 }
 
 /// Trailing-edge debounce settle window for `WindowResized` dispatch.
@@ -2236,6 +2281,7 @@ mod widget_routing_tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }
@@ -2453,6 +2499,7 @@ mod widget_routing_tests {
     fn double_click_at(x: f32, y: f32) -> UiEvent {
         UiEvent::DoubleClick {
             widget: None,
+            button: crate::MouseButton::Left,
             position: Point::new(x, y),
         }
     }
@@ -2501,6 +2548,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2547,6 +2595,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2631,6 +2680,7 @@ mod widget_routing_tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
         let move_to = |x: f32| UiEvent::MouseMoved {
             position: Point::new(x, 1.0),
@@ -2727,6 +2777,7 @@ mod widget_routing_tests {
                 UiEvent::TextCopied("exit-marker".into()),
                 UiEvent::DoubleClick {
                     widget: Some(app.id),
+                    button: crate::MouseButton::Left,
                     position: Point::default(),
                 },
             ]

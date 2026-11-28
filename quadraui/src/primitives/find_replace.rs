@@ -63,6 +63,29 @@ pub enum FindReplaceClickTarget {
     ReplaceAll,
 }
 
+impl FindReplaceClickTarget {
+    /// The switch this target flips, for the chevron and the toggle
+    /// buttons; `None` for an input, a nav button or a replace action.
+    pub fn toggle(self) -> Option<FindReplaceToggle> {
+        use FindReplaceClickTarget as T;
+        match self {
+            T::Chevron => Some(FindReplaceToggle::ShowReplace),
+            T::ToggleCase => Some(FindReplaceToggle::CaseSensitive),
+            T::ToggleWholeWord => Some(FindReplaceToggle::WholeWord),
+            T::ToggleRegex => Some(FindReplaceToggle::Regex),
+            T::TogglePreserveCase => Some(FindReplaceToggle::PreserveCase),
+            T::ToggleInSelection => Some(FindReplaceToggle::InSelection),
+            T::FindInput(_)
+            | T::ReplaceInput(_)
+            | T::PrevMatch
+            | T::NextMatch
+            | T::Close
+            | T::ReplaceCurrent
+            | T::ReplaceAll => None,
+        }
+    }
+}
+
 /// A hit region within the find/replace panel, expressed in
 /// character-cell units relative to the panel's top-left **content**
 /// corner (inside borders).
@@ -106,25 +129,63 @@ pub fn compute_hit_regions(
     replace_one_glyph_width: u16,
     replace_all_glyph_width: u16,
 ) -> (Vec<(FrHitRegion, FindReplaceClickTarget)>, u16) {
+    compute_hit_regions_hiding(
+        panel_w,
+        show_replace,
+        match_info,
+        replace_one_glyph_width,
+        replace_all_glyph_width,
+        &[],
+    )
+}
+
+/// [`compute_hit_regions`] without the toggles named in `hidden`: a hidden
+/// toggle gets no region, so nothing paints or clicks there, and its slot
+/// goes to the input field instead of a gap. Hiding
+/// [`FindReplaceToggle::ShowReplace`] drops the chevron.
+pub fn compute_hit_regions_hiding(
+    panel_w: u16,
+    show_replace: bool,
+    match_info: &str,
+    replace_one_glyph_width: u16,
+    replace_all_glyph_width: u16,
+    hidden: &[FindReplaceToggle],
+) -> (Vec<(FrHitRegion, FindReplaceClickTarget)>, u16) {
     use FindReplaceClickTarget::*;
+    let shown = |target: FindReplaceClickTarget| {
+        target
+            .toggle()
+            .is_none_or(|toggle| !hidden.contains(&toggle))
+    };
 
     let mut regions = Vec::with_capacity(16);
     let content_w = panel_w.saturating_sub(2);
 
     // Chevron: cols 0..2
-    regions.push((
-        FrHitRegion {
-            col: 0,
-            row: 0,
-            width: 2,
-        },
-        Chevron,
-    ));
+    if shown(Chevron) {
+        regions.push((
+            FrHitRegion {
+                col: 0,
+                row: 0,
+                width: 2,
+            },
+            Chevron,
+        ));
+    }
 
     // Find input: starts at col 2, right side uses remaining space for buttons.
     // Right side: toggles(3×3=9) + gap(1) + match_info(max(len,5)) + gap(1) + nav(4×2=8) = dynamic
     let info_len = (match_info.len() as u16).max(5);
-    let right_side_w: u16 = 9 + info_len + 1 + 8; // toggles + count + gap + nav
+    let find_toggles: Vec<FindReplaceClickTarget> = [ToggleCase, ToggleWholeWord, ToggleRegex]
+        .into_iter()
+        .filter(|t| shown(*t))
+        .collect();
+    let nav: Vec<FindReplaceClickTarget> = [PrevMatch, NextMatch, ToggleInSelection, Close]
+        .into_iter()
+        .filter(|t| shown(*t))
+        .collect();
+    // toggles + count + gap + nav
+    let right_side_w: u16 = 3 * find_toggles.len() as u16 + info_len + 1 + 2 * nav.len() as u16;
     let input_start: u16 = 2;
     let input_w = content_w.saturating_sub(2 + right_side_w);
     regions.push((
@@ -141,7 +202,7 @@ pub fn compute_hit_regions(
     // these text pairs literally, pixel surfaces paint same-width
     // codicon glyphs).
     let mut tx = input_start + input_w + 1;
-    for target in [ToggleCase, ToggleWholeWord, ToggleRegex] {
+    for target in find_toggles {
         regions.push((
             FrHitRegion {
                 col: tx,
@@ -157,7 +218,7 @@ pub fn compute_hit_regions(
     tx += info_len + 1;
 
     // Nav buttons: [↑(2)][↓(2)][≡(2)][×(2)]
-    for target in [PrevMatch, NextMatch, ToggleInSelection, Close] {
+    for target in nav {
         regions.push((
             FrHitRegion {
                 col: tx,
@@ -181,15 +242,17 @@ pub fn compute_hit_regions(
         ));
 
         let mut bx = input_start + input_w + 1;
-        regions.push((
-            FrHitRegion {
-                col: bx,
-                row: 1,
-                width: 2,
-            },
-            TogglePreserveCase,
-        ));
-        bx += 3;
+        if shown(TogglePreserveCase) {
+            regions.push((
+                FrHitRegion {
+                    col: bx,
+                    row: 1,
+                    width: 2,
+                },
+                TogglePreserveCase,
+            ));
+            bx += 3;
+        }
 
         regions.push((
             FrHitRegion {
@@ -255,6 +318,7 @@ pub fn compute_hit_regions(
 ///     replace_one_glyph: "R1".to_string(),
 ///     replace_all_glyph: "R*".to_string(),
 ///     hit_regions,
+///     hidden_toggles: Vec::new(),
 /// };
 ///
 /// // Column 0, row 0 is the chevron that toggles the replace row.
@@ -323,6 +387,12 @@ pub struct FindReplacePanel {
     /// `show_replace`, `match_info` or a glyph changes.
     #[serde(default)]
     pub hit_regions: Vec<(FrHitRegion, FindReplaceClickTarget)>,
+    /// Toggles this panel does not offer — say regex and preserve-case for
+    /// a host whose search engine has neither. A hidden toggle paints
+    /// nothing, takes no click and ignores its Alt shortcut;
+    /// [`Self::rebuild_hit_regions`] gives its slot to the input field.
+    #[serde(default)]
+    pub hidden_toggles: Vec<FindReplaceToggle>,
 }
 
 /// `#[serde(default)]` helper for [`FindReplacePanel::panel_width`] — a
@@ -459,7 +529,7 @@ impl FindReplacePanel {
         if x < ox || y < oy {
             return FindReplaceHit::Empty;
         }
-        for (region, target) in &self.hit_regions {
+        for (region, target) in self.regions() {
             let rx0 = ox + region.col as f32 * char_width;
             let rx1 = rx0 + region.width as f32 * char_width;
             let ry0 = oy + region.row as f32 * line_height;
@@ -475,14 +545,26 @@ impl FindReplacePanel {
     /// `show_replace`, `match_info` and replace-glyph widths (each glyph's
     /// char count).
     pub fn rebuild_hit_regions(&mut self) {
-        let (regions, _input_w) = compute_hit_regions(
+        let (regions, _input_w) = compute_hit_regions_hiding(
             self.panel_width,
             self.show_replace,
             &self.match_info,
             self.replace_one_glyph.chars().count() as u16,
             self.replace_all_glyph.chars().count() as u16,
+            &self.hidden_toggles,
         );
         self.hit_regions = regions;
+    }
+
+    /// [`Self::hit_regions`] less any toggle named in
+    /// [`Self::hidden_toggles`] — what paints and takes clicks, also for
+    /// regions a host computed itself with [`compute_hit_regions`].
+    pub fn regions(&self) -> impl Iterator<Item = &(FrHitRegion, FindReplaceClickTarget)> {
+        self.hit_regions.iter().filter(|(_, target)| {
+            target
+                .toggle()
+                .is_none_or(|toggle| !self.hidden_toggles.contains(&toggle))
+        })
     }
 
     /// The box this overlay occupies at the top-right of
@@ -629,15 +711,18 @@ impl FindReplacePanel {
                 sel_anchor: None,
             }
         };
+        if let Some(toggle) = target.toggle() {
+            return self.flip(toggle);
+        }
         match target {
-            T::Chevron => self.flip(FindReplaceToggle::ShowReplace),
+            T::Chevron
+            | T::ToggleCase
+            | T::ToggleWholeWord
+            | T::ToggleRegex
+            | T::TogglePreserveCase
+            | T::ToggleInSelection => unreachable!("toggle targets flip above"),
             T::FindInput(_) => focus_field(FindReplaceField::Find),
             T::ReplaceInput(_) => focus_field(FindReplaceField::Replace),
-            T::ToggleCase => self.flip(FindReplaceToggle::CaseSensitive),
-            T::ToggleWholeWord => self.flip(FindReplaceToggle::WholeWord),
-            T::ToggleRegex => self.flip(FindReplaceToggle::Regex),
-            T::TogglePreserveCase => self.flip(FindReplaceToggle::PreserveCase),
-            T::ToggleInSelection => self.flip(FindReplaceToggle::InSelection),
             T::PrevMatch => FindReplaceEvent::PrevMatch,
             T::NextMatch => FindReplaceEvent::NextMatch,
             T::Close => FindReplaceEvent::Close,
@@ -740,7 +825,7 @@ impl FindReplacePanel {
                     'p' => Some(FindReplaceToggle::PreserveCase),
                     _ => None,
                 };
-                if let Some(toggle) = toggle {
+                if let Some(toggle) = toggle.filter(|t| !self.hidden_toggles.contains(t)) {
                     return Handled::Event(self.flip(toggle));
                 }
             }
@@ -999,8 +1084,7 @@ impl crate::interactive::Interactive for FindReplacePanel {
         layout: &FindReplaceLayout,
     ) -> Vec<(Rect, crate::interactive::SubTarget)> {
         let (ox, oy) = (layout.area.x, layout.area.y);
-        self.hit_regions
-            .iter()
+        self.regions()
             .enumerate()
             .map(|(i, (region, _))| {
                 let r = layout.region_rect(region);
@@ -1043,8 +1127,7 @@ impl crate::interactive::Interactive for FindReplacePanel {
                     return Handled::Consumed;
                 };
                 let offset = self
-                    .hit_regions
-                    .iter()
+                    .regions()
                     .find(|(_, t)| *t == target)
                     .map_or(0, |(region, _)| layout.offset_at(region, x));
                 Handled::Event(self.click_event(target, offset))
@@ -1334,10 +1417,18 @@ mod native_surface_paint {
         // Positions derived from neighbouring hit regions, not a hit
         // region itself — the match-count string isn't clickable. The cell
         // painter derives it the same way.
-        let mut regex_end_col: Option<u16> = None;
+        let mut info_start_col: Option<u16> = None;
         let mut prev_match_col: Option<u16> = None;
 
-        for (region, target) in &panel.hit_regions {
+        for (region, target) in panel.regions() {
+            // The count follows the find input and whichever find-row
+            // toggles the panel shows.
+            if matches!(
+                target,
+                T::FindInput(_) | T::ToggleCase | T::ToggleWholeWord | T::ToggleRegex
+            ) {
+                info_start_col = Some(region.col + region.width);
+            }
             match target {
                 T::Chevron => {
                     let chevron = if panel.show_replace {
@@ -1416,7 +1507,6 @@ mod native_surface_paint {
                         &label,
                         panel.use_regex,
                     );
-                    regex_end_col = Some(region.col + region.width);
                 }
                 T::PrevMatch => {
                     paint_glyph(
@@ -1497,7 +1587,7 @@ mod native_surface_paint {
             }
         }
 
-        if let (Some(start_col), Some(end_col)) = (regex_end_col, prev_match_col) {
+        if let (Some(start_col), Some(end_col)) = (info_start_col, prev_match_col) {
             let info_col = start_col + 1;
             if end_col > info_col + 1 {
                 paint_label(
@@ -1614,6 +1704,7 @@ mod native_surface_paint {
                 replace_one_glyph: "R1".into(),
                 replace_all_glyph: "R*".into(),
                 hit_regions,
+                hidden_toggles: Vec::new(),
             }
         }
 
@@ -1916,6 +2007,7 @@ mod hit_test_tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         }
     }
 
@@ -2119,6 +2211,7 @@ mod interactive_tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions: Vec::new(),
+            hidden_toggles: Vec::new(),
         };
         p.rebuild_hit_regions();
         p
@@ -2190,6 +2283,54 @@ mod interactive_tests {
         assert_eq!(layout.content_origin, m.content_origin);
         assert_eq!(layout.row_height, m.row_height);
         assert_eq!(layout.char_width, 8.0);
+    }
+
+    /// Hidden toggles get no region (their slots widen the find input),
+    /// take no click and ignore their Alt shortcut; the rest still work.
+    #[test]
+    fn hidden_toggles_are_neither_shown_nor_clickable() {
+        let shown = panel(true);
+        let mut p = panel(true);
+        p.hidden_toggles = vec![FindReplaceToggle::Regex, FindReplaceToggle::PreserveCase];
+        p.rebuild_hit_regions();
+        let targets: Vec<_> = p.regions().map(|(_, t)| *t).collect();
+        assert!(!targets.contains(&FindReplaceClickTarget::ToggleRegex));
+        assert!(!targets.contains(&FindReplaceClickTarget::TogglePreserveCase));
+        assert!(targets.contains(&FindReplaceClickTarget::ToggleCase));
+        let input_w = |p: &FindReplacePanel| {
+            p.regions()
+                .find(|(_, t)| matches!(t, FindReplaceClickTarget::FindInput(_)))
+                .map(|(r, _)| r.width)
+                .unwrap()
+        };
+        assert_eq!(input_w(&p), input_w(&shown) + 3);
+
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert!(!matches!(
+            run(&p, key(Key::Char('r'), alt)).0,
+            Handled::Event(FindReplaceEvent::Toggled { .. })
+        ));
+        assert!(matches!(
+            run(&p, key(Key::Char('c'), alt)).0,
+            Handled::Event(FindReplaceEvent::Toggled { .. })
+        ));
+
+        // Regions a host computed itself are filtered the same way.
+        let mut external = shown.clone();
+        external.hidden_toggles = vec![FindReplaceToggle::Regex];
+        assert!(external
+            .regions()
+            .all(|(_, t)| *t != FindReplaceClickTarget::ToggleRegex));
+        let layout = cell_layout(&external);
+        let (region, _) = shown
+            .regions()
+            .find(|(_, t)| *t == FindReplaceClickTarget::ToggleRegex)
+            .unwrap();
+        let r = layout.region_rect(region);
+        assert_eq!(layout.hit_test(&external, r.x, r.y), FindReplaceHit::Empty);
     }
 
     #[test]

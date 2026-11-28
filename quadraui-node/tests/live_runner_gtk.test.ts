@@ -30,7 +30,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const nativeBackend: string | null = QuiApp.nativeBackend();
 const skip =
@@ -60,7 +60,7 @@ function runGtkScript(body: string): { stdout: string; stderr: string; status: n
   }
 }
 
-const indexPath = require.resolve("../js/index.ts");
+const indexPath = require.resolve("@quadraui/node");
 
 test(
   "startNative opens a real window, steps it, and tears it down via stopLive()",

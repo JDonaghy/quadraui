@@ -346,7 +346,7 @@ pub(crate) fn resolve_row_colors(
     striped: bool,
 ) -> (Color, Color) {
     let theme = ctx.theme;
-    let is_selected = ctx.table.selected_idx == Some(abs_idx);
+    let is_selected = ctx.table.is_row_selected(abs_idx);
     let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
     let row_fg = theme.foreground;
     let row_bg = if is_selected {
@@ -632,6 +632,8 @@ mod tests {
 
     fn make_table() -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("test"),
             columns: vec![
                 Column {
@@ -914,6 +916,8 @@ mod tests {
     fn body_cell_wider_than_column_is_clipped_and_does_not_bleed_into_neighbour() {
         // An over-long column cell is clipped to its own boundary, not to
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("clip-test"),
             columns: vec![
                 Column {
@@ -999,6 +1003,8 @@ mod tests {
         // count — a char-count budget would paint all 6 chars (12 cells)
         // across the neighbour column with no ellipsis at all.
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("wide-glyph-test"),
             columns: vec![
                 Column {
@@ -1510,6 +1516,8 @@ mod tests {
     fn make_h_scrolling_table() -> DataTable {
         let titles = ["Alpha", "Bravo", "Charlie", "Delta"];
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("hscroll"),
             columns: titles
                 .iter()
@@ -1654,6 +1662,8 @@ mod tests {
     fn make_wide_hscroll_table() -> DataTable {
         let titles = ["Alpha", "Bravo", "Charlie", "Delta"];
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("wide-hscroll"),
             columns: titles
                 .iter()
@@ -2091,6 +2101,8 @@ mod multi_select_driver_tests {
 
     fn sample_table() -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("dt"),
             columns: vec![Column {
                 title: "Name".to_string(),

@@ -1298,6 +1298,8 @@ mod tests {
     fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
         let id = WidgetId::new("tt:files");
         let table = quadraui::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id,
             columns: vec![quadraui::Column {
                 title: "Name".to_string(),

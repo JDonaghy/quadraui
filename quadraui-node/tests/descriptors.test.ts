@@ -15,7 +15,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("@quadraui/node");
 
 test("button leaf renders its label", () => {
   const app = new QuiApp(40, 20);
@@ -1426,14 +1426,14 @@ test("canvas region double-click emits a typed RegionDoubleClicked event", () =>
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 1.0, y: 0.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 1.0, y: 0.0 } } });
   app.run(1);
 
   assert.equal(received.length, 1, JSON.stringify(received));
   const [widgetId, canvasEvent] = received[0].Canvas;
   assert.equal(widgetId, "canvas:regions");
   assert.deepEqual(canvasEvent, {
-    RegionDoubleClicked: { region: "region:a", x: 1.0, y: 0.0 },
+    RegionDoubleClicked: { region: "region:a", button: "Left", x: 1.0, y: 0.0 },
   });
 });
 

@@ -295,6 +295,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
                 // See the `List` slot above.
                 loaded_rows: None,
+                selection_mode: tree.selection_mode,
             });
         }
     }
@@ -316,6 +317,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 viewport_rows,
                 // See the `List` slot above.
                 loaded_rows: None,
+                multi: multi_selection(data_table),
             });
         }
     }
@@ -346,32 +348,12 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
 }
 
-/// The per-call paint state a generic leaf paints with: whether it holds
-/// keyboard focus, as [`quadraui::primitive::PaintState::focus_ring_visible`]. A
-/// widget whose look follows focus (a form's focused-row highlight) reads
-/// it there, so the host's focus shows without the app echoing it onto
-/// the descriptor.
-struct LeafFocus(bool);
-
-impl quadraui::primitive::PaintState for LeafFocus {
-    fn focus_ring_visible(&self) -> bool {
-        self.0
-    }
-}
-
 /// Paints one generic leaf at `area`, unless the platform presents it
 /// itself ([`DynWidget::native_presentation`], a native menu bar), in
 /// which case nothing paints in the window. Returns whether it painted,
 /// so a natively presented leaf records no hit to route window input to.
 fn paint_widget_leaf(backend: &mut dyn Backend, area: Rect, widget: &dyn DynWidget) -> bool {
-    if widget.native_presentation(backend, area) {
-        return false;
-    }
-    let focused = widget
-        .id()
-        .is_some_and(|id| backend.focus_tree().focused_id() == Some(id));
-    backend.draw_dyn(area, widget, &LeafFocus(focused));
-    true
+    quadraui::frame::draw_widget(backend, area, widget)
 }
 
 /// How many lines of `td` fit in `rect` at a zero scroll offset — mirrors
@@ -429,6 +411,7 @@ fn draw_text_display_hit(
         // is right for every other caller (`draw_bands`, an unwindowed
         // layout-tree leaf).
         loaded_rows: None,
+        focusable: !matches!(quadraui::Interactive::focus(td), quadraui::FocusSpec::None),
     }
 }
 
@@ -1422,59 +1405,54 @@ fn clip_main_axis(
     (clipped_origin, (end - clipped_origin).max(0.0))
 }
 
-/// Best-effort intrinsic size of `node`, consulted by
-/// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
-/// child's main-axis size and for a non-`Stretch`
-/// [`quadraui::Align`]'s cross-axis size. Measured directly off the
-/// descriptor already decoded for painting: `TabBar` via
-/// `Backend::measure_text` (the same measurer `quadraui::compose::
-/// menu_system` already leans on for its own label widths), `TextDisplay`
-/// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
-/// own row count (height only — none of the three has a cheap intrinsic
-/// width), and a generic widget via its own `Primitive::measure`. Every other node kind (a nested `Row`/`Column`/`Split`/
-/// `Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement
-/// at this layer and reports [`None`] on both axes — see
-/// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
-/// degrades a `None`.
+/// Best-effort intrinsic size of `node`, for a
+/// [`quadraui::SectionSize::Content`] child's main axis and a non-`Stretch`
+/// [`quadraui::Align`]'s cross axis in [`layout_container_rects`]: `TabBar`
+/// by `Backend::measure_text`, `TextDisplay` by its lines, `List`/`Tree`/
+/// `DataTable` by row count (height only), a generic widget by
+/// `Primitive::measure`, and a `Row`/`Column` as [`NaturalSize::stacked`]
+/// over its children plus its padding and margin
+/// ([`quadraui::Spacing::outset`]), as the Rust app layer measures a stack.
+/// Other kinds (`Split`/`Tabs`/`SidebarPanel`/`SplitTree`) report [`None`].
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
-    // A `Styled` wrapper carries no geometry of its own -- unwrap to
-    // whatever it wraps, but push the override first via the same
-    // `push_styled_override`/`pop_styled_override` bracket `paint_styled`
-    // brackets its own recursive paint with, so a `padding` override on
-    // this wrapper changes what gets measured here, not just how the
-    // subtree later paints.
+    // A `Styled` wrapper measures what it wraps, under its own override
+    // (as `paint_styled` paints it), so a `padding` override is measured.
     if let LayoutNode::Styled(styled) = node {
         let push = push_styled_override(backend, &styled.style);
         let size = natural_size(backend, &styled.node, line_height);
         pop_styled_override(backend, push);
         return size;
     }
-    let LayoutNode::Leaf(leaf) = node else {
-        return NaturalSize {
-            width: None,
-            height: None,
+    let (container, horizontal) = match node {
+        LayoutNode::Leaf(_) => (None, false),
+        LayoutNode::Row(container) => (Some(container), true),
+        LayoutNode::Column(container) => (Some(container), false),
+        _ => return NaturalSize::NONE,
+    };
+    if let Some(container) = container {
+        let gap = if horizontal {
+            quantise_horizontal(container.spacing.gap, backend.char_width())
+        } else {
+            quantise_vertical(container.spacing.gap, line_height)
         };
+        let children: Vec<NaturalSize> = container
+            .children
+            .iter()
+            .map(|child| natural_size(backend, &child.node, line_height))
+            .collect();
+        let content = NaturalSize::stacked(children, horizontal, gap);
+        return container
+            .spacing
+            .outset(content, backend.char_width(), line_height);
+    }
+    let LayoutNode::Leaf(leaf) = node else {
+        return NaturalSize::NONE;
     };
     match &leaf.descriptor {
-        LeafDescriptor::TextDisplay(text) => {
-            let width = text
-                .lines
-                .iter()
-                .map(|line| {
-                    let line_text: String =
-                        line.spans.iter().map(|span| span.text.as_str()).collect();
-                    // `TextDisplay` is an `EditorClassPrimitive` (see
-                    // `quadraui::font_role`) -- its own lines paint in
-                    // `FontRole::Editor`, not the chrome font a `Button`/
-                    // `TabBar` label uses.
-                    backend.measure_text(&line_text, FontRole::Editor).0
-                })
-                .fold(0.0_f32, f32::max);
-            NaturalSize {
-                width: Some(width),
-                height: Some(text.lines.len() as f32 * line_height),
-            }
-        }
+        LeafDescriptor::TextDisplay(text) => NaturalSize {
+            width: Some(text.natural_cols() as f32 * backend.char_width()),
+            height: Some(text.lines.len() as f32 * line_height),
+        },
         LeafDescriptor::List(list) => NaturalSize {
             width: None,
             height: Some(list.items.len() as f32 * line_height),
@@ -1927,8 +1905,16 @@ fn windowed_data_table(table: &DataTable, window: ItemsWindow, leaf: WindowedLea
         rows,
         scroll_offset: 0,
         selected_idx: band_relative(table.selected_idx, leaf.band),
+        selected_indices: (table.selected_indices.iter())
+            .filter_map(|&i| band_relative(Some(i), leaf.band))
+            .collect(),
         ..table.clone()
     }
+}
+
+/// [`crate::hit::PaintedHit::DataTable::multi`] for `table`.
+fn multi_selection(table: &DataTable) -> Option<Vec<usize>> {
+    (table.selection_mode == quadraui::SelectionMode::Multi).then(|| table.selected_indices.clone())
 }
 
 /// [`windowed_vec`] for a [`ListView`]'s own `items` — an empty-text
@@ -2431,6 +2417,7 @@ pub fn paint_leaf_windowed(
                     .iter()
                     .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
                 loaded_rows: windowed.map(|windowed| windowed.loaded),
+                selection_mode: tree.selection_mode,
             });
         }
         LeafDescriptor::DataTable(data_table) => {
@@ -2473,6 +2460,7 @@ pub fn paint_leaf_windowed(
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
                 loaded_rows: windowed.map(|windowed| windowed.loaded),
+                multi: multi_selection(data_table),
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
@@ -4433,6 +4421,8 @@ mod tests {
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let table = DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("table"),
                 columns: vec![Column {
                     title: "col".to_string(),

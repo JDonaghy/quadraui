@@ -48,7 +48,9 @@ use crate::host::{
 };
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
-use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent};
+use crate::semantic::{
+    focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent, Press, Selections,
+};
 use crate::wire::DragRole;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
@@ -130,30 +132,15 @@ impl LayoutContent {
         tab_stops_from_hits(&self.hits.borrow())
     }
 
-    /// Routes `event` into the subtree, exactly as the main tree's own
+    /// Routes `event` into the subtree as the main tree's
     /// `event -> hit -> semantic` dispatch would: a positioned
-    /// `MouseDown`/`DoubleClick` click-focuses the leaf it landed on
-    /// (mirroring [`InteractionEngine::handle`]'s own click-to-focus
-    /// convention) and then resolves through the leaf itself — a generic
-    /// [`crate::layout::LeafDescriptor::Widget`] leaf through its own
-    /// [`DynWidget::handle`] (via `engine`), every other leaf through
-    /// [`crate::semantic::semantic_event_for_hit`]; a
-    /// `KeyPressed`/`CharTyped`/`ClipboardPaste` routes to whichever leaf
-    /// holds keyboard focus, through `engine`'s generic widget dispatch
-    /// for a [`crate::layout::LeafDescriptor::Widget`] leaf (a text
-    /// input's caret, selection and undo state, a form's field focus,
-    /// live in `engine`'s per-widget store like any main-tree leaf's), and
-    /// through [`crate::semantic::focus_scoped_key_event`] for every other
-    /// kind.
-    ///
-    /// Escape a focused generic leaf has no use for, and Escape on any
-    /// other leaf, is left unclaimed: the overlay itself owns Escape —
-    /// dismissing a popover, resolving a dialog to its cancel button —
-    /// and only a leaf that answers it (an open `ComboBox`, a form field)
-    /// outranks that.
-    ///
-    /// `None` means nothing in the subtree claimed `event`, leaving the
-    /// caller's own fallback (Escape dismissal, modal swallowing) to run.
+    /// `MouseDown`/`DoubleClick` click-focuses the leaf it hit, then resolves
+    /// through a generic `Widget` leaf's [`DynWidget::handle`] (via `engine`)
+    /// or [`crate::semantic::semantic_event_for_hit`]; a key, text or paste
+    /// goes to the focused leaf the same two ways (generic leaves keep their
+    /// caret, selection and undo state in `engine`'s per-widget store).
+    /// Escape is left to the overlay (dismiss, or a dialog's cancel) unless a
+    /// leaf answers it. `None` means nothing in the subtree claimed `event`.
     fn dispatch(
         &self,
         event: &UiEvent,
@@ -167,13 +154,12 @@ impl LayoutContent {
             UiEvent::MouseDown { position, .. } | UiEvent::DoubleClick { position, .. } => {
                 let position = *position;
                 let double_click = matches!(event, UiEvent::DoubleClick { .. });
-                let modifiers = match event {
-                    UiEvent::MouseDown { modifiers, .. } => *modifiers,
-                    _ => Modifiers::default(),
-                };
-                let button = match event {
-                    UiEvent::MouseDown { button, .. } => *button,
-                    _ => MouseButton::default(),
+                let (modifiers, button) = match event {
+                    UiEvent::MouseDown {
+                        modifiers, button, ..
+                    } => (*modifiers, *button),
+                    UiEvent::DoubleClick { button, .. } => (Modifiers::default(), *button),
+                    _ => (Modifiers::default(), MouseButton::default()),
                 };
                 let (id, detail, is_focusable) = {
                     let hits = self.hits.borrow();
@@ -217,12 +203,18 @@ impl LayoutContent {
                         );
                     }
                 }
+                let press = Press {
+                    position,
+                    button,
+                    modifiers,
+                    double_click,
+                };
                 let semantic = semantic_event_for_hit(
                     id,
                     &detail,
-                    modifiers,
-                    double_click,
+                    press,
                     &self.hits.borrow(),
+                    &mut engine.selections.borrow_mut(),
                 );
                 let resolved = semantic.unwrap_or_else(|| event.clone());
                 Some(
@@ -248,8 +240,13 @@ impl LayoutContent {
                 if matches!(key, Key::Named(NamedKey::Escape)) {
                     return None;
                 }
-                let resolved =
-                    focus_scoped_key_event(focused, key, *modifiers, &self.hits.borrow());
+                let resolved = focus_scoped_key_event(
+                    focused,
+                    key,
+                    *modifiers,
+                    &self.hits.borrow(),
+                    &mut engine.selections.borrow_mut(),
+                );
                 // `focus_scoped_key_event` echoes the original
                 // `KeyPressed` back when `focused` names no leaf in this
                 // subtree at all (or one with no key semantics of its
@@ -304,16 +301,22 @@ impl LayoutContent {
 /// different `hits` slice. `Split`/`SplitTree` are chrome around other
 /// content, not focusable leaves themselves, so they are skipped; a
 /// `SidebarPanel`'s header is a [`PaintedHit::Widget`] whose
-/// `FocusSpec::None` keeps it out too; `TextDisplay` is always one
-/// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
-/// every other variant yields its id and bounding `Rect`.
+/// `FocusSpec::None` keeps it out too; a `TextDisplay` is one only when
+/// its own `Interactive::focus` says so (a pane with a scrollbar, which
+/// the keyboard scrolls); every other variant yields its id and bounding
+/// `Rect`.
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
     hits.iter()
         .filter_map(|hit| match hit {
             PaintedHit::Tree { id, area, .. }
             | PaintedHit::List { id, area, .. }
-            | PaintedHit::DataTable { id, area, .. }
-            | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
+            | PaintedHit::DataTable { id, area, .. } => Some((*id, *area)),
+            PaintedHit::TextDisplay {
+                id,
+                area,
+                focusable,
+                ..
+            } => focusable.then_some((*id, *area)),
             PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
             // A `Scroll` is chrome around its own content, like
             // `Split` above -- its content's own
@@ -357,15 +360,11 @@ fn stops_around_focused_children(
     stops
 }
 
-/// A plain Tab/Shift-Tab on a focused generic leaf with per-child focus
-/// stops whose focused child — the one it last requested focus for — is
-/// its last (or first): focus leaves the leaf for the next (or previous)
-/// stop in `hits`' tab order, rather than the leaf wrapping round its own
-/// children. The leaf [`stops_around_focused_children`] leaves out while it
-/// holds focus rejoins the cycle here. Returns the newly focused stop and
-/// the reaction to the move; `None` for any other event, a leaf not at
-/// either end of its children, or when there is nowhere else to go — the
-/// key then goes to the leaf itself.
+/// A plain Tab/Shift-Tab on a focused leaf whose focused child is its last
+/// (or first) stop ([`quadraui::FocusSpec::child_at_edge`]): focus moves to
+/// the next (or previous) stop in `hits`' tab order instead of wrapping
+/// inside the leaf. Returns the new stop and the reaction; `None` (the key
+/// goes to the leaf) otherwise.
 fn tab_past_child_stops(
     hits: &[PaintedHit],
     focused: Option<quadraui::FocusAddress>,
@@ -387,16 +386,7 @@ fn tab_past_child_stops(
     let forward = matches!(named, NamedKey::Tab) && !modifiers.shift;
     let (focused, sub) = focused?;
     let (_, widget) = dyn_widget_hit(hits, focused)?;
-    let quadraui::FocusSpec::Children(stops) = widget.focus() else {
-        return None;
-    };
-    let pos = stops.iter().position(|stop| Some(stop.sub) == sub)?;
-    let at_end = if forward {
-        pos + 1 >= stops.len()
-    } else {
-        pos == 0
-    };
-    if !at_end {
+    if !widget.focus().child_at_edge(sub, forward) {
         return None;
     }
     let next = next_stop_after(hits, focused, forward)?;
@@ -1072,6 +1062,8 @@ pub struct InteractionEngine {
     /// `resolve_*` helpers. [`Self::set_hits`] runs the store's frame
     /// sweep every frame.
     widget_state: RefCell<quadraui::WidgetStateStore>,
+    /// Each `DataTable`/`List`/`Tree` leaf's multi-selection.
+    selections: RefCell<Selections>,
     /// This engine's claim on the thread's runtime
     /// [`quadraui::WidgetStateStore`], where it keeps every generic
     /// [`DynWidget`] leaf's `Interactive::State` — the store
@@ -1153,18 +1145,6 @@ struct DynWidgetClickOutcome {
     consumed: bool,
     /// Every `Reaction` already dispatched/resolved by this call.
     reaction: quadraui::Reaction,
-}
-
-/// The pointer-click facts [`InteractionEngine::handle`] has already
-/// resolved by the time a hit reaches
-/// [`InteractionEngine::dispatch_dyn_widget_click`] — bundled into one
-/// value so that method stays under `clippy::too_many_arguments` without
-/// losing any of them.
-struct PointerClick {
-    position: Point,
-    button: MouseButton,
-    modifiers: Modifiers,
-    double_click: bool,
 }
 
 impl Default for DynWidgetClickOutcome {
@@ -2250,8 +2230,8 @@ impl InteractionEngine {
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
     /// `Split`/`SplitTree` are chrome around other content, not focusable
     /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
-    /// pointer-only header contributes none; `TextDisplay` is always one (scroll/copy need
-    /// keyboard focus the same way a `Tree`/`List` does); every other
+    /// pointer-only header contributes none; a `TextDisplay` is one only
+    /// when it shows a scrollbar for the keyboard to drive; every other
     /// variant yields its id and bounding `Rect`.
     ///
     /// Returns empty while a form dialog is open, regardless of what the
@@ -2657,13 +2637,9 @@ impl InteractionEngine {
                     _ => None,
                 });
                 if let Some(content) = layout_content {
-                    // `LayoutContent::dispatch`'s own `None` means
-                    // "nothing in the subtree claimed this" — an Escape
-                    // the popover itself owns, or a key with no meaning
-                    // for the focused leaf. A positioned event that
-                    // landed inside the popover is still claimed either
-                    // way: it visually hit the popover, so the tree
-                    // painted underneath must never see it.
+                    // `None`: nothing in the popover claimed it. A
+                    // positioned event inside the popover is claimed
+                    // anyway, so the tree underneath never sees it.
                     match content.dispatch(event, self, backend, sink) {
                         Some(result) => return Some(result),
                         None if inside == Some(true) => return Some(Reaction::Continue),
@@ -2673,13 +2649,9 @@ impl InteractionEngine {
             }
         }
 
-        // Float does NOT claim mouse clicks here: its content is painted
-        // by the host, not this engine (see `Self::show_float`'s doc), so
-        // a click anywhere near it has to keep flowing through the
-        // normal hit-map routing below for that content to ever receive
-        // it. A non-focusable hint float never steals Escape either, same
-        // distinction [`quadraui::ModalStack::top_focusable`]'s own doc
-        // draws.
+        // A host-painted float claims no clicks (they reach its content
+        // through the hit map below), and only a focusable one claims
+        // Escape ([`quadraui::ModalStack::top_focusable`]).
         let float_claims_escape = self
             .overlays
             .iter()
@@ -2770,6 +2742,26 @@ impl InteractionEngine {
         }
     }
 
+    /// Re-anchors `id`'s multi-selection on its `List`/`Tree` cursor row, as
+    /// a plain arrow key does in the Rust widget.
+    fn select_cursor_row(&self, id: WidgetId) {
+        let hits = self.hit_map.borrow();
+        let row = match tree_rows_and_viewport(&hits, id) {
+            Some((row_paths, _)) => {
+                crate::host::tree_cursor_row(&self.widget_state, id, &row_paths)
+            }
+            None => list_rows_and_viewport(&hits, id)
+                .and_then(|_| crate::host::list_cursor_row(&self.widget_state, id)),
+        };
+        if let Some(row) = row {
+            self.selections
+                .borrow_mut()
+                .entry(id)
+                .or_default()
+                .on_gesture(Some(row), row, quadraui::SelectionGesture::Replace);
+        }
+    }
+
     /// [`Self::dispatch_rows_requested_after_scroll`] for a navigation key
     /// instead of a pointer scroll: an `apply_*_nav_key` call leaves the
     /// cursor's new offset in [`Self::widget_state`] rather than on the
@@ -2825,6 +2817,22 @@ impl InteractionEngine {
                 apply_tree_toggle_expand(&self.widget_state, *id, path);
                 Reaction::Redraw
             }
+            UiEvent::List(id, ListViewEvent::SelectionChanged { idx }) => {
+                crate::host::apply_list_selected(&self.widget_state, *id, *idx);
+                Reaction::Redraw
+            }
+            UiEvent::Tree(id, TreeEvent::SelectionChanged { path })
+            | UiEvent::Tree(
+                id,
+                TreeEvent::RowClicked {
+                    path,
+                    button: MouseButton::Left,
+                    ..
+                },
+            ) => {
+                crate::host::apply_tree_selected(&self.widget_state, *id, path);
+                Reaction::Redraw
+            }
             _ => Reaction::Continue,
         }
     }
@@ -2840,11 +2848,11 @@ impl InteractionEngine {
     fn dispatch_dyn_widget_click(
         &self,
         id: WidgetId,
-        click: PointerClick,
+        click: Press,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
-        let PointerClick {
+        let Press {
             position,
             button,
             modifiers,
@@ -3333,7 +3341,26 @@ impl InteractionEngine {
         } else {
             quadraui::Reaction::Continue
         };
-        pointer.merge(self.route(event, backend, sink))
+        // Focus pushed onto a widget with per-child stops (a form) enters
+        // its first child, as Tab into it does.
+        let enters = match &event {
+            UiEvent::FocusChanged(Some(id)) if backend.focus_tree().focused_id() != Some(id) => {
+                dyn_widget_hit(&self.hit_map.borrow(), *id).is_some_and(
+                    |(_, w)| matches!(w.focus(), quadraui::FocusSpec::Children(s) if !s.is_empty()),
+                )
+            }
+            _ => false,
+        };
+        let reaction = pointer.merge(self.route(event, backend, sink));
+        if !enters {
+            return reaction;
+        }
+        let tab = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Tab),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        reaction.merge(self.route(tab, backend, sink))
     }
 
     fn route(
@@ -3344,28 +3371,16 @@ impl InteractionEngine {
     ) -> quadraui::Reaction {
         use quadraui::Reaction;
 
-        // Set when a tooltip auto-dismisses below — merged into the final
-        // `Reaction` (and threaded through `continue_or_tooltip_redraw`
-        // for the handful of early `return`s further down whose own
-        // outcome is "nothing changed") so the redraw that takes the
-        // tooltip off screen always happens, regardless of which path
-        // through this function the event takes.
+        // A tooltip auto-dismissed below: every return path redraws
+        // (`continue_or_tooltip_redraw`) so it leaves the screen.
         let mut tooltip_dismissed = false;
 
-        // The reaction a focused generic widget produced for a key it let
-        // travel on (`Handled::Ignored`) while still asking for a repaint —
-        // a script-defined widget whose script consumed the key does this
-        // so the app sees the key press too. Merged into the final
-        // `Reaction` below, the same way `tooltip_dismissed` is, so the
-        // widget's repainted state shows even when `sink.dispatch` itself
-        // leaves `event` unhandled.
+        // The repaint a focused generic widget asked for on a key it still
+        // let travel on (`Handled::Ignored`), merged into the final result.
         let mut widget_key_reaction = Reaction::Continue;
 
-        // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
-        // valid drop target, below — merged into the final `Reaction` the
-        // same way `widget_key_reaction` is. `drag_started_reaction`/
-        // `drag_over_reaction` are its arm/continue counterparts, set
-        // further down once `hit`/the `MouseMoved` branch are reached.
+        // An armed `Self::gesture_drag` dropping, starting and moving over
+        // a target, merged into the final result.
         let mut gesture_reaction = Reaction::Continue;
         let mut drag_started_reaction = Reaction::Continue;
         let mut drag_over_reaction = Reaction::Continue;
@@ -3430,14 +3445,8 @@ impl InteractionEngine {
             }
         }
 
-        // A tooltip is non-interactive chrome, not a modal-input state
-        // machine — it never claims a click/key for itself, so this is a
-        // side effect rather than an early return. Clearing it here (on
-        // every `MouseDown`/`KeyPressed`, before anything else below gets
-        // a chance to consume the event) is what "route dismissal" means
-        // for a primitive with [`quadraui::Backend::draw_tooltip`]'s "no
-        // hit data returned" contract: the next interaction anywhere always hides
-        // it, same as a native tooltip's hover-out behaviour.
+        // Any press or key hides a tooltip, before anything can consume the
+        // event, without claiming it: a tooltip is non-interactive chrome.
         if matches!(
             event,
             UiEvent::MouseDown { .. } | UiEvent::KeyPressed { .. }
@@ -3451,16 +3460,15 @@ impl InteractionEngine {
             tooltip_dismissed = true;
         }
 
-        // A directly-dispatched `UiEvent::FocusChanged` — e.g. a binding's
-        // own Tab-cycling, which calls `AppLogic::handle` (hence this
-        // engine, once the binding's own `handle` forwards to it) straight
-        // through with the new focus, never going through the
-        // click-to-focus bookkeeping further down — gets the same
-        // "scroll a child only partly inside its `Scroll` fully into
-        // view" side effect that bookkeeping already applies to a
-        // click-driven focus change.
+        // A directly-dispatched `UiEvent::FocusChanged` (Tab-cycling, a test
+        // harness's `focus(id)`) moves keyboard focus to the widget it names,
+        // so the keys that follow reach it, and scrolls a child only partly
+        // inside its `Scroll` into view, as a click-driven focus change does.
         let mut scroll_into_view_reaction = Reaction::Continue;
         if let UiEvent::FocusChanged(Some(id)) = &event {
+            if backend.focus_tree().focused_id() != Some(id) {
+                backend.set_focus(Some(*id));
+            }
             scroll_into_view_reaction = self.scroll_focused_child_into_view(*id, sink);
             if matches!(scroll_into_view_reaction, Reaction::Exit) {
                 return scroll_into_view_reaction;
@@ -3479,26 +3487,15 @@ impl InteractionEngine {
         }
         let popup_reaction = popup_routing.reaction();
 
-        // One shared pass over `Self::overlays`, topmost (highest
-        // `Overlay::rank`) first — toast (claims a `MouseDown` landing on
-        // its own dismiss/action region only), then dialog (claims
-        // everything), then completions/rich-text-popup (each claims
-        // Escape and a `MouseDown`), then float (claims Escape only when
-        // focusable) — collapsing what used to be five hand-written
-        // per-kind precedence blocks into [`Self::dispatch_overlays`].
-        // `None` means nothing in the stack claimed `event`; the
-        // menu-bar/context-menu routing below (and everything after it)
-        // runs exactly as if none of this existed.
+        // `Self::overlays`, topmost first: a toast claims presses on its own
+        // regions, a dialog everything, completions/rich-text popups Escape
+        // and presses, a focusable float Escape. `None`: none claimed it.
         if let Some(reaction) = self.dispatch_overlays(&event, backend, sink) {
             return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
 
-        // A context-menu popup owns a full modal-input state machine that
-        // must see every event before the rest of this function's own
-        // routing — matching `ContextMenuController::handle`'s own doc
-        // ("call this before other UI routing"). It reports `Ignored`
-        // immediately when nothing of its own is open, so this is safe
-        // to run unconditionally.
+        // An open context menu sees every event before other routing
+        // (`ContextMenuController::handle`); with none open it ignores it.
         match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
                 // Activation/dismissal already closed the popup in
@@ -3574,19 +3571,14 @@ impl InteractionEngine {
             }
         }
 
-        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf no longer
-        // needs a bespoke claim loop here: it now decodes as a
-        // `crate::layout::LeafDescriptor::Widget`, so it hits
+        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf decodes
+        // as a `crate::layout::LeafDescriptor::Widget`, so it hits
         // `HitDetail::WidgetBody` through the generic hit-test pipeline
         // below, the same as every other `WIDGET_KINDS` member —
         // [`Self::dispatch_dyn_widget_click`] (and, through it,
         // [`Self::dyn_widget_dispatch`]'s own focus-request handling)
-        // covers click-to-focus generically. No `UiEvent::Scroll` arm
-        // either: [`CellGrid::handle`][quadraui::interactive::Interactive::handle]
-        // has no `RoutedEvent::Wheel` arm of its own yet (always
-        // `Handled::Ignored`), same gap the deleted
-        // [`CellGridController`]-based wheel block already documented as
-        // a no-op.
+        // covers click-to-focus generically, and its wheel scrolling
+        // arrives through the generic widget wheel dispatch above.
         //
         // A move with the left button held continues whichever
         // [`crate::widget_kinds::WIDGET_KINDS`] leaf's own in-progress
@@ -3765,27 +3757,13 @@ impl InteractionEngine {
             }
         }
 
-        // A plain `KeyPressed` (Tab/Shift+Tab already claimed upstream by
-        // the binding's own `preprocess_event` once `tab_stops` is
-        // non-empty) is routed to whichever leaf currently holds focus,
-        // wrapped into that leaf's own `KeyPressed` variant so the binding's
-        // own handler sees a focus-scoped event instead of a backend-global
-        // one.
-        //
-        // For a focused `Tree`/`List`/`DataTable`, a recognized navigation
-        // key (Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown) is tried
-        // against [`apply_tree_nav_key`]/[`apply_list_nav_key`]/
-        // [`apply_data_table_nav_key`] first: it moves and scrolls-into-view
-        // the id's cursor in [`Self::widget_state`] (controlled or not — see
-        // those functions' own doc), using the hit's own row/viewport
-        // geometry rather than a stale descriptor. `tree_rows_and_viewport`
-        // returns `None` while the focused tree's selected row is mid-rename
-        // (`editing.is_some()`), so a rename's own text-editing keys
-        // (`Home`/`End` included) are never also interpreted as cursor
-        // navigation. This never changes what reaches `sink` (still the same
-        // `focus_scoped_key_event` result a binding always got), only
-        // forces the redraw that paints the moved cursor, even when the
-        // binding's own `sink.dispatch` leaves the key unhandled.
+        // A plain `KeyPressed` goes to the focused leaf, wrapped in that
+        // leaf's own `KeyPressed` variant. On a focused `Tree`/`List`/
+        // `DataTable` a navigation key first moves and scrolls the id's
+        // cursor in [`Self::widget_state`] from the hit's own geometry
+        // (`tree_rows_and_viewport` is `None` mid-rename, so a rename's
+        // keys never navigate); that changes nothing `sink` sees, only
+        // forces the redraw that paints the moved cursor.
         if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
             if let Some(focused) = backend.focus_tree().focused_id().copied() {
                 let nav_applied = if let Some((total_rows, viewport_rows)) =
@@ -3877,7 +3855,16 @@ impl InteractionEngine {
                 } else {
                     false
                 };
-                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
+                if nav_applied && !modifiers.shift {
+                    self.select_cursor_row(focused);
+                }
+                event = focus_scoped_key_event(
+                    focused,
+                    key,
+                    *modifiers,
+                    &self.hit_map.borrow(),
+                    &mut self.selections.borrow_mut(),
+                );
                 if nav_applied {
                     // A windowed leaf's cursor move can scroll past the
                     // slice its app has loaded — ask for the rows that
@@ -4076,9 +4063,7 @@ impl InteractionEngine {
                 UiEvent::MouseDown {
                     modifiers, button, ..
                 } => Some((*modifiers, false, *button)),
-                UiEvent::DoubleClick { .. } => {
-                    Some((Modifiers::default(), true, MouseButton::default()))
-                }
+                UiEvent::DoubleClick { button, .. } => Some((Modifiers::default(), true, *button)),
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
@@ -4086,7 +4071,7 @@ impl InteractionEngine {
                     if let Some(position) = event_position(&event) {
                         let outcome = self.dispatch_dyn_widget_click(
                             *id,
-                            PointerClick {
+                            Press {
                                 position,
                                 button,
                                 modifiers,
@@ -4259,13 +4244,22 @@ impl InteractionEngine {
                         }
                     }
                     attach_hit = false;
-                } else if let Some(semantic) = semantic_event_for_hit(
-                    *id,
-                    detail,
-                    modifiers,
-                    double_click,
-                    &self.hit_map.borrow(),
-                ) {
+                } else if let Some(semantic) = event_position(&event).and_then(|position| {
+                    let press = Press {
+                        position,
+                        button,
+                        modifiers,
+                        double_click,
+                    };
+                    let mut selections = self.selections.borrow_mut();
+                    semantic_event_for_hit(
+                        *id,
+                        detail,
+                        press,
+                        &self.hit_map.borrow(),
+                        &mut selections,
+                    )
+                }) {
                     event = semantic;
                     attach_hit = false;
                 }
@@ -7778,13 +7772,12 @@ mod tests {
 
         driver.app().sink.borrow_mut().dispatched.clear();
 
-        // A double-click on the same button must activate it only once:
-        // `Button::handle` only matches `PointerKind::Down` on the main
-        // tree, ignoring `PointerKind::DoubleClick` outright, so this
-        // subtree's own click arm must not fire `ButtonActivated` for a
-        // `DoubleClick` either.
+        // The second press of a quick pair reaches the button as the
+        // `DoubleClick` it folded into, which a button with no double-click
+        // meaning takes as one more press: exactly one more activation.
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(
                 submit_rect.x + submit_rect.width * 0.5,
                 submit_rect.y + submit_rect.height * 0.5,
@@ -7792,13 +7785,13 @@ mod tests {
         });
         {
             let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                !dispatched
-                    .iter()
-                    .any(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. })),
-                "a double-click on the popover button must not emit a \
-                 second ButtonActivated: {:?}",
-                dispatched
+            let activations = dispatched
+                .iter()
+                .filter(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. }))
+                .count();
+            assert_eq!(
+                activations, 1,
+                "a double-click on the popover button is one more press: {dispatched:?}"
             );
         }
 
@@ -8581,6 +8574,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         assert_eq!(
@@ -8689,6 +8683,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: Point::new(x, y),
         });
         driver.dispatch(UiEvent::Scroll {
@@ -8972,6 +8967,8 @@ mod tests {
         use quadraui::{Column, ColumnWidth, DataRow, StyledText};
 
         let data_table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 Column {
@@ -9335,6 +9332,7 @@ mod tests {
 
         driver.dispatch(UiEvent::DoubleClick {
             widget: None,
+            button: quadraui::MouseButton::Left,
             position: row_point,
         });
 
@@ -9681,12 +9679,12 @@ mod tests {
         let (selected_idx, scroll_offset, viewport_rows) =
             list_hit.expect("the list must still be painted after 40 Down presses");
         assert_eq!(
-            selected_idx, 39,
-            "40 Downs starting from no selection must land exactly on row 39"
+            selected_idx, 40,
+            "40 Downs from the untouched list's row 0 must land exactly on row 40"
         );
         assert!(
-            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
-            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
+            (scroll_offset..scroll_offset + viewport_rows).contains(&40),
+            "row 40 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
             scroll_offset + viewport_rows
         );
     }
@@ -9847,6 +9845,8 @@ mod tests {
         use quadraui::{Column, DataRow, StyledText};
 
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table-cursor"),
             columns: vec![Column {
                 title: "Col".to_string(),

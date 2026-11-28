@@ -3070,6 +3070,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         }
     }
 
@@ -3132,6 +3133,8 @@ mod tests {
     /// used by the `Primitive` TUI parity tests below.
     fn sample_data_table() -> crate::DataTable {
         crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("test:data-table-primitive-pilot"),
             columns: vec![
                 crate::Column {
@@ -3523,6 +3526,8 @@ mod tests {
     /// in a 60-wide viewport — the #550 repro geometry.
     fn wide_hscroll_table() -> crate::DataTable {
         crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("wide-hscroll"),
             columns: ["a", "b", "c", "d"]
                 .iter()
@@ -4661,6 +4666,8 @@ mod tests {
         );
 
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![crate::primitives::data_table::Column {
                 title: "Name".into(),

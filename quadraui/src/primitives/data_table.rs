@@ -89,7 +89,7 @@
 ))]
 use crate::event::Rect;
 use crate::primitives::layout_metrics;
-use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
+use crate::types::{Decoration, Icon, Modifiers, SelectionMode, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Column definition for a `DataTable`.
@@ -252,6 +252,8 @@ impl DataTableGlyphs {
 /// use quadraui::{Column, ColumnMeasure, DataRow, DataTable, DataTableHit, StyledText, WidgetId};
 ///
 /// let table = DataTable {
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 ///     id: WidgetId::new("table:results"),
 ///     columns: vec![Column {
 ///         title: "Name".to_string(),
@@ -285,8 +287,20 @@ pub struct DataTable {
     pub id: WidgetId,
     pub columns: Vec<Column>,
     pub rows: Vec<DataRow>,
+    /// The cursor row, and the anchor a Shift range grows from.
     #[serde(default)]
     pub selected_idx: Option<usize>,
+    /// [`SelectionMode::Multi`] lets Ctrl/Cmd and Shift clicks, Shift+arrow
+    /// keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection,
+    /// reported as [`DataTableEvent::SelectionSet`]. Default `Single`.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+    /// The multi-selection to paint (row indices), usually the last
+    /// [`DataTableEvent::SelectionSet`]'s `indices` echoed back. Painted
+    /// with the selection colour alongside `selected_idx`; empty paints
+    /// `selected_idx` alone.
+    #[serde(default)]
+    pub selected_indices: Vec<usize>,
     #[serde(default)]
     pub scroll_offset: usize,
     /// Which column is sorted, and in which direction. `None` = no
@@ -404,6 +418,40 @@ pub enum DataTableEvent {
         idx: usize,
         position: crate::event::Point,
     },
+    /// Row `idx` was pressed with a button other than the primary and
+    /// secondary ones — middle (open in a new tab), `X1`/`X2` (back /
+    /// forward) or a backend-specific button. A left press selects
+    /// ([`Self::RowSelected`] / [`Self::SelectionSet`]); a right press asks
+    /// for the context menu ([`Self::ContextMenuRequested`]).
+    RowClicked {
+        idx: usize,
+        button: crate::event::MouseButton,
+        modifiers: Modifiers,
+    },
+}
+
+impl DataTableEvent {
+    /// The event a press on row `idx`, resolved by
+    /// [`crate::SelectionCore::press`], reports. `position` is the press
+    /// point in the coordinates the table was laid out in.
+    pub fn from_row_press(
+        press: crate::RowPress,
+        idx: usize,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+    ) -> Self {
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::RowSelected { idx },
+            RowPress::Set(indices) => Self::SelectionSet { indices },
+            RowPress::ContextMenu => Self::ContextMenuRequested { idx, position },
+            RowPress::Click(button) => Self::RowClicked {
+                idx,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────
@@ -793,6 +841,12 @@ impl DataTableLayout {
 }
 
 impl DataTable {
+    /// Whether row `idx` paints as selected: the cursor row
+    /// (`selected_idx`) or a member of `selected_indices`.
+    pub fn is_row_selected(&self, idx: usize) -> bool {
+        self.selected_idx == Some(idx) || self.selected_indices.contains(&idx)
+    }
+
     /// Compute layout from viewport dimensions and a column measurer.
     ///
     /// `row_height` is the backend's row height (1.0 for TUI, line_height
@@ -1429,7 +1483,7 @@ pub(crate) mod native_surface_paint {
         let line_height = ctx.line_height;
         let band = Rect::new(rect.x, row_y, rect.width, line_height);
         let row = &table.rows[abs_idx];
-        let is_selected = table.selected_idx == Some(abs_idx);
+        let is_selected = table.is_row_selected(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         // Zebra stripe: a solid fill painted first, so the selection and
@@ -1853,6 +1907,8 @@ pub(crate) mod native_surface_paint {
 
         fn two_col_table() -> DataTable {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("dt"),
                 columns: vec![
                     Column {
@@ -2844,10 +2900,22 @@ impl DataTable {
                 other => other,
             };
             let current = self.current_idx(state);
+            let extend = mods.shift && self.selection_mode == SelectionMode::Multi;
             return match FlatNav::mv(self.rows.len(), current, nav, false, |_| true) {
-                Some(target) => self.move_cursor(state, target, mods.shift, layout, cx),
+                Some(target) => self.move_cursor(state, target, extend, layout, cx),
                 None => Handled::Ignored,
             };
+        }
+        let cursor = self.current_idx(state);
+        state.selection.sync_painted(&self.selected_indices);
+        if let Some(indices) = state.selection.key(
+            self.selection_mode,
+            &event.key,
+            mods,
+            cursor,
+            self.rows.len(),
+        ) {
+            return Handled::Event(DataTableEvent::SelectionSet { indices });
         }
         match &event.key {
             Key::Named(dir @ (NamedKey::Left | NamedKey::Right)) => {
@@ -2872,15 +2940,6 @@ impl DataTable {
                 }
                 _ => Handled::Ignored,
             },
-            Key::Char('a') if mods.ctrl || mods.cmd => {
-                if self.rows.is_empty() {
-                    return Handled::Ignored;
-                }
-                let indices: Vec<usize> = (0..self.rows.len()).collect();
-                state.selection.selected = indices.clone();
-                state.selection.anchor = Some(self.rows.len() - 1);
-                Handled::Event(DataTableEvent::SelectionSet { indices })
-            }
             Key::Char(c) if no_accel && !c.is_control() => {
                 let labels: Vec<String> = self
                     .rows
@@ -2905,24 +2964,28 @@ impl DataTable {
         }
     }
 
-    /// Left press on a body row: plain click selects, Ctrl/Cmd and Shift
-    /// grow the multi-selection.
+    /// A press of `button` on body row `idx`, resolved by
+    /// [`crate::SelectionCore::press`]: a left press selects (or, in
+    /// [`SelectionMode::Multi`], grows the set with Ctrl/Cmd or Shift), a
+    /// right press asks for the context menu, any other button reports
+    /// [`DataTableEvent::RowClicked`].
     fn handle_row_press(
         &self,
         state: &mut DataTableState,
         idx: usize,
+        button: crate::event::MouseButton,
         mods: Modifiers,
+        position: crate::event::Point,
     ) -> crate::Handled<DataTableEvent> {
-        use crate::types::SelectionGesture;
-        use crate::Handled;
-        let gesture = SelectionGesture::from_modifiers(mods);
         let current = self.current_idx(state);
-        state.cursor = Some(idx);
-        let indices = state.selection.on_gesture(current, idx, gesture);
-        match gesture {
-            SelectionGesture::Replace => Handled::Event(DataTableEvent::RowSelected { idx }),
-            _ => Handled::Event(DataTableEvent::SelectionSet { indices }),
+        state.selection.sync_painted(&self.selected_indices);
+        let press = state
+            .selection
+            .press(self.selection_mode, current, idx, button, mods);
+        if button == crate::event::MouseButton::Left {
+            state.cursor = Some(idx);
         }
+        crate::Handled::Event(DataTableEvent::from_row_press(press, idx, mods, position))
     }
 
     /// Left press on the scrollbar track: the thumb starts a captured
@@ -3050,6 +3113,9 @@ impl crate::interactive::Interactive for DataTable {
                 .layout
                 .hit_test(local.x, local.y, layout.scroll_offset, total)
         };
+        let abs = |local: &crate::event::Point| {
+            crate::event::Point::new(local.x + layout.area.x, local.y + layout.area.y)
+        };
         match event {
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(MouseButton::Left),
@@ -3073,7 +3139,9 @@ impl crate::interactive::Interactive for DataTable {
                     DataTableHit::Header { col } => {
                         Handled::Event(DataTableEvent::HeaderClicked { col })
                     }
-                    DataTableHit::Row { idx } => self.handle_row_press(state, idx, *mods),
+                    DataTableHit::Row { idx } => {
+                        self.handle_row_press(state, idx, MouseButton::Left, *mods, abs(local))
+                    }
                     DataTableHit::Footer | DataTableHit::Empty => Handled::Consumed,
                 }
             }
@@ -3088,17 +3156,14 @@ impl crate::interactive::Interactive for DataTable {
                 _ => Handled::Ignored,
             },
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Right),
+                kind: PointerKind::Down(button),
                 local,
+                mods,
                 ..
             } => match hit(local) {
-                DataTableHit::Row { idx } => Handled::Event(DataTableEvent::ContextMenuRequested {
-                    idx,
-                    position: crate::event::Point::new(
-                        local.x + layout.area.x,
-                        local.y + layout.area.y,
-                    ),
-                }),
+                DataTableHit::Row { idx } => {
+                    self.handle_row_press(state, idx, *button, *mods, abs(local))
+                }
                 _ => Handled::Ignored,
             },
             RoutedEvent::Pointer {
@@ -3168,6 +3233,8 @@ mod tests {
             })
             .collect();
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("test"),
             columns,
             rows,
@@ -4568,6 +4635,8 @@ mod primitive_parity_tests {
 
     fn sample_table() -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("pods"),
             columns: vec![
                 Column {

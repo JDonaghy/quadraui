@@ -18,25 +18,6 @@
 // already exports, so a prop typo or a wrong value fails `tsc` the same way
 // a typo in a direct `Tree(rows, {...})` call would.
 //
-// Unlike every other module in this package, this file (and its
-// `./jsx-dev-runtime.ts` sibling) is written as a genuine ES module --
-// real `export`, not this package's usual `exports.X = ...` (see
-// `./index.ts`'s own header comment for why that convention exists
-// elsewhere). There is no tension with that rule here: a `.tsx` file can
-// never run under Node's native TypeScript support regardless of this
-// module's own export style (JSX syntax itself isn't valid JS), so nothing
-// ever `require()`s this file directly the way the rest of the package's
-// own tests do -- every real consumer reaches it exclusively through a
-// JSX-aware transform (`tsc`, esbuild, Bun) that already rewrites `import`/
-// `export` into whatever its own target module format needs. Writing this
-// pair as plain ESM is what makes the auto-import those transforms emit
-// (`import { jsx } from "<jsxImportSource>/jsx-runtime"`) resolve a real
-// named export instead of failing `tsc`'s own module checking the way a
-// `exports.jsx = ...` assignment would (`import`-ing a value out of a
-// module that mixes `export interface` with `exports.X = ...` doesn't
-// type-check -- only `import type` does, which is why `./app/nodes`'s own
-// node constructors are pulled in below through `require`, not `import`).
-//
 // `./app/nodes`'s own constructors (`Split`, `Column`, ...) take their
 // payload positionally (`Split(first, second, options)`); a JSX element
 // only ever has one `props` object (`children` included). The
@@ -94,37 +75,7 @@ import type {
   TextDisplayLine as TextDisplayLineDescriptor,
   TreeRow as TreeRowDescriptor,
 } from "./wire";
-
-// --- node-constructor bindings ---------------------------------------------
-
-/**
- * `./app/nodes`'s own runtime exports, reached through `require` (not
- * `import`) for the reason this file's own header doc gives, with the
- * signature each constructor's own doc (`./app/nodes.ts`) already
- * documents restated here by hand -- `require`'s result is otherwise
- * untyped, so this cast is what gives every call below its real parameter
- * types instead of `any`.
- */
-const nodeConstructors = require("./app/nodes.ts") as {
-  Split(first: Renderable, second: Renderable, options?: SplitOptions): QuiNode;
-  Column(items: Renderable[], options?: ColumnOptions): QuiNode;
-  Row(items: Renderable[], options?: RowOptions): QuiNode;
-  SidebarPanel(content: Renderable, options?: SidebarPanelOptions): QuiNode;
-  Scroll(content: Renderable, options?: ScrollOptions): QuiNode;
-  Tabs(tabs: TabEntry[], options?: TabsOptions): QuiNode;
-  Tree(rows: TreeRowDescriptor[], options?: TreeOptions): QuiNode;
-  Table(columns: ColumnDescriptor[], rows: DataRowDescriptor[], options?: TableOptions): QuiNode;
-  List(items: ListItemDescriptor[], options?: ListOptions): QuiNode;
-  StatusBar(leftSegments: StatusBarSegment[], rightSegments: StatusBarSegment[], options?: StatusBarOptions): QuiNode;
-  TextDisplay(lines: TextDisplayLineDescriptor[], options?: TextDisplayOptions): QuiNode;
-  Button(label: string, options?: ButtonOptions): QuiNode;
-  Form(fields: FormFieldSpec[], options?: FormOptions): QuiNode;
-  Checkbox(value: boolean, options?: CheckboxOptions): QuiNode;
-  Slider(value: number, min: number, max: number, options?: SliderOptions): QuiNode;
-  Select(choices: string[], options?: SelectOptions): QuiNode;
-  Password(value: string, options?: PasswordOptions): QuiNode;
-  TextArea(value: string, options?: TextAreaOptions): QuiNode;
-};
+import * as nodeConstructors from "./app/nodes";
 
 /**
  * `./app/widget`'s own `widgetFromIntrinsic` -- the `widget` intrinsic's
@@ -132,26 +83,15 @@ const nodeConstructors = require("./app/nodes.ts") as {
  * own registration logic; see that module's own header doc, "The JSX
  * intrinsic". Loaded lazily, from inside the `widget` entry of
  * `INTRINSICS` below rather than at this module's top level like
- * `nodeConstructors` above: `./app/widget` itself `require`s `../index.ts`,
+ * `nodeConstructors` above: `./app/widget` itself imports `../index`,
  * the native addon, and merely importing this JSX runtime must not drag
  * that in for a consumer who never reaches for `<widget>` -- `require`
  * caches the module, so this costs nothing beyond the first call.
  */
-type WidgetModule = {
-  widgetFromIntrinsic(
-    spec: {
-      measure(ctx: WidgetLayoutCtx, props: Record<string, unknown>, constraints: WidgetConstraints): WidgetSize;
-      paint(ctx: WidgetLayoutCtx, props: Record<string, unknown>, rect: WidgetRect): WidgetPaint;
-      onEvent?(event: WidgetEvent, props: Record<string, unknown>, state: Record<string, unknown>): boolean;
-      a11y?(props: Record<string, unknown>): WidgetA11yNode | null | undefined;
-      initialState?(props: Record<string, unknown>): Record<string, unknown>;
-    },
-    options: { id?: string; focusable?: boolean; props?: Record<string, unknown> },
-  ): ComponentLike;
-};
+type WidgetModule = typeof import("./app/widget");
 
 function widgetModule(): WidgetModule {
-  return require("./app/widget.ts") as WidgetModule;
+  return require("./app/widget") as WidgetModule;
 }
 
 // --- intrinsic element props (the `tsc`-checked half) ----------------------
@@ -212,6 +152,11 @@ export interface StatusBarProps extends StatusBarOptions {
 
 export interface TextDisplayProps extends TextDisplayOptions {
   lines: TextDisplayLineDescriptor[];
+}
+
+/** `<text>Count: {n}</text>`: the children are joined into one string for `Text`. */
+export interface TextProps extends TextDisplayOptions {
+  children?: string | number | ReadonlyArray<string | number>;
 }
 
 export interface ButtonProps extends ButtonOptions {
@@ -288,6 +233,7 @@ export namespace JSX {
     list: ListProps;
     statusBar: StatusBarProps;
     textDisplay: TextDisplayProps;
+    text: TextProps;
     button: ButtonProps;
     form: FormProps;
     checkbox: CheckboxProps;
@@ -405,6 +351,10 @@ const INTRINSICS: Record<IntrinsicTag, IntrinsicBuilder> = {
   textDisplay: (props) => {
     const { lines, ...options } = props as unknown as TextDisplayProps;
     return nodeConstructors.TextDisplay(lines, options);
+  },
+  text: (props) => {
+    const typed = props as unknown as TextProps;
+    return nodeConstructors.Text(childList(typed.children).join(""), withoutChildren(typed));
   },
   button: (props) => {
     const { label, ...options } = props as unknown as ButtonProps;

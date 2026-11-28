@@ -35,7 +35,7 @@ const {
   ToggleField,
   Toolbar,
   Tree,
-} = require("../js/app/index.ts");
+} = require("@quadraui/node/app");
 
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };
 
@@ -86,7 +86,7 @@ test("every id-bearing node constructor accepts an omitted id", () => {
 test("auto ids from every node constructor are stable across re-render", () => {
   const app = new App(20, 5, {
     view: () =>
-      Split(Tree([], { onRowClick: () => {} }), Table([], [], { onSelect: () => {} })),
+      Split(Tree([], { onClick: () => {} }), Table([], [], { onSelect: () => {} })),
   });
   const idsBefore = Object.keys(app._registry).sort();
   app.step();
@@ -116,15 +116,15 @@ test("tree row click and toggle-expand dispatch to their own callback", () => {
         [{ path: [0], indent: 0, icon: null, text: { spans: [] }, badge: null, is_expanded: false }],
         {
           id: "t:tree",
-          onRowClick: (path: unknown) => clicked.push(path),
+          onClick: (path: unknown, button: unknown) => clicked.push([path, button]),
           onToggleExpand: (path: unknown) => toggled.push(path),
         },
       ),
   });
 
-  app.pushEvent({ Tree: ["t:tree", { RowClicked: { path: [0], modifiers: NO_MODS } }] });
+  app.pushEvent({ Tree: ["t:tree", { RowClicked: { path: [0], button: "Left", modifiers: NO_MODS } }] });
   app.step();
-  assert.deepEqual(clicked, [[0]]);
+  assert.deepEqual(clicked, [[[0], "Left"]]);
   assert.deepEqual(toggled, []);
 
   app.pushEvent({ Tree: ["t:tree", { RowToggleExpand: { path: [0] } }] });
@@ -664,7 +664,7 @@ test("a MessageDialogResolved with no pending confirm/alert falls through to onE
 
 test("an unmatched event falls through to onEvent", () => {
   const seen: unknown[] = [];
-  const { keyName } = require("../js/app/index.ts");
+  const { keyName } = require("@quadraui/node/app");
   const app = new App(20, 5, {
     view: () => TextDisplay([], { id: "t:text" }),
     onEvent: (event: unknown) => seen.push(event),
@@ -678,7 +678,7 @@ test("an unmatched event falls through to onEvent", () => {
 // --- strict / onUnknownKey ----------------------------------------------------
 
 test("strict:true raises on a typo'd optional key in view()'s own tree", () => {
-  const { UnknownKeyError } = require("../js/index.ts");
+  const { UnknownKeyError } = require("@quadraui/node");
   // `App`'s constructor already forces one real render (see its own doc),
   // so the typo is caught there, not on a later `step()`.
   assert.throws(
@@ -789,7 +789,7 @@ test("rendered tree carries the current wire_version", () => {
   // tree with no version opinion of its own still decodes and renders, the
   // same way a hand-built wire object carrying the current
   // `runtime.WIRE_VERSION` already does for `QuiApp` directly.
-  const runtime = require("../js/app/runtime.ts");
+  const runtime = require("@quadraui/node/app/runtime");
   const app = new App(20, 5, { view: () => Button("OK", { onClick: () => {} }) });
   assert.ok(app.screenContains("OK"));
   assert.equal((app._render() as Record<string, unknown>).wire_version, runtime.WIRE_VERSION);
@@ -810,8 +810,8 @@ test("forcing a wire_version newer than this host understands raises", () => {
   // `quadraui_binding_core::WIRE_VERSION` accepts makes the host's version gate
   // reject the next render with `VersionMismatchError`, exactly as it
   // would for a hand-built wire object carrying the same inflated value.
-  const runtime = require("../js/app/runtime.ts");
-  const { VersionMismatchError } = require("../js/index.ts");
+  const runtime = require("@quadraui/node/app/runtime");
+  const { VersionMismatchError } = require("@quadraui/node");
   const app = new App(20, 5, { view: () => Button("OK", { onClick: () => {} }) });
   try {
     runtime.WIRE_VERSION = 999;

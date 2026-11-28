@@ -5,70 +5,92 @@
 //! payload itself.
 
 use quadraui::{
-    DataTableEvent, Key, ListViewEvent, Modifiers, NamedKey, TextDisplayEvent, TreeEvent, UiEvent,
-    WidgetId,
+    DataTableEvent, Key, ListViewEvent, Modifiers, MouseButton, NamedKey, Point, SelectionCore,
+    SelectionMode, TextDisplayEvent, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::tree_row_path;
 use crate::hit::{HitDetail, PaintedHit};
 
-/// Up/Down navigation for a focused `DataTable`: moves the current row
-/// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
-/// when nothing is selected yet. Enter activates the currently selected row
-/// — the keyboard equivalent of a pointer double-click — and is a no-op
-/// (`None`) when nothing is selected, since there is no row to activate.
-/// Every other key returns `None`, leaving [`focus_scoped_key_event`] to
-/// fall through to the raw `UiEvent::KeyPressed` — `DataTable` has no
-/// focus-scoped `KeyPressed` variant of its own (unlike `Tree`/`List`/
-/// `TabBar`) because `DataTableEvent::RowSelected`/`RowActivated` already
-/// are the semantic shapes arrow-key navigation and Enter need; a
-/// widget-scoped `KeyPressed` would just be an extra hop a binding's own
-/// handler would have to unwrap before reaching the same `key` string.
+/// Each `DataTable`/`List`/`Tree` leaf's [`SelectionCore`], by widget id —
+/// what a widget keeps in its own `Interactive::State`.
+pub type Selections = std::collections::HashMap<WidgetId, SelectionCore>;
+
+/// A focused `DataTable`'s keys: Up/Down move the selected row (clamped,
+/// from row 0 when none), Enter activates it, and with `multi` (the painted
+/// `selected_indices`, `Some` only in [`SelectionMode::Multi`]) Shift+Up/Down
+/// and [`SelectionCore::key`]'s chords report `SelectionSet`. `None` for any
+/// other key: the raw `UiEvent::KeyPressed` passes through.
 fn data_table_key_event(
     id: WidgetId,
-    key: &Key,
-    selected_idx: Option<usize>,
-    total_rows: usize,
+    (key, modifiers): (&Key, Modifiers),
+    (selected_idx, total_rows): (Option<usize>, usize),
+    multi: Option<&[usize]>,
+    selection: &mut SelectionCore,
 ) -> Option<UiEvent> {
     if total_rows == 0 {
         return None;
+    }
+    let set = |indices| {
+        Some(UiEvent::DataTable(
+            id,
+            DataTableEvent::SelectionSet { indices },
+        ))
+    };
+    if let Some(painted) = multi {
+        selection.sync_painted(painted);
+        let chord = selection.key(
+            SelectionMode::Multi,
+            key,
+            modifiers,
+            selected_idx,
+            total_rows,
+        );
+        if chord.is_some() {
+            return set(chord?);
+        }
     }
     if matches!(key, Key::Named(NamedKey::Enter)) {
         let idx = selected_idx?;
         return Some(UiEvent::DataTable(id, DataTableEvent::RowActivated { idx }));
     }
-    let idx = match key {
-        Key::Named(NamedKey::Down) => selected_idx.map_or(0, |i| (i + 1).min(total_rows - 1)),
-        Key::Named(NamedKey::Up) => selected_idx.map_or(0, |i| i.saturating_sub(1)),
+    let delta = match key {
+        Key::Named(NamedKey::Down) => 1,
+        Key::Named(NamedKey::Up) => -1,
         _ => return None,
     };
+    if modifiers.shift && multi.is_some() {
+        return set(selection.extend_by(selected_idx, delta, total_rows));
+    }
+    let idx = selected_idx.map_or(0, |i| i.saturating_add_signed(delta).min(total_rows - 1));
     Some(UiEvent::DataTable(id, DataTableEvent::RowSelected { idx }))
 }
 
-/// Enter on a focused `List` with at least one row activates the current
-/// selection — the keyboard equivalent of [`data_table_key_event`]'s own
-/// Enter handling, and of a `List` row's pointer double-click
-/// (`ListViewEvent::ItemDoubleClicked`). `selected_idx` is always a valid
-/// index into a non-empty `ListView::items` (the field has no `None`
-/// state), so the only case with nothing to activate is an empty list
-/// (`total_items == 0`), which returns `None` and leaves
-/// [`focus_scoped_key_event`] to fall through to the raw
-/// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
-/// same fallthrough — in particular Up/Down/vim `j`/`k`, which move the
-/// `List`'s row cursor inside [`crate::host::apply_list_nav_key`]'s own
-/// `WidgetStateStore` entry rather than through an event. A binding's handler
-/// therefore keeps seeing navigation keys as `ListViewEvent::KeyPressed`,
-/// which is what an app that tracks its own `ListView::selected_idx`
-/// (the controlled shape, since `selected_idx` is a required descriptor
-/// field) needs in order to move that selection itself.
+/// Enter on a focused, non-empty `List` activates its selection (the
+/// keyboard twin of `ItemDoubleClicked`), and [`SelectionCore::key`]'s
+/// multi-select chords report `SelectionSet` — a `List` always takes them,
+/// as its own `Interactive` impl does. Every other key returns `None` for
+/// [`focus_scoped_key_event`]'s raw `ListViewEvent::KeyPressed` fallthrough;
+/// Up/Down/`j`/`k` move the cursor in [`crate::host::apply_list_nav_key`]'s
+/// store, so an app tracking its own `selected_idx` sees them as keys.
 fn list_key_event(
     id: WidgetId,
-    key: &Key,
+    (key, modifiers): (&Key, Modifiers),
     selected_idx: usize,
     total_items: usize,
+    selection: &mut SelectionCore,
 ) -> Option<UiEvent> {
     if total_items == 0 {
         return None;
+    }
+    if let Some(indices) = selection.key(
+        SelectionMode::Multi,
+        key,
+        modifiers,
+        Some(selected_idx),
+        total_items,
+    ) {
+        return Some(UiEvent::List(id, ListViewEvent::SelectionSet { indices }));
     }
     if matches!(key, Key::Named(NamedKey::Enter)) {
         return Some(UiEvent::List(
@@ -79,98 +101,121 @@ fn list_key_event(
     None
 }
 
-/// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
-/// stands for, if any — the set the binding's own event handler synthesizes so a
-/// tree-row/chevron click, list-item click or data-table-row/header click
-/// reaches the binding's own event handler as the same shape it would get by
-/// pushing that event directly (`UiEvent::Tree`/`UiEvent::List`/`UiEvent::DataTable`),
-/// rather than only as a raw `MouseDown`/`DoubleClick` plus a `"hit"` dict
-/// the handler would have to re-interpret itself. `double_click` selects
-/// between a variant's single- and double-click shapes where both exist
-/// (e.g. `TreeEvent::RowClicked` vs `RowDoubleClicked`,
-/// `ListViewEvent::SelectionChanged` vs `ItemDoubleClicked`,
-/// `DataTableEvent::RowSelected` vs `RowDoubleClicked`). `None` for every
-/// other `HitDetail` — a data-table header divider or a split divider
-/// (handled separately, via [`crate::drag::ActiveDrag`], since either spans
-/// a drag rather than a single click), or a modified list-item click (see the `ListItem`
-/// arm below, which loses the gesture if folded into
-/// `ListViewEvent::SelectionChanged`) — for which the raw
-/// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
-/// event handler unchanged.
+/// One pointer press, as [`semantic_event_for_hit`] resolves it.
+#[derive(Debug, Clone, Copy)]
+pub struct Press {
+    pub position: Point,
+    pub button: MouseButton,
+    pub modifiers: Modifiers,
+    /// The press is the second of a quick pair (`UiEvent::DoubleClick`).
+    pub double_click: bool,
+}
+
+/// The selection mode, painted multi-selection and cursor row of the
+/// row leaf `id` in `hit_map` — what [`SelectionCore::press`] needs.
+fn row_selection(hit_map: &[PaintedHit], id: WidgetId) -> (SelectionMode, &[usize], Option<usize>) {
+    use PaintedHit as H;
+    let none: &[usize] = &[];
+    let found = hit_map.iter().find_map(|hit| match hit {
+        H::DataTable {
+            id: h,
+            multi,
+            selected_idx: at,
+            ..
+        } if *h == id => match multi {
+            Some(set) => Some((SelectionMode::Multi, &set[..], *at)),
+            None => Some((SelectionMode::Single, none, *at)),
+        },
+        H::List {
+            id: h,
+            selected_idx: at,
+            ..
+        } if *h == id => Some((SelectionMode::Multi, none, Some(*at))),
+        H::Tree {
+            id: h,
+            selection_mode: mode,
+            ..
+        } if *h == id => Some((*mode, none, None)),
+        _ => None,
+    });
+    found.unwrap_or((SelectionMode::Single, none, None))
+}
+
+/// The semantic [`UiEvent`] a press on `detail` (within primitive `id`)
+/// stands for, if any, so a tree-row/chevron, list-item or data-table
+/// row/header press reaches the binding's handler in the shape it would
+/// get by pushing that event directly, not as a raw `MouseDown` plus a
+/// `"hit"` dict. A left double-click picks the double-click shape
+/// (`RowDoubleClicked`, `ItemDoubleClicked`); every other row press
+/// resolves through [`SelectionCore::press`] on `id`'s entry in
+/// `selections` — select, grow a multi-selection (`SelectionSet`), ask
+/// for the context menu (right), or report the button (`RowClicked`,
+/// `ItemClicked`). Only a left press toggles a chevron or clicks a header.
+/// `None` for every other `HitDetail` (dividers arm drags through
+/// [`crate::drag::ActiveDrag`]), leaving the raw event and its `"hit"`.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
-    modifiers: Modifiers,
-    double_click: bool,
+    press: Press,
     hit_map: &[PaintedHit],
+    selections: &mut Selections,
 ) -> Option<UiEvent> {
+    let left = press.button == MouseButton::Left;
+    let double = press.double_click && left;
+    let (mode, painted, current) = row_selection(hit_map, id);
+    let mut resolve = |idx: usize| {
+        let selection = selections.entry(id).or_default();
+        selection.sync_painted(painted);
+        selection.press(mode, current, idx, press.button, press.modifiers)
+    };
+    let (mods, at) = (press.modifiers, press.position);
     match detail {
-        HitDetail::TreeRow { row } => {
-            let path = tree_row_path(hit_map, id, *row)?;
-            if double_click {
-                Some(UiEvent::Tree(id, TreeEvent::RowDoubleClicked { path }))
-            } else {
-                Some(UiEvent::Tree(id, TreeEvent::RowClicked { path, modifiers }))
-            }
-        }
-        HitDetail::TreeChevron { row } => {
+        HitDetail::TreeChevron { row } if left => {
             let path = tree_row_path(hit_map, id, *row)?;
             Some(UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }))
         }
-        HitDetail::ListItem { index } => {
-            if double_click {
-                Some(UiEvent::List(
-                    id,
-                    ListViewEvent::ItemDoubleClicked { idx: *index },
-                ))
-            } else if modifiers == Modifiers::default() {
-                Some(UiEvent::List(
-                    id,
-                    ListViewEvent::SelectionChanged { idx: *index },
-                ))
-            } else {
-                // `ListViewEvent::SelectionChanged` carries no modifiers, so a
-                // Ctrl/Shift/Cmd click (a multi-select gesture) can't be
-                // represented by it without losing which gesture it was.
-                // Leaving the raw `MouseDown` (with its `"hit"` dict still
-                // attached, since this returns `None`) lets the binding's
-                // own event handler read `event["modifiers"]` and
-                // `event["hit"]["index"]` and compute the selection itself,
-                // the same way it would for any other modified click.
-                None
+        HitDetail::TreeRow { row } | HitDetail::TreeChevron { row } => {
+            let path = tree_row_path(hit_map, id, *row)?;
+            if double {
+                return Some(UiEvent::Tree(id, TreeEvent::RowDoubleClicked { path }));
             }
+            let paths = |rows: &[usize]| {
+                rows.iter()
+                    .filter_map(|&r| tree_row_path(hit_map, id, r))
+                    .collect()
+            };
+            let event = TreeEvent::from_row_press(resolve(*row), path, mods, at, paths);
+            Some(UiEvent::Tree(id, event))
         }
-        HitDetail::DataTableHeader { col } => Some(UiEvent::DataTable(
+        HitDetail::ListItem { index } if double => Some(UiEvent::List(
+            id,
+            ListViewEvent::ItemDoubleClicked { idx: *index },
+        )),
+        HitDetail::ListItem { index } => {
+            let event = ListViewEvent::from_row_press(resolve(*index), *index, mods, at);
+            Some(UiEvent::List(id, event))
+        }
+        HitDetail::DataTableHeader { col } if left => Some(UiEvent::DataTable(
             id,
             DataTableEvent::HeaderClicked { col: *col },
         )),
+        HitDetail::DataTableRow { row } if double => Some(UiEvent::DataTable(
+            id,
+            DataTableEvent::RowDoubleClicked { idx: *row },
+        )),
         HitDetail::DataTableRow { row } => {
-            if double_click {
-                Some(UiEvent::DataTable(
-                    id,
-                    DataTableEvent::RowDoubleClicked { idx: *row },
-                ))
-            } else {
-                Some(UiEvent::DataTable(
-                    id,
-                    DataTableEvent::RowSelected { idx: *row },
-                ))
-            }
+            let event = DataTableEvent::from_row_press(resolve(*row), *row, mods, at);
+            Some(UiEvent::DataTable(id, event))
         }
         _ => None,
     }
 }
 
 /// Wire-shaped drag-gesture event [`crate::engine::InteractionEngine::handle`]
-/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`],
-/// a default method on that trait: it defaults to ignoring the event and
-/// reporting [`quadraui::Reaction::Continue`], so every existing
-/// [`crate::engine::EventSink`] impl keeps compiling unchanged until a
-/// binding deliberately overrides it to thread this to its own callback.
-/// Derives `Serialize` only, not `Deserialize`: [`HitDetail`] — the shape
-/// every `*_detail` field below reuses rather than inventing a second
-/// drag-specific hit description — has no `Deserialize` of its own either,
-/// since neither type has a reverse (host -> engine) decode path.
+/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`]
+/// (which by default ignores it, returning `Continue`, until a binding
+/// overrides it). `Serialize` only: [`HitDetail`], which every `*_detail`
+/// field reuses, has no reverse (host -> engine) decode path either.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -257,26 +302,20 @@ pub fn key_to_focus_string(key: &Key) -> String {
     }
 }
 
-/// Routes a raw `KeyPressed` to whichever leaf the `FocusTree` names as
-/// focused, wrapping it into that leaf's own semantic `KeyPressed` variant
-/// (or, for a focused `DataTable`'s Up/Down/Enter, straight into
-/// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
-/// focused `List`'s Enter with at least one row, straight into
-/// [`list_key_event`]'s `ItemActivated`). A focused
-/// [`crate::widget_kinds::WIDGET_KINDS`] leaf (e.g. `Button`, `Switch`) never
-/// reaches this function at all — `InteractionEngine::handle` claims its
-/// `KeyPressed` earlier, through `DynWidget::handle` directly, the same
-/// generic seam its `MouseDown`/`DoubleClick` routing already goes through.
-/// Every other key a focused leaf doesn't recognize passes through as the
-/// original `UiEvent::KeyPressed` unchanged; the same happens for any other
-/// key a focused `DataTable`/`List` doesn't recognize, and when `focused`
-/// names a leaf absent from this frame's hit map (for example a tree that
-/// scrolled out of the render).
+/// Routes a raw `KeyPressed` to the focused leaf as that leaf's semantic
+/// event: its own `KeyPressed` variant, or [`data_table_key_event`]'s /
+/// [`list_key_event`]'s selection and activation events, the multi-select
+/// ones growing `id`'s entry in `selections`. A focused
+/// [`crate::widget_kinds::WIDGET_KINDS`] leaf never reaches here
+/// (`InteractionEngine::handle` routes it through `DynWidget::handle`).
+/// An unrecognised key, or a `focused` id absent from this frame's hit
+/// map, passes through as the original `UiEvent::KeyPressed`.
 pub fn focus_scoped_key_event(
     focused: WidgetId,
     raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
+    selections: &mut Selections,
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
         key: raw_key.clone(),
@@ -306,16 +345,22 @@ pub fn focus_scoped_key_event(
                 selected_idx,
                 total_items,
                 ..
-            } if *id == focused => list_key_event(*id, raw_key, *selected_idx, *total_items)
-                .or_else(|| {
-                    Some(UiEvent::List(
-                        *id,
-                        ListViewEvent::KeyPressed {
-                            key: key.clone(),
-                            modifiers,
-                        },
-                    ))
-                }),
+            } if *id == focused => list_key_event(
+                *id,
+                (raw_key, modifiers),
+                *selected_idx,
+                *total_items,
+                selections.entry(*id).or_default(),
+            )
+            .or_else(|| {
+                Some(UiEvent::List(
+                    *id,
+                    ListViewEvent::KeyPressed {
+                        key: key.clone(),
+                        modifiers,
+                    },
+                ))
+            }),
             PaintedHit::TextDisplay { id, .. } if *id == focused => Some(UiEvent::TextDisplay(
                 *id,
                 TextDisplayEvent::KeyPressed {
@@ -327,8 +372,15 @@ pub fn focus_scoped_key_event(
                 id,
                 selected_idx,
                 total_rows,
+                multi,
                 ..
-            } if *id == focused => data_table_key_event(*id, raw_key, *selected_idx, *total_rows),
+            } if *id == focused => data_table_key_event(
+                *id,
+                (raw_key, modifiers),
+                (*selected_idx, *total_rows),
+                multi.as_deref(),
+                selections.entry(*id).or_default(),
+            ),
             _ => None,
         })
         .unwrap_or(fallback)

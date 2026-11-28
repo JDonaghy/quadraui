@@ -80,6 +80,8 @@ fn tree_view() -> TreeView {
 
 fn data_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("rows:table"),
         columns: vec![Column {
             title: "Name".into(),

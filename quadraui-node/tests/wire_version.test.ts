@@ -13,7 +13,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 test("setRender: a tree with no wire_version key is accepted", () => {
   const app = new QuiApp(20, 5);

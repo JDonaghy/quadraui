@@ -17,9 +17,8 @@ If you know **Elm, iced, Textual or React**, you know the shape already:
 **state**, a **view** that turns state into a widget tree each frame, and
 **update** code that changes state when an event arrives. There is no data
 binding and no manual redraw. [The shape of an app](concepts/index.md) maps
-each part onto the framework you know. Python and Node build the view from
-`Column` and `Row`; Rust, for now, implements a lower-level trait and
-places each widget itself (third below).
+each part onto the framework you know. All three languages build the view
+from the same `Column` and `Row` tree.
 
 ## The same counter, three ways
 
@@ -27,11 +26,7 @@ places each widget itself (third below).
 
 <!-- sample: examples/hero/python/counter.py -->
 ```python
-from quadraui.app import App, Button, Column, Row, TextDisplay, key_name
-
-
-def text(s):
-    return [{"spans": [{"text": s, "fg": None, "bg": None}]}]
+from quadraui.app import App, Button, Column, Row, Text
 
 
 class Counter:
@@ -40,8 +35,12 @@ class Counter:
 
     def view(self):
         return Column(
-            TextDisplay(text(f"Count: {self.count}"), id="count"),
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+            Text(f"Count: {self.count}", id="count"),
+            Row(
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
+                size="content",
+            ),
         )
 
     def inc(self):
@@ -50,21 +49,16 @@ class Counter:
     def dec(self):
         self.count -= 1
 
-    def on_key(self, event):
-        if key_name(event) == "q":
-            raise SystemExit
-
 
 if __name__ == "__main__":
-    counter = Counter()
-    App(30, 5, view=counter.view, on_event=counter.on_key).run_tui()  # or .run_native(title="Counter"): same Counter
+    App(view=Counter().view).run_tui()  # q quits; or .run_native(title="Counter"): same Counter
 ```
 
 **TypeScript (JSX)**
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+import { App } from "@quadraui/node/app";
 
 class Counter {
   count = 0;
@@ -72,92 +66,64 @@ class Counter {
   view() {
     return (
       <column>
-        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
-        <row>
+        <text id="count">Count: {this.count}</text>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>
       </column>
     );
   }
-
-  onKey(event: unknown, quit: () => void) {
-    if (keyName(event) === "q") quit();
-  }
 }
 
 if (require.main === module) {
   const counter = new Counter();
-  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
-  const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => counter.view() }).runTui(); // q quits; or .runNative("Counter"): same Counter
 }
 module.exports = { Counter };
 ```
 
-**Rust**: the same three parts on the lower-level `AppLogic` trait. Rust has
-no declarative `Column`/`Row` yet, so this view places widgets by hand.
+**Rust**: the same tree. A node maps its events to a message, and one
+`update` applies it, as in Elm and iced.
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust,noplayground
 use quadraui::prelude::*;
-use quadraui::{primitive::DynWidget, Button, FrameTree, StyledSpan};
-use std::cell::Cell;
 
 #[derive(Default)]
 pub struct Counter {
     pub count: i32,
-    cell: Cell<(f32, f32)>,
 }
 
-impl Counter {
-    fn view(&self) -> ScreenLayout {
-        let (w, h) = self.cell.get(); // one character cell, in this backend's units
-        let text = StyledSpan::plain(format!("Count: {}", self.count));
-        let mut label = TextDisplay::new(WidgetId::new("count"));
-        label.lines = vec![TextDisplayLine {
-            spans: vec![text],
-            decoration: Default::default(),
-            timestamp: None,
-        }];
-        let mut ui = ScreenLayout::new();
-        let mut put = |col: f32, row: f32, cols: f32, widget: Box<dyn DynWidget>| {
-            let rect = Rect::new(col * w, row * h, cols * w, h);
-            ui.push(Surface::Widget { rect, widget })
-        };
-        put(0.0, 0.0, 20.0, Box::new(label));
-        put(0.0, 2.0, 5.0, Box::new(Button::new("dec".into(), "-")));
-        put(6.0, 2.0, 5.0, Box::new(Button::new("inc".into(), "+")));
-        ui
-    }
+#[derive(Clone)]
+pub enum Msg {
+    Inc,
+    Dec,
 }
 
-impl AppLogic for Counter {
-    type AreaId = ();
-    fn render(&self, backend: &mut dyn Backend, _: ()) {
-        self.cell.set((backend.char_width(), backend.line_height()));
-        self.view().draw(backend);
+impl View for Counter {
+    type Msg = Msg;
+    fn view(&self) -> Node<Msg> {
+        column([
+            text(format!("Count: {}", self.count)).id("count"),
+            row([
+                button("-").id("dec").on_click(Msg::Dec),
+                button("+").id("inc").on_click(Msg::Inc),
+            ])
+            .content(),
+        ])
     }
-    fn frame_tree(&self, _: ()) -> FrameTree {
-        self.view().into_frame_tree()
-    }
-    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
-            UiEvent::KeyPressed {
-                key: Key::Char('q'),
-                ..
-            } => return Reaction::Exit,
-            _ => return Reaction::Continue,
+    fn update(&mut self, msg: Msg) -> Command {
+        match msg {
+            Msg::Inc => self.count += 1,
+            Msg::Dec => self.count -= 1,
         }
-        Reaction::Redraw
+        Command::None
     }
 }
 
 fn main() -> Result<(), quadraui::RunError> {
-    quadraui::tui::run(Counter::default()) // or gtk::run, macos::run, win::run: same Counter
+    run_tui(Counter::default()) // or run_native: the same Counter in a window
 }
 ```
 

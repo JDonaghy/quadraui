@@ -1,35 +1,39 @@
 # Focus
 
 One widget at a time has **keyboard focus**. Keys go to it first; keys it
-does not use reach your app (`on_event` in Python and Node, `handle` in
-Rust), which is how the counter's `q` works while a button has focus.
+does not use reach your app (`on_event` in Python and Node,
+`View::on_event` in Rust), which is how the counter's `q` works while a
+button has focus.
 
 - **Tab** and **Shift+Tab** move focus through every focus stop on screen,
-  in the order the widgets declare them.
+  in reading order (top to bottom, then left to right). Inside a form, Tab
+  moves from field to field and, past the last field, on to the next
+  widget.
 - **Clicking** a focusable widget focuses it.
 - A widget can have several stops: each row of a list, each field of a
   form, each cell of a grid.
 
 Widgets declare their stops themselves (`Interactive::focus()` in Rust,
 returning none, one stop, or one per child), so a screen gets a sensible
-Tab order with no extra code. The focused widget paints a focus ring.
+Tab order with no extra code. Plain text is not a stop: a `TextDisplay`
+takes focus only when it shows a scrollbar (`show_scrollbar`), so the
+keyboard can scroll it.
 
-Two things you will notice in the terminal today, both open issues rather
-than intended behaviour:
-
-- A `TextDisplay` is a Tab stop. In the counter, Tab therefore visits
-  the `Count:` label as well as the buttons, and while the label has
-  focus its focus ring covers the text.
-- In Python and Node, the focus ring outlines the button's whole share
-  of the layout (often several rows tall, since `Column` and `Row` split
-  space equally) and is drawn over the button's left bracket, so `[ + ]`
-  shows as `│ + ]`. The Rust counter draws no ring.
+The focused widget shows a focus ring, the same in Rust, Python and Node.
+In the terminal the ring never covers what the widget draws: a focused
+button keeps `[ + ]` intact, its brackets turn the accent colour and the
+label is underlined at its own width, not the width of its layout cell. A
+taller widget, such as a list, gets a box drawn in the blank cells around
+its text. A form shows its focused field with its own highlight instead.
 
 ## Setting focus
 
 In Python and Node, pass `has_focus` / `hasFocus` to the widget that should
-hold focus, as the task list does: `List(..., has_focus=True)`. In Rust a
-widget asks for focus from its event handler through `EventCx::request_focus`.
+hold focus, as the task list does: `List(..., has_focus=True)`. In a
+headless test, `h.find(id="form").focus()` (Node: `h.find({ id: "form"
+}).focus()`) moves keyboard focus to a widget, and on a form to its first
+field. In Rust a widget asks for focus from its event handler through
+`EventCx::request_focus`.
 
 A modal overlay, such as a dialog, holds focus until it closes; see
 [Popups](popups.md).

@@ -9,9 +9,9 @@ name: quadraui-node release
 # must not collide on one tag namespace.
 #
 # Four npm packages publish out of this one workflow run: the root
-# `@quadraui/node` facade (no native code of its own -- just
-# `js/index.ts`'s hand-maintained wrapper, compiled to `dist/` by its own
-# `prepack` hook) and one platform package per prebuilt binary
+# `@quadraui/node` facade (no native code of its own -- just `js/**`,
+# compiled to `dist/` with generated declarations by its own `prepack`
+# hook) and one platform package per prebuilt binary
 # (`@quadraui/node-darwin-arm64`, `-linux-x64-gnu`, `-win32-x64-msvc`, each
 # scaffolded once under `quadraui-node/npm/<platform>/` by `napi
 # create-npm-dirs` and checked in). The root package's `optionalDependencies`
@@ -143,6 +143,18 @@ jobs:
             node "$example"
             echo "::endgroup::"
           done
+      - name: Install tmux for the live TUI check (macOS)
+        if: runner.os == 'macOS'
+        run: command -v tmux || brew install tmux
+      # Packs the root and all three platform packages, installs the root
+      # plus this platform's tarball into a clean project and runs the hero
+      # counter from it -- headless everywhere, and live in tmux on Linux
+      # and macOS (Windows has no tmux, so the script reports that step as
+      # skipped there).
+      - name: Pack, clean-install and run the hero counter
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then node scripts/pack_smoke.ts; else node scripts/pack_smoke.ts --live; fi
       # `napi build --platform`'s own per-platform suffix (e.g.
       # `quadraui-node.darwin-arm64.node`) makes each leg's artifact name
       # collision-free without this workflow needing to rename anything.
@@ -208,16 +220,6 @@ jobs:
         run: rm -f *.node
       - name: Collect binaries into their per-platform packages
         run: npm run artifacts
-      # `napi artifacts` also drops a copy of every platform's `.node` file
-      # at the crate root (its usual `napi build` output location), which
-      # the root package's own `files` list (`*.node`, for a plain local
-      # `npm run build` + `npm pack` dev loop) would otherwise bundle into
-      # the published root tarball -- three redundant native binaries on
-      # top of the one each platform package already ships on its own.
-      # Each one's real home is its `npm/<platform>/` package, already
-      # populated by the step above; the root copies are discarded here.
-      - name: Discard napi artifacts' root-level binary copies
-        run: rm -f *.node
       # Publishes `@quadraui/node-darwin-arm64`/`-linux-x64-gnu`/
       # `-win32-x64-msvc` (each `npm/<platform>/package.json`'s
       # `publishConfig.access: public`, needed since every one is scoped)

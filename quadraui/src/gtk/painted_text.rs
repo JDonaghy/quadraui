@@ -103,6 +103,8 @@ mod tests {
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
                 let table = crate::DataTable {
+                    selection_mode: Default::default(),
+                    selected_indices: Vec::new(),
                     id: WidgetId::new(format!("row-{i}")),
                     columns: vec![crate::Column {
                         title: label.to_string(),

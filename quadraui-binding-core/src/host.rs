@@ -1022,12 +1022,9 @@ struct ListCursorState {
     scroll_controlled: bool,
 }
 
-/// Moves a flat (non-hierarchical) cursor by `delta` rows within `[0,
-/// count)`, clamped at either edge — the `List`/`DataTable` counterpart of
-/// `TreeNavCore::move_selection_by`'s own clamp. `None` means "nothing
-/// selected yet": a forward move (`delta > 0`) starts at row `0`, a
-/// backward one at the last row, matching `TreeNavCore::move_selection_by`'s
-/// own "no current selection" branch. Returns `None` only when `count == 0`.
+/// Moves a flat cursor by `delta` rows within `[0, count)`, clamped, as
+/// `TreeNavCore::move_selection_by` does; from `None` a forward move starts
+/// at row `0` and a backward one at the last. `None` only when `count == 0`.
 fn move_flat_index(current: Option<usize>, delta: isize, count: usize) -> Option<usize> {
     if count == 0 {
         return None;
@@ -1098,19 +1095,17 @@ pub fn apply_list_nav_key(
         .borrow()
         .value::<ListCursorState>(&id)
         .unwrap_or_default();
+    // An untouched list paints row 0 selected, so arrows start there.
+    let current = stored.selected_idx.or((total_items > 0).then_some(0));
     let new_idx = match nav {
-        CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_items),
-        CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_items),
+        CursorNav::Up => move_flat_index(current, -1, total_items),
+        CursorNav::Down => move_flat_index(current, 1, total_items),
         CursorNav::Home => edge_flat_index(Edge::Start, total_items),
         CursorNav::End => edge_flat_index(Edge::End, total_items),
-        CursorNav::PageUp => {
-            move_flat_index(stored.selected_idx, -page_delta(viewport_rows), total_items)
-        }
-        CursorNav::PageDown => {
-            move_flat_index(stored.selected_idx, page_delta(viewport_rows), total_items)
-        }
+        CursorNav::PageUp => move_flat_index(current, -page_delta(viewport_rows), total_items),
+        CursorNav::PageDown => move_flat_index(current, page_delta(viewport_rows), total_items),
     };
-    let moved = new_idx != stored.selected_idx;
+    let moved = new_idx != current;
     let scroll_offset = match new_idx {
         Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
         _ => stored.scroll_offset,
@@ -1127,18 +1122,67 @@ pub fn apply_list_nav_key(
     moved
 }
 
-/// Resolves `list`'s cursor + scroll for painting — the `List` counterpart
-/// of [`resolve_tree_cursor`]. `ListView::selected_idx` has no "unset"
-/// state of its own (always a valid index into a non-empty list, default
-/// `0`), so it gets the exact same latch [`resolve_tree_cursor`]'s own doc
-/// describes for `scroll_offset`: `selected_controlled` turns `true` the
-/// first time `list.selected_idx` is non-zero and then stays `true`,
-/// including a later frame whose `selected_idx` goes back to `0`. An app
-/// that genuinely pins the selection at row `0` from the very first frame
-/// is indistinguishable from "uncontrolled, never touched" — the same
-/// residual ambiguity [`resolve_tree_cursor`] accepts for `scroll_offset`.
-///
-/// Call once per frame, before painting `list`.
+/// Moves `id`'s `List` cursor to the row a click selected, so an
+/// uncontrolled list paints it and arrows on from it.
+pub fn apply_list_selected(widget_state: &RefCell<WidgetStateStore>, id: WidgetId, idx: usize) {
+    let stored = widget_state
+        .borrow()
+        .value::<ListCursorState>(&id)
+        .unwrap_or_default();
+    widget_state.borrow_mut().set(
+        id,
+        ListCursorState {
+            selected_idx: Some(idx),
+            ..stored
+        },
+    );
+}
+
+/// [`apply_list_selected`] for a `Tree`.
+pub fn apply_tree_selected(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    path: &TreePath,
+) {
+    let stored = widget_state
+        .borrow()
+        .value::<TreeCursorState>(&id)
+        .unwrap_or_default();
+    widget_state.borrow_mut().set(
+        id,
+        TreeCursorState {
+            selected_path: Some(path.clone()),
+            ..stored
+        },
+    );
+}
+
+/// The row `id`'s `List` cursor is on.
+pub fn list_cursor_row(widget_state: &RefCell<WidgetStateStore>, id: WidgetId) -> Option<usize> {
+    widget_state
+        .borrow()
+        .value::<ListCursorState>(&id)
+        .and_then(|state| state.selected_idx)
+}
+
+/// The row of `row_paths` `id`'s `Tree` cursor is on.
+pub fn tree_cursor_row(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    row_paths: &[TreePath],
+) -> Option<usize> {
+    let path = widget_state
+        .borrow()
+        .value::<TreeCursorState>(&id)?
+        .selected_path?;
+    row_paths.iter().position(|row| *row == path)
+}
+
+/// Resolves `list`'s cursor + scroll for painting, once per frame — the
+/// `List` counterpart of [`resolve_tree_cursor`]. `ListView::selected_idx`
+/// has no "unset" value, so it takes the latch [`resolve_tree_cursor`] uses
+/// for `scroll_offset`: controlled from the first frame it is non-zero, for
+/// good. An app pinning row `0` from the start reads as uncontrolled.
 pub fn resolve_list_cursor(
     widget_state: &RefCell<WidgetStateStore>,
     list: &ListView,
@@ -5174,6 +5218,8 @@ mod tests {
         scroll_offset: usize,
     ) -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("host-test:table"),
             columns: vec![Column {
                 title: "Col".to_string(),
@@ -5367,10 +5413,11 @@ mod tests {
             assert!(apply_list_nav_key(&widget_state, id, 500, 8, &down_key()));
         }
 
+        // An untouched list starts on row 0, so 40 Downs end on row 40.
         let list = test_list(500, 0, 0);
         let resolved = resolve_list_cursor(&widget_state, &list, 8);
-        assert_eq!(resolved.selected_idx, 39);
-        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39));
+        assert_eq!(resolved.selected_idx, 40);
+        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&40));
     }
 
     /// A `List` whose descriptor pins a non-zero `scroll_offset` keeps

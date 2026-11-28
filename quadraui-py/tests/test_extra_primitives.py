@@ -2789,14 +2789,14 @@ def test_canvas_region_double_click_emits_a_typed_region_double_clicked_event():
 
     received = []
     app.set_handler(lambda event: received.append(event))
-    app.push_event({"DoubleClick": {"position": {"x": 1.0, "y": 0.0}}})
+    app.push_event({"DoubleClick": {"button": "Left", "position": {"x": 1.0, "y": 0.0}}})
     app.run(1)
 
     assert len(received) == 1
     widget_id, canvas_event = received[0]["Canvas"]
     assert widget_id == "canvas:regions"
     assert canvas_event == {
-        "RegionDoubleClicked": {"region": "region:a", "x": 1.0, "y": 0.0}
+        "RegionDoubleClicked": {"region": "region:a", "button": "Left", "x": 1.0, "y": 0.0}
     }
 
 

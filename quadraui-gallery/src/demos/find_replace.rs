@@ -69,6 +69,7 @@ impl FindReplaceDemo {
                 replace_one_glyph: "R1".into(),
                 replace_all_glyph: "R*".into(),
                 hit_regions: Vec::new(),
+                hidden_toggles: Vec::new(),
             },
             last_click: None,
         }

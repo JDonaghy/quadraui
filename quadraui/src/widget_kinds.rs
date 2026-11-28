@@ -717,6 +717,8 @@ mod tests {
         #[test]
         fn decodes_the_backend_gated_group_f_kinds() {
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: "table".into(),
                 columns: Vec::new(),
                 rows: Vec::new(),
@@ -1241,6 +1243,8 @@ mod tests {
 
         fn sample_tree_table() -> TreeTable {
             let table = DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("files"),
                 columns: vec![Column {
                     title: "Name".to_string(),

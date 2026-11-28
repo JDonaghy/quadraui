@@ -22,6 +22,15 @@ test("the hero counter runs headless and counts + - + to 1", () => {
   assert.match(result.stdout, /ok: node hero counter/);
 });
 
+test("a test in its own file loads the app's .tsx file and passes", () => {
+  const result = spawnSync(process.execPath, [...process.execArgv, path.join(HERO, "run_tui.ts"), path.join(HERO, "counter.test.tsx")], {
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ok$/m);
+});
+
 test("run_tui.ts runs the .tsx file it is given, outside the repo", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qu-run-tui-"));
   const app = path.join(dir, "app.tsx");

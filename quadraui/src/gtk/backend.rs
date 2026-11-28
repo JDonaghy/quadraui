@@ -5711,6 +5711,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table-glyphs"),
                 columns: vec![crate::Column {
                     title: String::new(),
@@ -5789,6 +5791,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table"),
                 columns: vec![crate::Column {
                     title: "col".to_string(),
@@ -7867,6 +7871,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         let mut backend = GtkBackend::new();
@@ -7942,6 +7947,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         let mut backend = GtkBackend::new();

@@ -14,7 +14,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 function treeRows(count: number) {
   const rows = [];
@@ -82,16 +82,15 @@ test("a 500-row tree with no scroll/selection fields scrolls to keep the cursor 
   }
   app.run(40);
 
-  // 40 Downs starting from no selection land on row index 39 (the first
-  // Down selects row 0, each of the other 39 moves by one).
+  // The click selects row 0, and each of the 40 Downs moves by one.
   const state = app.widgetState("fm:tree");
   assert.ok(state, "the tree must have resolved widget state after navigation");
-  assert.deepEqual(state.selectedPath, [39]);
+  assert.deepEqual(state.selectedPath, [40]);
   assert.ok(
     state.scrollOffset > 0,
     `500 rows must have scrolled the uncontrolled view: ${JSON.stringify(state)}`,
   );
-  assert.ok(app.screenContains("row 39"), "row 39 (the moved cursor) must be visible on screen");
+  assert.ok(app.screenContains("row 40"), "row 40 (the moved cursor) must be visible on screen");
   assert.ok(!app.screenContains("row 0"), "row 0 must have scrolled out of view");
 });
 
@@ -252,12 +251,12 @@ test("a tree leaf whose outer id differs from its own descriptor id still resolv
     state,
     "the leaf's own tree-address id must have resolved widget state after navigation",
   );
-  assert.deepEqual(state.selectedPath, [39]);
+  assert.deepEqual(state.selectedPath, [40]);
   assert.ok(
     state.scrollOffset! > 0,
     `500 rows must have scrolled the uncontrolled view: ${JSON.stringify(state)}`,
   );
-  assert.ok(app.screenContains("row 39"), "row 39 (the moved cursor) must be visible on screen");
+  assert.ok(app.screenContains("row 40"), "row 40 (the moved cursor) must be visible on screen");
   assert.ok(!app.screenContains("row 0"), "row 0 must have scrolled out of view");
 
   assert.equal(
@@ -278,7 +277,7 @@ test("a tree leaf whose outer id differs from its own descriptor id still resolv
     afterAnotherFrame,
     "the leaf's widget state must survive a further render instead of being GC'd",
   );
-  assert.deepEqual(afterAnotherFrame.selectedPath, [40]);
+  assert.deepEqual(afterAnotherFrame.selectedPath, [41]);
 });
 
 test("a tree in an unselected tab keeps its cursor across a tab switch", () => {

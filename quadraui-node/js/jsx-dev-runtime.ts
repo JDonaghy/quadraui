@@ -7,13 +7,6 @@
 // object and the lexical `this` a transform captures for a better runtime
 // warning -- and otherwise behaves exactly like `./jsx-runtime.ts`'s own
 // `jsx`/`jsxs`.
-//
-// A real `import` of `jsx` (not the `require`-plus-manual-cast `./jsx-
-// runtime.ts` itself needs for `./app/nodes`) is enough here: `jsx-
-// runtime.ts` is a genuine ES module with a true `export function jsx`, so
-// its own type and value are both visible this way -- see that file's own
-// header doc for why pulling a value out of `./app/nodes` the same way
-// does not type-check instead.
 import { Fragment, jsx } from "./jsx-runtime";
 import type { ElementType } from "./jsx-runtime";
 

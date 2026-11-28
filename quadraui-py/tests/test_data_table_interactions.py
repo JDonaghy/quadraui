@@ -119,7 +119,7 @@ def test_double_click_on_a_row_emits_row_double_clicked():
     received = []
     app.set_handler(lambda event: received.append(event))
     app.push_event(
-        {"DoubleClick": {"position": {"x": 2.0, "y": 1.0}}}
+        {"DoubleClick": {"button": "Left", "position": {"x": 2.0, "y": 1.0}}}
     )
     app.run(1)
 

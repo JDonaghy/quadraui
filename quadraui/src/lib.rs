@@ -386,6 +386,9 @@ pub mod tui;
 #[cfg_attr(docsrs, doc(cfg(feature = "win")))]
 pub mod win;
 
+// The model-view-update app layer: `View`, `Node` trees laid out by the
+// core stack solver, and the `Run` adapter onto `AppLogic`.
+pub mod app;
 pub mod compose;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
@@ -684,7 +687,8 @@ pub use primitives::editor::{
     Style as EditorStyle,
 };
 pub use primitives::find_replace::{
-    compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
+    compute_hit_regions as compute_find_replace_hit_regions,
+    compute_hit_regions_hiding as compute_find_replace_hit_regions_hiding, FindReplaceClickTarget,
     FindReplaceEvent, FindReplaceField, FindReplaceHit, FindReplaceLayout, FindReplaceMetrics,
     FindReplacePanel, FindReplaceToggle, FrHitRegion, FR_PANEL_WIDTH,
 };
@@ -862,7 +866,7 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionCore,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, RowPress, SelectionCore,
     SelectionGesture, SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
@@ -931,8 +935,8 @@ pub use primitive::{LayoutCtx, PaintEnv, Placed, Primitive};
 // doc. `non_interactive!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here.
 pub use interactive::{
-    EventCx, EventHost, FocusSpec, FocusStop, Interactive, KeyEvent, Never, PointerKind,
-    RoutedEvent, WidgetAction,
+    EventCx, EventHost, FocusIndicator, FocusSpec, FocusStop, Interactive, KeyEvent, Never,
+    PointerKind, RoutedEvent, WidgetAction,
 };
 // The widget-contract routing engine's two public types — see
 // `frame_tree`/`widget_state`'s own module docs.

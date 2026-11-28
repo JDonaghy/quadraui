@@ -12,6 +12,41 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `App.quit()` ends the run from any callback (a node callback, `on_event`,
+  an async task) or from top-level code; the step that ran it, or the next
+  one, returns `False`, and `run_tui()`/`run_native()`/`run_async()`
+  return (#3107).
+- Default quit keys on `App`: Ctrl-C unless a focused text field takes it,
+  and `q`/Escape when no focused widget consumed the key. `on_event` sees
+  the key first and keeps the app running by returning `True`;
+  `App(quit_keys=False)` turns all three off (#3107).
+- `App(width, height)` is optional and defaults to 80x24; it only sizes a
+  headless run (#3107).
+- `Text("...")`: one unstyled `TextDisplay` line per `\n`-separated line,
+  sized to its content by default (#3107).
+- Per-child `size=`, `min=` and `max=` on every app-layer node constructor
+  except `Slider`: `size` is an `int` (portable pixels; a TUI cell is 8x16),
+  `"N%"`, `"Nfr"`, `"content"` or a raw wire `SectionSize`, and sets how
+  much of its parent `Column`/`Row` the node takes (#3107).
+- Multi-select reaches the app (#2551). `data_table` descriptors take
+  `selection_mode` (`"Single"`/`"Multi"`) and `selected_indices`; in
+  `"Multi"`, Ctrl/Cmd-click, Shift-click, Shift+Up/Down, Ctrl/Cmd+A and
+  Ctrl+Space/Insert emit `DataTable.SelectionSet{indices}` and the set
+  paints back from `selected_indices`. A `list` emits
+  `List.SelectionSet{indices}` for Ctrl/Cmd/Shift clicks, Ctrl/Cmd+A and
+  Ctrl+Space/Insert, and a `"Multi"` `tree` emits `Tree.SelectionSet{paths}`
+  for Ctrl/Cmd/Shift clicks. App layer: `Table(selection_mode=...,
+  selected_indices=..., on_selection=, on_context_menu=, on_click=)`,
+  `List(on_selection=, on_context_menu=, on_click=)` and
+  `Tree(on_selection=, on_context_menu=)`.
+- `TextDisplay(lines, show_scrollbar=True)` paints a scrollbar and makes
+  the pane a Tab stop the keyboard can scroll (#3108). Wire descriptors
+  gain `Palette.show_mode_badge` (default true; false hides the `[L]`/`[I]`
+  badge) and `FindReplacePanel.hidden_toggles` (toggles the panel does not
+  offer: no paint, no click, no Alt shortcut) (#3082). A `cell_grid` leaf
+  scrolls under the mouse wheel, and while a cell is being edited a click
+  on it places the caret and a drag selects (#3082).
+
 - A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
   Fedora 40+, Debian 13+) carrying two builds of the extension,
   `_quadraui_gtk` (linking the system GTK 4, Pango, Cairo and GLib; nothing
@@ -76,6 +111,34 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   carries the six new keys.
 
 ### Changed
+
+- **Breaking:** `Tree(on_click=f)` calls `f(path, button)`, matching `List`
+  and `Table`'s `on_click(idx, button)`, so an app can tell a middle or
+  back/forward row press from a left one; `Tree(on_row_click=f)` is gone. Migrate
+  with a callback that takes the button and ignores it, or acts only on
+  `"Left"` (#3080).
+- `h.find(id="form").focus()` in the test harness moves keyboard focus there (a pushed
+  `FocusChanged` now moves it), so typed keys reach the form's first field
+  instead of the last-clicked widget (#3080).
+- The default quit keys are documented as they behave in all three
+  languages: `q`/Escape quit unless the focused widget takes the key, and
+  Ctrl-C quits unless a focused text field takes it (#3080).
+- Mouse events changed shape (#3074, #2555). `DoubleClick` carries a
+  `button` (`{"DoubleClick": {"button": "Left", "position": ...}}`; a pushed
+  `DoubleClick` must now name it), and only the left button folds, so two
+  quick right-clicks are two context-menu requests. Two quick clicks on a
+  `Button` call `on_click` twice. A right-click on a `DataTable`, `List` or
+  `Tree` row emits `ContextMenuRequested{idx|path, position}` instead of a
+  selection, and a middle or back/forward press emits
+  `DataTable.RowClicked`/`List.ItemClicked{idx, button, modifiers}`;
+  `Tree.RowClicked` gains `button`. A header or chevron reacts to the left
+  button only.
+- Focus renders the same as in Rust (#3108): a `TextDisplay` is not a Tab
+  stop unless it shows a scrollbar; the TUI focus ring never covers a
+  control's glyphs (a focused button keeps both brackets, underlined at its
+  natural width, with accent-coloured brackets; a list's ring steps around
+  its rows' text); and a `cell_grid` cursor on a cell filled close to the
+  cursor colour paints inverse so it stays visible (#3082).
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input
@@ -408,6 +471,25 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- The test harness's `find(id=...)` and `walk()` see a node given `size`, `min`
+  or `max`, and everything inside it: those keys hid the node, so a
+  content-sized `Row` of buttons or any `Text` could not be found (#3080).
+- A content-sized `Row`/`Column` with `padding` keeps its children: its
+  measured size now includes the padding, which was then inset from a box
+  sized without it, leaving nothing to paint (#3080).
+- A plain arrow key on a `List` or `Tree` moves the multi-selection to the
+  cursor row, so a following Ctrl-click grows the selection from there, as
+  in Rust, instead of from the row clicked before the arrow keys (#3080).
+- A `List` or `Tree` the app leaves uncontrolled follows its own clicks
+  and arrow keys: a click moves its cursor, the first Down from an untouched
+  list goes to row 1, and a `Tree` with no selected path sends none instead
+  of an empty path that pinned its cursor (#3080).
+- `Text` in a `Row` (sized to its content by default) is as wide as its
+  line plus the gutter a `TextDisplay` row reserves, so each label shows
+  whole instead of wrapping into an empty one-row slot (#3107).
+- A `Column` or `Row` sized `"content"` measures its children (their sizes
+  end to end plus the gaps, and the largest across) instead of collapsing
+  to nothing, the same measure the Rust app layer gives a stack (#3107).
 - While a modal overlay (`show_overlay("message_dialog", ...)` and the
   other modal kinds) is open, a click, pointer move or key it does not use
   no longer reaches the widget painted beside or beneath it.

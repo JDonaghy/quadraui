@@ -12,7 +12,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // The toolbar is the only leaf this render callback returns, so
 // `draw_bands` lays its band at the very top of the viewport (row 0) --

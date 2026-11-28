@@ -94,12 +94,13 @@ class WidgetNotFound(AssertionError):
 # other non-meta key on a node names the primitive kind it paints.
 _CONTAINER_ROLES = frozenset({"row", "column", "split", "tabs", "sidebar_panel", "split_tree"})
 
-# Keys a layout node may carry alongside its one role key. `wire_version`
+# Keys a layout node may carry alongside its one role key: its spacing, the
+# `size`/`min`/`max` its parent `Column`/`Row` reads, and `wire_version`. `wire_version`
 # is the top-level-only sibling key `quadraui.app.runtime.App` now stamps
 # onto every tree it renders (see that module's own doc) -- harmless to
 # treat as meta on every node, since no primitive/container role is ever
 # itself named "wire_version".
-_META_KEYS = frozenset({"id", "padding", "margin", "gap", "wire_version"})
+_META_KEYS = frozenset({"id", "padding", "margin", "gap", "size", "min", "max", "wire_version"})
 
 # Descriptor fields whose string values are text a user can read. `glyph` and
 # `fallback` (an icon and its ASCII stand-in) are deliberately absent: they are
@@ -273,7 +274,10 @@ def _by_index(row: Row) -> Dict[str, Any]:
 # (role, verb) -> the `UiEvent` variant the engine delivers for it.
 _ROW_EVENTS: Dict[str, Dict[str, Tuple[str, Callable[[Row], Dict[str, Any]]]]] = {
     "tree": {
-        "click": ("RowClicked", lambda row: {"path": row.path, "modifiers": _modifiers(False, False, False, False)}),
+        "click": (
+            "RowClicked",
+            lambda row: {"path": row.path, "button": "Left", "modifiers": _modifiers(False, False, False, False)},
+        ),
         "select": ("SelectionChanged", _by_path),
         "double_click": ("RowDoubleClicked", _by_path),
         "activate": ("RowDoubleClicked", _by_path),

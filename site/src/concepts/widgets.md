@@ -6,13 +6,14 @@ does not hold a pointer back into your app.
 
 - **Python:** `Button("+", id="inc", on_click=self.inc)`
 - **Node:** `<button id="inc" label="+" onClick={...} />`
-- **Rust:** `Button::new("inc".into(), "+")`
+- **Rust:** `button("+").id("inc").on_click(Msg::Inc)` in a `View`, or the
+  descriptor itself, `Button::new("inc".into(), "+")`, below the app layer
 
 Every widget has a **`WidgetId`**, a string you choose (`"inc"`). Events
 name the widget they came from by that id, and the runtime keeps a widget's
-private state under it between frames. Keep ids stable. In Python and Node
-an id is optional; a node without one gets an id from its position in the
-tree.
+private state under it between frames. Keep ids stable. In all three
+languages an app-layer id is optional; a node without one gets an id from
+its position in the tree.
 
 quadraui ships more than 50 widgets: lists, trees, tables, forms, an editor, a
 terminal, charts, tabs, menus, dialogs and more. See them all, on every
@@ -40,8 +41,10 @@ A widget is one type implementing two traits:
   clicks, keys, popups. Paint and hit-testing cannot disagree, because both
   read one layout.
 
-This one paints a block of colour and has no behaviour (from the README;
-CI compiles and paints it):
+This one paints a block of colour and has no behaviour (from the README,
+which also shows its struct and its `A11yPrimitive` impl, the
+accessibility description every widget declares; CI compiles and paints
+it):
 
 <!-- sample: quadraui/tests/readme_own_widget.rs -->
 ```rust,noplayground

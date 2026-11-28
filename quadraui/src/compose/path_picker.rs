@@ -791,6 +791,7 @@ impl<K: PickerKind> PathPicker<K> {
             create_label: self.kind.create_label(&self.paths.query),
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         }
     }
 

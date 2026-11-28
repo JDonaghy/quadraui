@@ -289,7 +289,9 @@ class FileManager:
         if 0 <= index < len(self.open):
             del self.open[index]
 
-    def _on_row_click(self, path: list[int]) -> None:
+    def _on_row_click(self, path: list[int], button: str) -> None:
+        if button != "Left":
+            return
         rows, nodes = folder_rows(self.root)
         for row, node in zip(rows, nodes):
             if row["path"] == list(path):
@@ -374,7 +376,7 @@ class FileManager:
             selected_path=selected_path,
             has_focus=True,
             style=TREE_STYLE,
-            on_row_click=self._on_row_click,
+            on_click=self._on_row_click,
             on_toggle_expand=self._on_row_toggle_expand,
         )
         body = Split(tree, self._details_pane(), id="fm:split", ratio=BODY_SPLIT_RATIO)

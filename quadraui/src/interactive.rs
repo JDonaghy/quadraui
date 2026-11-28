@@ -109,6 +109,62 @@ pub enum FocusSpec {
     Children(Vec<FocusStop>),
 }
 
+impl FocusSpec {
+    /// Whether `sub`, the focused child of a widget with these stops, is
+    /// its last stop (`forward`) or its first: where Tab (or Shift+Tab)
+    /// leaves the widget for the next stop in the host's tab order instead
+    /// of wrapping round the widget's own children. `false` outside
+    /// [`Self::Children`] and for a `sub` that names none of its stops.
+    pub fn child_at_edge(&self, sub: Option<SubTarget>, forward: bool) -> bool {
+        let FocusSpec::Children(stops) = self else {
+            return false;
+        };
+        let Some(pos) = stops.iter().position(|stop| Some(stop.sub) == sub) else {
+            return false;
+        };
+        if forward {
+            pos + 1 >= stops.len()
+        } else {
+            pos == 0
+        }
+    }
+}
+
+/// Where the host draws the focus ring while a widget holds keyboard
+/// focus — see [`Interactive::focus_ring`].
+///
+/// The ring marks the control, not the layout cell it sits in: a button
+/// laid out in a wide cell paints `[ Add ]` at its natural size, and the
+/// ring follows those glyphs rather than the cell's empty remainder.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FocusIndicator {
+    /// Around the whole rect the widget was painted in.
+    Bounds,
+    /// Around this rect, in the widget's own local space (the same space
+    /// [`Interactive::sub_regions`] answers in).
+    At(crate::Rect),
+    /// No host ring: the widget shows its own focus (a form's focused-row
+    /// highlight), so a ring on top would only cover content.
+    Own,
+}
+
+impl FocusIndicator {
+    /// The absolute rect this ring traces for a widget painted at
+    /// `rect`, or `None` for [`Self::Own`].
+    pub fn resolve(self, rect: crate::Rect) -> Option<crate::Rect> {
+        match self {
+            FocusIndicator::Bounds => Some(rect),
+            FocusIndicator::At(r) => Some(crate::Rect::new(
+                r.x + rect.x,
+                r.y + rect.y,
+                r.width,
+                r.height,
+            )),
+            FocusIndicator::Own => None,
+        }
+    }
+}
+
 /// One focusable stop inside a [`FocusSpec::Children`] list.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FocusStop {
@@ -223,6 +279,30 @@ pub enum RoutedEvent {
         /// What dismissed it.
         reason: crate::popup::DismissReason,
     },
+}
+
+impl RoutedEvent {
+    /// The plain press a double-click also is: `Some(Pointer { kind:
+    /// Down(button), .. })` for a [`PointerKind::DoubleClick`] pointer
+    /// event (same `sub`, `local` and `mods`), `None` for every other
+    /// event. [`crate::primitive::DynWidget::handle`] re-delivers an
+    /// ignored double-click through this.
+    pub fn double_click_as_press(&self) -> Option<RoutedEvent> {
+        match self {
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(button),
+                sub,
+                local,
+                mods,
+            } => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Down(*button),
+                sub: *sub,
+                local: *local,
+                mods: *mods,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The runtime seam [`Interactive::handle`] reaches through [`EventCx`] to
@@ -408,6 +488,17 @@ pub trait Interactive: Primitive {
         Vec::new()
     }
 
+    /// Where the host's focus ring goes while this widget holds keyboard
+    /// focus, resolved against `layout` — see [`FocusIndicator`]. The runners
+    /// read it from the frame's painted record, so the ring tracks the
+    /// geometry that is on screen.
+    ///
+    /// Default: [`FocusIndicator::Bounds`].
+    fn focus_ring(&self, layout: &Self::Layout) -> FocusIndicator {
+        let _ = layout;
+        FocusIndicator::Bounds
+    }
+
     /// The name [`crate::DrawsPrimitives::draw_dyn`] publishes sub-part
     /// `sub` under, as a frame-inventory zone (see
     /// [`crate::Backend::register_zone`]) whose id is `"<widget id>:<name>"`.
@@ -553,6 +644,7 @@ mod tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }

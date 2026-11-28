@@ -28,7 +28,7 @@ fn hex(color: quadraui::tui::testing::Color) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
 }
 
-fn frame(driver: &mut TuiDriver<todo::Todo>, input: Value) -> Value {
+fn frame(driver: &mut TuiDriver<Run<todo::Todo>>, input: Value) -> Value {
     driver.render();
     let screen = driver.screen();
     let rows: Vec<&str> = screen.trim_end_matches('\n').split('\n').collect();
@@ -41,7 +41,10 @@ fn frame(driver: &mut TuiDriver<todo::Todo>, input: Value) -> Value {
                 .collect()
         })
         .collect();
-    let events = std::mem::take(&mut driver.app_mut().log);
+    let mut events = std::mem::take(&mut driver.app_mut().log);
+    if driver.exited() {
+        events.push("quit".into());
+    }
     json!({ "input": input, "rows": rows, "styles": styles, "events": events })
 }
 
@@ -65,20 +68,26 @@ fn main() {
         .nth(1)
         .expect("usage: parity-trace SCRIPT.json");
     let script: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let mut driver = TuiDriver::new(todo::Todo::default(), WIDTH, HEIGHT);
+    let mut driver = TuiDriver::new(Run::new(todo::Todo::default()), WIDTH, HEIGHT);
     let mut trace = vec![frame(&mut driver, Value::Null)];
     for step in script {
         if let Some(at) = step.get("click") {
-            driver.click(
+            // Press and release, as the Python and Node harnesses'
+            // `click_at` do: `TuiDriver::click` is the press alone.
+            let (x, y) = (
                 at[0].as_f64().unwrap() as f32,
                 at[1].as_f64().unwrap() as f32,
             );
+            driver.click(x, y);
+            driver.mouse_up(x, y);
         } else if let Some(text) = step.get("type") {
             for c in text.as_str().unwrap().chars() {
                 driver.press(Key::Char(c));
             }
         } else if let Some(name) = step.get("key") {
             driver.press(key(name.as_str().unwrap()));
+        } else if let Some(c) = step.get("ctrl") {
+            driver.ctrl_char(c.as_str().unwrap().chars().next().unwrap());
         } else {
             panic!("unknown step {step}");
         }

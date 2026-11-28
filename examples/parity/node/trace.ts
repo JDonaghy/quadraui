@@ -18,7 +18,7 @@ const WIDTH = 40;
 const HEIGHT = 12;
 const hex = (rgb: number[]) => rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
 
-function frame(h: any, todo: any, input: unknown) {
+function frame(h: any, app: any, todo: any, input: unknown) {
   const rows = h.screen().replace(/\n$/, "").split("\n");
   const styles: string[][] = [];
   for (let y = 0; y < HEIGHT; y++) {
@@ -30,18 +30,21 @@ function frame(h: any, todo: any, input: unknown) {
     styles.push(row);
   }
   const events = todo.log.splice(0);
+  if (app.step() === false) events.push("quit");
   return { input, rows, styles, events };
 }
 
 const script = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const todo = new Todo();
-const h = harness(new App(WIDTH, HEIGHT, { view: () => todo.view() }));
-const trace = [frame(h, todo, null)];
+const app = new App(WIDTH, HEIGHT, { view: () => todo.view() });
+const h = harness(app);
+const trace = [frame(h, app, todo, null)];
 for (const step of script) {
   if ("click" in step) h.clickAt(step.click[0], step.click[1]);
   else if ("type" in step) h.type(step.type);
   else if ("key" in step) h.press(step.key);
+  else if ("ctrl" in step) h.press(step.ctrl, { ctrl: true });
   else throw new Error(`unknown step ${JSON.stringify(step)}`);
-  trace.push(frame(h, todo, step));
+  trace.push(frame(h, app, todo, step));
 }
 process.stdout.write(JSON.stringify(trace));

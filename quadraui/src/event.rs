@@ -533,9 +533,15 @@ pub enum CanvasEvent {
         x: f32,
         y: f32,
     },
-    /// A declared region was double-clicked. No `button`/`modifiers` field
-    /// — mirrors [`UiEvent::DoubleClick`] itself, which carries neither.
-    RegionDoubleClicked { region: WidgetId, x: f32, y: f32 },
+    /// A declared region was double-clicked with `button` — the button
+    /// [`UiEvent::DoubleClick`] carries. No `modifiers` field: a
+    /// double-click carries none.
+    RegionDoubleClicked {
+        region: WidgetId,
+        button: MouseButton,
+        x: f32,
+        y: f32,
+    },
     /// The hovered region changed, including to/from no region at all.
     /// `None` means the pointer is over the canvas's own body but outside
     /// every declared region, or has left the canvas entirely — the same
@@ -660,8 +666,20 @@ pub enum UiEvent {
     MouseLeft {
         widget: WidgetId,
     },
+    /// The second press of a quick primary-button pair at one spot.
+    /// [`crate::dispatch::DoubleClickDetector`] folds only
+    /// [`MouseButton::Left`] presses, so two quick right-clicks stay two
+    /// `MouseDown`s (two context-menu requests) rather than becoming a
+    /// double-click. `button` names the button that was double-clicked,
+    /// so a consumer matches on it rather than assuming one.
+    ///
+    /// A widget with no double-click meaning of its own receives this as
+    /// a plain press of `button` (see
+    /// [`crate::primitive::DynWidget::handle`]): two quick clicks on a
+    /// `Button` activate it twice.
     DoubleClick {
         widget: Option<WidgetId>,
+        button: MouseButton,
         position: Point,
     },
     /// Scroll-wheel event. **Routes to the widget under the cursor, not

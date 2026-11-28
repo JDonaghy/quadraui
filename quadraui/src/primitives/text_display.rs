@@ -91,12 +91,42 @@ pub struct TextDisplay {
     /// gutter width (1 cell on TUI, ~12px on GTK). The scrollbar's
     /// thumb + track hit regions are included in the layout's
     /// `hit_regions` for drag interaction.
+    ///
+    /// It also makes the pane a Tab stop, so the keyboard can scroll it;
+    /// without a scrollbar a `TextDisplay` takes no keyboard focus.
     #[serde(default)]
     pub show_scrollbar: bool,
 }
 
 fn default_auto_scroll() -> bool {
     true
+}
+
+/// Glyph prefixed to every continuation row of a wrapped
+/// [`TextDisplay`] line. Without it, a wrapped
+/// row and a genuinely new line are visually identical, so a reader
+/// can't tell "this continues" from "this is unrelated."
+/// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
+/// space: a single narrow glyph, so it costs a small, predictable,
+/// constant column budget on every row (see
+/// [`wrap_continuation_marker_width`]).
+pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
+
+/// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
+/// [`crate::text_util::display_width`]).
+pub(crate) fn wrap_continuation_marker_width() -> usize {
+    crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
+}
+
+/// Column budget consumed by `line`'s timestamp prefix (its display
+/// width plus one separating space), or `0` when the line has none.
+/// Shared by every backend so the wrap column accounting always agrees
+/// with how much room the timestamp actually occupies.
+pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
+    line.timestamp
+        .as_ref()
+        .map(|ts| crate::text_util::display_width(ts) + 1)
+        .unwrap_or(0)
 }
 
 /// Backend-shared line-wrapping math for [`TextDisplay`].
@@ -124,32 +154,7 @@ fn default_auto_scroll() -> bool {
 mod wrap {
     use super::{StyledSpan, TextDisplayLine};
 
-    /// Glyph prefixed to every continuation row of a wrapped
-    /// [`super::TextDisplay`] line. Without it, a wrapped
-    /// row and a genuinely new line are visually identical, so a reader
-    /// can't tell "this continues" from "this is unrelated."
-    /// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
-    /// space: a single narrow glyph, so it costs a small, predictable,
-    /// constant column budget on every row (see
-    /// [`wrap_continuation_marker_width`]).
-    pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
-
-    /// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
-    /// [`crate::text_util::display_width`]).
-    pub(crate) fn wrap_continuation_marker_width() -> usize {
-        crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
-    }
-
-    /// Column budget consumed by `line`'s timestamp prefix (its display
-    /// width plus one separating space), or `0` when the line has none.
-    /// Shared by every backend so the wrap column accounting always agrees
-    /// with how much room the timestamp actually occupies.
-    pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
-        line.timestamp
-            .as_ref()
-            .map(|ts| crate::text_util::display_width(ts) + 1)
-            .unwrap_or(0)
-    }
+    use super::{line_timestamp_cols, wrap_continuation_marker_width};
 
     /// Word-wrap one [`TextDisplayLine`]'s spans to `col_budget` display
     /// cells. Thin, backend-shared adapter over
@@ -299,9 +304,7 @@ mod wrap {
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub(crate) use wrap::{
-    content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count, WRAP_CONTINUATION_MARKER,
-};
+pub(crate) use wrap::{content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count};
 
 /// One line in a `TextDisplay`. Carries styled spans plus an optional
 /// decoration tag (Error/Warning/Muted/Header) for log-level styling and
@@ -316,6 +319,18 @@ pub struct TextDisplayLine {
     /// Optional timestamp prefix (e.g. `"12:34:56"`) rendered before spans.
     #[serde(default)]
     pub timestamp: Option<String>,
+}
+
+impl TextDisplayLine {
+    /// One unstyled line of `text`: a single [`StyledSpan::plain`] span, no
+    /// decoration and no timestamp.
+    pub fn plain(text: impl Into<String>) -> Self {
+        Self {
+            spans: vec![StyledSpan::plain(text)],
+            decoration: Decoration::Normal,
+            timestamp: None,
+        }
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -606,6 +621,26 @@ impl TextDisplay {
             title: None,
             show_scrollbar: false,
         }
+    }
+
+    /// The display cells this display needs to show every line on one
+    /// row: its widest line's text plus the gutter every row reserves for
+    /// a timestamp or wrap marker, plus a scrollbar cell when it shows one.
+    pub fn natural_cols(&self) -> usize {
+        let widest = self
+            .lines
+            .iter()
+            .map(|line| {
+                let text: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| crate::text_util::display_width(&span.text))
+                    .sum();
+                text + line_timestamp_cols(line).max(wrap_continuation_marker_width())
+            })
+            .max()
+            .unwrap_or(0);
+        widest + usize::from(self.show_scrollbar)
     }
 
     /// Append a line to the end of the buffer. Honours `max_lines` by
@@ -1546,8 +1581,8 @@ impl crate::primitive::Primitive for TextDisplay {
     }
 
     /// One row per buffer line (unwrapped) plus a title row when one is
-    /// set — what a container sizing this display to its content would
-    /// give it.
+    /// set, and [`TextDisplay::natural_cols`] wide — what a container
+    /// sizing this display to its content would give it.
     fn measure(
         &self,
         ctx: &crate::primitive::LayoutCtx,
@@ -1555,7 +1590,11 @@ impl crate::primitive::Primitive for TextDisplay {
     ) -> crate::NaturalSize {
         let row_h = ctx.line_height.max(1.0);
         let rows = self.lines.len() as f32 + f32::from(u8::from(self.title.is_some()));
-        crate::NaturalSize::new(None, Some((rows * row_h).min(avail.height)))
+        let width = self.natural_cols() as f32 * ctx.char_width;
+        crate::NaturalSize::new(
+            Some(width.min(avail.width)),
+            Some((rows * row_h).min(avail.height)),
+        )
     }
 
     /// `rect` is the display's own area, title row included. On a cell
@@ -1709,15 +1748,17 @@ impl crate::interactive::Interactive for TextDisplay {
     type State = TextDisplayState;
     type Action = TextDisplayEvent;
 
-    /// One focus stop as a whole: a read-only log pane takes focus so
-    /// the keyboard can scroll it, but has no focusable sub-parts.
-    /// [`crate::interactive::FocusSpec::None`] for an empty buffer —
-    /// there is nothing to scroll.
+    /// A plain run of text (a label, a heading, a counter's readout) is
+    /// not a Tab stop: there is nothing for the keyboard to do on it. A
+    /// pane that shows a scrollbar ([`TextDisplay::show_scrollbar`]) is
+    /// one focus stop as a whole, so the keyboard can scroll it — the
+    /// scrollbar is the opt-in. An empty buffer is never a stop: there is
+    /// nothing to scroll.
     fn focus(&self) -> crate::interactive::FocusSpec {
-        if self.lines.is_empty() {
-            crate::interactive::FocusSpec::None
-        } else {
+        if self.show_scrollbar && !self.lines.is_empty() {
             crate::interactive::FocusSpec::Stop
+        } else {
+            crate::interactive::FocusSpec::None
         }
     }
 
@@ -1913,11 +1954,7 @@ mod interactive_tests {
     }
 
     fn plain_line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
     }
 
     fn display(count: usize, show_scrollbar: bool) -> TextDisplay {
@@ -1980,8 +2017,16 @@ mod interactive_tests {
 
     #[test]
     fn an_empty_display_is_not_a_focus_stop() {
-        assert_eq!(Interactive::focus(&display(0, false)), FocusSpec::None);
-        assert_eq!(Interactive::focus(&display(3, false)), FocusSpec::Stop);
+        assert_eq!(Interactive::focus(&display(0, true)), FocusSpec::None);
+        assert_eq!(Interactive::focus(&display(3, true)), FocusSpec::Stop);
+    }
+
+    /// Plain text is not a Tab stop; showing a scrollbar opts the pane in,
+    /// so the keyboard can scroll it.
+    #[test]
+    fn only_a_display_with_a_scrollbar_is_a_focus_stop() {
+        assert_eq!(Interactive::focus(&display(3, false)), FocusSpec::None);
+        assert_eq!(Interactive::focus(&display(3, true)), FocusSpec::Stop);
     }
 
     #[test]
@@ -2236,11 +2281,7 @@ mod cell_paint_tests {
     use crate::types::{Color, Decoration, StyledSpan, WidgetId};
 
     fn line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
     }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
@@ -2677,14 +2718,37 @@ mod cell_paint_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_cols_is_the_widest_line_plus_the_row_gutter() {
+        let mut display = TextDisplay::new(WidgetId::new("t"));
+        display.lines = vec![
+            TextDisplayLine::plain("ab"),
+            TextDisplayLine::plain("abcde"),
+        ];
+        let marker = wrap_continuation_marker_width();
+        assert_eq!(display.natural_cols(), 5 + marker);
+        display.lines[1].timestamp = Some("12:00:00".into());
+        assert_eq!(display.natural_cols(), 5 + 9);
+        display.show_scrollbar = true;
+        assert_eq!(display.natural_cols(), 5 + 9 + 1);
+    }
     use crate::types::{Color, StyledSpan};
 
     fn line(text: &str) -> TextDisplayLine {
-        TextDisplayLine {
-            spans: vec![StyledSpan::plain(text)],
-            decoration: Decoration::Normal,
-            timestamp: None,
-        }
+        TextDisplayLine::plain(text)
+    }
+
+    #[test]
+    fn plain_line_is_one_unstyled_span_with_no_decoration_or_timestamp() {
+        assert_eq!(
+            TextDisplayLine::plain("Count: 3"),
+            TextDisplayLine {
+                spans: vec![StyledSpan::plain("Count: 3")],
+                decoration: Decoration::Normal,
+                timestamp: None,
+            }
+        );
     }
 
     fn make_td(lines: usize, show_scrollbar: bool, scroll: usize, auto: bool) -> TextDisplay {

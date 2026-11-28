@@ -5754,6 +5754,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         // Reads the cell metrics off the backend rather than assuming
@@ -7129,6 +7130,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: Default::default(),
+            show_mode_badge: true,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -7410,6 +7412,8 @@ mod tests {
     #[test]
     fn win_backend_draw_data_table_paints_cell_text_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![crate::Column {
                 title: "col".to_string(),
@@ -7741,6 +7745,8 @@ mod tests {
     #[test]
     fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 crate::Column {

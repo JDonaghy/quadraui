@@ -2,14 +2,14 @@
 
 quadraui has one renderer, written in Rust, and three ways to drive it. Pick
 the language you write apps in; each quick start takes about five minutes
-and ends with the same counter app running in your terminal and then in a
-native window.
+and ends with the same counter app running in your terminal, and in a
+native window wherever the table below has a native backend for you.
 
 | | Install | Quick start |
 |---|---|---|
-| **Rust** | `cargo add quadraui --features tui` | [Rust](quick-start/rust.md) |
+| **Rust** | `cargo add quadraui --features tui` (0.12; until it ships, from git) | [Rust](quick-start/rust.md) |
 | **Python** 3.8+ | `pip install quadraui` | [Python](quick-start/python.md) |
-| **Node.js** 22+ / TypeScript | `npm install @quadraui/node` | [Node and TypeScript](quick-start/node.md) |
+| **Node.js** 22+ / TypeScript | from a clone until 0.12; then `npm install @quadraui/node` | [Node and TypeScript](quick-start/node.md) |
 
 ## Which backends you get
 
