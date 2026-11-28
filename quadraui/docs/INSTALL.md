@@ -106,7 +106,7 @@ fall back to `run_tui()`. `QUADRAUI_DISABLE_GTK=1` skips loading GTK in a proces
 opens a window. The wheels workflow installs both wheels into clean `ubuntu:24.04`,
 `fedora:40`, `fedora:42` and `debian:12` containers, with and without GTK, on every PR that
 touches `quadraui-py`; the reasoning is in
-[`quadraui-py/docs/LINUX_NATIVE_WHEELS.md`](../../quadraui-py/docs/LINUX_NATIVE_WHEELS.md).
+[`quadraui-py/docs/LINUX_NATIVE_WHEELS.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-py/docs/LINUX_NATIVE_WHEELS.md).
 
 ### macOS
 
