@@ -171,7 +171,8 @@ pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker};
     all(feature = "macos", target_os = "macos")
 ))]
 pub use tree_table_controller::{
-    NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
+    NodeId, TreeTableController, TreeTableControllerEvent, TreeTableModel, TreeTableModelLayout,
+    TreeTableModelState, TreeTableNodeData,
 };
 pub use workspace::{
     Workspace, WorkspaceDoc, WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState,

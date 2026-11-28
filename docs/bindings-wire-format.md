@@ -1982,7 +1982,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 <a id="wire-draggesturewireevent"></a>
 #### `DragGestureWireEvent`
 
-Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` — mirrors `crate::engine::TreeTableControllerWireEvent`'s own `EventSink` default-method rollout: that method defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
+Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
 
 Alias for `_DragGestureWireEventDragStarted | _DragGestureWireEventDragOver | _DragGestureWireEventDropped`.
 
@@ -4457,23 +4457,24 @@ Declarative description of a `TreeTable` widget: a `DataTable` plus per-row tree
 <a id="wire-treetablecontrollerdescriptor"></a>
 #### `TreeTableControllerDescriptor`
 
-A `"tree_table_controller"` extra: the hierarchical-model counterpart of `"tree_table"` (`TreeTable`/`quadraui::TreeTableNode`'s flat, host-flattened shape). Unlike every other additive primitive on this trait, decoding this is only ever the SEED for a `crate::engine::InteractionEngine`-cached `TreeTableController` — `crate::engine::InteractionEngine::sync_tree_tables` reads `nodes`/ `selected_id` exactly once, the first frame this `id` is seen (`Self::seed_controller`), then leaves the controller's own live expand/selection/sort state alone on every later frame, the same "seed once, then the richer controller owns it" rule that method's own doc gives for a `Form.scroll_offset`. `Self::paint` (the bare, non-interactive fallback every `ExtraPaint` impl gets painted with before that sync ever runs) builds a throwaway controller the same way, so the very first frame — before any controller is cached at all — still paints the full seeded model rather than nothing.
+A hierarchical tree table as a contract widget — the wire kind `"tree_table_controller"`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bordered` | `boolean` | no |  |
 | `columns` | `Column[]` | no |  |
-| `folders_first` | `boolean` | no |  |
+| `folders_first` | `boolean` | no | Sort branches before leaves at every level when a header click sorts. |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
 | `nodes` | `TreeTableControllerNode[]` | no |  |
 | `selected_id` | `string \| null` | no |  |
 | `show_scrollbar` | `boolean` | no |  |
+| `sort_override` | `boolean` | no | `nodes` already arrive in the app's own order for the current sort: a header click still toggles the sort indicator and reports `TreeTableModelEvent::SortChanged`, but the widget does not re-order the rows itself. |
 
 <a id="wire-treetablecontrollernode"></a>
 #### `TreeTableControllerNode`
 
-One node in a `"tree_table_controller"` extra's hierarchical model — the wire mirror of `TreeTableNodeData`, which has no `Deserialize` of its own (its fields are private; only its `TreeTableNodeData::leaf`/`TreeTableNodeData::branch`/ `TreeTableNodeData::lazy_branch` constructors are public), so a wire node decodes into this plain mirror first and `Self::into_node_data` then picks the matching constructor. `has_children: false` is always a `TreeTableNodeData::leaf` (`children` ignored); `has_children: true` with `children` present (including an empty list) is a `TreeTableNodeData::branch`; `has_children: true` with `children` absent is a `TreeTableNodeData::lazy_branch` — the same three-way split `quadraui::compose::tree_table_controller`'s own module doc describes for *Lazy loading*.
+One node in `TreeTableController`'s hierarchical model: an app-level row, not yet flattened into a `TreeTableNode`/`DataRow` pair.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4486,7 +4487,7 @@ One node in a `"tree_table_controller"` extra's hierarchical model — the wire 
 <a id="wire-treetablecontrollerwireevent"></a>
 #### `TreeTableControllerWireEvent`
 
-Wire-shaped mirror of `TreeTableControllerEvent` — the same field shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself has neither; it's an in-crate-only `quadraui::compose` type), and `Consumed`/`Ignored` dropped: `InteractionEngine::handle` only ever calls `EventSink::dispatch_tree_table_controller` for the five variants below, folding `Consumed`/`Ignored` straight into its own `Reaction` instead (see that method's own `TreeTableController` routing blocks).
+Events a `TreeTableModel` (the wire kind `"tree_table_controller"`) reports to the app. Rows are named by the app's own stable node id rather than by position, since a sort or an expand moves a node's flattened row. Serialized under the `"TreeTableController"` event key.
 
 Exactly one of the tags below is present on the wire (a discriminated union):
 
@@ -4495,8 +4496,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `RowSelected` | `_TreeTableControllerWireEventRowSelected` | Row selected — click or keyboard navigation. |
 | `RowActivated` | `_TreeTableControllerWireEventRowActivated` | Enter pressed, or a row/chevron double-clicked. |
 | `ToggleExpand` | `_TreeTableControllerWireEventToggleExpand` | A branch node's expand state flipped; its children were already loaded (or this collapses). |
-| `ChildrenRequested` | `_TreeTableControllerWireEventChildrenRequested` | A lazy branch was expanded for the first time with no loaded children — the host should fetch them and answer via `InteractionEngine::set_tree_table_children`. |
-| `SortChanged` | `_TreeTableControllerWireEventSortChanged` | A header click (re-)sorted every loaded level's children by `col`'s cell text — see `TreeTableController::header_clicked`'s own doc for how a host overrides the comparator via `InteractionEngine::set_tree_table_sort_override`. |
+| `ChildrenRequested` | `_TreeTableControllerWireEventChildrenRequested` | A lazy branch (`has_children` with no `children`) was expanded for the first time. |
+| `SortChanged` | `_TreeTableControllerWireEventSortChanged` | A header click sorted every loaded level's children by `col`'s cell text. |
 
 <a id="wire-treetableevent"></a>
 #### `TreeTableEvent`
@@ -7082,6 +7083,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` | A `crate::TreeTable` chevron/row/header/column interaction — see `TreeTableEvent`'s own variants, in particular `TreeTableEvent::ToggleExpanded` for the branch-expand chevron click `DataTableEvent` has no counterpart for. |
+| `TreeTableController` | `[WidgetId, TreeTableControllerWireEvent]` | A `TreeTableModel` (wire kind `"tree_table_controller"`) row, chevron or header interaction, naming rows by the app's node ids. |
 | `CellGrid` | `[WidgetId, CellGridEvent]` | A `crate::CellGrid` cell was clicked, moving the cursor to its absolute `(row, col)` — see `CellGridEvent::CursorMoved`. |
 | `MultiSectionView` | `[WidgetId, MultiSectionViewEvent]` | A `crate::MultiSectionView` header, divider, scrollbar or aux input was used, or one of its section bodies reported an event — see `crate::MultiSectionViewEvent`. |
 | `Chat` | `[WidgetId, ChatEvent]` | A `crate::Chat` was submitted, cancelled or clicked, or one of its controlled fields changed — see `crate::ChatEvent`. |

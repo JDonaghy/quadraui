@@ -425,9 +425,9 @@ widget_kinds! {
     "list" => crate::ListView,
     // Gated the same as `impl Primitive for TreeView`/`TreeTable`, so
     // these entries exist exactly on the feature sets where each is a
-    // `DynWidget`. `"tree_table_controller"` is the wire name the py/node
-    // hierarchical-model kind publishes; it decodes to the same flattened
-    // `TreeTable` descriptor as `"tree_table"`.
+    // `DynWidget`. `"tree_table_controller"` is the hierarchical-model
+    // kind: a node tree the widget flattens itself, keeping the expand,
+    // selection, scroll and sort state in its own `Interactive::State`.
     #[cfg(any(
         feature = "gtk",
         feature = "tui",
@@ -448,7 +448,7 @@ widget_kinds! {
         feature = "win",
         all(feature = "macos", target_os = "macos")
     ))]
-    "tree_table_controller" => crate::TreeTable,
+    "tree_table_controller" => crate::TreeTableModel,
     // Ungated, like `impl Primitive for TabBar`/`impl Interactive for
     // TabBar` — `TabBar` is a `DynWidget` on every feature set.
     "tab_bar" => crate::TabBar,
@@ -1275,13 +1275,35 @@ mod tests {
         }
 
         #[test]
-        fn decodes_a_tree_table_under_both_kind_names() {
-            for kind in ["tree_table", "tree_table_controller"] {
-                let payload = serde_json::to_value(sample_tree_table()).expect("table serializes");
-                let widget = decode_widget(kind, payload)
-                    .unwrap_or_else(|err| panic!("{kind} decodes: {err}"));
-                assert_eq!(widget.id().map(|id| id.as_str()), Some("files"), "{kind}");
-            }
+        fn decodes_a_flat_tree_table() {
+            let payload = serde_json::to_value(sample_tree_table()).expect("table serializes");
+            let widget = decode_widget("tree_table", payload).expect("tree_table decodes");
+            assert!(widget.as_any().is::<TreeTable>());
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("files"));
+        }
+
+        #[test]
+        fn decodes_a_node_tree_as_a_tree_table_model() {
+            let payload = serde_json::json!({
+                "id": "files",
+                "columns": [{"title": "Name", "width": {"Flex": 1.0}}],
+                "nodes": [{
+                    "id": "src",
+                    "cells": [{"spans": [{"text": "src"}]}],
+                    "has_children": true,
+                    "children": [{"id": "src/lib.rs", "cells": []}],
+                }],
+                "sort_override": true,
+            });
+            let widget =
+                decode_widget("tree_table_controller", payload).expect("node tree decodes");
+            let model = widget
+                .as_any()
+                .downcast_ref::<crate::TreeTableModel>()
+                .expect("a TreeTableModel");
+            assert_eq!(model.nodes.len(), 1);
+            assert_eq!(model.nodes[0].children().map(<[_]>::len), Some(1));
+            assert!(model.sort_override && model.has_focus);
         }
     }
 }

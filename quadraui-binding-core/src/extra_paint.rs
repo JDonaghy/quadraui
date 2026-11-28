@@ -10,10 +10,7 @@
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
-use quadraui::{
-    Backend, Column, Icon, NaturalSize, Point, Rect, StyledText,
-    TreeTableController, TreeTableNodeData, WidgetId,
-};
+use quadraui::{Backend, NaturalSize, Point, Rect, WidgetId};
 
 /// Paints one additive primitive descriptor painted outside the five fixed
 /// slots above. Implemented once per primitive type (see the `impl`s just
@@ -104,149 +101,6 @@ pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
 }
 
 
-/// One node in a `"tree_table_controller"` extra's hierarchical model —
-/// the wire mirror of [`TreeTableNodeData`], which has no `Deserialize` of
-/// its own (its fields are private; only its
-/// [`TreeTableNodeData::leaf`]/[`TreeTableNodeData::branch`]/
-/// [`TreeTableNodeData::lazy_branch`] constructors are public), so a wire
-/// node decodes into this plain mirror first and [`Self::into_node_data`]
-/// then picks the matching constructor. `has_children: false` is always a
-/// [`TreeTableNodeData::leaf`] (`children` ignored); `has_children: true`
-/// with `children` present (including an empty list) is a
-/// [`TreeTableNodeData::branch`]; `has_children: true` with `children`
-/// absent is a [`TreeTableNodeData::lazy_branch`] — the same three-way
-/// split [`quadraui::compose::tree_table_controller`]'s own module doc
-/// describes for *Lazy loading*.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct TreeTableControllerNode {
-    pub id: String,
-    #[serde(default)]
-    pub cells: Vec<StyledText>,
-    #[serde(default)]
-    pub icon: Option<Icon>,
-    #[serde(default)]
-    pub has_children: bool,
-    #[serde(default)]
-    pub children: Option<Vec<TreeTableControllerNode>>,
-}
-
-impl TreeTableControllerNode {
-    /// Recursively builds the real [`TreeTableNodeData`] this wire node
-    /// describes — the one place a `"tree_table_controller"` extra's
-    /// `nodes` (seeding a freshly-cached controller,
-    /// [`TreeTableControllerDescriptor::seed_controller`]) and a host's own
-    /// `set_children`/sort-override call
-    /// ([`crate::host::tree_table_controller_nodes_from_wire`]) both
-    /// convert through.
-    pub(crate) fn into_node_data(self) -> TreeTableNodeData {
-        let node = if !self.has_children {
-            TreeTableNodeData::leaf(self.id, self.cells)
-        } else if let Some(children) = self.children {
-            let children = children
-                .into_iter()
-                .map(TreeTableControllerNode::into_node_data)
-                .collect();
-            TreeTableNodeData::branch(self.id, self.cells, children)
-        } else {
-            TreeTableNodeData::lazy_branch(self.id, self.cells)
-        };
-        match self.icon {
-            Some(icon) => node.with_icon(icon),
-            None => node,
-        }
-    }
-}
-
-/// A `"tree_table_controller"` extra: the hierarchical-model counterpart of
-/// `"tree_table"` ([`TreeTable`]/[`quadraui::TreeTableNode`]'s flat,
-/// host-flattened shape). Unlike every other additive primitive on this
-/// trait, decoding this is only ever the SEED for a
-/// [`crate::engine::InteractionEngine`]-cached [`TreeTableController`] —
-/// [`crate::engine::InteractionEngine::sync_tree_tables`] reads `nodes`/
-/// `selected_id` exactly once, the first frame this `id` is seen
-/// ([`Self::seed_controller`]), then leaves the controller's own live
-/// expand/selection/sort state alone on every later frame, the same "seed
-/// once, then the richer controller owns it" rule that method's own doc
-/// gives for a `Form.scroll_offset`. [`Self::paint`] (the bare,
-/// non-interactive fallback every [`ExtraPaint`] impl gets painted with
-/// before that sync ever runs) builds a throwaway controller the same way,
-/// so the very first frame — before any controller is cached at all —
-/// still paints the full seeded model rather than nothing.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct TreeTableControllerDescriptor {
-    pub id: WidgetId,
-    #[serde(default)]
-    pub columns: Vec<Column>,
-    #[serde(default)]
-    pub nodes: Vec<TreeTableControllerNode>,
-    #[serde(default)]
-    pub selected_id: Option<String>,
-    #[serde(default = "default_true")]
-    pub has_focus: bool,
-    #[serde(default = "default_true")]
-    pub show_scrollbar: bool,
-    #[serde(default)]
-    pub bordered: bool,
-    #[serde(default)]
-    pub folders_first: bool,
-}
-
-/// `serde(default = ...)` for [`TreeTableControllerDescriptor::has_focus`]/
-/// `show_scrollbar`, whose own un-set wire default is `true` — unlike a
-/// plain `#[serde(default)]`, which would silently resolve a missing key
-/// to `bool::default() == false`.
-fn default_true() -> bool {
-    true
-}
-
-impl TreeTableControllerDescriptor {
-    /// A freshly-seeded [`TreeTableController`] for this descriptor's `id`,
-    /// `nodes` and `selected_id` — see [`Self`]'s own doc for why this only
-    /// ever runs once per cached controller (on creation), never every
-    /// frame.
-    pub(crate) fn seed_controller(&self) -> TreeTableController {
-        let mut controller = TreeTableController::new(self.id.as_str().to_string());
-        controller.set_nodes(
-            self.nodes
-                .iter()
-                .cloned()
-                .map(TreeTableControllerNode::into_node_data)
-                .collect(),
-        );
-        controller.set_selected_id(self.selected_id.clone());
-        controller.set_folders_first(self.folders_first);
-        controller
-    }
-}
-
-impl ExtraPaint for TreeTableControllerDescriptor {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let mut controller = self.seed_controller();
-        controller.set_has_focus(self.has_focus);
-        controller.set_show_scrollbar(self.show_scrollbar);
-        controller.set_bordered(self.bordered);
-        controller.render(backend, area, self.columns.clone());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check only — same limitation [`TreeTable::hit_test`]'s
-    /// own doc describes; the precise chevron/row/header resolution a
-    /// click actually gets goes through
-    /// [`crate::engine::InteractionEngine::handle`]'s own cached-controller
-    /// routing instead, which has a real `Backend` to resolve against.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
 
 /// Counts its `literal` arguments at compile time — the array-length
 /// companion `extra_primitives!` needs so [`EXTRA_PRIMITIVE_KINDS`]'s
@@ -334,7 +188,6 @@ macro_rules! extra_primitives {
 }
 
 extra_primitives! {
-    "tree_table_controller" => TreeTableControllerDescriptor,
 }
 
 /// The `widget_kinds!`-registered kind strings this crate decodes into
@@ -428,15 +281,20 @@ extra_primitives! {
 /// itself once focused; `"menu_bar"` decodes to [`quadraui::AppMenu`],
 /// whose dropdown cascade is its own popups and whose open menu and
 /// highlights are descriptor fields the app echoes back from
-/// `UiEvent::AppMenu(id, AppMenuEvent::Changed(view))`. A further kind joins this table only when it
+/// `UiEvent::AppMenu(id, AppMenuEvent::Changed(view))`.
+/// [`quadraui::TreeTableModel`] keeps the user's expand,
+/// selection, scroll and sort state in its own `Interactive::State`,
+/// which the engine keeps across frames, so `"tree_table_controller"`
+/// needs nothing more either. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 42] = [
+pub const WIDGET_KINDS: [&str; 43] = [
     "form",
     "menu_bar",
     "tree_table",
+    "tree_table_controller",
     "text_input",
     "text_field",
     "password",
@@ -553,6 +411,7 @@ mod tests {
     use crate::hit::PaintedHit;
     use crate::layout::{LayoutLeaf, LeafDescriptor};
     use quadraui::tui::testing::TuiDriver;
+    use quadraui::StyledText;
     use quadraui::{AppLogic, FormEvent, Reaction, Toolbar, ToolbarButton, TreeTable, UiEvent};
     use std::cell::RefCell;
 

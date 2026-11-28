@@ -126,7 +126,7 @@ function descriptor(state: CellGridState) {
 
 function render(state: CellGridState) {
   // A single-leaf `"row"` layout tree -- fills the whole viewport, the same
-  // shape `tree_table_controller.test.ts`'s own `render` uses and for the
+  // shape `tree_table_controller.test.ts`'s own render uses and for the
   // same reason (the flat six-slot-plus-extras system's fixed 3-line band
   // is far too short for a sheet).
   return { row: [{ id: "cg", cell_grid: descriptor(state) }] };
@@ -178,8 +178,7 @@ test("cell grid click, scroll request, and edit round trip", () => {
       return true;
     }
     // Exactly what a real app does with a `CellsRequested`: load that
-    // absolute block and repaint -- there is no `set_*` call for this,
-    // unlike `setTreeTableChildren`.
+    // absolute block and repaint -- there is no `set_*` call for this.
     state.cells = cells(requested.row_start, requested.col_start, requested.rows, requested.cols);
     state.loadedRowStart = requested.row_start;
     state.loadedColStart = requested.col_start;

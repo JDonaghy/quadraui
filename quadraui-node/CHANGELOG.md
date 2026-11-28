@@ -150,6 +150,31 @@ fragment step for this package (that mechanism, and
   while focused, firing `onChange`, instead of only through an a11y
   Increment/Decrement. Any open widget popup (a `"combo_box"` list) now
   receives the press that lands on it, instead of the press being dropped.
+- **Breaking:** a `"tree_table_controller"` leaf's `nodes` are content
+  read every frame (#2978, 0.12 rec 14), no longer a seed read once on
+  the leaf's first frame. The widget keeps only what the user does to the
+  tree -- expanded branches, the selection, the scroll position and the
+  header sort -- keyed by node id. So:
+  - lazily loaded children reach the widget as that node's `children` in
+    the next render, not through a method call;
+  - `selected_id` selects that node whenever the app changes it (between
+    changes the user's own selection stands);
+  - the new `sort_override: true` says `nodes` already arrive in the
+    app's own order for the current sort, so a header click reports
+    `SortChanged` and moves the sort indicator but does not re-order the
+    rows;
+  - `has_focus` paints as sent; keyboard focus no longer forces the
+    focused look on.
+
+  Events keep their `{"TreeTableController": [id, event]}` shape and
+  variants, and now reach the handler through the ordinary `UiEvent` path,
+  so `pushEvent` accepts that shape too. See *Removed* for the migration.
+- A generic widget leaf lays out and paints with the `Interactive` state
+  its own events left (#2978): binding-core keeps that state in the same
+  per-thread store the Rust runtime paints from. A widget whose paint
+  reads its state (a caret, a text selection, an open section) now shows
+  it in a `quadraui-node` app as it does in a Rust one.
+
 - A `"completions"` overlay (`showOverlay("completions", ...)`) now routes
   pointer input through core `Completions`' own event handling: a click
   on a row reports `{ List: [id, { SelectionChanged: { idx: n } }] }` and
@@ -232,6 +257,61 @@ fragment step for this package (that mechanism, and
 - `QuiApp.listCharWidth()` and `QuiApp.scrollbarReserve()` (#2979, 0.12
   rec 14), part of the 0.12 binding API cleanup. Budget row text with
   `charWidth()` or `measureText()` instead.
+
+- `QuiApp.setTreeTableChildren(id, nodeId, children)` and
+  `QuiApp.setTreeTableSortOverride(id, nodes)` (#2978, 0.12 rec 14).
+  Lazily loaded children and a host sort order are
+  `"tree_table_controller"` descriptor content now: keep them in the app's
+  own model and send them from the render callback. Before:
+
+  ```ts
+  app.setHandler((event) => {
+    if ("TreeTableController" in event) {
+      const [tableId, payload] = event.TreeTableController;
+      if ("ChildrenRequested" in payload) pending.push([tableId, payload.ChildrenRequested.id]);
+    }
+  });
+  app.run(1);
+  for (const [tableId, nodeId] of pending) app.setTreeTableChildren(tableId, nodeId, load(nodeId));
+  ```
+
+  After -- the handler records what the app now knows, and the render
+  callback builds the whole tree from it:
+
+  ```ts
+  const loaded = new Map<string, Node[]>(); // node id -> children the app has loaded
+  let sort: [number, boolean] | null = null; // set when the app sorts rows itself
+
+  app.setHandler((event) => {
+    if (!("TreeTableController" in event)) return;
+    const payload = event.TreeTableController[1];
+    if ("ChildrenRequested" in payload) {
+      const id = payload.ChildrenRequested.id;
+      loaded.set(id, load(id));
+    } else if ("SortChanged" in payload) {
+      sort = [payload.SortChanged.col, payload.SortChanged.ascending];
+    }
+  });
+
+  const wire = (n: Node): object => ({
+    id: n.id,
+    cells: n.cells,
+    ...(n.isBranch ? { has_children: true } : {}),
+    // Leave `children` out until loaded: that is a lazy branch.
+    ...(loaded.has(n.id) ? { children: myOrder(loaded.get(n.id)!, sort).map(wire) } : {}),
+  });
+
+  app.setRender(() => ({
+    row: [{ id: "files", tree_table_controller: {
+      id: "files", columns, nodes: myOrder(roots, sort).map(wire),
+      sort_override: sort !== null, // leave out to keep the built-in text sort
+    } }],
+  }));
+  ```
+
+  An app that is happy with the built-in sort (cell text, branches first
+  with `folders_first`) leaves `sort_override` out and ignores
+  `SortChanged`.
 
 - `QuiApp.insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
   `insertDataTable`/`insertTabBar`/`insertProgress`/`insertSpinner`/

@@ -110,7 +110,7 @@ def _descriptor(state):
 
 def _render(state):
     # A single-leaf `"row"` layout tree -- fills the whole viewport, the
-    # same shape `test_tree_table_controller.py`'s own `_render` uses and
+    # same shape `test_tree_table_controller.py`'s own `render` uses and
     # for the same reason (the flat six-slot-plus-extras system's fixed
     # 3-line band is far too short for a sheet).
     return {"row": [{"id": "cg", "cell_grid": _descriptor(state)}]}
@@ -160,8 +160,7 @@ def test_cell_grid_click_scroll_request_and_edit_round_trip():
         if requested is None:
             return True
         # Exactly what a real app does with a `CellsRequested`: load that
-        # absolute block and repaint -- there is no `set_*` call for this,
-        # unlike `set_tree_table_children`.
+        # absolute block and repaint -- there is no `set_*` call for this.
         row_start = requested["row_start"]
         rows = requested["rows"]
         cols = requested["cols"]

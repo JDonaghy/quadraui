@@ -257,9 +257,8 @@ pub fn semantic_event_for_hit(
 }
 
 /// Wire-shaped drag-gesture event [`crate::engine::InteractionEngine::handle`]
-/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`] —
-/// mirrors [`crate::engine::TreeTableControllerWireEvent`]'s own `EventSink`
-/// default-method rollout: that method defaults to ignoring the event and
+/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`],
+/// a default method on that trait: it defaults to ignoring the event and
 /// reporting [`quadraui::Reaction::Continue`], so every existing
 /// [`crate::engine::EventSink`] impl keeps compiling unchanged until a
 /// binding deliberately overrides it to thread this to its own callback.

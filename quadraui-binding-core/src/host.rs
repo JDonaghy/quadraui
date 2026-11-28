@@ -1722,27 +1722,6 @@ pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> Tr
     }
 }
 
-// ─── `TreeTableController` node decode — shared by paint-time seeding and ──
-// a host's own `set_children`/sort-override call
-
-/// Converts a host's wire-shaped node list into the
-/// [`quadraui::TreeTableNodeData`] list [`quadraui::TreeTableController::set_children`]/
-/// [`quadraui::TreeTableController::set_nodes`] expect — the same decode
-/// [`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]
-/// applies to a `"tree_table_controller"` extra's own `nodes` at paint
-/// time, exposed here so a binding's own `set_children`/sort-override call
-/// (answering a `ChildrenRequested`/`SortChanged` the engine already
-/// emitted) can reuse the identical conversion without decoding through a
-/// whole extra descriptor.
-pub fn tree_table_controller_nodes_from_wire(
-    nodes: Vec<crate::extra_paint::TreeTableControllerNode>,
-) -> Vec<quadraui::TreeTableNodeData> {
-    nodes
-        .into_iter()
-        .map(crate::extra_paint::TreeTableControllerNode::into_node_data)
-        .collect()
-}
-
 // ─── Resolving the five fixed slots as a unit, and reading the store back ───
 //
 // Every `resolve_*` function above takes one descriptor and returns the
@@ -2349,23 +2328,19 @@ pub fn widget_state_snapshot(
 
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
-/// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
-/// tree tables against `hits`,
-/// then makes the one [`InteractionEngine::render_overlays`] call that
+/// or [`crate::render::paint_layout`]) and collecting `hits`: makes the one [`InteractionEngine::render_overlays`] call that
 /// paints every open overlay in z-order (dialog on top of everything but
 /// tooltip/toast, then float/rich-text-popup/completions below it, toast
 /// topmost of all) — a correctness contract worth writing down in exactly
 /// one place rather than copy-pasted at each of a binding's render paths
 /// (the static-slots path and the render-callback path both reach this).
 /// Takes `hits` by value and hands it to [`InteractionEngine::set_hits`] at
-/// the end, after every `sync_*`/`render_overlays` call above has had a
-/// chance to read it by reference.
+/// the end, after `render_overlays` has painted.
 pub fn render_overlays(
     engine: &InteractionEngine,
     backend: &mut dyn Backend,
     hits: Vec<PaintedHit>,
 ) {
-    engine.sync_tree_tables(backend, &hits);
     engine.render_overlays(backend);
     engine.set_hits(hits);
 }

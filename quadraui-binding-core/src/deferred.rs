@@ -17,7 +17,7 @@ use std::time::Duration;
 use quadraui::{
     Backend, Completions, ContextMenuItem, Float, FloatMeasure, ImageSource, MessageDialogOptions,
     Notification, Point, PointerShape, Rect, RichTextPopup, Theme, Toast, ToastCorner, Tooltip,
-    TreeTableNodeData, WidgetId,
+    WidgetId,
 };
 
 use crate::engine::{DialogContentSize, InteractionEngine};
@@ -86,8 +86,6 @@ pub enum DeferredAction {
     // Boxed: `StyleOverride` covers every `Theme`/`Style` token, so storing
     // it inline would dominate the enum's size.
     DefineStyle(String, Box<StyleOverride>),
-    SetTreeTableChildren(WidgetId, String, Vec<TreeTableNodeData>),
-    SetTreeTableSortOverride(WidgetId, Vec<TreeTableNodeData>),
 }
 
 /// The `"context_menu"` `show_overlay` descriptor: the menu's items.
@@ -507,12 +505,6 @@ pub fn apply_deferred_action(
         DeferredAction::DefineStyle(name, overrides) => {
             host.style_sets.define(name, *overrides);
             backend.request_frame_in(Duration::ZERO);
-        }
-        DeferredAction::SetTreeTableChildren(id, node_id, children) => {
-            engine.set_tree_table_children(id, &node_id, children);
-        }
-        DeferredAction::SetTreeTableSortOverride(id, nodes) => {
-            engine.set_tree_table_sort_override(id, nodes);
         }
     }
     Ok(())

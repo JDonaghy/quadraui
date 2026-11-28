@@ -852,7 +852,7 @@ pub use primitives::tree::{
     TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use primitives::tree_table::{
-    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
+    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableModelEvent, TreeTableNode,
 };
 pub use style::{CellOverflow, Style};
 pub use text_util::{
@@ -1010,7 +1010,10 @@ pub use compose::{
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
+pub use compose::{
+    TreeTableController, TreeTableControllerEvent, TreeTableModel, TreeTableModelState,
+    TreeTableNodeData,
+};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
