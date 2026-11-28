@@ -63,7 +63,7 @@ test("clicking a star twice is idempotent and re-renders from app state", () => 
 test("a region click calls onRate exactly once", () => {
   const calls: number[] = [];
   const RatingControl = rating.RatingControl as (options: unknown) => unknown;
-  const { App } = require("../js/app/index.ts");
+  const { App } = require("@quadraui/node/app");
   const app = new App(rating.WIDTH, rating.HEIGHT, {
     view: () => RatingControl({ id: "rating:stars", value: 3, onRate: (v: number) => calls.push(v) }),
     onEvent: () => {},
@@ -81,7 +81,7 @@ test("a focused key press calls onRate exactly once", () => {
   // alone (`_rate` is idempotent), so this counts invocations directly.
   const calls: number[] = [];
   const RatingControl = rating.RatingControl as (options: unknown) => unknown;
-  const { App } = require("../js/app/index.ts");
+  const { App } = require("@quadraui/node/app");
   const app = new App(rating.WIDTH, rating.HEIGHT, {
     view: () => RatingControl({ id: "rating:stars", value: 3, focusable: true, onRate: (v: number) => calls.push(v) }),
     onEvent: () => {},

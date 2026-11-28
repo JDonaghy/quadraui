@@ -62,20 +62,16 @@
 // `after()` so its watcher timer does not outlive the test.
 // `quadraui-py`'s `quadraui.testing` packages the same teardown as a
 // `pytest` fixture (`quadraui_harness`), since pytest does have one.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `./index.ts`'s own header comment gives.
 
 import type { WidgetState } from "./index";
 
 /** No widget matched a `find()`. */
-class WidgetNotFoundError extends Error {
+export class WidgetNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "WidgetNotFoundError";
   }
 }
-exports.WidgetNotFoundError = WidgetNotFoundError;
 
 // Layout nodes that hold other nodes rather than painting a primitive; every
 // other non-meta key on a node names the primitive kind it paints.
@@ -215,7 +211,7 @@ function collectText(value: unknown, out: string[]): void {
  * by its index or tree path. Every action is the `UiEvent` the engine
  * delivers when a user does that to this row.
  */
-class Row {
+export class Row {
   widget: Widget;
   index: number;
   descriptor: any;
@@ -287,7 +283,6 @@ class Row {
     this.widget.sendScoped({ [name]: payload(this) });
   }
 }
-exports.Row = Row;
 
 const byPath = (row: Row) => ({ path: row.path });
 const byIndex = (row: Row) => ({ idx: row.index });
@@ -316,7 +311,7 @@ const ROW_EVENTS: Record<string, Record<string, [string, (row: Row) => unknown]>
 };
 
 /** One tab of a `tabs` node: its title, the widget tree it holds, and the click/close a user performs on its header. */
-class Tab {
+export class Tab {
   widget: Widget;
   index: number;
   descriptor: any;
@@ -347,10 +342,9 @@ class Tab {
     this.widget.sendScoped({ TabClosed: { index: this.index } });
   }
 }
-exports.Tab = Tab;
 
 /** One button of a toolbar strip, clicked through the engine's own hit test against the label as it painted. */
-class ToolbarButton {
+export class ToolbarButton {
   harness: Harness;
   index: number;
   id: string;
@@ -367,7 +361,6 @@ class ToolbarButton {
     this.harness.clickText(this.label);
   }
 }
-exports.ToolbarButton = ToolbarButton;
 
 /**
  * One node of the tree the app's last render produced: its wire `id`, its
@@ -379,7 +372,7 @@ exports.ToolbarButton = ToolbarButton;
  * and the framework-owned state the app does *not* track (scroll offset,
  * active tab, split ratio, selection) with `widget.state`.
  */
-class Widget {
+export class Widget {
   harness: Harness;
   role: string;
   descriptor: any;
@@ -663,7 +656,6 @@ class Widget {
     return matches(this.walk(query.includeHidden === true), query);
   }
 }
-exports.Widget = Widget;
 
 function matches(widgets: Widget[], query: Query): Widget[] {
   return widgets.filter((widget) => {
@@ -694,7 +686,7 @@ function firstMatch(widgets: Widget[], query: Query, scope: Widget | null): Widg
 }
 
 /** A running app, queried and driven the way a user drives it. Build one with `harness(app)`. */
-class Harness {
+export class Harness {
   app: any;
   qui: any;
   private renderCallback: () => unknown;
@@ -893,17 +885,15 @@ class Harness {
     this.app.disableHotReload?.();
   }
 }
-exports.Harness = Harness;
 
 /**
  * Wraps a running app for querying and driving from a test. Pass an `App`
  * from `./app` on its own, or a plain `QuiApp` together with the same
  * `render` callable it was constructed with.
  */
-function harness(app: unknown, options: HarnessOptions = {}): Harness {
+export function harness(app: unknown, options: HarnessOptions = {}): Harness {
   return new Harness(app, options);
 }
-exports.harness = harness;
 
 // --- building the widget tree out of one rendered frame ----------------------
 

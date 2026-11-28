@@ -54,19 +54,15 @@
 // timer that does the same check every `interval` milliseconds and, on a
 // change, wakes the app's event loop through `QuiApp.waker()`, so the
 // reload itself always runs from the app's own event stream.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives.
 
-const fs = require("node:fs");
+import * as fs from "node:fs";
 
 /**
  * Payload the watcher timer posts through `QuiAppWaker.post`; `App` claims
  * a `{User: HOT_RELOAD_WAKE}` event itself instead of passing it to
  * `onEvent`.
  */
-const HOT_RELOAD_WAKE = "quadraui.app.hotReload";
-exports.HOT_RELOAD_WAKE = HOT_RELOAD_WAKE;
+export const HOT_RELOAD_WAKE = "quadraui.app.hotReload";
 
 export type ModuleExports = Record<string, unknown>;
 
@@ -84,7 +80,7 @@ export type Poller = PollTimer;
  * Turns the caller's watch list into resolved absolute paths, rejecting
  * anything a reload cannot re-require from a file on disk.
  */
-function resolveModules(modules: ReadonlyArray<string>): string[] {
+export function resolveModules(modules: ReadonlyArray<string>): string[] {
   return modules.map((spec) => {
     if (typeof spec !== "string") {
       throw new TypeError(`not a module path: ${JSON.stringify(spec)} (pass require.resolve("./view.ts"))`);
@@ -104,7 +100,6 @@ function resolveModules(modules: ReadonlyArray<string>): string[] {
     return resolved;
   });
 }
-exports.resolveModules = resolveModules;
 
 type Stamp = string | null;
 
@@ -118,7 +113,7 @@ function stampOf(path: string): Stamp {
 }
 
 /** Remembers each watched file's stamp and reports which ones changed since the stamps were last taken. */
-class ModuleWatcher {
+export class ModuleWatcher {
   paths: string[];
   private stamps = new Map<string, Stamp>();
 
@@ -146,7 +141,6 @@ class ModuleWatcher {
     });
   }
 }
-exports.ModuleWatcher = ModuleWatcher;
 
 /**
  * An unref'd timer calling `onChange()` whenever `watcher.changed()` is
@@ -154,7 +148,7 @@ exports.ModuleWatcher = ModuleWatcher;
  * taken a new snapshot before reporting again). Unref'd so a watching app
  * never keeps the process alive on its own.
  */
-class PollTimer {
+export class PollTimer {
   private timer: ReturnType<typeof setInterval>;
   private reported: string | null = null;
 
@@ -178,7 +172,6 @@ class PollTimer {
     clearInterval(this.timer);
   }
 }
-exports.PollTimer = PollTimer;
 
 /**
  * Re-requires every watched path in order, returning each one's exports as
@@ -189,7 +182,7 @@ exports.PollTimer = PollTimer;
  * semantics Python's `importlib.reload` has. Throws whatever the first
  * failing re-require threw, after restoring every module it touched.
  */
-function reloadModules(paths: ReadonlyArray<string>): SavedModules {
+export function reloadModules(paths: ReadonlyArray<string>): SavedModules {
   const saved: SavedModules = [];
   try {
     for (const path of paths) {
@@ -216,10 +209,9 @@ function reloadModules(paths: ReadonlyArray<string>): SavedModules {
   }
   return saved;
 }
-exports.reloadModules = reloadModules;
 
 /** Puts each module's exports back to a `reloadModules` snapshot. */
-function restoreModules(saved: SavedModules): void {
+export function restoreModules(saved: SavedModules): void {
   for (const entry of saved) {
     for (const key of Object.keys(entry.exports)) {
       delete entry.exports[key];
@@ -227,7 +219,6 @@ function restoreModules(saved: SavedModules): void {
     Object.assign(entry.exports, entry.snapshot);
   }
 }
-exports.restoreModules = restoreModules;
 
 /**
  * Re-points each `instance`'s prototype at the reloaded class of the same
@@ -235,7 +226,7 @@ exports.restoreModules = restoreModules;
  * reload can put it back. An instance whose class is not exported from a
  * watched module is left alone.
  */
-function repointPrototypes(
+export function repointPrototypes(
   instances: ReadonlyArray<object>,
   paths: ReadonlyArray<string>,
   rebound: ReboundPrototypes,
@@ -253,7 +244,6 @@ function repointPrototypes(
     Object.setPrototypeOf(instance, replacement.prototype);
   }
 }
-exports.repointPrototypes = repointPrototypes;
 
 function lookupClass(paths: ReadonlyArray<string>, name: string): { prototype: object } | null {
   for (const path of paths) {
@@ -267,9 +257,8 @@ function lookupClass(paths: ReadonlyArray<string>, name: string): { prototype: o
 }
 
 /** Undoes `repointPrototypes`. */
-function restorePrototypes(rebound: ReboundPrototypes): void {
+export function restorePrototypes(rebound: ReboundPrototypes): void {
   for (const entry of rebound) {
     Object.setPrototypeOf(entry.instance, entry.prototype);
   }
 }
-exports.restorePrototypes = restorePrototypes;

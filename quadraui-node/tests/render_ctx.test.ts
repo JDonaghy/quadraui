@@ -11,8 +11,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { getCurrentCtx, StaleRenderCtxError } = require("../js/index.ts");
-const { App, Button } = require("../js/app/index.ts");
+const { getCurrentCtx, StaleRenderCtxError } = require("@quadraui/node");
+const { App, Button } = require("@quadraui/node/app");
 
 test("a view with no ctx parameter still renders unchanged", () => {
   // The original zero-argument `view()` shape every script written before

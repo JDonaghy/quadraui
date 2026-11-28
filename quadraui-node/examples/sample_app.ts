@@ -5,7 +5,7 @@
 // `d` (or "Delete") confirms before removing a task, `q`/Escape quits.
 //     node examples/sample_app.ts [--tui]
 
-const { App, Button, Column, Form, List, Row, StatusBar, TextInputField, ToggleField, keyName } = require("../js/app/index.ts");
+const { App, Button, Column, Form, List, Row, StatusBar, TextInputField, ToggleField, keyName } = require("@quadraui/node/app");
 import type { Renderable } from "../js/app/index";
 const plain = (s: string) => ({ spans: [{ text: s, fg: null, bg: null }] });
 class TaskApp {

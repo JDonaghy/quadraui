@@ -14,7 +14,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 test("viewport matches the constructor dimensions", () => {
   const app = new QuiApp(42, 17);

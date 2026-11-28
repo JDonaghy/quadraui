@@ -7,28 +7,24 @@ native addon.
 
 > **Status: run it from a clone today.** `@quadraui/node` is first
 > published to npm with quadraui 0.12
-> ([#3079](https://github.com/JDonaghy/quadraui/issues/3079)). Even
-> installed from a local path, its `app` and JSX entry points do not load
-> from `node_modules` yet
-> ([#2801](https://github.com/JDonaghy/quadraui/issues/2801)): under `tsx`,
-> `require("@quadraui/node/app")` returns an empty object and you get
-> `TypeError: App is not a constructor`, and plain Node cannot load the JSX
-> runtime (`SyntaxError: Unexpected token 'export'`). So this page runs
-> your app through the clone's own loader, which CI uses.
-> [From npm](#from-npm-after-012) shows the intended setup for when both
-> land.
+> ([#3079](https://github.com/JDonaghy/quadraui/issues/3079)). Until then
+> this page runs your app through the clone's own loader, which CI uses.
+> [From npm](#from-npm-after-012) shows the setup for an installed package;
+> CI already runs it against `npm pack` tarballs of the clone.
 
 ## 1. Get quadraui
 
 ```sh
 git clone https://github.com/JDonaghy/quadraui
-cd quadraui/quadraui-node && npm ci && npm run build:debug && cd ..
+cd quadraui/quadraui-node && npm ci && npm run build:debug && npm run build:dist && cd ..
 ```
 
 `npm ci` installs the exact locked versions without touching
 `package-lock.json`. npm 11 may warn that esbuild's install script was
 blocked by `allow-scripts`; the loader works anyway, so you can ignore it.
-`build:debug` compiles the native addon (it needs a Rust toolchain).
+`build:debug` compiles the native addon (it needs a Rust toolchain), and
+`build:dist` compiles the package's TypeScript to `dist/`, where its
+entry points live.
 
 ## 2. Write the app
 
@@ -38,7 +34,7 @@ from the README, and CI runs and type-checks this exact file
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+import { App, keyName } from "@quadraui/node/app";
 
 class Counter {
   count = 0;
@@ -80,10 +76,8 @@ The three parts:
   input no single widget owns, such as the `q` key.
 
 Lowercase tags are quadraui's built-in widgets, typed from the same
-generated schema as the Rust side, so a misspelled prop fails `tsc`. The
-`App` class itself comes in through `require` and is untyped (`any`) for
-now, because the app layer's runtime exports are CommonJS assignments
-(#2801).
+generated schema as the Rust side, so a misspelled prop fails `tsc`, and
+so does a wrong argument to `App`.
 
 Some details the sample does not explain:
 
@@ -157,7 +151,8 @@ if (!h.contains("Count: 1")) throw new Error(h.screen());
 ```
 
 In a file you run with `run_tui.ts`, the same two modules are plain
-`require("@quadraui/node/app")` and `require("@quadraui/node/testing")`.
+`import { App } from "@quadraui/node/app"` and
+`import { harness } from "@quadraui/node/testing"`.
 The harness methods you will use most:
 
 | Method | Does |
@@ -234,16 +229,17 @@ array:
 | `<form id="f" fields={fields} />` | `Form(fields, { id: "f" })` |
 | `<statusBar id="s" leftSegments={l} rightSegments={r} />` | `StatusBar(l, r, { id: "s" })` |
 
-Because `require` gives these as `any`, a React-style props object is not
-caught: `Button({ id, label })` builds a button with no id, and
-`Column({ children })` throws `items is not iterable`. A whole app in this
-style is `quadraui-node/examples/sample_app.ts`.
+The node constructors take positional arguments, not a React-style props
+object: `Button("+", { id: "inc", onClick })` and `Column([a, b])`, and
+`tsc` rejects `Button({ id, label })`. A whole app in this style is
+`quadraui-node/examples/sample_app.ts`.
 
 ## From npm (after 0.12)
 
-Once `@quadraui/node` is on npm and #2801 has landed, a project of your
-own will look like this. It does not run yet; see the status note at the
-top.
+Once `@quadraui/node` is on npm, a project of your own looks like this.
+Until then, `npm pack` in the clone's `quadraui-node/` (and in
+`quadraui-node/npm/<your platform>/`, with the built `.node` file copied
+in) gives you tarballs to `npm install` instead.
 
 ```sh
 mkdir counter && cd counter && npm init -y
@@ -255,7 +251,7 @@ npm install --save-dev tsx typescript @types/node
 {
   "compilerOptions": {
     "strict": true,
-    "module": "commonjs",
+    "module": "node16",
     "target": "es2020",
     "types": ["node"],
     "jsx": "react-jsx",
@@ -264,7 +260,10 @@ npm install --save-dev tsx typescript @types/node
 }
 ```
 
-`@types/node` and `"types": ["node"]` are what let `tsc` see `require`,
+`"module": "node16"` (or `"nodenext"`, or `"bundler"` with a bundler) is
+what makes `tsc` read the package's `exports` map, so
+`@quadraui/node/app` and the JSX runtime resolve with their types.
+`@types/node` and `"types": ["node"]` let `tsc` see `require.main`,
 `module` and `setImmediate`. Then `npx tsx counter.tsx` runs the app.
 
 ## More

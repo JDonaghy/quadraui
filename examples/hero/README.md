@@ -16,7 +16,7 @@ counter-native` (or `tui,gtk` / `tui,win`) runs the same Rust `Counter`. In
 Python and Node, swap `run_tui()` for `run_native(...)`. `q` quits all three.
 `node examples/hero/node/run_tui.ts path/to/app.tsx` runs a JSX file of your
 own the same way, which is how the Node quick start runs a reader's app until
-`@quadraui/node` loads from `node_modules` (#2801).
+`@quadraui/node` is on npm (#3079).
 
 ## The shared shape
 
@@ -167,6 +167,7 @@ binding-only ones.
    bottom of its cell.
 9. **Node can't run JSX directly.** `node/load_jsx.ts` compiles
    `counter.tsx` in memory with esbuild and maps `@quadraui/node/*` to this
-   checkout. An app built on the published package needs `tsc`, esbuild or
-   Bun, and the `app`/`jsx-runtime` subpaths still export `.ts` source
-   (#2801).
+   checkout's compiled `dist/`. An app built on the published package
+   compiles its JSX with `tsc`, esbuild or Bun;
+   `quadraui-node/scripts/pack_smoke.ts` does that with `tsc` against
+   `npm pack` tarballs.

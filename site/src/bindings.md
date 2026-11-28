@@ -11,7 +11,7 @@ through all three.
 
 | | Rust | Python | Node / TSX |
 |---|---|---|---|
-| Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `require("@quadraui/node/app")` |
+| Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `import { App, ... } from "@quadraui/node/app"` |
 | State | struct fields | object attributes | class fields |
 | View | `ScreenLayout` of widgets at rects | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
 | Update | `fn handle(&mut self, UiEvent) -> Reaction` | `on_click=self.inc` | `onClick={() => this.count++}` |

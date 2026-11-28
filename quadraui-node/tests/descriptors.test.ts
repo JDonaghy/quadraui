@@ -15,7 +15,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("@quadraui/node");
 
 test("button leaf renders its label", () => {
   const app = new QuiApp(40, 20);

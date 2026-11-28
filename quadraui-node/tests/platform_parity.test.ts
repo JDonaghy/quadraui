@@ -44,7 +44,7 @@ const {
   appPath,
   setAppIdentifier,
   installCrashHandler,
-} = require("../js/index.ts");
+} = require("@quadraui/node");
 
 // ─── Auto-update ────────────────────────────────────────────────────────────
 

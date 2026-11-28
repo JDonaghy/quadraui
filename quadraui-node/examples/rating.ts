@@ -28,7 +28,7 @@ import type {
   WidgetSpec,
 } from "../js/app/widget";
 
-const appModule = require("../js/app/index.ts");
+const appModule = require("@quadraui/node/app");
 const { App, keyName } = appModule;
 /**
  * `../js/app/index.ts`'s own `defineWidget` re-export, typed by hand --

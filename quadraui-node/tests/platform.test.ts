@@ -36,7 +36,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // `tmpDir()` callers never need to clean up individually -- every directory
 // it creates is removed once by this file's own `after` hook, the

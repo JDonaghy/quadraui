@@ -30,7 +30,7 @@ const {
   TextInputField,
   ToggleField,
   keyName,
-} = require("../js/app/index.ts");
+} = require("@quadraui/node/app");
 
 import type { Renderable } from "../js/app/index";
 import type { Color, ListItem, StatusBarSegment, StyledText } from "../js/wire";
