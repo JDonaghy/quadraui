@@ -19,12 +19,11 @@ A widget is one Rust type with one implementation that every backend paints:
   `UiEvent`), using the same `Self::Layout` the paint used. A widget with no
   behaviour uses `non_interactive!(Type)`.
 
-<!-- TODO(0.12 final pass): this paragraph states rule 7's final state; see the
-marker under the rule list. -->
 Backends know no widget. A pixel backend implements `PaintSurface` (fill,
 stroke, text runs and text lines, images, clip); TUI implements `CellSurface`
-(cells, borders, cursor, inline graphics). `Backend` itself carries frame,
-font, input and platform-service methods. A leaf widget lives in
+(cells, borders, cursor, inline graphics). `Backend` itself carries only
+frame, font, metric, input and platform-service methods, and no widget
+needs one of them added. A leaf widget lives in
 `quadraui/src/primitives/<name>.rs`; a composite assembled from other widgets
 (a dialog, a picker, an app shell) lives in `quadraui/src/compose/`.
 
@@ -77,24 +76,22 @@ font, input and platform-service methods. A leaf widget lives in
    paint and routing disagreeing; this catches the formula itself being wrong.
    Verify by mutating the formula and watching the test fail.
 7. **Never a `Backend` method, never a per-backend file.** `Backend` is sealed
-   and in-tree only. `tests/backend_method_ratchet.rs` lets its method count
-   only shrink, and `tests/per_backend_file_ratchet.rs` lets the backend
-   directories' file and line counts only shrink. A diff that adds a
-   `draw_<name>`/`<name>_layout` method or a widget file under a backend
-   directory fails those tests and is a review reject. Implement `Primitive` +
-   `Interactive` instead; see "Writing a widget" below.
+   and in-tree only, and holds platform services alone.
+   `tests/backend_method_ratchet.rs` pins the trait to its exact list of
+   platform methods and fails on any `*_layout` method or `draw_*` method
+   other than the frame-level `draw_focus_ring`;
+   `tests/per_backend_file_ratchet.rs` pins each backend directory to its
+   exact list of platform modules, lets its line count only shrink, and pins
+   `frame::Surface` to `Widget` + `Opaque`. A diff that adds a
+   `draw_<name>`/`<name>_layout` method, a widget file under a backend
+   directory, or a per-widget `Surface` variant fails those tests and is a
+   review reject. Implement `Primitive` + `Interactive` instead; see
+   "Writing a widget" below.
 8. **Public API changes are versioned by deprecation, not by announcement.**
    See rule 8 in full below — it is the one rule whose failure lands in *other
    repos*.
 9. **A new `PlatformServices` capability states its TUI story and ships a
    driver test proving it.** See rule 9 in full below.
-
-<!-- TODO(0.12 final pass): after W9, confirm rule 7 holds without exception:
-`trait Backend` has no widget-named draw_*/ *_layout method left
-(backend_method_ratchet baseline 66, KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS
-empty or gone), and no widget file remains under src/{tui,gtk,macos,win}.
-Also confirm the built-in painter module names (`native_surface_paint`,
-`cell_paint`) cited in rule 3 are still the convention. -->
 
 ## Paint state: hover, press and persistent state
 
@@ -353,8 +350,18 @@ what ships in the PR:
    behaviour.
 4. **No `Surface`/`FrameZone` variant.** The widget reaches the frame as
    `Surface::Widget`.
-5. **A `widget_kinds!` entry** in `src/widget_kinds.rs` if Python or Node apps
-   build the widget, so the binding layer can decode it.
+5. **Binding exposure**, if Python or Node apps build the widget. The
+   descriptor derives `Serialize` + `Deserialize` and, under the `schema`
+   feature, `schemars::JsonSchema`. Add a `widget_kinds!` entry in
+   `quadraui/src/widget_kinds.rs` and the kind string to `WIDGET_KINDS` in
+   `quadraui-binding-core/src/widget_kinds.rs`; the binding then decodes it
+   as a generic widget leaf, paints and routes it through its own
+   `Primitive`/`Interactive`, and keeps its `Interactive::State` across
+   frames. Regenerate the typed wire files with
+   `python3 scripts/gen_wire_types.py` and run `scripts/check_wire_types.sh`.
+   No binding-side painter or controller is written. A widget defined
+   outside quadraui registers its kind at runtime with
+   `quadraui::register_widget_kind_with_schema` instead.
 6. **Gallery entry** in `quadraui-gallery` showing the widget on every
    backend.
 7. **Tests:** layout tests on the descriptor (rule 1), the black-box contract
@@ -362,10 +369,6 @@ what ships in the PR:
    has any.
 8. **Changelog fragment** — `changelog.d/<issue>.added.md` per
    `changelog.d/README.md`.
-
-<!-- TODO(0.12 final pass): after W8, confirm what a binding-exposed widget
-needs besides its `widget_kinds!` entry (wire_schema entry? regenerated
-.pyi/.d.ts via scripts/check_wire_types.sh?) and list it in step 5. -->
 
 ## Rule 8 — public-API lifecycle
 

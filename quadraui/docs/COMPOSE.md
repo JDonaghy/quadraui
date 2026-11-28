@@ -2,8 +2,9 @@
 
 `src/compose/` holds quadraui's composite widgets — an app shell, a docked
 bottom panel, dialogs, pickers, a menu bar, a document strip — and the
-controllers that drive them. This page has one section per public module, in
-the order `src/compose/mod.rs` declares them.
+controllers that drive them. This page has one section per public module,
+alphabetically by file name, which is the order `src/compose/mod.rs`
+declares them in.
 
 ## Widgets and controllers
 
@@ -17,9 +18,10 @@ re-deriving hit-testing.
 Most modules come in two parts:
 
 - **A widget** — a descriptor implementing the widget contract
-  ([`Primitive`] + [`Interactive`]): `ShellView`, `BottomPanel`,
-  `MessageDialog`, `FormDialog`, `DualModePalette`, `FilePicker`,
-  `FolderPicker`, `HelpOverlay`, `AppMenu`, `Workspace`. You build it from
+  ([`Primitive`] + [`Interactive`]): `AppMenu`, `ShellView`, `BottomPanel`,
+  `Chat`, `DualModePalette`, `FilePicker`, `FolderPicker`, `FormDialog`,
+  `HelpOverlay`, `MessageDialog`, `Sidebar`, `TabGroup`, `TreeTableModel`,
+  `Workspace`. You build it from
   your state every frame, paint it with `draw_dyn` (or a `Surface::Widget`
   entry), and list it in `AppLogic::frame_tree`. The runtime routes input to
   it, keeps its gesture state (`Interactive::State`) between frames, and
@@ -184,43 +186,83 @@ impl AppLogic for Confirm {
 
 The per-module snippets below are marked `rust,ignore` because they are
 fragments: they assume `backend: &mut dyn Backend`, `event: UiEvent` and the
-app's own fields in scope. Each section names an example file that is the
-compiled, runnable version.
+app's own fields in scope. A section's **Example** line names the compiled,
+runnable version, or the unit tests that stand in for one.
 
 ---
 
-## `ShellView` / `AppShell` — `src/compose/app_shell.rs`
+## `AppMenu` — `src/compose/app_menu.rs`
+
+**Owns:** a menu bar and its dropdowns — open/close, Alt-key activation,
+arrow-key navigation, hover-to-switch between open menus, submenus. Define
+the structure once as `MenuDef`s and match on activations. On a backend
+whose effective menu style is native (the macOS system menu bar), the bar
+is installed natively instead of painted.
+
+**Widget:** `AppMenu::new(id, menus)` (`State` = `AppMenuState`, `Action` =
+`AppMenuEvent`, delivered as `UiEvent::AppMenu(id, event)`). Which menu is
+open is the `AppMenuView` the app holds; the dropdowns are popups
+(`Interactive::popups`), so the runtime paints them above the frame and
+routes them first. `AppMenuEvent::Changed(view)` asks the app to store a new
+view (`AppMenu::apply` does it); `AppMenuEvent::Activated(id)` is a chosen
+item. `Primitive::native_presentation` installs the bar natively where the
+backend presents menus natively.
+
+**Raw-event host:** a host that reads raw `UiEvent`s keeps the `AppMenu` and
+its `AppMenuState` and calls `render(backend, bar_rect)` and
+`handle_ui_event(&mut state, &event, backend, bar_rect)`, which applies every
+view change itself, keeps the open dropdown on the modal stack and answers a
+`Handled<AppMenuEvent>`.
+
+**Smallest wiring:**
+
+```rust,ignore
+match self.menu.handle_ui_event(&mut self.menu_state, &event, backend, bar_rect) {
+    Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "save" => save(),
+    Handled::Ignored => {}
+    _ => return Reaction::Redraw,
+}
+```
+
+**Example:** `examples/tui_menu_bar.rs` / `examples/gtk_menu_bar.rs` /
+`examples/macos_menu_bar.rs` / `examples/win_menu_bar.rs`
+(`examples/common/menu_bar_app.rs`).
+
+---
+
+## `ShellView` — `src/compose/app_shell.rs`
 
 **Owns:** the VS Code / JetBrains-style application frame — activity bar,
 active panel switching, sidebar show/hide and resize drag, and the optional
 title bar, bottom panel, bottom bands, command line and status bar slots.
 
 **Widget:** `ShellView` (`State` = `ShellViewState`, `Action` =
-`AppShellEvent`, delivered as `UiEvent::AppShell(id, event)`). Everything
+`ShellEvent`, delivered as `UiEvent::ShellView(id, event)`). Everything
 visible is a descriptor field the app owns: the `PanelDefinition`s, the
 active panel, sidebar width and visibility, bottom-panel height and
 visibility. `ShellViewState` holds only gesture data (an in-progress divider
-drag, activity-bar hover). The shell paints its own chrome through its
-`ActivityBar` and `StatusBar` children and reports the bounds for panel
-content, the main area, the bottom panel and the status bar in
-`ShellViewLayout`. Each chrome region is a named sub-region, so `draw_dyn`
-publishes it as a frame-inventory zone (`app-shell:status-bar`, …).
+drag, the activity bar's hover). The shell paints the activity bar through
+an `ActivityBar` child and the sidebar header through a `StatusBar` child;
+panel content, the main area, the bottom panel and the status-bar slot are
+the host's to paint, into the bounds `ShellViewLayout::shell` (a
+`ShellLayout`) reports. Each chrome region is a named sub-region
+(`ShellRegion`), so `draw_dyn` publishes it as a frame-inventory zone
+`"<id>:<region>"` — `app-shell:status-bar` for a shell with the default id
+`APP_SHELL_ID`.
 
-**Actions (`AppShellEvent`):** `PanelChanged { panel_id }`,
+**Actions (`ShellEvent`):** `PanelChanged { panel_id }`,
 `SidebarHidden`, `SidebarResized { new_width }`,
 `BottomPanelResized { new_height }`, `BottomPanelHidden`,
-`BottomItemClicked { id }`, `ActivityCursorMoved { .. }`.
+`BottomItemClicked { id }`, `ActivityCursorMoved { index }`, plus
+`Consumed` / `Ignored` for a raw-event host.
 
 **Smallest wiring:** most apps don't build the shell themselves. Implement
 `ShellApp`, describe the frame with a `ShellConfig`, and call
 `<backend>::shell_runner::run_with_shell(app, config)`; the runner owns the
-shell and calls your `render_content` with the resolved layout.
-`examples/hello.rs` is the smallest such app. See `docs/GUIDE.md`'s Step 0
-table for when to reach for `ShellApp` over bare `AppLogic`.
-
-<!-- TODO(0.12 final pass): after DC2 (#2958) deletes `AppShell`, check what
-`ShellApp`/`run_with_shell` hand `render_content` (the `AppShellLayout` name), and
-drop `AppShell` from this heading. -->
+`ShellView` and calls your `render_content(backend, &ShellLayout)` with the
+resolved chrome rects. `examples/hello.rs` is the smallest such app. See
+`docs/GUIDE.md`'s Step 0 table for when to reach for `ShellApp` over bare
+`AppLogic`.
 
 **Example:** `examples/hello.rs`; the full frame in
 `examples/tui_full_chrome_demo.rs` / `examples/gtk_full_chrome_demo.rs`
@@ -238,18 +280,21 @@ the resize drag that changes its height.
 `BottomPanelEvent`, delivered as `UiEvent::BottomPanel(id, event)`). Its tab
 strip paints and routes through a `TabBar` child; the content area below it
 is the host's. `BottomPanel::new(tabs, active_tab_id)` with
-`BottomPanelItem`s, plus `with_maximised`.
-
-**Controller:** `BottomPanelController` — owns a `BottomPanelConfig`
-(tabs with their `BackendWidget` content, active tab, maximised, height
-fraction), renders strip and active content, and routes clicks:
-`handle_click_event(x, y)` returns `Handled<BottomPanelEvent>`.
+`BottomPanelItem`s, plus `with_id` and `with_maximised`;
+`BottomPanel::from_config(&config)` builds one from a `BottomPanelConfig`.
+The panel is controlled: `apply(&event)` activates or closes a tab or
+toggles maximised. A host that routes its own clicks calls
+`click(&mut state, &layout, position)` with the layout the panel painted
+with, which answers `Handled<BottomPanelEvent>`.
 
 **Actions (`BottomPanelEvent`):** `TabActivated(id)`, `TabClosed(id)`,
 `MaximiseToggled`, `Resized(height)` (native units).
 
-**Smallest wiring:** attach a config to the shell and it drives the
-controller for you:
+**Smallest wiring:** attach a `BottomPanelConfig` (tabs with their
+`BackendWidget` content, active tab, maximised, height fraction) to the
+shell. The shell runner docks the panel under the main column, applies tab
+activation and close itself, and reports each event to
+`ShellApp::on_bottom_panel_event`:
 
 ```rust,ignore
 let config = ShellConfig::new("App", panels).with_bottom_panel_config(BottomPanelConfig {
@@ -392,7 +437,7 @@ dialog — fuzzy filtering, directory walking, scroll, selection, and (in save
 mode) the typed query doubling as the destination filename. Paints through
 the `Palette` widget.
 
-**Widget:** `FilePicker` (`State` = `FilePickerState`, `Action` =
+**Widget:** `FilePicker` (`State` = `PathPickerEditState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
 **Construct:** `FilePicker::new(mode, root, filters)` with
@@ -419,7 +464,7 @@ dialog.
 **Owns:** an interactive directory-browsing modal — filesystem walking,
 fuzzy filtering, scroll, selection. Paints through the `Palette` widget.
 
-**Widget:** `FolderPicker` (`State` = `FolderPickerState`, `Action` =
+**Widget:** `FolderPicker` (`State` = `PathPickerEditState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
 **Construct:** `FolderPicker::rooted_at(root, extra_file_names)`, optionally
@@ -463,11 +508,6 @@ backend in reach. Tab / Shift+Tab move focus between editable fields and emit
 keys edit the focused text field and emit `FormEvent::TextInputChanged`;
 Enter emits `FormEvent::TextInputCommitted`. The cursor and selection live
 inside the controller; your model keeps only the `String` value.
-
-<!-- TODO(0.12 final pass): the collapse (#2977/#2978) deletes `FormController`
-when the binding `form` kind moves to `FormState`. Once
-`src/compose/form_controller.rs` is gone, delete this section and point
-`examples/common/form_scroll.rs` readers at the `Form` widget. -->
 
 **Example:** `examples/tui_form_scroll.rs` / `examples/gtk_form_scroll.rs`
 (`examples/common/form_scroll.rs`).
@@ -638,45 +678,6 @@ backend.draw_dyn(layout.bounds, &popup, &());
 
 ---
 
-## `AppMenu` — `src/compose/app_menu.rs`
-
-**Owns:** a menu bar and its dropdowns — open/close, Alt-key activation,
-arrow-key navigation, hover-to-switch between open menus, submenus. Define
-the structure once as `MenuDef`s and match on activations. On a backend
-whose effective menu style is native (the macOS system menu bar), the bar
-is installed natively instead of painted.
-
-**Widget:** `AppMenu::new(id, menus)` (`State` = `AppMenuState`, `Action` =
-`AppMenuEvent`, delivered as `UiEvent::AppMenu(id, event)`). Which menu is
-open is the `AppMenuView` the app holds; the dropdowns are popups
-(`Interactive::popups`), so the runtime paints them above the frame and
-routes them first. `AppMenuEvent::Changed(view)` asks the app to store a new
-view (`AppMenu::apply` does it); `AppMenuEvent::Activated(id)` is a chosen
-item. `Primitive::native_presentation` installs the bar natively where the
-backend presents menus natively.
-
-**Raw-event host:** a host that reads raw `UiEvent`s keeps the `AppMenu` and
-its `AppMenuState` and calls `render(backend, bar_rect)` and
-`handle_ui_event(&mut state, &event, backend, bar_rect)`, which applies every
-view change itself, keeps the open dropdown on the modal stack and answers a
-`Handled<AppMenuEvent>`.
-
-**Smallest wiring:**
-
-```rust,ignore
-match self.menu.handle_ui_event(&mut self.menu_state, &event, backend, bar_rect) {
-    Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "save" => save(),
-    Handled::Ignored => {}
-    _ => return Reaction::Redraw,
-}
-```
-
-**Example:** `examples/tui_menu_bar.rs` / `examples/gtk_menu_bar.rs` /
-`examples/macos_menu_bar.rs` / `examples/win_menu_bar.rs`
-(`examples/common/menu_bar_app.rs`).
-
----
-
 ## `MessageDialog` — `src/compose/message_dialog.rs`
 
 **Owns:** the in-canvas message/alert box — keyboard button focus and
@@ -732,41 +733,6 @@ capability check.
 
 ---
 
-## `SidebarPanelBody` — `src/compose/sidebar_panel_body.rs`
-
-**Owns:** the four layers of a sidebar panel — background fill, optional
-header/search chrome, the panel's own body widget, an optional
-scrollbar-gutter reservation — painted in one ordered call.
-
-**Widget, paint only.** `SidebarPanelBody` is a `Primitive` with no
-behaviour (`non_interactive!`), built fresh each frame as a struct literal
-(`background`, `chrome`, `scrollbar_gutter`; it derives `Default`). The
-chrome is `SidebarPanelChrome::None`, `Header(title)`,
-`HeaderAndSearch { .. }`, `Search { .. }` or `StatusBars(bars)`; the
-header/search shapes paint through `paint_settings_chrome` /
-`paint_settings_chrome_cells`. `render(backend, rect, &body)` paints the
-background and chrome through `draw_dyn`, then hands the remaining rect to
-your `BackendWidget` body and returns a `SidebarPanelBodyLayout` (body rect,
-gutter rect, the status bars' hit regions). Click routing stays with
-whatever owns the body widget.
-
-**Smallest wiring:**
-
-```rust,ignore
-let panel = SidebarPanelBody {
-    background: Some(theme.background),
-    chrome: SidebarPanelChrome::Header("Explorer".into()),
-    scrollbar_gutter: None,
-};
-let layout = panel.render(backend, panel_rect, &explorer_tree);
-```
-
-**Example:** `examples/tui_sidebar_panel_body.rs` /
-`examples/gtk_sidebar_panel_body.rs`
-(`examples/common/sidebar_panel_body_demo.rs`).
-
----
-
 ## `Sidebar` — `src/compose/sidebar.rs`
 
 **Owns:** a multi-section sidebar (VS Code's Explorer/Outline/Timeline
@@ -816,6 +782,41 @@ if let Handled::Event(actions) = sidebar.handle_event(&mut state, &event, backen
 (`examples/common/multi_tree.rs`); search and toggle sections in
 `examples/tui_sidebar_search.rs` / `examples/gtk_sidebar_search.rs`
 (`examples/common/sidebar_search.rs`).
+
+---
+
+## `SidebarPanelBody` — `src/compose/sidebar_panel_body.rs`
+
+**Owns:** the four layers of a sidebar panel — background fill, optional
+header/search chrome, the panel's own body widget, an optional
+scrollbar-gutter reservation — painted in one ordered call.
+
+**Widget, paint only.** `SidebarPanelBody` is a `Primitive` with no
+behaviour (`non_interactive!`), built fresh each frame as a struct literal
+(`background`, `chrome`, `scrollbar_gutter`; it derives `Default`). The
+chrome is `SidebarPanelChrome::None`, `Header(title)`,
+`HeaderAndSearch { .. }`, `Search { .. }` or `StatusBars(bars)`; the
+header/search shapes paint through `paint_settings_chrome` /
+`paint_settings_chrome_cells`. `render(backend, rect, &body)` paints the
+background and chrome through `draw_dyn`, then hands the remaining rect to
+your `BackendWidget` body and returns a `SidebarPanelBodyLayout` (body rect,
+gutter rect, the status bars' hit regions). Click routing stays with
+whatever owns the body widget.
+
+**Smallest wiring:**
+
+```rust,ignore
+let panel = SidebarPanelBody {
+    background: Some(theme.background),
+    chrome: SidebarPanelChrome::Header("Explorer".into()),
+    scrollbar_gutter: None,
+};
+let layout = panel.render(backend, panel_rect, &explorer_tree);
+```
+
+**Example:** `examples/tui_sidebar_panel_body.rs` /
+`examples/gtk_sidebar_panel_body.rs`
+(`examples/common/sidebar_panel_body_demo.rs`).
 
 ---
 
@@ -938,25 +939,18 @@ if let Handled::Event(ToastStackAction::Action(button_id)) = controller.handle_e
 
 ## `ToolbarHoverTracker` — `src/compose/toolbar_hover_tracker.rs`
 
-**Owns:** "which item is under the pointer" for a host that routes its own
-mouse moves: `ToolbarHoverTracker` (a `Toolbar` button's `WidgetId`),
-`ListHoverTracker` and `TreeHoverTracker` (a row index). `update(&layout, x,
-y)` returns `true` when the hovered item changed.
+**Owns:** "which `Toolbar` button is under the pointer" for a host that
+routes its own mouse moves. `update(&layout, x, y)` takes the
+`ToolbarLayout` the toolbar was painted with and returns `true` when the
+hovered button's `WidgetId` changed.
 
 **Not needed for a `Toolbar` painted with `draw_dyn`.** The runtime tracks
 the pointer against every widget painted that way and hands hover and press
 to the widget's paint through `PaintEnv`, so the toolbar tints its hovered
 button with no tracker.
 
-<!-- TODO(0.12 final pass): DC1 (#2957) deletes `TreeHoverTracker` and keeps
-`src/compose/toolbar_hover_tracker.rs` with `ToolbarHoverTracker` (the same
-rule as README.md's compose-table marker). After W9, check whether
-`ListHoverTracker` survived the residue sweep (its in-tree user is
-`gtk/list.rs`), then drop each departed type from this section; keep the
-section while the file exists. -->
-
-**Example:** `examples/tui_sidebar_panel.rs` / `examples/gtk_sidebar_panel.rs`
-(`examples/common/sidebar_panel_app.rs`).
+**Example:** none standalone; its `#[cfg(test)]` module in
+`toolbar_hover_tracker.rs` is the direct-use reference.
 
 ---
 
@@ -994,7 +988,7 @@ let first_visible = nav.scroll_offset();
 
 ---
 
-## `TreeTableController` — `src/compose/tree_table_controller.rs`
+## `TreeTableModel` / `TreeTableController` — `src/compose/tree_table_controller.rs`
 
 **Owns:** one keyboard-navigable `TreeTable` driven from a *hierarchical*
 model instead of an app-maintained flattened row list. It holds
@@ -1009,7 +1003,41 @@ child loading** — a node built with `TreeTableNodeData::lazy_branch` emits
 until `set_children` answers. Navigation goes through `TreeNavCore`, with
 the controller translating between `NodeId` and the positional `TreePath`.
 
-**Controller only.** `TreeTableController::new(id)`; `set_nodes(nodes)`;
+**Widget:** `TreeTableModel` (`State` = `TreeTableModelState`, `Action` =
+`TreeTableModelEvent`, delivered as `UiEvent::TreeTableModel(id, event)`;
+the binding wire kind `"tree_table_controller"`). Its fields are content:
+`columns`, the whole `nodes` tree every frame (lazily loaded children
+included), `selected_id`, the `has_focus` / `show_scrollbar` / `bordered` /
+`folders_first` flags, and `sort_override` for an app that sends rows in its
+own sort order. What the user does to that tree — expansion, selection,
+scroll and the header sort — lives in `TreeTableModelState`, keyed by node
+id so it survives a re-sort or a refresh. The state holds a
+`TreeTableController`, so behaviour is the controller's. Events:
+`RowSelected { id }`, `RowActivated { id }`, `ToggleExpand { id, expand }`,
+`ChildrenRequested { id }` (answer by sending the node's `children` in the
+next frame), `SortChanged { col, ascending }`.
+
+```rust,ignore
+let files = TreeTableModel {
+    id: WidgetId::new("files"),
+    columns,
+    nodes, // the app's whole tree, rebuilt each frame
+    selected_id: None,
+    has_focus: true,
+    show_scrollbar: true,
+    bordered: false,
+    folders_first: true,
+    sort_override: false,
+};
+// render()/frame_tree(): Surface::Widget + tree.push(files.id, area, ...).
+// handle():
+if let UiEvent::TreeTableModel(_, TreeTableModelEvent::ChildrenRequested { id }) = event {
+    self.load_children_into_model(&id); // shows up in next frame's `nodes`
+}
+```
+
+**Controller:** for a host that routes raw events itself.
+`TreeTableController::new(id)`; `set_nodes(nodes)`;
 `render(backend, rect, columns)`; `handle(&event, backend, rect, columns)`
 → `TreeTableControllerEvent` (`RowSelected { id }`, `RowActivated { id }`,
 `ToggleExpand { id, expand }`, `ChildrenRequested { id }`,
@@ -1036,13 +1064,10 @@ match tree.handle(&event, backend, rect, columns) {
 }
 ```
 
-<!-- TODO(0.12 final pass): after D2 (#2948) ports TreeTable and the collapse
-(#2977) moves `tree_table_controller` off the binding extras, recheck this
-section (lazy children and the sort override become descriptor content). -->
-
-**Example:** `quadraui-gallery/src/demos/tree_table.rs` — expand/collapse,
-a header-click sort and the lazy `remote/` branch. Its `#[cfg(test)]`
-module is the direct-use reference.
+**Example:** `quadraui-gallery/src/demos/tree_table.rs` drives the
+controller — expand/collapse, a header-click sort and the lazy `remote/`
+branch. The `#[cfg(test)]` module of `tree_table_controller.rs` covers both
+the controller and `TreeTableModel`.
 
 ---
 

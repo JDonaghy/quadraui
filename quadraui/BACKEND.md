@@ -18,16 +18,6 @@ through the widget contract ([`Primitive`] + [`Interactive`]) onto one paint
 target your backend provides. Adding a widget to quadraui changes no backend;
 adding a backend makes every widget work on it.
 
-<!-- TODO(0.12 final pass): this guide describes the trait as W9 leaves it. On
-develop at 94f45833 `trait Backend` still declares 111 methods: the 66 in §2
-plus 45 legacy widget methods (draw_tree/list/data_table/split/split_tree/chart/
-board/canvas/progress/spinner/scrollbar/message_list/find_replace/…, their
-*_layout twins, list_char_width, scrollbar_reserve, tree_scroll_row_height, …),
-and src/{gtk,macos,win,tui}/ still hold per-widget rasterisers (tree.rs,
-list.rs, data_table.rs, split.rs, chart.rs, board.rs, …). After W9 (#2981 plus
-the residue sweep) confirm both are gone; if any survive, name them here as
-legacy. -->
-
 Audience: you're opening a PR against this repo to add a new render
 backend — a new GPU surface, a webview, a different terminal library, an
 embedded display, the next desktop toolkit — or you want to understand why
@@ -42,9 +32,9 @@ Three rules, worth internalising before reading any backend code:
 1. **Apps build widget descriptors from state, every frame, by value.** No
    retained widget tree, no `widget.set_text(...)` between frames. The app
    holds canonical state; descriptors (`TabBar`, `TreeView`, `Dialog`, …)
-   are cheap snapshots. What must survive between frames — a hover index,
+   are cheap snapshots. What must survive between frames — a press origin,
    a half-finished drag — is the widget's [`Interactive::State`], which the
-   runtime keeps in its widget-state store keyed by [`WidgetId`].
+   runtime keeps in its `WidgetStateStore`, keyed by [`WidgetId`].
 2. **Widgets paint themselves; backends rasterise paint verbs.** A widget's
    [`Primitive::layout`] resolves every geometry decision, and
    [`Primitive::paint`] (pixels) or [`Primitive::paint_cells`] (terminal
@@ -83,7 +73,9 @@ every frame, which is cheap in practice.
 
 ## 2. What a backend implements
 
-`Backend` is platform services only. Grouped by job:
+`Backend` is platform services only: 66 methods, none of them named after a
+widget. `tests/backend_method_ratchet.rs` pins the trait to exactly this set,
+so a new method lands with a deliberate edit to that list. Grouped by job:
 
 | Job | Methods |
 |---|---|
@@ -95,14 +87,6 @@ every frame, which is cheap in practice.
 | Structural observation | `register_text_region`, `register_zone`, `cancel_text_selection_drag`, `modal_stack_handle`, `drag_state_handle`, `focus_tree`, `set_focus`, `frame_capture`, `last_frame`, `screenshot`, `last_error` |
 | Native chrome | `install_menu_bar`, `show_context_menu`, `menu_style`, `set_menu_style`, `effective_menu_style`, `begin_window_drag`, `toggle_window_maximize`, `begin_window_resize`, `set_cursor`, `titlebar_control_inset`, `set_caret_shape`, `window`, `tray` |
 | OS services | `services` (a `dyn PlatformServices`: clipboard, dialogs, notifications, URLs, trash, secrets, …), `backend_caps` |
-
-<!-- TODO(0.12 final pass): the table lists the 66 methods W9 keeps. Today
-`tests/backend_method_ratchet.rs` has BACKEND_METHOD_COUNT_BASELINE = 111; the
-45 not tabulated are the legacy widget methods W9 (#2981 plus the residue sweep)
-deletes. After W9 confirm the baseline is exactly 66, that the trait's methods
-match this table name for name, and that no `draw_<widget>`/`<widget>_layout`
-method remains. If a merged PR moved one of these to another seam, update the
-table. -->
 
 Beyond the trait, an in-tree backend ships:
 
@@ -162,13 +146,14 @@ A terminal cannot express `PaintSurface`'s verbs (a bordered box is literal
 box-drawing glyphs chosen per corner; a double-width CJK glyph occupies two
 cells), so a cell backend implements [`CellSurface`] instead: `size`,
 `put_char`, `put_wide`, `put_str_clipped`, `fill`, `draw_border`, `get`,
-`set_cursor`, `color_depth`, plus the defaulted `put_grapheme` and
-`emit_graphics` (inline images; `false` when unsupported). Widgets paint to
-it from `Primitive::paint_cells`. `quadraui::tui::BufferCellSurface` wraps a
-bare buffer for tests and headless renders.
-
-<!-- TODO(0.12 final pass): after #2980 (CSR) removes the ratatui escape hatch from
-`CellSurface`, confirm the verb list above matches `src/cell_surface.rs` exactly. -->
+`set_cursor`, `color_depth`, plus the defaulted `put_grapheme`, `tint_bg`,
+`set_bg`, `add_modifier` and `emit_graphics` (inline images; `false` when
+unsupported). Each cell write takes one `CellStyle` (foreground,
+background, bold, italic, underline colour, dim, reverse). Widgets paint to
+it from `Primitive::paint_cells`, and these verbs are all a widget can do to
+a terminal: no widget reaches the underlying ratatui buffer.
+`quadraui::tui::BufferCellSurface` wraps a bare buffer for tests and
+headless renders.
 
 ### Frame scope
 
@@ -354,10 +339,6 @@ and then `src/tui/cell_surface.rs`; for pixels, `src/gtk/surface.rs`.
 
 ## 9. Backend-implementer checklist
 
-<!-- TODO(0.12 final pass): until W9 a new backend would also have to implement
-the 45 legacy widget methods (see the marker under §2). After W9 confirm this
-checklist is complete for a backend that implements only the §2 table. -->
-
 ### Paint
 
 - [ ] **Every required `PaintSurface` verb** (or every `CellSurface` verb)
@@ -482,11 +463,11 @@ A new backend adds `src/<platform>/` with its `backend`, `events`, `run`,
 `shell_runner`, `services`, paint-surface and `testing` modules,
 `impl Backend for <Platform>Backend`, and
 `impl crate::backend::sealed::Sealed for <Platform>Backend` (required —
-`Backend` is sealed). `tests/per_backend_file_ratchet.rs` keeps each backend
-directory to platform modules.
-
-<!-- TODO(0.12 final pass): after W9 (#2981) check the module list above against
-the `PLATFORM_FILES` allow-lists in `tests/per_backend_file_ratchet.rs`. -->
+`Backend` is sealed). `tests/per_backend_file_ratchet.rs` lists the exact
+platform modules each backend directory holds (`PLATFORM_FILES`) and freezes
+each directory's line count, which may only shrink; a new backend adds its
+own entry and baseline there. No file in a backend directory paints, lays
+out or routes a widget.
 
 ## 12. Desktop plumbing you get for free (`crate::platform`)
 

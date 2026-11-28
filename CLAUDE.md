@@ -54,16 +54,20 @@ dialog, a picker, an app shell) lives in `quadraui/src/compose/`. Backends are
 **platform services and rasterisers only**: GTK, macOS and Win implement
 `PaintSurface`, TUI implements `CellSurface`, and none of them knows any widget.
 A new backend therefore implements `Backend` (platform services) plus one of
-those two surfaces, and every widget paints on it with no further change. How to
-write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
+those two surfaces, and every widget paints on it with no further change. The
+Python/Node bindings reach the same implementation: `quadraui-binding-core`
+decodes a widget by its `widget_kinds!` kind and paints, routes and keeps its
+state through its own `Primitive`/`Interactive`, with no binding-side copy. How
+to write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
 
 1. **A widget never gets a `Backend` method or a per-backend file.** `layout()`
    resolves geometry once; `paint()` draws it through `&mut dyn PaintSurface`;
    `paint_cells()` draws it through `&mut dyn CellSurface` for TUI. Hosts reach
    it through `DrawsPrimitives::draw_dyn` (or `Surface::Widget` in a
    `ScreenLayout`), never a widget-named `draw_*`. `Backend` is sealed;
-   `tests/backend_method_ratchet.rs` and `tests/per_backend_file_ratchet.rs`
-   only let `Backend` and the backend directories shrink.
+   `tests/backend_method_ratchet.rs` pins it to its platform methods and
+   `tests/per_backend_file_ratchet.rs` pins each backend directory to its
+   platform modules, so neither grows for a widget.
 2. **Input routes through `FrameTree`.** An app returns its widgets from
    `AppLogic::frame_tree`; the runtime hit-tests, focuses, and calls
    `Interactive::handle` with a `RoutedEvent` in widget-local coordinates.
@@ -85,12 +89,6 @@ write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
    `examples/common/<shape>.rs`, one ~10-line runner per backend.
 6. **Events are unified at `UiEvent`** before reaching `AppLogic::handle`; a
    widget's `Action` becomes one through `WidgetAction::into_ui_event`.
-
-<!-- TODO(0.12 final pass): after W9, confirm `trait Backend` declares no
-widget-named draw_*/ *_layout method (backend_method_ratchet baseline = 66),
-that no widget file is left under src/{tui,gtk,macos,win}, and that every
-widget reaches the frame as Surface::Widget (no per-widget Surface/FrameZone
-variant remains). If any survive, name them here as legacy, not as a path. -->
 
 **TUI is a first-class backend.** A user-facing capability (menus, pickers,
 dialogs, buttons, text boxes, lists) must *work* on TUI, not return
