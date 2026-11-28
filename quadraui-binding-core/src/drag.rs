@@ -215,17 +215,15 @@ pub fn enclosing_scroll_child(
 /// semantics (e.g. a `List` row's `ListViewEvent::SelectionChanged`) keep
 /// firing exactly as without a gesture armed, and
 /// `InteractionEngine::handle` dispatches the
-/// [`crate::semantic::DragGestureWireEvent::DragStarted`]/`DragOver`/
+/// [`DragGestureWireEvent::DragStarted`]/`DragOver`/
 /// `Dropped` wire events alongside them, through
 /// [`crate::engine::EventSink::dispatch_drag_gesture`].
 pub struct GestureDrag {
     /// The leaf the gesture started on.
     pub source: WidgetId,
     /// The [`HitDetail`] the originating `MouseDown` landed on within
-    /// [`Self::source`] — e.g. [`HitDetail::ListItem`] for a drag starting
-    /// on one row of a `List` — so a host reordering a list by drag knows
-    /// WHICH row was picked up, not just that `source` (the whole `List`)
-    /// was.
+    /// [`Self::source`] — [`HitDetail::WidgetBody`] for a widget leaf,
+    /// which resolves its own sub-regions.
     pub source_detail: HitDetail,
     /// The leaf (and its own [`HitDetail`]) currently under the pointer,
     /// when that leaf's own [`DragRole::drop_target`] is set — `None`

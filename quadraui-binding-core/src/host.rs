@@ -2,12 +2,12 @@
 //! today, a napi leaf next, #1126) needs around [`crate::engine::InteractionEngine`]
 //! to drive a [`quadraui::AppLogic`], but that still carries zero
 //! host-language FFI type. A binding's own `AppLogic` impl holds one
-//! [`BindingHost`] (the six fixed primitive slots, any number of additive
-//! slots, and the backend-settings replay store) plus its own callback
+//! [`BindingHost`] (its per-kind widget map and the backend-settings
+//! replay store) plus its own callback
 //! fields (a Python callable, a JS function value, ...) and an
 //! [`crate::engine::InteractionEngine`]; [`render_overlays`] is the one
 //! render-time call every binding's `AppLogic::render` makes after painting
-//! its own slots, so the anchored-overlay z-order — context menu, float,
+//! its own widgets, so the anchored-overlay z-order — context menu, float,
 //! rich-text popup, completions, dialog, tooltip, toast topmost of all, in
 //! the exact order [`render_overlays`]'s own body paints them — is written
 //! down once instead of copy-pasted per binding.
@@ -2919,8 +2919,8 @@ mod tests {
     }
 
     /// A minimal [`AppLogic`] whose `render` paints a layout tree through
-    /// [`crate::render::paint_layout`] -- not [`BindingHost::render_refs`]'s
-    /// five fixed slots -- and refreshes [`BindingHost::leaf_tooltips`] from
+    /// [`crate::render::paint_layout`] -- not [`BindingHost::widgets`]'
+    /// flat bands -- and refreshes [`BindingHost::leaf_tooltips`] from
     /// it every frame via [`crate::render::collect_leaf_tooltips`], the
     /// same two calls `quadraui-py`'s own `PyAppLogic::render` makes for
     /// its `RenderOutput::Tree` path.

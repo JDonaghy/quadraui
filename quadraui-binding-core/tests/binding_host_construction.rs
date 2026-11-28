@@ -6,9 +6,8 @@
 //! here, so this test is what keeps the host's fields reachable from a
 //! binding crate rather than only from inside `quadraui-binding-core`.
 //!
-//! Also pins the paint consequence of the host carrying no additive
-//! primitives of its own: the `RenderRefs` it hands `draw_bands` borrows an
-//! empty extras map, so only the fixed bands reach the backend.
+//! Also pins the paint consequence: `draw_bands` paints exactly the
+//! widgets the host's `widgets` map holds, one band per kind.
 
 use std::collections::HashMap;
 use std::rc::Rc;

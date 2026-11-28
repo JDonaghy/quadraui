@@ -145,6 +145,21 @@ mod tests {
     use quadraui::{Backend, Point, Rect, WidgetId};
     use std::cell::RefCell;
 
+    /// [`WIDGET_KINDS`] names exactly core's static `widget_kinds!` table
+    /// minus the one kind a layout tree carries as a container node, so
+    /// the band order it fixes never leaves a static kind undecodable.
+    #[test]
+    fn widget_kinds_is_the_static_table_less_the_container_kind() {
+        let mut ours: Vec<&str> = WIDGET_KINDS.to_vec();
+        ours.sort_unstable();
+        let mut core: Vec<&str> = quadraui::widget_kinds::static_widget_kinds()
+            .into_iter()
+            .filter(|kind| !crate::wire::is_reserved_node_key(kind))
+            .collect();
+        core.sort_unstable();
+        assert_eq!(ours, core);
+    }
+
     /// Records every event an [`EventSink`] receives, in order, for a
     /// chrome-leaf test to assert against without any host-language
     /// callback in scope.
@@ -1003,8 +1018,8 @@ mod tests {
     }
 
     /// An unrecognised key inside a `"slider"` descriptor body -- a
-    /// generic-widget leaf, reached through [`decode_widget_leaf`] rather
-    /// than the six fixed leaf kinds -- is a hard [`crate::DecodeError::UnknownKey`] under
+    /// generic-widget leaf, reached through [`decode_widget_leaf`] -- is a
+    /// hard [`crate::DecodeError::UnknownKey`] under
     /// `strict`, naming the key, the dict it was found on, and the keys
     /// `Slider` actually accepts, the same policy a layout-tree node's own
     /// sibling keys already get.

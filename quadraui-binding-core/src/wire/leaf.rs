@@ -433,9 +433,9 @@ mod tests {
         );
     }
 
-    /// A [`WIDGET_KINDS`] body gets the same treatment as the fixed leaf
-    /// above even though its concrete descriptor type is named by the kind
-    /// string rather than statically: `"labl"` inside a `"button"` dict is
+    /// A [`WIDGET_KINDS`] body's concrete descriptor type is named by the
+    /// kind string rather than statically, and its keys are still checked:
+    /// `"labl"` inside a `"button"` dict is
     /// a hard [`DecodeError::UnknownKey`] under `strict`, naming the key.
     #[test]
     fn widget_leaf_body_rejects_an_unknown_key_under_strict() {
@@ -518,11 +518,10 @@ mod tests {
         );
     }
 
-    /// A leaf dict naming two descriptor kinds at once is rejected — even
-    /// across the `LEAF_KIND_KEYS`/`WIDGET_KINDS` loops `"list"`/`"button"`
-    /// fall into respectively, so `"list"` carries a complete, validly
-    /// decoding body here (unlike most other fixtures in this file, which
-    /// only need enough to reach the check they're after).
+    /// A leaf dict naming two descriptor kinds at once is rejected, even
+    /// when both decode on their own — so `"list"` carries a complete,
+    /// validly decoding body here (unlike most other fixtures in this
+    /// file, which only need enough to reach the check they're after).
     #[test]
     fn rejects_a_leaf_with_two_descriptor_kinds() {
         let value = json!({
@@ -567,10 +566,8 @@ mod tests {
     }
 
     /// A minimal `"list"`/`"tree"`/`"data_table"` descriptor body carrying
-    /// `"scroll_px"` -- the documented `scroll_px_from_value` extension key,
-    /// not a field any of `ListView`/`TreeView`/`DataTable` declares (see
-    /// `docs/bindings-wire-format.md`'s own `"scroll_px"` entries and
-    /// [`crate::scroll_px_from_value`]'s doc). Covers both the layout-tree
+    /// `"scroll_px"`, a field `ListView`/`TreeView`/`DataTable` each
+    /// declare. Covers both the layout-tree
     /// leaf shape (`{"id": ..., "list": {...}}`) and the flat per-slot shape
     /// (`{"list": {...}}`) [`decode_render_output_with_styles`] dispatches
     /// between.
@@ -678,9 +675,8 @@ mod tests {
     }
 
     /// A minimal `"list"`/`"tree"`/`"data_table"`/`"text_display"`
-    /// descriptor body carrying `"items_window"` -- the documented
-    /// `items_window_from_value` extension key, not a field any of
-    /// `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares. Mirrors
+    /// descriptor body carrying `"items_window"`, a field
+    /// `ListView`/`TreeView`/`DataTable`/`TextDisplay` each declare. Mirrors
     /// [`scrollable_body_with_scroll_px`]'s own dual-shape coverage.
     fn windowed_body_with_items_window(kind: &str) -> Value {
         let window = json!({"start": 0, "total": 100_000});

@@ -172,10 +172,10 @@ mod tests {
     use super::*;
 
     /// A render callback's flat (pre-layout-tree) `dict` shape decodes
-    /// into a [`RenderFrame`]: a present fixed slot decodes into its type, a
-    /// missing or `null` fixed slot leaves that frame slot empty, and a
-    /// present `"button"` [`crate::widget_kinds::WIDGET_KINDS`] slot lands in
-    /// [`RenderFrame::widgets`].
+    /// into a [`RenderFrame`]: a present `"button"`
+    /// [`crate::widget_kinds::WIDGET_KINDS`] slot lands in
+    /// [`RenderFrame::widgets`], and a missing or `null` slot leaves that
+    /// kind out.
     #[test]
     fn decodes_a_flat_render_frame() {
         let value = json!({

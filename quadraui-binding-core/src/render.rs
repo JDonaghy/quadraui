@@ -2413,7 +2413,7 @@ mod tests {
 
     /// Every one of the text-entry leaf kinds sizes to its own content
     /// under a non-`Stretch` `Align`, exactly like a `Button`/
-    /// `TextDisplay`/`TabBar` fixed leaf already does in
+    /// `TextDisplay`/`TabBar` leaf already does in
     /// [`align_every_value_at_two_terminal_sizes`] above, through its own
     /// `Primitive::measure`.
     /// `Align::Start`/`Center`/`End` each size the child to its reported

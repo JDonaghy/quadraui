@@ -1330,7 +1330,7 @@ pub unsafe extern "C" fn qui_free(ptr: *mut c_char) {
 
 // ─── Real-terminal spike: `QuiRtApp` ────────────────────────────────────────
 //
-// Everything above runs the headless `TuiDriver` — no terminal, fixed slots,
+// Everything above runs the headless `TuiDriver` — no terminal, six slots,
 // one descriptor per primitive type. `QuiRtApp` is a narrow, additive spike
 // proving out the other half: a real terminal driven over `TuiRunner`, a
 // handle-addressed store so a descriptor can be updated in place instead of

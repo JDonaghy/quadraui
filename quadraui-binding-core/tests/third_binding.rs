@@ -234,8 +234,8 @@ fn the_derived_wire_schema_lists_a_runtime_registered_kind() {
     assert!(schema["kinds"].get("button").is_some());
 }
 
-/// A runtime kind named after a layout container, a fixed leaf kind, an
-/// extra primitive or a node sibling key would be shadowed during decode,
+/// A runtime kind named after a layout container, a static widget kind or
+/// a node sibling key would be shadowed during decode,
 /// so binding-core refuses to register it at all.
 #[test]
 fn registering_a_reserved_node_key_as_a_kind_is_refused() {

@@ -487,7 +487,7 @@ pub trait EventSink {
     /// [`InteractionEngine::handle`]'s own drag-gesture arm/continue/clear
     /// (see [`crate::drag::GestureDrag`]'s own doc) reported `event`,
     /// carrying an already wire-shaped
-    /// [`crate::semantic::DragGestureWireEvent`] rather than a
+    /// [`crate::drag::DragGestureWireEvent`] rather than a
     /// [`quadraui::UiEvent`]: `quadraui::UiEvent` has no variant for a
     /// generic draggable/drop-target gesture over an arbitrary leaf.
     ///
@@ -1314,11 +1314,10 @@ impl InteractionEngine {
         *self.drag_roles.borrow_mut() = drag_roles;
     }
 
-    /// This engine's own per-widget state store — a binding's `render`
-    /// passes this to [`crate::host::resolve_tree_cursor`] (right before
-    /// painting a `Tree`) so the cursor [`Self::handle`]'s `KeyPressed`
-    /// routing moved via [`crate::host::apply_tree_nav_key`] is what
-    /// actually gets painted.
+    /// This engine's own store of container state — a split's ratio, a
+    /// `Scroll`'s offset — which [`Self::handle`] writes and
+    /// [`crate::host::resolve_layout_node`] reads back right before a
+    /// binding's `render` paints.
     pub fn widget_state(&self) -> &RefCell<quadraui::WidgetStateStore> {
         &self.widget_state
     }
@@ -1945,10 +1944,8 @@ impl InteractionEngine {
     /// on a `Button` emits the normal
     /// [`quadraui::UiEvent::ButtonActivated`]; a click or focused key
     /// on a `Tree`/`List`/`DataTable`/`TabBar`/`TextDisplay`/`Checkbox`/…
-    /// leaf resolves through the same
-    /// [`crate::semantic::semantic_event_for_hit`]/
-    /// [`crate::semantic::focus_scoped_key_event`] pair
-    /// [`Self::handle`] uses for the main tree; typing/toggling a
+    /// leaf resolves through that widget's own `Interactive::handle`, the
+    /// same as in the main tree; typing/toggling a
     /// `"form"` field emits the normal `UiEvent::Form(leaf_id, ..)`
     /// event. Tab/Shift-Tab cycle among the subtree's own stops and
     /// never leave the popover (see [`Self::tab_stops`]'s own doc for
@@ -8613,7 +8610,7 @@ mod tests {
 
     /// A minimal [`AppLogic`] painting a single `quadraui::SplitTree` node
     /// (via [`paint_layout`], not [`draw_bands`] — `SplitTree` is a
-    /// `LayoutNode` shape, not one of the six fixed slots), for the
+    /// `LayoutNode` shape, not a widget kind), for the
     /// divider-drag coverage below.
     struct SplitTreeLogic {
         tree: quadraui::SplitTree,

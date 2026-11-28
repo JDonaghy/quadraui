@@ -254,8 +254,8 @@ impl std::error::Error for DecodeError {}
 /// [`DecodeError::Borrow`] whose path is `what` — the shared tail every
 /// per-kind decoder in this crate (`wire::decode_layout_node`, ...) reduces to once it has a
 /// concrete type and a `serde::Deserializer` in hand. Public so a binding
-/// crate with its own fixed-slot descriptor types (`quadraui-ffi`'s
-/// `qui_<kind>_insert` family) can decode straight into them with the same
+/// crate with its own descriptor types (`quadraui-ffi`'s `qui_push_event`)
+/// can decode straight into them with the same
 /// error shape every decoder in this module already uses, instead of
 /// calling `serde_json`/`serde` directly and inventing its own.
 pub fn decode_value<'de, T, D>(what: &str, deserializer: D) -> Result<T, DecodeError>
