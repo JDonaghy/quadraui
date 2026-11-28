@@ -1,14 +1,14 @@
 //! Backend-agnostic [`Form`] demo showcasing `FieldKind::ComboBox`
-//! routed through `FormController`.
+//! hosted in a [`ScrolledForm`].
 //!
-//! `Form`/`FormController` paint only the compact one-row field (live
-//! text + a chevron); the open, filtered dropdown is this app's own
-//! popup overlay, mirroring `FieldKind::ColorPicker`'s contract. This
-//! demo's `render` is the reference implementation for that overlay: it
-//! paints the `ComboBox` itself over the field `FormController` already
-//! rendered, and the box's own dropdown popup lands above the frame.
+//! The form paints only the compact one-row field (live text + a
+//! chevron); the open, filtered dropdown is this app's own popup
+//! overlay, mirroring `FieldKind::ColorPicker`'s contract. This demo's
+//! `render` is the reference implementation for that overlay: it paints
+//! the `ComboBox` itself over the field the form already rendered, and
+//! the box's own dropdown popup lands above the frame.
 //!
-//! `FormController` forwards every key straight into the embedded
+//! The form forwards every key straight into the embedded
 //! combo box and translates the result into one of the four
 //! `FormEvent::ComboBox*` events — this app never decodes a key
 //! itself, it only *applies* the resulting event per `ComboBox`'s
@@ -23,21 +23,19 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, ComboBox, FieldKind, Form, FormController, FormControllerAction,
-    FormEvent, FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ComboBox, FieldKind, Form, FormEvent, FormField, FormState, Handled,
+    Key, NamedKey, Reaction, Rect, ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct FormComboBoxApp {
-    fc: FormController,
+    form_state: FormState,
     combo: ComboBox,
     last_action: String,
 }
 
 impl FormComboBoxApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("fruit-form".into());
-        fc.set_has_focus(true);
         let combo = ComboBox::new(
             WidgetId::new("fruit-combo"),
             vec![
@@ -48,13 +46,11 @@ impl FormComboBoxApp {
                 "Cranberry".into(),
             ],
         );
-        let mut app = Self {
-            fc,
+        Self {
+            form_state: FormState::default(),
             combo,
             last_action: "—".into(),
-        };
-        app.fc.set_form(app.build_form());
-        app
+        }
     }
 
     fn build_form(&self) -> Form {
@@ -100,13 +96,14 @@ impl FormComboBoxApp {
     }
 
     /// The combo box field's own on-screen row, resolved through
-    /// [`FormController::field_rect`] rather than assumed — this demo's
+    /// [`quadraui::ScrolledFormLayout::field_rect`] rather than assumed — this demo's
     /// `Form` happens to have exactly one field, but the lookup is the
     /// same one a multi-field form needs.
     fn field_bounds(&self, backend: &dyn Backend) -> Rect {
         let form_rect = Self::form_rect(backend);
-        self.fc
-            .field_rect(WidgetId::new("fruit"), backend, form_rect)
+        ScrolledForm::new(self.build_form())
+            .layout_at(&self.form_state, backend, form_rect)
+            .field_rect(&WidgetId::new("fruit"))
             .unwrap_or(form_rect)
     }
 
@@ -145,7 +142,7 @@ impl AppLogic for FormComboBoxApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
 
         if self.combo.open {
             // The box paints its field over the form's own row; its open
@@ -171,11 +168,10 @@ impl AppLogic for FormComboBoxApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(fe)) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(fe) => {
                 match fe {
                     FormEvent::ComboBoxTextChanged { value, .. } => {
                         self.combo.text = value.clone();
@@ -201,12 +197,9 @@ impl AppLogic for FormComboBoxApp {
                         self.last_action = format!("{other:?}");
                     }
                 }
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

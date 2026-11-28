@@ -123,7 +123,7 @@ pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
 /// traditional-direction behavior exactly: wheel-down (positive raw
 /// `dy`) becomes negative `delta.y`, i.e. "not up", so compose
 /// widgets (`Sidebar`, `Chat`,
-/// `FormController`) scroll the view toward later content.
+/// `ScrolledForm`) scroll the view toward later content.
 ///
 /// `natural_scroll = true` flips the sign again — content follows the
 /// gesture, matching touchscreen/trackpad "natural scrolling"

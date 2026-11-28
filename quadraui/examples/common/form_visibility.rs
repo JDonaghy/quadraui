@@ -1,8 +1,9 @@
-//! Backend-agnostic Form demo showcasing `FormController::set_visibility`:
-//! declarative `visible_when` / `enabled_when` conditions
-//! (`quadraui::visibility`) drive which fields are shown and which are
-//! enabled, re-evaluated automatically on every `FormController::set_form`
-//! call — no app-side rebuild of the field list per keystroke.
+//! Backend-agnostic Form demo showcasing declarative visibility:
+//! `visible_when` / `enabled_when` conditions (`quadraui::visibility`),
+//! declared once, drive which fields are shown and which are enabled.
+//! `build_form` runs `apply_visibility` against the latest field values
+//! every time it builds the form — no app-side rebuild of the field list
+//! per keystroke.
 //!
 //! Single [`AppLogic`] impl drives both the TUI runner and the GTK
 //! runner. The thin shells in `examples/{tui,gtk}_form_visibility.rs` are
@@ -17,12 +18,11 @@
 //! - Toggle `agree`: "I agree to the terms"
 //! - Button `submit`: "Submit" — rendered with `disabled: true` (muted
 //!   style, see `tui::form::draw_field_button`) whenever `agree` is off
-//!   (`enabled_when: agree == true`). `FormController`'s click routing
-//!   still emits `FormEvent::ButtonClicked` for a disabled field (the
-//!   same posture a disabled toolbar button takes — see
-//!   `form_controller`'s `click_toolbar_disabled_button_still_emits_toolbar_button_clicked`
-//!   test), so `handle` below checks `self.agree` itself before honoring
-//!   the click, rather than relying on the framework to swallow it.
+//!   (`enabled_when: agree == true`). The form's click routing still
+//!   emits `FormEvent::ButtonClicked` for a disabled field (the same
+//!   posture a disabled toolbar button takes), so `handle` below checks
+//!   `self.agree` itself before honoring the click, rather than relying
+//!   on the framework to swallow it.
 //!
 //! Controls:
 //! - mouse click on a toggle → flip value; visibility/enablement
@@ -37,13 +37,14 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     expr::{Expr, Value},
-    visibility::{FieldVisibility, FormVisibility},
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormEvent,
-    FormField, Handled, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    visibility::{apply_visibility, FieldVisibility, FormVisibility},
+    AppLogic, Backend, Color, FieldKind, Form, FormEvent, FormField, FormState, Handled, Reaction,
+    Rect, ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormVisibilityApp {
-    fc: FormController,
+    form_state: FormState,
+    visibility: FormVisibility,
     ship: bool,
     address: String,
     agree: bool,
@@ -54,9 +55,6 @@ pub struct FormVisibilityApp {
 
 impl FormVisibilityApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("checkout".into());
-        fc.set_has_focus(true);
-
         let mut rules = FormVisibility::default();
         rules.fields.insert(
             "address".to_string(),
@@ -78,26 +76,19 @@ impl FormVisibilityApp {
                 )),
             },
         );
-        // Declared once, up front: `fc.set_form` re-evaluates this same
+        // Declared once, up front: `build_form` re-evaluates this same
         // `FormVisibility` against whatever `self.ship`/`self.agree` are
-        // at the time, on every call — see `compose::form_controller`'s
-        // "Declarative visibility" doc section.
-        fc.set_visibility(rules);
-
-        let mut app = Self {
-            fc,
+        // at the time, on every call.
+        Self {
+            form_state: FormState::default(),
+            visibility: rules,
             ship: false,
             address: String::new(),
             agree: false,
             submit_count: 0,
             focused: Some(WidgetId::new("ship")),
             last_action: "—".into(),
-        };
-        // Seed the controller's cached form immediately: the runner's
-        // first paint happens before any `UiEvent` reaches `handle`, so
-        // without this the first frame would render an empty form area.
-        app.fc.set_form(app.build_form());
-        app
+        }
     }
 
     fn build_form(&self) -> Form {
@@ -157,9 +148,8 @@ impl FormVisibilityApp {
                 label: StyledText::plain("Submit"),
                 kind: FieldKind::Button,
                 hint: StyledText::default(),
-                // Always built as enabled: `FormController::set_form`
-                // runs `apply_visibility` right after this, which writes
-                // the real value from `enabled_when`.
+                // Always built as enabled: `apply_visibility` below
+                // writes the real value from `enabled_when`.
                 disabled: false,
                 validation: None,
                 label_position: None,
@@ -172,7 +162,7 @@ impl FormVisibilityApp {
             },
         ];
 
-        Form {
+        let mut form = Form {
             id: WidgetId::new("checkout-form"),
             fields,
             focused_field: self.focused,
@@ -184,7 +174,9 @@ impl FormVisibilityApp {
             control_width: Default::default(),
             min_control_width: None,
             spacing: Default::default(),
-        }
+        };
+        apply_visibility(&mut form, &self.visibility);
+        form
     }
 
     fn form_rect(backend: &dyn Backend) -> Rect {
@@ -234,7 +226,7 @@ impl AppLogic for FormVisibilityApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
@@ -255,11 +247,10 @@ impl AppLogic for FormVisibilityApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(fe)) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(fe) => {
                 match fe {
                     FormEvent::ToggleChanged { ref id, value } if id.as_str() == "ship" => {
                         self.ship = value;
@@ -274,7 +265,7 @@ impl AppLogic for FormVisibilityApp {
                         self.last_action = format!("address = {:?}", self.address);
                     }
                     FormEvent::ButtonClicked { ref id } if id.as_str() == "submit" => {
-                        // `FormController` routes the click regardless of
+                        // The form routes the click regardless of
                         // `disabled` (same posture a disabled toolbar
                         // button takes); it is this app's job to honor
                         // `enabled_when`'s outcome, which it already knows
@@ -294,12 +285,9 @@ impl AppLogic for FormVisibilityApp {
                         self.last_action = format!("{fe:?}");
                     }
                 }
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

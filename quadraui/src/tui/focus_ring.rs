@@ -9,7 +9,7 @@
 //! through underneath the ring.
 //!
 //! A one-row-tall `rect` (e.g. a `Form` `ButtonRow`/`ToggleGroup` item —
-//! see `compose::form_controller`'s "Item-level keyboard focus" doc
+//! see `primitives::form::contract`'s "Item-level keyboard focus" doc
 //! section) has no interior left for side walls once a top border is
 //! drawn, so the box would consume the entire row and erase its label.
 //! [`draw_focus_ring`] special-cases that height with an underline

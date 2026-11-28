@@ -293,11 +293,62 @@ pub fn validate(form: &mut Form, rules: &FormRules) {
     }
 }
 
+/// Append a trailing `" *"` span, in `marker_fg` when given, to the label
+/// of every field `rules` declares [`Validator::Required`] for, so every
+/// painter shows a required-field marker by rendering `label.spans` as
+/// given. Inert when `rules.fields` is empty.
+pub fn mark_required(form: &mut Form, rules: &FormRules, marker_fg: Option<crate::Color>) {
+    if rules.fields.is_empty() {
+        return;
+    }
+    for field in &mut form.fields {
+        let is_required = rules
+            .fields
+            .get(field.id.as_str())
+            .is_some_and(|rules| rules.iter().any(|rule| rule.check == Validator::Required));
+        if is_required {
+            let marker = match marker_fg {
+                Some(fg) => crate::types::StyledSpan::with_fg(" *", fg),
+                None => crate::types::StyledSpan::plain(" *"),
+            };
+            field.label.spans.push(marker);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::form::FormField;
     use crate::types::{StyledText, WidgetId};
+
+    #[test]
+    fn mark_required_appends_a_marker_to_required_fields_only() {
+        let mut form = form_with(vec![text_field("name", ""), text_field("note", "")]);
+        let mut rules = FormRules::default();
+        rules.fields.insert(
+            "name".to_string(),
+            vec![Rule {
+                check: Validator::Required,
+                message: "Required".to_string(),
+                severity: Severity::Error,
+            }],
+        );
+        let fg = crate::Color::rgb(200, 0, 0);
+        mark_required(&mut form, &rules, Some(fg));
+        let name = &form.fields[0].label.spans;
+        assert_eq!(name.last().map(|s| s.text.as_str()), Some(" *"));
+        assert_eq!(name.last().and_then(|s| s.fg), Some(fg));
+        assert_eq!(form.fields[1].label.spans.len(), 1, "no rule, no marker");
+    }
+
+    #[test]
+    fn mark_required_is_inert_without_rules() {
+        let mut form = form_with(vec![text_field("name", "")]);
+        let before = form.clone();
+        mark_required(&mut form, &FormRules::default(), None);
+        assert_eq!(form, before);
+    }
 
     fn text_field(id: &str, value: &str) -> FormField {
         FormField {

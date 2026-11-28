@@ -1,13 +1,13 @@
 //! Backend-agnostic [`Form`] demo showcasing `FieldKind::Dropdown`
-//! routed through `FormController`.
+//! hosted in a [`ScrolledForm`].
 //!
 //! Unlike `FieldKind::ComboBox` (whose open/filtered popup is drawn by
 //! the *app*, via `Backend::draw_combo_box` — see
 //! `examples/common/form_combo_box.rs`), a `Dropdown`'s popup is drawn
 //! by the TUI backend itself the moment the field is focused: this
-//! app's `render` is just `FormController::render`, nothing extra.
+//! app's `render` is just `ScrolledForm::draw`, nothing extra.
 //!
-//! `FormController` claims `Up`/`Down` on a focused, enabled `Dropdown`
+//! The form claims `Up`/`Down` on a focused, enabled `Dropdown`
 //! and emits `FormEvent::DropdownChanged` immediately on every move —
 //! there's no separate open/commit step, so this app applies the new
 //! `selected_idx` as soon as the event arrives.
@@ -18,13 +18,13 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormEvent,
-    FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormEvent, FormField, FormState, Handled, Key,
+    NamedKey, Reaction, Rect, ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct FormDropdownApp {
-    fc: FormController,
+    form_state: FormState,
     options: Vec<String>,
     selected_idx: usize,
     last_action: String,
@@ -32,10 +32,8 @@ pub struct FormDropdownApp {
 
 impl FormDropdownApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("theme-form".into());
-        fc.set_has_focus(true);
-        let mut app = Self {
-            fc,
+        Self {
+            form_state: FormState::default(),
             options: vec![
                 "One Dark".into(),
                 "Solarized Light".into(),
@@ -43,9 +41,7 @@ impl FormDropdownApp {
             ],
             selected_idx: 0,
             last_action: "—".into(),
-        };
-        app.fc.set_form(app.build_form());
-        app
+        }
     }
 
     fn build_form(&self) -> Form {
@@ -131,7 +127,7 @@ impl AppLogic for FormDropdownApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
@@ -145,26 +141,19 @@ impl AppLogic for FormDropdownApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(FormEvent::DropdownChanged {
-                selected_idx,
-                ..
-            })) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(FormEvent::DropdownChanged { selected_idx, .. }) => {
                 self.selected_idx = selected_idx;
                 self.last_action = format!("selected {}", self.options[selected_idx]);
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::FormAction(other)) => {
+            Handled::Event(other) => {
                 self.last_action = format!("{other:?}");
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

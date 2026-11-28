@@ -11,7 +11,7 @@
 //! and call [`SidebarPanelBody::render`]. It owns no interaction state
 //! of its own: scrolling, search-query editing, and body-widget
 //! selection stay with whatever controller already manages the body
-//! (a `TreeView`, `FormController`, [`crate::Sidebar`], a raw
+//! (a `TreeView`, a [`crate::ScrolledForm`], [`crate::Sidebar`], a raw
 //! `TreeView`, …).
 //!
 //! The panel is a widget-contract [`crate::primitive::Primitive`]
@@ -50,7 +50,7 @@
 //!   for tab content, so a host can share one widget between a
 //!   bottom-panel tab and a sidebar panel if it wants to. `BackendWidget`
 //!   carries a `Send + 'static` bound, so a body that only *borrows* the
-//!   host's app state for one frame (a `FormController`
+//!   host's app state for one frame (a form's state
 //!   behind `Rc<RefCell<_>>`, anything tied to a `!Send` engine) can't
 //!   implement it — [`SidebarPanelBody::render_with`] takes the body as
 //!   an unbounded closure instead, for exactly that case.
@@ -293,7 +293,7 @@ impl SidebarPanelBody {
     /// bound exists so *owned* content can live inside `ShellAdapter`
     /// (`BottomPanelConfig`) and cross into the runner thread. A body that only *borrows* the
     /// host's app state for one frame — `Rc<RefCell<_>>`-backed
-    /// controllers like `FormController`, or anything
+    /// state like a form's, or anything
     /// tied to a `!Send` engine — can never satisfy it. Use
     /// [`Self::render_with`] instead; it paints the identical
     /// background/chrome/body/gutter sequence but takes the body as a
@@ -310,7 +310,7 @@ impl SidebarPanelBody {
     /// Same paint sequence as [`Self::render`] — background, then
     /// chrome, then the body — but takes `body` as a borrowed closure
     /// instead of a `&dyn BackendWidget`, so it can close over
-    /// non-`'static`, non-`Send` state (a `&FormController`, an
+    /// non-`'static`, non-`Send` state (a `&FormState`, an
     /// `Rc<RefCell<Engine>>` borrow, …) that [`BackendWidget`]'s
     /// `Send + 'static` supertrait would otherwise shut out. `body` is
     /// called exactly once, with `layout.body_rect`.

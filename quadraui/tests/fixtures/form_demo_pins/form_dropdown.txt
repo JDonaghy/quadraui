@@ -1,0 +1,196 @@
+=== initial
+| Theme One Dark ▾                                                                                   |
+|│ One Dark                                                                                         │|
+|│ Solarized Light                                                                                  │|
+|│ Gruvbox                                                                                          │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| theme=One Dark | —                                                                   up / down / q |
+0: 0-15 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 16-16 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 17-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-19 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 20-84 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 85-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== down
+| Theme Solarized Light ▾                                                                            |
+|│ One Dark                                                                                         │|
+|│ Solarized Light                                                                                  │|
+|│ Gruvbox                                                                                          │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| theme=Solarized Light | selected Solarized Light                                     up / down / q |
+0: 0-22 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 23-23 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 24-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-49 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 50-84 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 85-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== down_again
+| Theme Gruvbox ▾                                                                                    |
+|│ One Dark                                                                                         │|
+|│ Solarized Light                                                                                  │|
+|│ Gruvbox                                                                                          │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| theme=Gruvbox | selected Gruvbox                                                     up / down / q |
+0: 0-14 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-15 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 16-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-33 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 34-84 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 85-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== up
+| Theme Solarized Light ▾                                                                            |
+|│ One Dark                                                                                         │|
+|│ Solarized Light                                                                                  │|
+|│ Gruvbox                                                                                          │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| theme=Solarized Light | selected Solarized Light                                     up / down / q |
+0: 0-22 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 23-23 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 24-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(50, 60, 90), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-49 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 50-84 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 85-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };

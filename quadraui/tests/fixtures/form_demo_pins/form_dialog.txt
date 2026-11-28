@@ -1,0 +1,441 @@
+=== initial
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [Milestone name                   ]│                         |
+|                         │ Description [Optional                         ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-53 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 54-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-47 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 48-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== name_typed
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [Optional                         ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-41 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 42-42 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 43-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-47 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 48-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== description_typed
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== on_cancel
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(20, 22, 30), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== on_create
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(20, 22, 30), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== wrapped_to_name
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(20, 22, 30), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== backtab_to_create
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(20, 22, 30), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== created
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │Created: "M1" / "first"                         │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(20, 22, 30), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+=== clicked_description
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                         ╭─ Create milestone ─────────────────────────────╮                         |
+|                         │                                                │                         |
+|                         │Created: "M1" / "first"                         │                         |
+|                         │ Name        [M1                               ]│                         |
+|                         │ Description [first                            ]│                         |
+|                         │             [                                 ]│                         |
+|                         │             [                                 ]│                         |
+|                         │                            Cancel      Create  │                         |
+|                         ╰────────────────────────────────────────────────╯                         |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+0: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-26 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 27-44 CellStyle { fg: Rgb(180, 200, 230), bg: Rgb(28, 32, 44), modifiers: NONE }; 45-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 45-45 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 46-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 40-72 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 73-73 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-25 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 26-63 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(28, 32, 44), modifiers: NONE }; 64-73 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 74-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-24 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 25-74 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(28, 32, 44), modifiers: NONE }; 75-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };

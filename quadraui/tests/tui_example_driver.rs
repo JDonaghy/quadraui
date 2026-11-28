@@ -5824,10 +5824,10 @@ fn form_groups_click_toggle_flips_rendered_value() {
 
 // ─── FormScrollApp: keyboard editing of Form text fields ──────────────────
 //
-// `FormController::handle_inner` decodes `KeyPressed`/`CharTyped` for the
+// `Form`'s own `Interactive` decodes `KeyPressed`/`CharTyped` for the
 // focused field itself. `FormScrollApp::handle` (unlike `FormGroupsApp`
 // above) has no key-decoding arm of its own for its `name` field — every
-// assertion below exercises `fc.handle_cached` alone turning raw keystrokes
+// assertion below exercises `ScrolledForm::handle_event` alone turning raw keystrokes
 // into `FormEvent::TextInputChanged`/`TextInputCommitted`/`FocusChanged`,
 // proving "no app-side key plumbing is needed to edit a field".
 
@@ -5940,7 +5940,7 @@ fn form_scroll_typing_q_while_editing_name_does_not_quit() {
 // ─── FormVisibilityApp: declarative visible_when / enabled_when ───────────
 //
 // `FormVisibilityApp` declares its `FormVisibility` rules exactly once, in
-// `new()`; every assertion below exercises `FormController::set_form`
+// `new()`; every assertion below exercises `build_form`'s `apply_visibility`
 // re-evaluating those same rules against the latest `ship`/`agree` values
 // on each event — there is no app-side rebuild of the field list per
 // keystroke (see `quadraui::visibility`'s module doc).
@@ -5993,7 +5993,7 @@ fn form_visibility_agree_toggle_enables_submit_render_and_click_action() {
         .expect("Submit cell should be inside the screen")
         .fg;
 
-    // FormController's click routing emits FormEvent::ButtonClicked
+    // The form's click routing emits FormEvent::ButtonClicked
     // regardless of `disabled` (the same posture a disabled toolbar
     // button takes) — this pins that the *app* declines to honor it
     // while enabled_when (agree == true) is false.
@@ -6210,11 +6210,11 @@ fn form_control_width_content_sizes_to_its_own_value() {
     );
 }
 
-// ─── FormComboBoxApp: FieldKind::ComboBox routed through FormController ──────
+// ─── FormComboBoxApp: FieldKind::ComboBox hosted in a ScrolledForm ───────────
 //
-// `FormController` forwards every key straight into the embedded
+// The form forwards every key straight into the embedded
 // `ComboBox` and translates its `ComboBoxEvent` into one of the four
-// `FormEvent::ComboBox*` events (see `compose::form_controller`'s
+// `FormEvent::ComboBox*` events (see `primitives::form::contract`'s
 // "ComboBox fields" doc section). The app only *applies* those events —
 // these tests exercise that routing, and the app's own dropdown-overlay
 // paint, end to end through the real example and the TUI renderer.
@@ -6403,14 +6403,14 @@ fn form_combo_box_q_quits_only_when_the_dropdown_is_closed() {
     );
 }
 
-// ─── FormDropdownApp: FieldKind::Dropdown routed through FormController ─────
+// ─── FormDropdownApp: FieldKind::Dropdown hosted in a ScrolledForm ──────────
 //
 // Unlike `FieldKind::ComboBox`, a `Dropdown`'s popup is drawn by the TUI
 // backend itself (`draw_form`) the instant the field is focused — there's
 // no app-owned overlay-draw call, and no open/close toggle: `focused` is
 // the only visibility signal, and `Up`/`Down` live-commit `selected_idx`
 // via `FormEvent::DropdownChanged` on every keystroke (see
-// `compose::form_controller`'s "Dropdown fields" doc section).
+// `primitives::form::contract`'s "Dropdown fields" doc section).
 
 #[test]
 fn form_dropdown_shows_the_popup_for_the_initially_focused_field() {
@@ -6483,11 +6483,11 @@ fn form_dropdown_q_quits() {
     );
 }
 
-// ─── FormDatePickerApp: FieldKind::DatePicker routed through FormController ──
+// ─── FormDatePickerApp: FieldKind::DatePicker hosted in a ScrolledForm ───────
 //
-// `FormController::handle_cached` forwards arrow/page keys straight into the
+// The form forwards arrow/page keys straight into the
 // embedded `DatePicker`'s own `navigate` method (see
-// `compose::form_controller`'s "Date picker fields" doc section) rather than
+// `primitives::form::contract`'s "Date picker fields" doc section) rather than
 // decoding them itself — these tests exercise that routing end to end
 // through the real example app and TUI renderer.
 
@@ -6515,7 +6515,7 @@ fn form_date_picker_right_arrow_scrubs_the_focused_day_without_confirming() {
     assert!(
         after.contains("2024-03-16"),
         "Right should move the picker's in-flight focused day forward by \
-         one, rendered via FormController's date-edit overlay even though \
+         one, rendered via the FormState date-edit overlay even though \
          the app has not persisted anything yet:\n{after}"
     );
     assert!(

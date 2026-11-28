@@ -1070,6 +1070,9 @@ struct DynWidgetClickOutcome {
     consumed: bool,
     /// Every `Reaction` already dispatched/resolved by this call.
     reaction: quadraui::Reaction,
+    /// The focus the widget asked for while handling the event, whatever
+    /// [`DispatchFocus`] it was dispatched under.
+    focus_request: Option<quadraui::FocusAddress>,
 }
 
 /// The pointer-click facts [`InteractionEngine::handle`] has already
@@ -1090,6 +1093,7 @@ impl Default for DynWidgetClickOutcome {
             event: None,
             consumed: false,
             reaction: quadraui::Reaction::Continue,
+            focus_request: None,
         }
     }
 }
@@ -2375,7 +2379,7 @@ impl InteractionEngine {
         } else {
             DispatchFocus::Popup
         };
-        let outcome = self.dyn_widget_dispatch_with_focus(
+        let mut outcome = self.dyn_widget_dispatch_with_focus(
             id,
             entry.widget.as_ref(),
             bounds,
@@ -2384,6 +2388,33 @@ impl InteractionEngine {
             sink,
             focus,
         )?;
+        // A Tab the overlay leaves unclaimed walks its own child stops
+        // from the one it names, as the runtime's focus tree does.
+        let next_stop = match (event, outcome.focus_request) {
+            (UiEvent::KeyPressed { key, modifiers, .. }, Some((_, Some(sub))))
+                if outcome.event.is_none() && !outcome.consumed =>
+            {
+                quadraui::focus::tab_step(key, modifiers).and_then(|delta| {
+                    quadraui::focus::step_child_stop(&entry.widget.focus(), sub, delta)
+                })
+            }
+            _ => None,
+        };
+        if let Some(next) = next_stop {
+            let walked = self.dyn_widget_dispatch_with_focus(
+                id,
+                entry.widget.as_ref(),
+                bounds,
+                DispatchInput::Routed(RoutedEvent::FocusIn(Some(next))),
+                backend,
+                sink,
+                focus,
+            )?;
+            outcome = DynWidgetClickOutcome {
+                reaction: outcome.reaction.merge(walked.reaction),
+                ..walked
+            };
+        }
         let mut reaction = outcome.reaction;
         match outcome.event {
             Some(resolved @ UiEvent::MessageDialogResolved(_)) => {
@@ -2957,7 +2988,10 @@ impl InteractionEngine {
             widget.handle(state, &routed, layout.as_ref(), &mut cx)
         });
 
-        let mut outcome = DynWidgetClickOutcome::default();
+        let mut outcome = DynWidgetClickOutcome {
+            focus_request: intents.focus_request,
+            ..DynWidgetClickOutcome::default()
+        };
         if let Some((focus_id, sub)) = intents
             .focus_request
             .filter(|_| focus == DispatchFocus::Tree)
