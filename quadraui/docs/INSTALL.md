@@ -87,8 +87,8 @@ pip picks between two wheels by the host's glibc:
 
 | Wheel | Hosts | `run_tui()` | `run_native()` |
 |---|---|---|---|
-| `manylinux_2_39` | glibc 2.39+: Ubuntu 24.04+, Fedora 40+, Debian 13+, Arch | yes | GTK window when the system GTK 4 (4.10+) runtime is installed |
-| `manylinux_2_17` | older glibc: Ubuntu 22.04, Debian 12 | yes | raises `UnsupportedError` (these distributions ship GTK older than 4.10) |
+| `manylinux_2_39` (x86_64 only) | glibc 2.39+: Ubuntu 24.04+, Fedora 40+, Debian 13+, Arch | yes | GTK window when the system GTK 4 (4.10+) runtime is installed |
+| `manylinux_2_17` (x86_64 only) | older glibc: Ubuntu 22.04, Debian 12 | yes | raises `UnsupportedError` (these distributions ship GTK older than 4.10) |
 
 The `manylinux_2_39` wheel carries two builds of the extension and links the **system** GTK
 libraries rather than bundling them, so GTK is a runtime package you install, not a build
@@ -103,9 +103,17 @@ sudo pacman -S gtk4            # Arch
 Without GTK, `import quadraui` and `run_tui()` still work, and `run_native()` raises
 `UnsupportedError` naming `libgtk-4.so.1` and the command above, so an app can catch it and
 fall back to `run_tui()`. `QUADRAUI_DISABLE_GTK=1` skips loading GTK in a process that never
-opens a window. The wheels workflow installs both wheels into clean `ubuntu:24.04`,
-`fedora:40`, `fedora:42` and `debian:12` containers, with and without GTK, on every PR that
-touches `quadraui-py`; the reasoning is in
+opens a window. Both wheels are x86_64 only; on aarch64 pip builds the sdist, which needs a
+Rust toolchain and is TUI-only by default. On aarch64, an older glibc or a source install,
+build the GTK backend
+yourself: with the GTK 4 `-dev`/`-devel` package and a Rust toolchain installed, run
+`MATURIN_PEP517_ARGS="--features gtk" pip install --no-binary quadraui quadraui`.
+
+On every PR that touches `quadraui-py`, the wheels workflow installs from a directory
+holding both wheels into clean containers: `ubuntu:24.04`, `fedora:40` and `fedora:42`
+with GTK (a window must paint), `ubuntu:24.04` and `fedora:42` without GTK (`run_native()`
+must raise naming `libgtk-4.so.1`), and `debian:12` (pip must pick the TUI-only wheel). The
+reasoning is in
 [`quadraui-py/docs/LINUX_NATIVE_WHEELS.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-py/docs/LINUX_NATIVE_WHEELS.md).
 
 ### macOS

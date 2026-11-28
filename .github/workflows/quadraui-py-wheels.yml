@@ -361,6 +361,10 @@ jobs:
             install: >-
               apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
               python3 python3-venv
+          - name: fedora-42 without gtk4
+            image: fedora:42
+            mode: missing-gtk
+            install: dnf install -y python3
           - name: debian-12 (glibc 2.36)
             image: debian:12
             mode: tui-only
