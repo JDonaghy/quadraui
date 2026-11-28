@@ -1734,11 +1734,11 @@ Declarative description of a `DataTable` widget.
 | `h_scroll` | `number` | no | Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI). |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
-| `items_window` | `ItemsWindow \| null` | no | The loaded slice's place in the real collection — see `crate::behaviour::row_window`. |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `min_total_width` | `number \| null` | no | Minimum total width for all columns. |
 | `rows` | `DataRow[]` | yes |  |
 | `scroll_offset` | `number` | no |  |
-| `scroll_px` | `number \| null` | no | Pixel-precise scroll position; wins over `scroll_offset` when set. |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
 | `selected_idx` | `number \| null` | no |  |
 | `show_scrollbar` | `boolean` | no | Show a vertical scrollbar when rows exceed the viewport. |
 | `sort` | `[number, SortDirection] \| null` | no | Which column is sorted, and in which direction. |
@@ -2818,10 +2818,10 @@ Declarative description of a `ListView` widget.
 | `has_focus` | `boolean` | no | Whether this list currently holds keyboard focus. |
 | `id` | `WidgetId` | yes |  |
 | `items` | `ListItem[]` | yes |  |
-| `items_window` | `ItemsWindow \| null` | no | The loaded slice's place in the real collection — see `crate::behaviour::row_window`. |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `max_content_width` | `number \| null` | no | Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text. |
 | `scroll_offset` | `number` | no |  |
-| `scroll_px` | `number \| null` | no | Pixel-precise scroll position; wins over `scroll_offset` when set. |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
 | `selected_idx` | `number` | yes |  |
 | `show_v_scrollbar` | `boolean` | no | When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there. |
 | `striped` | `boolean` | no | Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling. |
@@ -4123,7 +4123,7 @@ Declarative description of a `TextDisplay`.
 | `auto_scroll` | `boolean` | no | When true, backends auto-scroll to keep the latest line visible. |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
-| `items_window` | `ItemsWindow \| null` | no | The loaded slice's place in the real collection — see `crate::behaviour::row_window`. |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded lines sit in the real collection: when set, the payload holds lines `start..` of `total`, and `scroll_offset` and every line index in this widget's events are absolute indices into those `total` lines. |
 | `lines` | `TextDisplayLine[]` | yes |  |
 | `max_lines` | `number` | no | Maximum lines to retain in the ring buffer. |
 | `scroll_offset` | `number` | no | Index of the first visible line. |
@@ -4463,10 +4463,10 @@ Declarative description of a `TreeView` widget.
 | --- | --- | --- | --- |
 | `has_focus` | `boolean` | no | Whether this tree currently holds keyboard focus. |
 | `id` | `WidgetId` | yes |  |
-| `items_window` | `ItemsWindow \| null` | no | The loaded slice's place in the real collection — see `crate::behaviour::row_window`. |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `rows` | `TreeRow[]` | yes | Pre-flattened, pre-expanded rows in visual order. |
 | `scroll_offset` | `number` | no | How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1). |
-| `scroll_px` | `number \| null` | no | Pixel-precise scroll position; wins over `scroll_offset` when set. |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
 | `selected_path` | `number[] \| null` | no |  |
 | `selection_mode` | `SelectionMode` | yes |  |
 | `style` | `TreeStyle` | yes |  |
@@ -6955,9 +6955,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `count` | `number` | yes |  |
-| `id` | `WidgetId` | yes |  |
-| `start` | `number` | yes |  |
+| `count` | `number` | yes | How many rows to send from `start`. |
+| `id` | `WidgetId` | yes | The windowed widget asking for rows. |
+| `start` | `number` | yes | The absolute index of the first row to send, the next `items_window.start`. |
 
 <a id="wire-_uieventscroll"></a>
 #### `_UiEventScroll`

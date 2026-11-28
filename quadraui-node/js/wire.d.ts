@@ -457,11 +457,11 @@ export interface DataTable {
   h_scroll?: number; // Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
   has_focus?: boolean;
   id: WidgetId;
-  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
+  items_window?: ItemsWindow | null; // Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
   min_total_width?: number | null; // Minimum total width for all columns.
   rows: DataRow[];
   scroll_offset?: number;
-  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
+  scroll_px?: number | null; // Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
   selected_idx?: number | null;
   show_scrollbar?: boolean; // Show a vertical scrollbar when rows exceed the viewport.
   sort?: [number, SortDirection] | null; // Which column is sorted, and in which direction.
@@ -1139,10 +1139,10 @@ export interface ListView {
   has_focus?: boolean; // Whether this list currently holds keyboard focus.
   id: WidgetId;
   items: ListItem[];
-  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
+  items_window?: ItemsWindow | null; // Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
   max_content_width?: number | null; // Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
   scroll_offset?: number;
-  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
+  scroll_px?: number | null; // Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
   selected_idx: number;
   show_v_scrollbar?: boolean; // When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
   striped?: boolean; // Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
@@ -1933,7 +1933,7 @@ export interface TextDisplay {
   auto_scroll?: boolean; // When true, backends auto-scroll to keep the latest line visible.
   has_focus?: boolean;
   id: WidgetId;
-  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
+  items_window?: ItemsWindow | null; // Where the loaded lines sit in the real collection: when set, the payload holds lines `start..` of `total`, and `scroll_offset` and every line index in this widget's events are absolute indices into those `total` lines.
   lines: TextDisplayLine[];
   max_lines?: number; // Maximum lines to retain in the ring buffer.
   scroll_offset?: number; // Index of the first visible line.
@@ -2111,10 +2111,10 @@ export interface TreeTableNode {
 export interface TreeView {
   has_focus?: boolean; // Whether this tree currently holds keyboard focus.
   id: WidgetId;
-  items_window?: ItemsWindow | null; // The loaded slice's place in the real collection — see `crate::behaviour::row_window`.
+  items_window?: ItemsWindow | null; // Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
   rows: TreeRow[]; // Pre-flattened, pre-expanded rows in visual order.
   scroll_offset?: number; // How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
-  scroll_px?: number | null; // Pixel-precise scroll position; wins over `scroll_offset` when set.
+  scroll_px?: number | null; // Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
   selected_path?: number[] | null;
   selection_mode: SelectionMode;
   style: TreeStyle;
@@ -3469,9 +3469,9 @@ export interface _UiEventRadioGroupSelectionChanged {
 }
 
 export interface _UiEventRowsRequested {
-  count: number;
-  id: WidgetId;
-  start: number;
+  count: number; // How many rows to send from `start`.
+  id: WidgetId; // The windowed widget asking for rows.
+  start: number; // The absolute index of the first row to send, the next `items_window.start`.
 }
 
 export interface _UiEventScroll {
