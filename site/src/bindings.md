@@ -39,8 +39,7 @@ has the table.
   inside a handler (`app.stopLive()` throws there), so the counter's
   `quit()` defers `live.stop()` and `app.stopLive()` with `setImmediate`.
   An `App.quit()` safe to call from a handler is proposed.
-- **Node from npm.** `@quadraui/node` is first published with 0.12, and its
-  app and JSX entry points need #2801 to load from `node_modules`; until
+- **Node from npm.** `@quadraui/node` is first published with 0.12; until
   then Node apps run from a clone ([Node quick start](quick-start/node.md)).
 - **Text.** Python lets a span leave out `fg`/`bg`; the TypeScript type
   requires both (`null` for the theme's colour). Rust uses
