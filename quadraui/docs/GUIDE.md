@@ -20,6 +20,11 @@ input. Step 3 below also paints some widgets by hand at a `Rect` it
 computes itself. See "How a host paints, routes and tests a widget" in
 [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) for the whole host side.
 
+The Rust blocks in Steps 2 to 5 are consecutive pieces of one `src/main.rs` (Step
+5's test goes in a `#[cfg(test)]` module); put together in order they build and
+the test passes against this release. Each is marked `ignore` for rustdoc because
+no single piece compiles on its own.
+
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root
 exports — the two runner traits, the event/geometry types, and a
@@ -41,12 +46,12 @@ you write any code:
 | VS-Code-style chrome for free — activity bar, sidebar, title bar, status bar, bottom panel — and you fill in the *content* of each panel | [`ShellApp`] | `quadraui::tui::shell_runner::run_with_shell(app, config)` / the GTK equivalent | A window manager you configure, not one you build. |
 
 **This guide uses `AppLogic`.** Our two-pane app is simple enough that
-building the split ourselves is less code than configuring an
-`AppShell`. Reach for `ShellApp` when you find yourself manually
+building the split ourselves is less code than configuring a
+`ShellView`. Reach for `ShellApp` when you find yourself manually
 reimplementing an activity bar, a collapsible sidebar, or a bottom
-panel with tabs — `AppShell` (what `ShellApp` runs inside) already has
-all of that, and the `ShellView` / `AppShell` section of
-[`COMPOSE.md`](COMPOSE.md) shows how to fill its panels.
+panel with tabs — `ShellView` (what `ShellApp` runs inside) already has
+all of that, and the `ShellView` section of [`COMPOSE.md`](COMPOSE.md)
+shows how to fill its panels.
 
 Both traits' methods take a `&mut dyn Backend` — the same trait object
 either way, so switching from `AppLogic` to `ShellApp` later doesn't
@@ -77,7 +82,7 @@ instead.
 use std::cell::Cell;
 
 use quadraui::prelude::*;
-use quadraui::{DrawsPrimitives, FrameTree, TreeEvent}; // draw_dyn
+use quadraui::{DrawsPrimitives, FrameTree, TreeEvent}; // draw_primitive, draw_dyn
 
 struct TwoPane {
     split: Split,
@@ -166,12 +171,6 @@ split hands back.
 
 ## Step 3: rendering and input
 
-<!-- TODO(0.12 final pass): after W5 (#2968 ports Split/SplitTree onto the
-contract) and W9 (#2981 deletes draw_split/split_layout), replace the
-`backend.draw_split` call below with the contract way to get a split's pane
-rects (paint the Split as a widget and read its layout), and compile the
-sample against the release. The tree half already uses the contract. -->
-
 ```rust,ignore
 impl AppLogic for TwoPane {
     type AreaId = ();
@@ -180,8 +179,9 @@ impl AppLogic for TwoPane {
         let viewport = backend.viewport();
         let bounds = Rect::new(0.0, 0.0, viewport.width, viewport.height);
 
-        // Split gives us two rectangles; we decide what goes in each one.
-        let panes = backend.draw_split(bounds, &self.split);
+        // Painting the split draws its divider and returns its layout:
+        // two pane rectangles, and we decide what goes in each one.
+        let panes = backend.draw_primitive(bounds, &self.split);
         self.tree_rect.set(panes.first_bounds);
 
         backend.draw_dyn(panes.first_bounds, &self.tree_view(), &());
@@ -285,20 +285,20 @@ conformance) once your app grows past one screen.
   describes the widget, its layout and the events it emits.
   [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) covers writing your own
   widget and how a host paints, routes and tests one.
-- **`AppShell` / `ShellApp`**: if your app grows an activity bar, a
+- **`ShellView` / `ShellApp`**: if your app grows an activity bar, a
   resizable sidebar, or tabs, revisit Step 0. [`COMPOSE.md`](COMPOSE.md)
-  documents `AppShell` and the other controllers that coordinate several
-  widgets.
+  documents `ShellView` and the other compose-layer widgets that
+  coordinate several widgets.
 - **A second backend**: everything above is TUI-specific only in
   `main()`. Swap `quadraui::tui::run` for `quadraui::gtk::run` (behind
   the `gtk` feature) and the exact same `AppLogic` impl draws with
   Cairo/Pango instead of ratatui — that's the cross-backend portability
   commitment `CLAUDE.md` describes.
 - **Testing your own `Backend`-consuming code without a real backend**:
-  [`quadraui::testing::RecordingBackend`] is a fully-implemented
-  `Backend` for unit tests that need *some* backend to hand a function,
-  not a specific one's real rendering — see its doc for what it records
-  and what it deliberately leaves `unimplemented!()`.
+  [`quadraui::testing::RecordingBackend`] is a headless `Backend` for
+  unit tests that need *some* backend to hand a function, not a specific
+  one's real rendering — see its doc for what it records and which
+  platform services it leaves `unimplemented!()`.
 
 [`AppLogic`]: ../src/runner.rs
 [`ShellApp`]: ../src/shell.rs
