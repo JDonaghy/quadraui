@@ -575,10 +575,9 @@ const INLINE_LEAF_CASES: Array<{
     expected: [
       { FocusChanged: "ta:1" },
       null,
-      // The focusing click lands at column 0 (the default cursor position
-      // for a textarea with no explicit `cursor`), so Enter's inserted
-      // newline lands before "hi", not after it.
-      ["ta:1", { TextInputChanged: { id: "ta:1", value: "\nhi" } }],
+      // A textarea with no explicit `cursor` edits from the end of its
+      // value, so Enter's inserted newline lands after "hi".
+      ["ta:1", { TextInputChanged: { id: "ta:1", value: "hi\n" } }],
     ],
   },
 ];
@@ -621,6 +620,47 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
     }
   });
 }
+
+// A focused `text_input` edits through the core text state: Ctrl+Backspace
+// and Ctrl+Delete delete a word, Ctrl+Left jumps one, Home/End reach the
+// line's ends, and Ctrl+Z/Ctrl+Shift+Z undo and redo -- with the caret the
+// input's own state walked to, never one the app echoes back.
+test("text_input word, line-end and undo keys edit through the core state", () => {
+  const app = new QuiApp(40, 20);
+  const state = { value: "foo bar" };
+  app.setRender(() => ({ text_input: { id: "ti:1", lines: [state.value] } }));
+  app.screen();
+  app.setHandler((event: any) => {
+    const changed = event.Form?.[1]?.TextInputChanged;
+    if (changed) state.value = changed.value;
+  });
+  // Content starts two cells in (border + padding): x = 9 is column 7, the
+  // end of "foo bar".
+  app.pushEvent({ MouseDown: { button: "Left", position: { x: 9.0, y: 1.0 }, modifiers: {} } });
+  app.run(1);
+  const key = (named: string, modifiers: Record<string, boolean> = {}) => {
+    app.pushEvent({ KeyPressed: { key: { Named: named }, modifiers, repeat: false } });
+    app.run(1);
+  };
+  key("Backspace", { ctrl: true });
+  assert.equal(state.value, "foo ");
+  key("Home");
+  app.pushEvent({ CharTyped: "X" });
+  app.run(1);
+  assert.equal(state.value, "Xfoo ");
+  key("End");
+  key("Left", { ctrl: true });
+  key("Delete", { ctrl: true });
+  assert.equal(state.value, " ");
+  app.pushEvent({ KeyPressed: { key: { Char: "z" }, modifiers: { ctrl: true }, repeat: false } });
+  app.run(1);
+  assert.equal(state.value, "Xfoo ");
+  app.pushEvent({
+    KeyPressed: { key: { Char: "z" }, modifiers: { ctrl: true, shift: true }, repeat: false },
+  });
+  app.run(1);
+  assert.equal(state.value, " ");
+});
 
 // The four chrome-bar kinds below each have their own click-routing
 // mechanism (`ExtraPaint::paint_chrome`'s `chrome_hits` for

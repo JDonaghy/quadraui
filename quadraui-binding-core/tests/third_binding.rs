@@ -2,8 +2,10 @@
 //! public API, with no `quadraui-py`/`quadraui-node` code in the loop: the
 //! shape a third binding (a Lua host binding `binding-core` directly)
 //! takes. Each frame decodes a wire layout tree, resolves the engine's
-//! stored widget state into it, paints it through a `TuiBackend`, and
-//! routes input back through the engine to a host-side event sink.
+//! stored widget state into it, paints it through a `TuiBackend` with the
+//! engine's per-widget state installed
+//! (`InteractionEngine::paint_with_widget_state`), and routes input back
+//! through the engine to a host-side event sink.
 //!
 //! Overlays take the same route: a `show_overlay(kind, descriptor, anchor)`
 //! call decodes through `decode_overlay` and opens through
@@ -97,7 +99,9 @@ impl AppLogic for HostApp {
             &windows,
         );
         let mut hits = Vec::new();
-        paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+        self.engine.paint_with_widget_state(|| {
+            paint_layout_windowed(backend, area, &node, &mut hits, &windows)
+        });
         render_overlays(&self.engine, backend, hits);
     }
 
@@ -271,4 +275,67 @@ fn a_host_opens_a_context_menu_and_receives_its_activation() {
         "{:?}",
         driver.app().sink.borrow().events
     );
+}
+
+/// A text input's caret is the widget's own state: a host that never
+/// echoes a cursor back still sees the caret painted where `End` moved it,
+/// and typing lands there, with nothing text-specific in the host.
+#[test]
+fn a_host_text_input_paints_its_caret_from_the_engines_widget_state() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "name", "text_input": {"id": "name", "lines": ["hello"], "has_focus": true}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 24, 8);
+    driver.render();
+    let (x, y) = driver.find("hello").expect("the input paints its value");
+    let (x, y) = (x as u16, y as u16);
+    let caret_at = |driver: &TuiDriver<HostApp>, col: u16| {
+        driver.style_at(x + col, y) != driver.style_at(x + col + 1, y)
+            && driver.style_at(x + col, y) != driver.style_at(x + col - 1, y)
+    };
+    driver.click(f32::from(x), f32::from(y));
+    driver.press_named(quadraui::NamedKey::End);
+    driver.render();
+    assert!(caret_at(&driver, 5), "the caret paints after the last char");
+    assert!(
+        !caret_at(&driver, 0),
+        "the descriptor's column-0 caret is not painted"
+    );
+
+    driver.type_char('!');
+    assert!(
+        driver
+            .app()
+            .sink
+            .borrow()
+            .events
+            .iter()
+            .any(|event| matches!(
+                event,
+                UiEvent::Form(_, FormEvent::TextInputChanged { value, .. }) if value == "hello!"
+            )),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+}
+
+/// The engine's widget state is installed only for the paint pass: the
+/// thread's own store is back in place once it returns.
+#[test]
+fn paint_with_widget_state_restores_the_threads_own_store() {
+    let id = WidgetId::new("outside");
+    quadraui::with_widget_states(|states| {
+        states.state_for(id, &quadraui::Checkbox::new(id));
+    });
+    let engine = InteractionEngine::new();
+    let seen_inside = engine
+        .paint_with_widget_state(|| quadraui::with_widget_states(|states| states.contains(&id)));
+    assert!(
+        !seen_inside,
+        "the engine's own store is the one painted from"
+    );
+    assert!(quadraui::with_widget_states(|states| states.contains(&id)));
+    quadraui::with_widget_states(|states| states.remove(&id));
 }

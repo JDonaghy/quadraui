@@ -1,9 +1,7 @@
 //! Framework-owned store of per-widget runtime state, keyed by a widget's
-//! own stable [`WidgetId`] — the pattern [`crate::text_input::TextEditorCache`]
-//! already uses for a standalone `TextInput`'s cursor/selection/undo
-//! session, generalised so a future widget kind can reuse it without
-//! growing its own `RefCell<HashMap<WidgetId, _>>` and its own pruning
-//! logic in [`crate::engine::InteractionEngine`].
+//! own stable [`WidgetId`], so a widget kind can keep state across frames
+//! without growing its own `RefCell<HashMap<WidgetId, _>>` and its own
+//! pruning logic in [`crate::engine::InteractionEngine`].
 //!
 //! [`WidgetState`] is type-erased (`Box<dyn Any>` per entry) because this
 //! crate's one instance (wired into [`crate::engine::InteractionEngine`])
@@ -41,7 +39,7 @@
 //! State for an id is dropped once that id goes a full frame without being
 //! resolved — i.e. isn't part of what got rendered. Tracking this needs no
 //! knowledge of *which* ids a frame painted (unlike
-//! [`crate::engine::InteractionEngine::set_hits`]'s `TextEditorCache`
+//! [`crate::engine::InteractionEngine::set_hits`]'s generic-widget state
 //! pruning, which walks the frame's `PaintedHit`s by hand): every
 //! [`WidgetState::resolve`] call marks its id "seen this frame", and
 //! [`WidgetState::gc`] — called once per frame, after the paint pass that
@@ -49,9 +47,8 @@
 //! that wasn't marked, then clears the mark on every entry that survives so
 //! the next frame starts the same check over. A widget that stops
 //! rendering (removed, navigated away from, …) is therefore collected
-//! after exactly one frame of absence, the same lifetime
-//! `TextEditorCache`'s own per-frame `retain` already gives a standalone
-//! `TextInput`.
+//! after exactly one frame of absence, the same lifetime the engine's
+//! per-frame `retain` gives a generic widget's state.
 
 use std::any::Any;
 use std::cell::RefCell;

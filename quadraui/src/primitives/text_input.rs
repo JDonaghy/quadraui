@@ -48,9 +48,10 @@
 //! `TextEditor` `Deref`s to the wrapped `TextInput`, so `.lines`,
 //! `.cursor_line`, `.layout(..)` and `backend.draw_text_input(rect, &ed)`
 //! all work directly on it. Every content-mutating op records the
-//! pre-mutation snapshot into a bounded [`crate::undo::UndoStack`]; pure
-//! cursor movement does not, so moving the cursor between two edits
-//! doesn't split them into separate undo steps.
+//! pre-mutation snapshot into a bounded [`text_edit::EditHistory`], the
+//! undo history every editable text widget shares; pure cursor movement
+//! does not, so moving the cursor between two edits doesn't split them
+//! into separate undo steps.
 //!
 //! Selection is therefore readable via [`TextEditor::selection_range`] /
 //! [`TextEditor::selected_text`] rather than off a bare `&TextInput`. No
@@ -67,7 +68,6 @@ use crate::behaviour::text_edit;
 use crate::event::{Point, Rect};
 use crate::style::Style;
 use crate::types::WidgetId;
-use crate::undo::UndoStack;
 use crate::Handled;
 
 /// Multi-line text input. Text is stored as one entry per line — empty
@@ -221,32 +221,12 @@ impl Default for TextInput {
 /// core every editable text widget shares lives — see that module's doc.
 pub use crate::behaviour::text_edit::EditOp;
 
-/// Snapshot of the editable state — everything [`EditOp::Undo`]/
-/// [`EditOp::Redo`] restore. Deliberately excludes `id`/`placeholder`/
-/// `scroll_offset`/`scroll_col`/`has_focus`: those aren't buffer content,
-/// so undoing an edit shouldn't also snap the viewport back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TextInputSnapshot {
-    lines: Vec<String>,
-    cursor_line: usize,
-    cursor_col: usize,
-    selection_anchor: Option<(usize, usize)>,
-}
-
-/// Bounded so a long-lived editor (e.g. a persistent chat input, or a
-/// large commit-message buffer) doesn't accumulate unbounded history —
-/// each undo step clones the full `lines: Vec<String>`. 200 steps is
-/// generous for interactive editing while keeping worst-case memory
-/// proportional to a small constant times the buffer size, not to how
-/// long the widget has been alive.
-const UNDO_HISTORY_LIMIT: usize = 200;
-
 /// An editing session over a [`TextInput`] — handles insert / delete /
 /// cursor-movement / selection / undo behaviour.
 ///
 /// `TextEditor` owns the two pieces of live editing state that
 /// deliberately are **not** `TextInput` fields: the selection anchor, and
-/// a bounded [`crate::undo::UndoStack`] of buffer snapshots. See this
+/// a bounded [`text_edit::EditHistory`] of buffer snapshots. See this
 /// module's *Why the editing state is a wrapper* section for why — the
 /// short version is that adding **any** field to `TextInput`, `pub` or
 /// private, breaks external exhaustive `TextInput { .. }` struct literals
@@ -271,7 +251,7 @@ pub struct TextEditor {
     /// The wrapped paint-time state — hand this to a rasteriser.
     pub input: TextInput,
     selection_anchor: Option<(usize, usize)>,
-    undo_stack: UndoStack<TextInputSnapshot>,
+    history: text_edit::EditHistory,
 }
 
 impl TextEditor {
@@ -281,7 +261,7 @@ impl TextEditor {
         Self {
             input,
             selection_anchor: None,
-            undo_stack: UndoStack::with_limit(UNDO_HISTORY_LIMIT),
+            history: text_edit::EditHistory::default(),
         }
     }
 
@@ -321,81 +301,25 @@ impl TextEditor {
         Some(text_edit::text_in_range(&self.input.lines, start, end))
     }
 
-    fn snapshot(&self) -> TextInputSnapshot {
-        TextInputSnapshot {
-            lines: self.input.lines.clone(),
-            cursor_line: self.input.cursor_line,
-            cursor_col: self.input.cursor_col,
-            selection_anchor: self.selection_anchor,
-        }
-    }
-
-    fn restore(&mut self, snap: TextInputSnapshot) {
-        self.input.lines = snap.lines;
-        self.input.cursor_line = snap.cursor_line;
-        self.input.cursor_col = snap.cursor_col;
-        self.selection_anchor = snap.selection_anchor;
-    }
-
-    /// A borrowed [`text_edit::EditView`] over this editor's buffer,
-    /// caret and selection anchor — the single mutator every [`EditOp`]
-    /// runs through, shared with [`crate::TextField`] and
-    /// [`crate::CommandLine`] (those two via
-    /// [`text_edit::apply_flat_edit_op`]).
-    fn view(&mut self) -> text_edit::EditView<'_> {
-        text_edit::EditView {
-            lines: &mut self.input.lines,
-            cursor_line: &mut self.input.cursor_line,
-            cursor_col: &mut self.input.cursor_col,
-            anchor: &mut self.selection_anchor,
-        }
-    }
-
     /// Apply one [`EditOp`], mutating the wrapped [`TextInput`] in place.
     /// Returns whether anything actually changed (useful for deciding
     /// whether a redraw is needed).
     ///
-    /// `Undo`/`Redo` are served from this editor's history. Every other
-    /// op goes to [`text_edit::EditView::apply`], with a pre-mutation
-    /// snapshot recorded first for the content-mutating ones
-    /// ([`text_edit::mutates_content`]) so undo can restore them. Pure
-    /// cursor/selection movement is not recorded, so moving the cursor
+    /// Runs through this editor's own [`text_edit::EditHistory`], the
+    /// undo/redo every editable text widget shares: `Undo`/`Redo` restore
+    /// from it, and content-changing ops record a step in it. Pure
+    /// cursor/selection movement records nothing, so moving the cursor
     /// between two edits doesn't split them into separate undo steps.
     pub fn apply(&mut self, op: EditOp) -> bool {
-        match op {
-            EditOp::Undo => {
-                let current = self.snapshot();
-                match self.undo_stack.undo(current) {
-                    Some(prev) => {
-                        self.restore(prev);
-                        true
-                    }
-                    None => false,
-                }
-            }
-            EditOp::Redo => {
-                let current = self.snapshot();
-                match self.undo_stack.redo(current) {
-                    Some(next) => {
-                        self.restore(next);
-                        true
-                    }
-                    None => false,
-                }
-            }
-            other => {
-                if text_edit::mutates_content(&other) {
-                    let snap = self.snapshot();
-                    let changed = self.view().apply(&other);
-                    if changed {
-                        self.undo_stack.record(snap);
-                    }
-                    changed
-                } else {
-                    self.view().apply(&other)
-                }
-            }
-        }
+        self.history.apply(
+            &mut text_edit::EditView {
+                lines: &mut self.input.lines,
+                cursor_line: &mut self.input.cursor_line,
+                cursor_col: &mut self.input.cursor_col,
+                anchor: &mut self.selection_anchor,
+            },
+            &op,
+        )
     }
 }
 
@@ -1233,9 +1157,25 @@ pub struct TextInputPrimitiveLayout {
     pub layout: TextInputLayout,
     /// One character's advance, in the laying-out backend's units.
     pub char_width: f32,
+    /// One text row's height, in the laying-out backend's units.
+    pub line_height: f32,
+    /// Whether the input was laid out on a cell grid.
+    pub units: crate::primitive::Units,
 }
 
 impl TextInputPrimitiveLayout {
+    /// `ti` laid out into the same area with the same metrics — how a
+    /// painter places a caret that has moved since this layout resolved.
+    pub fn relayout(&self, ti: &TextInput) -> TextInputLayout {
+        match self.units {
+            crate::primitive::Units::Cells => cell_layout(ti, self.area),
+            _ => ti.layout(
+                self.area,
+                TextInputMeasure::new(self.line_height, self.char_width),
+            ),
+        }
+    }
+
     /// Classify an absolute point against this input — see
     /// [`TextInputLayout::hit_test`].
     pub fn hit_test(&self, x: f32, y: f32) -> TextInputHit {
@@ -1319,13 +1259,14 @@ impl crate::primitive::Primitive for TextInput {
             crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
             _ => rect,
         };
-        let (layout, char_width) = match ctx.units() {
-            crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
+        let (layout, char_width, line_height) = match ctx.units() {
+            crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0, 1.0),
             _ => {
                 let advance = ctx.text_width("0", self.font_role()).max(1.0);
                 (
                     self.layout(rect, TextInputMeasure::new(ctx.line_height, advance)),
                     advance,
+                    ctx.line_height,
                 )
             }
         };
@@ -1333,11 +1274,14 @@ impl crate::primitive::Primitive for TextInput {
             area: rect,
             layout,
             char_width,
+            line_height,
+            units: ctx.units(),
         }
     }
 
     /// The shared pixel painter — the same one every pixel backend's
-    /// `draw_text_input` routes through.
+    /// `draw_text_input` routes through — with the caret this input's
+    /// own editing has walked to ([`TextInputState`]).
     fn paint(
         &self,
         layout: &TextInputPrimitiveLayout,
@@ -1346,13 +1290,15 @@ impl crate::primitive::Primitive for TextInput {
     ) {
         let theme = env.theme();
         let style = env.style();
+        let (painted, painted_layout) =
+            self.with_painted_caret(layout, env.widget_state_as::<TextInputState>());
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            native_surface_paint::paint(self, &layout.layout, surface, theme, style);
+            native_surface_paint::paint(&painted, &painted_layout, surface, theme, style);
         }
         #[cfg(not(any(
             feature = "gtk",
@@ -1360,7 +1306,7 @@ impl crate::primitive::Primitive for TextInput {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme, style);
+            let _ = (painted, painted_layout, surface, theme, style);
         }
     }
 
@@ -1378,7 +1324,35 @@ impl crate::primitive::Primitive for TextInput {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, &layout.layout, cells, theme);
+        let (painted, painted_layout) =
+            self.with_painted_caret(layout, env.widget_state_as::<TextInputState>());
+        cell_paint::paint(&painted, &painted_layout, cells, theme);
+    }
+}
+
+impl TextInput {
+    /// This input and its layout with the caret `state` has walked to,
+    /// for a painter — the descriptor's own caret and `layout` unchanged
+    /// when `state` has not moved it.
+    fn with_painted_caret<'a>(
+        &'a self,
+        layout: &'a TextInputPrimitiveLayout,
+        state: Option<&TextInputState>,
+    ) -> (
+        std::borrow::Cow<'a, TextInput>,
+        std::borrow::Cow<'a, TextInputLayout>,
+    ) {
+        use std::borrow::Cow;
+        match state.and_then(|s| s.caret) {
+            Some((line, col)) if (line, col) != (self.cursor_line, self.cursor_col) => {
+                let mut painted = self.clone();
+                painted.cursor_line = line;
+                painted.cursor_col = col;
+                let relaid = layout.relayout(&painted);
+                (Cow::Owned(painted), Cow::Owned(relaid))
+            }
+            _ => (Cow::Borrowed(self), Cow::Borrowed(&layout.layout)),
+        }
     }
 }
 
@@ -1592,6 +1566,59 @@ mod interactive_tests {
             ctrl: true,
             ..Default::default()
         }
+    }
+
+    /// The caret a painter shows is the one this widget's own editing
+    /// walked to, not the descriptor's stale `cursor_col`, so a binding
+    /// needs no second paint pass to show where typing will land.
+    #[test]
+    fn the_painted_caret_follows_the_widget_state() {
+        let ti = sample(&["hello"]);
+        let layout = layout_of(&ti);
+        let state = TextInputState {
+            caret: Some((0, 4)),
+            ..Default::default()
+        };
+        let (painted, painted_layout) = ti.with_painted_caret(&layout, Some(&state));
+        assert_eq!((painted.cursor_line, painted.cursor_col), (0, 4));
+        let at = |l: &TextInputLayout| l.cursor_bounds.map(|r| r.x);
+        assert_eq!(
+            at(&painted_layout)
+                .zip(at(&layout.layout))
+                .map(|(a, b)| a - b),
+            Some(4.0)
+        );
+        let (unmoved, unmoved_layout) = ti.with_painted_caret(&layout, None);
+        assert_eq!(unmoved.cursor_col, 0);
+        assert_eq!(*unmoved_layout, layout.layout);
+    }
+
+    #[test]
+    fn ctrl_z_undoes_a_typed_edit_through_the_widget_state() {
+        let ti = sample(&["hi"]);
+        let layout = layout_of(&ti);
+        let mut state = TextInputState {
+            caret: Some((0, 2)),
+            ..Default::default()
+        };
+        let mut host = MockHost::default();
+        let typed = {
+            let mut cx = EventCx::new(ti.id, &mut host);
+            ti.handle(&mut state, &RoutedEvent::Text("!".into()), &layout, &mut cx)
+        };
+        assert_eq!(
+            typed,
+            Handled::Event(TextInputAction::Changed("hi!".into()))
+        );
+        let echoed = sample(&["hi!"]);
+        let undone = {
+            let mut cx = EventCx::new(echoed.id, &mut host);
+            echoed.handle(&mut state, &key(Key::Char('z'), ctrl()), &layout, &mut cx)
+        };
+        assert_eq!(
+            undone,
+            Handled::Event(TextInputAction::Changed("hi".into()))
+        );
     }
 
     #[test]
@@ -2611,6 +2638,7 @@ mod tests {
         // Regression test for the unbounded-memory concern: recording
         // more than `UNDO_HISTORY_LIMIT` steps evicts the oldest ones
         // instead of growing forever.
+        use crate::behaviour::text_edit::UNDO_HISTORY_LIMIT;
         let mut ti = editor(vec![""]);
         for _ in 0..UNDO_HISTORY_LIMIT + 50 {
             ti.apply(EditOp::InsertChar('a'));

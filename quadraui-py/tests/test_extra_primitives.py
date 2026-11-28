@@ -434,10 +434,9 @@ _INLINE_LEAF_CASES = [
         [
             {"FocusChanged": "ta:1"},
             None,
-            # The focusing click lands at column 0 (the default cursor
-            # position for a textarea with no explicit `cursor`), so
-            # Enter's inserted newline lands before "hi", not after it.
-            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "\nhi"}}),
+            # A textarea with no explicit `cursor` edits from the end of
+            # its value, so Enter's inserted newline lands after "hi".
+            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "hi\n"}}),
         ],
         id="textarea",
     ),
@@ -3076,13 +3075,11 @@ def test_text_input_ctrl_letter_passes_through_unclaimed():
     assert received[0]["KeyPressed"]["key"] == {"Char": "s"}
 
 
-def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
-    # `Left`/`Right`/etc move the cursor but never change the text, so
-    # `apply_text_input_edit` reports no change and the caller falls back
-    # to the plain `KeyPressed` -- the cursor move itself is still cached
-    # (exercised by the backspace-after-typing test above landing in the
-    # right place), but nothing `Form`-shaped reaches Python for it.
-    app, _state, received = _focused_text_input_app("hi")
+def test_text_input_arrow_key_moves_the_caret_and_reaches_no_handler():
+    # `Left` moves the caret and changes no text: the input's own state
+    # claims it, so nothing reaches Python for it, and the next typed
+    # character lands at the moved caret.
+    app, state, received = _focused_text_input_app("hi", click_x=4.0)
 
     app.push_event(
         {
@@ -3094,10 +3091,35 @@ def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
         }
     )
     app.run(1)
+    assert received == []
 
-    assert len(received) == 1
-    assert "KeyPressed" in received[0]
-    assert received[0]["KeyPressed"]["key"] == {"Named": "Left"}
+    app.push_event({"CharTyped": "!"})
+    app.run(1)
+    assert state["value"] == "h!i"
+
+
+def test_text_input_ctrl_word_and_home_keys_edit_through_the_core_state():
+    # Ctrl+Backspace/Ctrl+Delete delete a word, Ctrl+Left jumps one, and
+    # Home/End move to the line's ends -- the same keys every core text
+    # widget answers, with the caret the input's own state walked to.
+    app, state, received = _focused_text_input_app("foo bar", click_x=9.0)
+
+    def key(named, **modifiers):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": named}, "modifiers": modifiers, "repeat": False}}
+        )
+        app.run(1)
+
+    key("Backspace", ctrl=True)
+    assert state["value"] == "foo "
+    key("Home")
+    app.push_event({"CharTyped": "X"})
+    app.run(1)
+    assert state["value"] == "Xfoo "
+    key("End")
+    key("Left", ctrl=True)
+    key("Delete", ctrl=True)
+    assert state["value"] == " "
 
 
 def test_text_input_click_places_the_caret_at_the_clicked_column():
@@ -3167,10 +3189,10 @@ def test_text_input_shift_left_selects_then_backspace_deletes_the_selection():
 def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
     # `Ctrl+A` on a focused `text_input` resolves to this primitive's own
     # built-in `EditOp::SelectAll`, not a literal "a". `SelectAll` changes
-    # no text itself, so -- same as a pure cursor move -- it produces no
-    # `Form` event and falls through as the raw `KeyPressed`; what matters
-    # is that the selection it leaves behind in the cache makes the next
-    # typed character replace the whole buffer instead of being inserted
+    # no text itself, so -- same as a pure cursor move -- the input claims
+    # it and nothing reaches Python; what matters is that the selection it
+    # leaves behind in the input's own state makes the next typed
+    # character replace the whole buffer instead of being inserted
     # alongside it.
     app, state, received = _focused_text_input_app("hello", click_x=7.0)
 
@@ -3184,10 +3206,8 @@ def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
         }
     )
     app.run(1)
-    assert len(received) == 1
-    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+    assert received == []
 
-    received.clear()
     app.push_event({"CharTyped": "X"})
     app.run(1)
 
@@ -3199,15 +3219,13 @@ def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
 
 
 def test_text_input_cmd_a_selects_all_on_macos_chord():
-    # Regression (#1910 fix-round review): on macOS the SelectAll/Undo/Redo
-    # chords arrive with `cmd`, not `ctrl` (`ns_modifier_flags_to_quadraui`
-    # maps a real Cmd into `Modifiers { cmd: true, ctrl: false, .. }`).
-    # `edit_op_from_binding` compares against `parse_binding`'s hard-coded
-    # Ctrl-primary chord, so it must treat Ctrl and Cmd as one interchangeable
-    # primary modifier -- otherwise Cmd+A/Z/Shift+Z silently stop working on
-    # macOS. Mirror of the `ctrl` SelectAll test above with `cmd` in place of
-    # `ctrl`: the SelectAll must still fire, so the next typed char replaces
-    # the whole buffer rather than inserting alongside it.
+    # On macOS the SelectAll/Undo/Redo chords arrive with `cmd`, not `ctrl`
+    # (`ns_modifier_flags_to_quadraui` maps a real Cmd into
+    # `Modifiers { cmd: true, ctrl: false, .. }`), so Ctrl and Cmd must be
+    # one interchangeable primary modifier. Mirror of the `ctrl` SelectAll
+    # test above with `cmd` in place of `ctrl`: the SelectAll must still
+    # fire, so the next typed char replaces the whole buffer rather than
+    # inserting alongside it.
     app, state, received = _focused_text_input_app("hello", click_x=7.0)
 
     app.push_event(
@@ -3220,10 +3238,8 @@ def test_text_input_cmd_a_selects_all_on_macos_chord():
         }
     )
     app.run(1)
-    assert len(received) == 1
-    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+    assert received == []
 
-    received.clear()
     app.push_event({"CharTyped": "X"})
     app.run(1)
 
@@ -3236,10 +3252,8 @@ def test_text_input_cmd_a_selects_all_on_macos_chord():
 
 def test_text_input_ctrl_z_undoes_then_ctrl_shift_z_redoes():
     # `Ctrl+Z`/`Ctrl+Shift+Z` resolve to this primitive's own built-in
-    # `EditOp::Undo`/`Redo`, served from the cached `TextEditor`'s own
-    # history -- which now survives across calls instead of starting
-    # empty every keystroke (see `apply_text_input_edit`'s doc for why a
-    # fresh `TextEditor` per call could never undo anything).
+    # `EditOp::Undo`/`Redo`, served from the undo history in the input's
+    # own state, which survives across keystrokes.
     app, state, received = _focused_text_input_app("hi", click_x=4.0)
 
     app.push_event({"CharTyped": "!"})
@@ -3331,10 +3345,10 @@ def test_clicking_a_switch_inside_a_layout_tree_leaf_uses_the_leaf_id():
     assert received[1]["SwitchToggled"] == {"widget": "leaf:1", "value": True}
 
 
-def test_text_input_enter_commits_current_value():
-    # `Enter` on a focused `text_input` always commits -- this primitive has
-    # no multiline mode to special-case -- carrying whatever value the
-    # current descriptor snapshot holds.
+def test_text_input_enter_inserts_a_newline():
+    # A `text_input` is the multi-line core `TextInput`: Enter inserts a
+    # line break at the caret rather than committing. A single-line entry
+    # that commits on Enter is `text_field` (or `password`).
     app = QuiApp(40, 20)
     app.set_render(lambda: {"text_input": {"id": "ti:1", "lines": ["hello"]}})
     app.screen()
@@ -3357,7 +3371,31 @@ def test_text_input_enter_commits_current_value():
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ti:1"
-    assert form_event == {"TextInputCommitted": {"id": "ti:1", "value": "hello"}}
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "\nhello"}}
+
+
+def test_text_field_leaf_edits_and_commits_through_the_core_state():
+    # A `text_field` leaf edits like every core single-line field: the
+    # focusing click parks the caret at the clicked column (the start),
+    # typed text lands there, and Enter commits the current value.
+    app = QuiApp(40, 20)
+    app.set_render(lambda: {"text_field": {"id": "tf:1", "value": "hi"}})
+    app.screen()
+    focus = _click_events(app, 1.0, 0.0)
+    assert focus[0]["FocusChanged"] == "tf:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event({"CharTyped": "!"})
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(2)
+
+    assert [tuple(e["Form"]) for e in received] == [
+        ("tf:1", {"TextInputChanged": {"id": "tf:1", "value": "!hi"}}),
+        ("tf:1", {"TextInputCommitted": {"id": "tf:1", "value": "hi"}}),
+    ]
 
 
 def test_switch_enter_toggles_once_the_engines_focus_tree_names_it_focused():

@@ -3738,23 +3738,22 @@ mod tests {
         assert!(rects[1].x > rects[0].x);
     }
 
-    /// Every one of the additive (`LeafDescriptor::Extra`) leaf kinds
-    /// overriding `ExtraPaint::natural_size` sizes to its own content
+    /// Every one of the text-entry leaf kinds sizes to its own content
     /// under a non-`Stretch` `Align`, exactly like a `Button`/
     /// `TextDisplay`/`TabBar` fixed leaf already does in
-    /// [`align_every_value_at_two_terminal_sizes`] above — the behaviour
-    /// this trait method exists to extend past the six fixed slots.
+    /// [`align_every_value_at_two_terminal_sizes`] above, through its own
+    /// `Primitive::measure`.
     /// `Align::Start`/`Center`/`End` each size the child to its reported
     /// natural height (well under the tall `area` below, so "non-
     /// stretched" is unambiguous) and position it at the top, middle,
     /// or bottom of the container respectively; only `Align::Stretch`
     /// (checked once up front) still fills the whole extent.
     #[test]
-    fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
-        use crate::extra_paint::{PasswordInput, TextArea};
-        use quadraui::{TextField, TextInput};
+    fn align_sizes_every_text_entry_leaf_kind_to_its_own_natural_height() {
+        use quadraui::primitive::DynWidget;
+        use quadraui::{PasswordInput, TextArea, TextField, TextInput};
 
-        let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
+        let kinds: Vec<(&'static str, Rc<dyn DynWidget>)> = vec![
             (
                 "text_input",
                 Rc::new(TextInput::new(WidgetId::new("text_input"))),
@@ -3765,38 +3764,36 @@ mod tests {
             ),
             (
                 "password",
-                Rc::new(PasswordInput {
-                    inner: TextInput::new(WidgetId::new("password")),
-                    mask_char: '*',
-                }),
+                Rc::new(PasswordInput::new(WidgetId::new("password"))),
             ),
             (
                 "textarea",
-                Rc::new(TextArea {
-                    inner: TextInput::new(WidgetId::new("textarea")),
-                    visible_rows: 3,
-                }),
+                Rc::new(TextArea::new(WidgetId::new("textarea"))),
             ),
         ];
-        assert!(
-            kinds.len() >= 4,
-            "this test's own point is coverage across every self-sizing extra leaf kind"
-        );
 
         let height = 24.0_f32;
         let area = Rect::new(0.0, 0.0, 80.0, height);
-        for (name, extra) in kinds {
-            let child = || {
-                vec![LayoutChild::new(LayoutNode::Leaf(LayoutLeaf {
+        for (name, widget) in kinds {
+            let leaf = || {
+                LayoutNode::Leaf(LayoutLeaf {
                     id: name.to_string(),
-                    descriptor: LeafDescriptor::Extra(extra.clone()),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: name,
+                        widget: widget.clone(),
+                    },
                     scroll_px: None,
-                }))]
+                })
             };
+            let child = || vec![LayoutChild::new(leaf())];
 
-            let natural = extra.natural_size(&mut tui()).height.unwrap_or_else(|| {
-                panic!("{name} should report a natural height for this test to be meaningful")
-            });
+            let mut backend = tui();
+            let line_height = backend.line_height();
+            let natural = natural_size(&mut backend, &leaf(), line_height)
+                .height
+                .unwrap_or_else(|| {
+                    panic!("{name} should report a natural height for this test to be meaningful")
+                });
             assert!(
                 natural < height,
                 "{name}'s natural height {natural} should be well under the container's \

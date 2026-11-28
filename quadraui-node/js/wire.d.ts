@@ -1369,13 +1369,14 @@ export interface PanelDefinitionDescriptor {
   tooltip?: string | null;
 }
 
-/** `PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`. */
+/** A standalone masked single-line input. The value is held in plaintext; only painting masks it. */
 export interface PasswordInput {
-  cursor?: number | null;
-  has_focus?: boolean;
+  cursor?: number | null; // The caret as a byte offset into `value`; `None` puts it at the end.
+  has_focus?: boolean; // Whether to paint the focused wash and caret.
   id: WidgetId;
-  mask_char?: string;
-  value?: string;
+  mask_char?: string; // The glyph painted for each character of the value.
+  placeholder?: string; // Shown dimmed while the value is empty.
+  value?: string; // The plaintext value.
 }
 
 /** What a path picker reports: a confirmed path or a dismissal, plus the browsing changes the host applies onto the picker's `PathPickerState` (the pickers' `apply` does it). */
@@ -1956,14 +1957,14 @@ export interface TerminalScrollbar {
   width?: number | null; // Scrollbar width in surface-native units (pixels on a pixel backend, cells on TUI).
 }
 
-/** `TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset. */
+/** A standalone multi-line input over a flat `value` (lines separated by `'/n'`). */
 export interface TextArea {
-  cursor?: number | null;
-  has_focus?: boolean;
+  cursor?: number | null; // The caret as a byte offset into `value`; `None` puts it at the end.
+  has_focus?: boolean; // Whether to paint the focused wash.
   id: WidgetId;
-  placeholder?: string | null;
-  value?: string;
-  visible_rows?: number;
+  placeholder?: string; // Shown dimmed while the value is empty.
+  value?: string; // The text, lines separated by `'/n'`.
+  visible_rows?: number; // Rows tall — the viewport height, independent of how many lines the value holds.
 }
 
 /** Declarative description of a `TextDisplay`. */
@@ -2811,7 +2812,7 @@ export interface _HitDetailDataTableRow {
   row: number;
 }
 
-/** Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant. */
+/** Landed on an additive primitive's interactive region (currently `quadraui::Form`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant. */
 export interface _HitDetailExtraBody {
   kind: "extra_body";
 }

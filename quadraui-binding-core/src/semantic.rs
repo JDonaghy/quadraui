@@ -5,14 +5,12 @@
 //! payload itself.
 
 use quadraui::{
-    CanvasEvent, DataTableEvent, EditOp, Key, ListViewEvent, Modifiers, MouseButton, NamedKey,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    CanvasEvent, DataTableEvent, Key, ListViewEvent, Modifiers, MouseButton, NamedKey, TabBar,
+    TabBarEvent, TextDisplayEvent, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, PasswordInput, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
-use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
@@ -98,46 +96,6 @@ fn tab_bar_key_event(
     tab_count: usize,
 ) -> Option<UiEvent> {
     TabBar::handle_focus_key(focused_index, tab_count, key).map(|ev| UiEvent::TabBar(id, ev))
-}
-
-/// Resolves a key focused on a standalone [`PasswordInput`] leaf by
-/// forwarding to [`text_input_key_event`] on its plaintext `inner` —
-/// identical typing/cursor/selection/commit semantics to a bare
-/// standalone `TextInput`, the only difference being what
-/// [`PasswordInput::as_widget`](crate::extra_paint::PasswordInput::as_widget)
-/// paints, which never sees this function at all.
-pub(crate) fn password_key_event(
-    id: WidgetId,
-    password: &PasswordInput,
-    key: &Key,
-    modifiers: Modifiers,
-    text_editors: &TextEditorCache,
-) -> Option<UiEvent> {
-    text_input_key_event(id, &password.inner, key, modifiers, text_editors)
-}
-
-/// Resolves a key focused on a standalone [`TextArea`] leaf: every key
-/// [`EditOp::from_key`] maps goes straight through
-/// [`apply_text_input_edit`] on its `inner` [`TextInput`] — unlike
-/// [`password_key_event`]'s forward to [`text_input_key_event`], Enter is
-/// never special-cased into a commit here, so `EditOp::from_key`'s own
-/// `Enter -> InsertChar('\n')` mapping is what gives this leaf a real
-/// newline on Enter, the one behavioural difference
-/// `FieldKind::TextArea`'s own doc draws against `FieldKind::TextInput`.
-/// A Ctrl/Cmd chord is left unclaimed (`None`) so an app-level accelerator
-/// still fires, same guard [`text_input_key_event`] applies.
-pub(crate) fn text_area_key_event(
-    id: WidgetId,
-    text_area: &TextArea,
-    key: &Key,
-    modifiers: Modifiers,
-    text_editors: &TextEditorCache,
-) -> Option<UiEvent> {
-    if modifiers.ctrl || modifiers.cmd {
-        return None;
-    }
-    let op = EditOp::from_key(key, modifiers)?;
-    apply_text_input_edit(id, &text_area.inner, op, text_editors)
 }
 
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
@@ -415,7 +373,6 @@ pub fn focus_scoped_key_event(
     raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
-    text_editors: &TextEditorCache,
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
         key: raw_key.clone(),
@@ -483,18 +440,6 @@ pub fn focus_scoped_key_event(
                 total_rows,
                 ..
             } if *id == focused => data_table_key_event(*id, raw_key, *selected_idx, *total_rows),
-            PaintedHit::Extra { id, extra, .. } if *id == focused => {
-                if let Some(text_input) = extra_as::<TextInput>(extra) {
-                    return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
-                }
-                if let Some(password) = extra_as::<PasswordInput>(extra) {
-                    return password_key_event(*id, password, raw_key, modifiers, text_editors);
-                }
-                if let Some(text_area) = extra_as::<TextArea>(extra) {
-                    return text_area_key_event(*id, text_area, raw_key, modifiers, text_editors);
-                }
-                None
-            }
             _ => None,
         })
         .unwrap_or(fallback)
@@ -717,13 +662,11 @@ mod tests {
     fn arrow_right_on_a_focused_tab_bar_moves_focus() {
         let id = WidgetId::new("tabs");
         let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
-        let text_editors = TextEditorCache::default();
         let event = focus_scoped_key_event(
             id,
             &Key::Named(NamedKey::Right),
             Modifiers::default(),
             &hit_map,
-            &text_editors,
         );
         assert_eq!(
             event,
@@ -739,13 +682,11 @@ mod tests {
     fn enter_on_a_focused_tab_bar_activates_it() {
         let id = WidgetId::new("tabs");
         let hit_map = vec![tab_bar_hit(id, Some(2), 3)];
-        let text_editors = TextEditorCache::default();
         let event = focus_scoped_key_event(
             id,
             &Key::Named(NamedKey::Enter),
             Modifiers::default(),
             &hit_map,
-            &text_editors,
         );
         assert_eq!(
             event,
@@ -760,13 +701,11 @@ mod tests {
     fn unrecognized_key_on_a_focused_tab_bar_falls_back_to_key_pressed() {
         let id = WidgetId::new("tabs");
         let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
-        let text_editors = TextEditorCache::default();
         let event = focus_scoped_key_event(
             id,
             &Key::Named(NamedKey::Escape),
             Modifiers::default(),
             &hit_map,
-            &text_editors,
         );
         assert_eq!(
             event,

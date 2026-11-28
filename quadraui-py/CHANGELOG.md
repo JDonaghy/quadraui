@@ -68,6 +68,28 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- The four text-entry leaf kinds, `"text_input"`, `"text_field"`,
+  `"password"` and `"textarea"`, are the core widgets painted and edited
+  through their own state (#2977/#2978), with these visible changes:
+  - `"text_input"` is the multi-line core `TextInput`: Enter inserts a line
+    break (a `TextInputChanged` with the `\n`) instead of reporting
+    `{"TextInputCommitted": ...}`. Use `"text_field"` or `"password"` for a field that
+    commits on Enter.
+  - A key that only moves the caret or the selection (arrows, Home/End,
+    Shift-selection, Ctrl/Cmd+A) is claimed by a focused `"text_input"`,
+    and no longer reaches the handler as a raw `KeyPressed`.
+  - `"text_field"` now edits: typing, paste, click-to-caret, the clear
+    button and Enter (a `{"TextInputCommitted": ...}`) all work, where it used to paint only.
+  - `"textarea"` with no `"cursor"` edits from the end of its value
+    (it used to start at column 0), and a click on a `"textarea"` or
+    `"password"` leaf focuses it without moving the caret. Both now answer
+    Ctrl/Cmd+A (select all) and Ctrl/Cmd+C/X (copy and cut, as
+    `TextCopied`; a password swallows them), which used to pass through.
+  - `"password"` accepts a `"placeholder"`, and a `"textarea"`'s
+    `"placeholder"` is a string, no longer nullable; `wire.pyi` follows.
+  - A `"text_input"` leaf's natural height counts its border rows, so
+    under a non-`stretch` `align` it sizes to the box it paints.
+
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
   on a row reports `{"List": (id, {"SelectionChanged": {"idx": n}})}` and
@@ -230,6 +252,16 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   | `dismiss_rich_text_popup()` | `dismiss_overlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
 ### Fixed
+
+- A focused `"text_input"` answers Ctrl+Left/Right (word jump),
+  Ctrl+Backspace/Delete (word delete) and Ctrl+Home/End, which used to
+  pass through unhandled, and Ctrl/Cmd+Z/Ctrl/Cmd+Shift+Z undo and redo in
+  every text-entry leaf, not only `"text_input"`.
+- The caret of a text-entry leaf, and of a `"command_line"` or
+  `"palette"` query, paints where the widget's own editing put it, not
+  where the descriptor's `cursor` says.
+- A text-entry leaf inside a layout dialog or popover keeps editing:
+  keys and typed text reach it through the same routing as the main tree.
 
 - A layout-tree render resolves stored cursor, scroll, split-ratio and
   active-tab state through binding-core's shared resolvers, the same ones

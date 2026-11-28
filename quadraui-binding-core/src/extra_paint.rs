@@ -10,10 +10,9 @@
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
-use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText, TextField,
-    TextInput, TreeTableController, TreeTableNodeData, WidgetId,
+    Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText,
+    TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -24,14 +23,12 @@ use quadraui::{
 /// [`ExtraPaint::id`] is mechanical (`self.id`) on every impl and backs the
 /// [`crate::hit::PaintedHit::Extra`] entry pushed for this descriptor.
 /// [`ExtraPaint::hit_test`] and [`ExtraPaint::tab_stop`] default to "not
-/// interactive", which most additive primitives keep; [`quadraui::Switch`]
-/// and [`quadraui::TextInput`] override both to
-/// route pointer and keyboard focus through their own `layout`/`hit_test`.
+/// interactive", which most additive primitives keep; [`Form`] overrides
+/// both to route pointer and keyboard focus to itself.
 /// This trait only gets a hit/focus to the binding's own event handler with
 /// `widget` set — the per-kind semantic event synthesis that turns it into a
-/// `FormEvent` (toggling the switch's value, editing the text input, ...)
-/// lives in `semantic_event_for_hit`, `focus_scoped_key_event`,
-/// `text_input_key_event` and `text_input_insert_event`, below.
+/// `FormEvent` lives in `semantic_event_for_hit` and
+/// `focus_scoped_key_event`.
 pub trait ExtraPaint: std::any::Any {
     fn paint(&self, backend: &mut dyn Backend, area: Rect);
 
@@ -96,36 +93,14 @@ pub trait ExtraPaint: std::any::Any {
     }
 }
 
-/// Recovers the concrete descriptor (`Switch`, `TextInput`, ...) kept alive
+/// Recovers the concrete descriptor (`Form`, `MenuBar`, ...) kept alive
 /// behind the `Rc<dyn ExtraPaint>` in a [`crate::hit::PaintedHit::Extra`] entry, via
 /// trait-upcasting coercion to [`ExtraPaint`]'s `std::any::Any` supertrait.
 /// Used by [`crate::semantic::semantic_event_for_hit`] and the binding's own
 /// event handler to route a hit/key to the matched extra's own semantics
-/// (`Switch::click`, `TextEditor::apply`, ...) instead of leaving every
-/// extra paint-only.
+/// instead of leaving every extra paint-only.
 pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
     (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
-}
-
-/// Recovers the plain [`TextInput`] driving the matched extra's own
-/// typing/cursor/selection, whether `extra` is a bare standalone
-/// `TextInput` or one of [`PasswordInput`]/[`TextArea`]'s `inner` — all
-/// three reuse [`quadraui::TextEditor`] against an ordinary `TextInput`
-/// buffer verbatim (masked or multi-line only at paint time, via each's
-/// own `as_widget`), so [`crate::text_input::text_input_click_event`]/
-/// [`crate::text_input::text_input_insert_event`] can place a caret or
-/// insert typed/pasted text on any of the three through one call site.
-pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
-    if let Some(text_input) = extra_as::<TextInput>(extra) {
-        return Some(text_input);
-    }
-    if let Some(password) = extra_as::<PasswordInput>(extra) {
-        return Some(&password.inner);
-    }
-    if let Some(text_area) = extra_as::<TextArea>(extra) {
-        return Some(&text_area.inner);
-    }
-    None
 }
 
 impl ExtraPaint for Form {
@@ -144,7 +119,7 @@ impl ExtraPaint for Form {
         self.id
     }
 
-    /// Whole-area bounds check, like [`TextInput::hit_test`] above — a
+    /// Whole-area bounds check — a
     /// click's precise field-level routing is
     /// `crate::engine::InteractionEngine::handle`'s own `FormController`
     /// dispatch, which resolves it via `FormController`'s own internal
@@ -155,308 +130,6 @@ impl ExtraPaint for Form {
 
     fn tab_stop(&self) -> bool {
         true
-    }
-}
-
-impl ExtraPaint for TextInput {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check: [`ExtraPaint::hit_test`] has no
-    /// backend-metrics parameter to resolve a click to a specific
-    /// character column, so this only ever decides whether a click landed
-    /// on the input at all — `InteractionEngine::handle`'s own
-    /// `HitDetail::ExtraBody` arm has `Backend::measure()` in hand at the
-    /// click site and threads it through `text_input_click_event` for the
-    /// metrics-aware part (resolving which character column, and placing
-    /// the caret there).
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// No natural width — a standalone text input fills whatever width
-    /// its container gives it, same as `crate::render::natural_size`'s
-    /// own `List`/`Tree`/`DataTable` arms. Height is `lines.len()` rows:
-    /// unlike [`PasswordInput`]/[`TextField`] (always exactly one line
-    /// by construction) a bare standalone `TextInput` leaf may hold
-    /// several, the same count [`quadraui::TextInput::layout`] paints.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let rows = self.lines.len().max(1) as f32;
-        NaturalSize::new(None, Some(rows * backend.line_height()))
-    }
-}
-
-impl ExtraPaint for TextField {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]'s
-    /// doc documents: resolving a click to the text column vs. the clear
-    /// button needs the backend metrics [`quadraui::TextField::layout`]
-    /// takes, which this trait's `hit_test` has no parameter for — not
-    /// wired to a precise [`quadraui::TextFieldHit`] yet, same as
-    /// `TextInput`.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// Always exactly one line — [`quadraui::TextField`] has no
-    /// multi-line mode, unlike a bare [`TextInput`]. No natural width,
-    /// same reasoning as [`TextInput::natural_size`].
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-/// Mirrors [`quadraui::primitives::form`]'s own private
-/// `password_default_mask`.
-fn password_input_default_mask() -> char {
-    '•'
-}
-
-/// A standalone masked single-line input — the layout-leaf lift of
-/// [`FieldKind::PasswordInput`], reached via the `"password"` extra kind.
-/// The real value lives in `inner` (a plain [`quadraui::TextInput`], always
-/// kept to exactly one line — `Enter` commits rather than inserting `'\n'`
-/// (via [`crate::semantic::password_key_event`]'s forward to
-/// [`crate::text_input::text_input_key_event`]), and
-/// [`crate::text_input::text_input_insert_event`] strips any `'\n'` out of
-/// an IME commit or clipboard paste before it ever reaches `inner`), so
-/// typing/cursor/selection otherwise reuse [`quadraui::TextEditor`]
-/// verbatim rather than a second text-editing implementation; it paints
-/// as the core [`quadraui::PasswordInput`] ([`PasswordInput::as_widget`]),
-/// masking every character so the screen never shows the plaintext.
-#[derive(Debug, Clone)]
-pub struct PasswordInput {
-    pub inner: TextInput,
-    pub mask_char: char,
-}
-
-impl PasswordInput {
-    /// The core [`quadraui::PasswordInput`] this leaf paints as: `inner`'s
-    /// one line and caret, masked with `mask_char`.
-    pub(crate) fn as_widget(&self) -> quadraui::PasswordInput {
-        let line = self.inner.lines.first().cloned().unwrap_or_default();
-        let mut widget = quadraui::PasswordInput::new(self.inner.id);
-        widget.cursor = Some(quadraui::behaviour::text_edit::col_to_byte(
-            &line,
-            self.inner.cursor_col,
-        ));
-        widget.value = line;
-        widget.has_focus = self.inner.has_focus;
-        widget.mask_char = self.mask_char;
-        widget
-    }
-}
-
-/// [`PasswordInput`]'s wire shape: the plaintext value and a caret byte
-/// offset, which `Deserialize` turns into the one-line [`TextInput`].
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "PasswordInput"))]
-struct PasswordInputWire {
-    id: WidgetId,
-    #[serde(default)]
-    value: String,
-    #[serde(default)]
-    cursor: Option<usize>,
-    #[serde(default)]
-    has_focus: bool,
-    #[serde(default = "password_input_default_mask")]
-    mask_char: char,
-}
-
-#[cfg(feature = "schema")]
-impl schemars::JsonSchema for PasswordInput {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        PasswordInputWire::schema_name()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        PasswordInputWire::json_schema(generator)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PasswordInput {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = PasswordInputWire::deserialize(deserializer)?;
-        let char_count = wire.value.chars().count();
-        let cursor_col = wire.cursor.unwrap_or(char_count).min(char_count);
-        Ok(PasswordInput {
-            inner: TextInput::new(wire.id)
-                .with_lines(vec![wire.value])
-                .with_cursor_col(cursor_col)
-                .with_has_focus(wire.has_focus),
-            mask_char: wire.mask_char,
-        })
-    }
-}
-
-impl ExtraPaint for PasswordInput {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_dyn(area, &self.as_widget(), &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.inner.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// Always exactly one line: `Enter` commits, never inserts `'\n'`. No natural width, same reasoning as
-    /// [`TextInput::natural_size`].
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-/// Mirrors [`quadraui::primitives::form`]'s own private
-/// `textarea_default_rows`.
-fn text_area_default_rows() -> usize {
-    3
-}
-
-/// A standalone multi-line input — the layout-leaf lift of
-/// [`FieldKind::TextArea`], reached via the `"textarea"` extra kind. Like
-/// [`PasswordInput`], `inner` is a plain [`quadraui::TextInput`] (already
-/// multi-line), so [`crate::semantic::text_area_key_event`] reuses
-/// [`quadraui::EditOp::from_key`] and
-/// [`crate::text_input::apply_text_input_edit`] unchanged — `inner.lines`
-/// *is* the value, with no bridging needed on the way in. It paints as the
-/// core [`quadraui::TextArea`] ([`TextArea::as_widget`]), `visible_rows`
-/// rows tall.
-#[derive(Debug, Clone)]
-pub struct TextArea {
-    pub inner: TextInput,
-    pub visible_rows: usize,
-}
-
-/// [`TextArea`]'s wire shape: the whole value as one string with `'\n'`
-/// line breaks and a caret byte offset.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schema", schemars(rename = "TextArea"))]
-struct TextAreaWire {
-    id: WidgetId,
-    #[serde(default)]
-    value: String,
-    #[serde(default)]
-    placeholder: Option<String>,
-    #[serde(default)]
-    cursor: Option<usize>,
-    #[serde(default)]
-    has_focus: bool,
-    #[serde(default = "text_area_default_rows")]
-    visible_rows: usize,
-}
-
-#[cfg(feature = "schema")]
-impl schemars::JsonSchema for TextArea {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        TextAreaWire::schema_name()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        TextAreaWire::json_schema(generator)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for TextArea {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = TextAreaWire::deserialize(deserializer)?;
-        let (cursor_line, cursor_col) = quadraui::behaviour::text_edit::byte_offset_to_line_col(
-            &wire.value,
-            wire.cursor.unwrap_or(0),
-        );
-        let lines: Vec<String> = wire.value.split('\n').map(str::to_string).collect();
-        let mut inner = TextInput::new(wire.id)
-            .with_lines(lines)
-            .with_cursor_line(cursor_line)
-            .with_cursor_col(cursor_col)
-            .with_has_focus(wire.has_focus);
-        if let Some(placeholder) = wire.placeholder {
-            inner = inner.with_placeholder(placeholder);
-        }
-        Ok(TextArea {
-            inner,
-            visible_rows: wire.visible_rows,
-        })
-    }
-}
-
-impl TextArea {
-    /// The core [`quadraui::TextArea`] this leaf paints as: `inner`'s
-    /// lines joined, its caret as a byte offset.
-    pub(crate) fn as_widget(&self) -> quadraui::TextArea {
-        let value = self.inner.lines.join("\n");
-        let mut widget = quadraui::TextArea::new(self.inner.id);
-        widget.cursor = Some(quadraui::behaviour::text_edit::line_col_to_byte_offset(
-            &value,
-            self.inner.cursor_line,
-            self.inner.cursor_col,
-        ));
-        widget.value = value;
-        widget.placeholder = self.inner.placeholder.clone().unwrap_or_default();
-        widget.has_focus = self.inner.has_focus;
-        widget.visible_rows = self.visible_rows;
-        widget
-    }
-}
-
-impl ExtraPaint for TextArea {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_dyn(area, &self.as_widget(), &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.inner.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// `visible_rows` rows tall — the field's own declared viewport
-    /// height, independent of how many lines `inner` actually holds
-    /// (scrolling, not growth, absorbs the difference). No natural
-    /// width, same reasoning as [`TextInput::natural_size`].
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let rows = self.visible_rows.max(1) as f32;
-        NaturalSize::new(None, Some(rows * backend.line_height()))
     }
 }
 
@@ -703,12 +376,8 @@ macro_rules! extra_primitives {
 
 extra_primitives! {
     "form" => Form,
-    "text_input" => TextInput,
-    "text_field" => TextField,
     "tree_table_controller" => TreeTableControllerDescriptor,
     "menu_bar" => MenuBar,
-    "password" => PasswordInput,
-    "textarea" => TextArea,
 }
 
 /// The `widget_kinds!`-registered kind strings this crate decodes into
@@ -789,13 +458,22 @@ extra_primitives! {
 /// and report the same `FormEvent` a form row of that kind does;
 /// [`quadraui::Markdown`] composes a `TextDisplay` and reports a link press
 /// as `UiEvent::RichTextLinkClicked` and a wheel notch as the display's own
-/// scroll event. A further kind joins this table only when it
+/// scroll event. [`quadraui::TextInput`], [`quadraui::TextField`],
+/// [`quadraui::PasswordInput`] and [`quadraui::TextArea`] edit through the
+/// shared text-editing core and keep their caret, selection and undo
+/// history in their own `Interactive::State`, which their painters read,
+/// so `"text_input"`, `"text_field"`, `"password"` and `"textarea"` need
+/// nothing more either. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 36] = [
+pub const WIDGET_KINDS: [&str; 40] = [
     "tree_table",
+    "text_input",
+    "text_field",
+    "password",
+    "textarea",
     "toolbar",
     "number_input",
     "combo_box",
@@ -1735,16 +1413,12 @@ mod tests {
         }
     }
 
-    /// Renders `extra` as the sole leaf of a `20x5` driver and returns it
-    /// already focused (via a leading `Tab`, the same mechanism
+    /// Renders a [`WIDGET_KINDS`] leaf of `kind` as the sole leaf of a
+    /// `20x5` driver and returns it already focused (via a leading `Tab`,
+    /// the same mechanism
     /// [`tab_focuses_a_toolbar_and_enter_activates_its_focused_button`]
     /// (`crate::engine`'s own tests) uses) — every leaf below is its
     /// layout tree's only tab stop, so one `Tab` always lands focus on it.
-    fn single_leaf_driver(id: WidgetId, extra: Rc<dyn ExtraPaint>) -> TuiDriver<SingleLeafApp> {
-        leaf_driver(id, Box::new(move || LeafDescriptor::Extra(extra.clone())))
-    }
-
-    /// [`single_leaf_driver`] for a [`WIDGET_KINDS`] leaf of `kind`.
     fn single_widget_driver(
         id: WidgetId,
         kind: &'static str,
@@ -1982,27 +1656,18 @@ mod tests {
     }
 
     /// Typing a character is the real interactive path for a standalone
-    /// password leaf (a whole-area click only focuses it, the same coarse
-    /// convention `ComboBox`/`DatePicker` already have) —
-    /// reaching the handler as [`FormEvent::TextInputChanged`] via
-    /// [`password_key_event`]'s forward to [`text_input_key_event`]. The
-    /// render assertion checks the masked glyph appears and the plaintext
-    /// never does, proving [`PasswordInput::as_widget`] actually masks
-    /// rather than echoing `inner` verbatim.
+    /// password leaf — reaching the handler as
+    /// [`FormEvent::TextInputChanged`] through the generic widget leaf's
+    /// own `Interactive::handle`. The render assertion checks the masked
+    /// glyph appears and the plaintext never does.
     #[test]
     fn password_leaf_renders_masked_and_typing_reaches_the_interaction_engine() {
         let id = WidgetId::new("pw:1");
-        let inner = TextInput::new(id)
-            .with_lines(vec!["hi".to_string()])
-            .with_cursor_col(2)
-            .with_has_focus(true);
-        let mut driver = single_leaf_driver(
-            id,
-            Rc::new(PasswordInput {
-                inner,
-                mask_char: '*',
-            }),
-        );
+        let mut password = quadraui::PasswordInput::new(id);
+        password.value = "hi".to_string();
+        password.has_focus = true;
+        password.mask_char = '*';
+        let mut driver = single_widget_driver(id, "password", Rc::new(password));
         assert!(driver.screen_contains("**"), "{}", driver.screen());
         assert!(!driver.screen_contains("hi"), "{}", driver.screen());
 
@@ -2019,28 +1684,20 @@ mod tests {
     }
 
     /// An IME-committed character (`CharTyped`) or a clipboard paste
-    /// (`ClipboardPaste`) both reach a focused standalone password leaf
-    /// through [`text_input_insert_event`] -- [`extra_as_text_input`]
-    /// matches a [`PasswordInput`]'s `inner`, not only a bare `TextInput`.
-    /// A newline embedded in the pasted text is stripped rather than
-    /// splitting `inner` into a second line, keeping
-    /// [`PasswordInput::as_widget`]'s "always exactly one line" invariant
-    /// even though this path (unlike `Enter`) has no commit special-case
-    /// to fall back on.
+    /// (`ClipboardPaste`) both reach a focused standalone password leaf,
+    /// and a newline embedded in the pasted text is dropped rather than
+    /// splitting the one-line value.
     #[test]
     fn password_leaf_reaches_char_typed_and_clipboard_paste_and_strips_newlines() {
         let id = WidgetId::new("pw:2");
-        let password = || {
-            Rc::new(PasswordInput {
-                inner: TextInput::new(id)
-                    .with_lines(vec!["hi".to_string()])
-                    .with_cursor_col(2)
-                    .with_has_focus(true),
-                mask_char: '*',
-            })
+        let password = || -> Rc<dyn DynWidget> {
+            let mut password = quadraui::PasswordInput::new(id);
+            password.value = "hi".to_string();
+            password.has_focus = true;
+            Rc::new(password)
         };
 
-        let mut driver = single_leaf_driver(id, password());
+        let mut driver = single_widget_driver(id, "password", password());
         driver.dispatch(UiEvent::CharTyped('!'));
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
@@ -2052,43 +1709,29 @@ mod tests {
             "CharTyped('!') should emit TextInputChanged{{value: \"hi!\"}}: {dispatched:?}"
         );
 
-        // A fresh driver at the same starting `inner` -- see the identical
-        // comment in the select test above for why this doesn't chain off
-        // the previous dispatch's own outcome.
-        let mut driver = single_leaf_driver(id, password());
+        let mut driver = single_widget_driver(id, "password", password());
         driver.dispatch(UiEvent::ClipboardPaste("yo\nthere".to_string()));
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
             dispatched.iter().any(|event| matches!(
                 event,
                 UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
-                    if *ev_id == id && value == "hiyothere" && !value.contains('\n')
+                    if *ev_id == id && value == "hiyothere"
             )),
             "pasting \"yo\\nthere\" should strip the newline: {dispatched:?}"
         );
     }
 
-    /// Enter inserts a newline (not a commit, unlike a plain standalone
-    /// `TextInput`/[`PasswordInput`]) — the one behavioural difference
-    /// `FieldKind::TextArea`'s own doc draws against `FieldKind::TextInput`,
-    /// given here by [`text_area_key_event`] never special-casing Enter the
-    /// way [`password_key_event`]'s forward to [`text_input_key_event`]
-    /// does. Reaches the handler as [`FormEvent::TextInputChanged`] with
-    /// the embedded `\n`.
+    /// Enter inserts a newline in a standalone textarea leaf (not a
+    /// commit, unlike a password leaf), reaching the handler as
+    /// [`FormEvent::TextInputChanged`] with the embedded `\n`.
     #[test]
     fn text_area_leaf_renders_and_enter_inserts_a_newline_through_the_interaction_engine() {
         let id = WidgetId::new("ta:1");
-        let inner = TextInput::new(id)
-            .with_lines(vec!["hi".to_string()])
-            .with_cursor_col(2)
-            .with_has_focus(true);
-        let mut driver = single_leaf_driver(
-            id,
-            Rc::new(TextArea {
-                inner,
-                visible_rows: 3,
-            }),
-        );
+        let mut area = quadraui::TextArea::new(id);
+        area.value = "hi".to_string();
+        area.has_focus = true;
+        let mut driver = single_widget_driver(id, "textarea", Rc::new(area));
         assert!(driver.screen_contains("hi"), "{}", driver.screen());
 
         driver.press_named(quadraui::NamedKey::Enter);
@@ -2103,26 +1746,16 @@ mod tests {
         );
     }
 
-    /// A clipboard paste reaches a focused standalone textarea leaf the
-    /// same way [`password_leaf_reaches_char_typed_and_clipboard_paste_and_strips_newlines`]
-    /// proves it reaches a password leaf -- [`extra_as_text_input`]
-    /// matches a [`TextArea`]'s `inner` too. Unlike the password case, a
-    /// pasted newline is kept verbatim: `TextArea` has no single-line
-    /// invariant to protect.
+    /// A clipboard paste reaches a focused standalone textarea leaf with
+    /// its newline kept verbatim: a textarea has no single-line invariant
+    /// to protect.
     #[test]
     fn text_area_leaf_reaches_clipboard_paste_with_embedded_newline() {
         let id = WidgetId::new("ta:2");
-        let inner = TextInput::new(id)
-            .with_lines(vec!["hi".to_string()])
-            .with_cursor_col(2)
-            .with_has_focus(true);
-        let mut driver = single_leaf_driver(
-            id,
-            Rc::new(TextArea {
-                inner,
-                visible_rows: 3,
-            }),
-        );
+        let mut area = quadraui::TextArea::new(id);
+        area.value = "hi".to_string();
+        area.has_focus = true;
+        let mut driver = single_widget_driver(id, "textarea", Rc::new(area));
 
         driver.dispatch(UiEvent::ClipboardPaste(" there\nfriend".to_string()));
         let dispatched = &driver.app().sink.borrow().dispatched;
@@ -2133,6 +1766,79 @@ mod tests {
                     if *ev_id == id && value == "hi there\nfriend"
             )),
             "pasting \" there\\nfriend\" should keep its newline: {dispatched:?}"
+        );
+    }
+
+    /// A focused `"text_input"` leaf edits through the shared text core:
+    /// Ctrl+Backspace deletes the word before the caret, Ctrl+Z undoes it
+    /// and Ctrl+Shift+Z redoes it, with the caret the widget's own state
+    /// walked to.
+    #[test]
+    fn text_input_leaf_word_delete_undo_and_redo_run_through_the_core_state() {
+        use std::cell::RefCell as Cell;
+        let id = WidgetId::new("ti:1");
+        // The app's own copy of the value, echoed back into every render.
+        let value = Rc::new(Cell::new("foo bar".to_string()));
+        let rendered = Rc::clone(&value);
+        let mut driver = leaf_driver(
+            id,
+            Box::new(move || LeafDescriptor::Widget {
+                kind: "text_input",
+                widget: Rc::new(
+                    quadraui::TextInput::new(id)
+                        .with_lines(vec![rendered.borrow().clone()])
+                        .with_cursor_col(7),
+                ),
+            }),
+        );
+        let ctrl = |shift| quadraui::Modifiers {
+            ctrl: true,
+            shift,
+            ..Default::default()
+        };
+        let mut press = |key: quadraui::Key, modifiers| -> Option<String> {
+            driver.app().sink.borrow_mut().dispatched.clear();
+            driver.dispatch(UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat: false,
+            });
+            let changed =
+                driver
+                    .app()
+                    .sink
+                    .borrow()
+                    .dispatched
+                    .iter()
+                    .find_map(|event| match event {
+                        UiEvent::Form(ev_id, FormEvent::TextInputChanged { value, .. })
+                            if *ev_id == id =>
+                        {
+                            Some(value.clone())
+                        }
+                        _ => None,
+                    });
+            if let Some(changed) = &changed {
+                *value.borrow_mut() = changed.clone();
+                driver.render();
+            }
+            changed
+        };
+        assert_eq!(
+            press(
+                quadraui::Key::Named(quadraui::NamedKey::Backspace),
+                ctrl(false)
+            )
+            .as_deref(),
+            Some("foo ")
+        );
+        assert_eq!(
+            press(quadraui::Key::Char('z'), ctrl(false)).as_deref(),
+            Some("foo bar")
+        );
+        assert_eq!(
+            press(quadraui::Key::Char('z'), ctrl(true)).as_deref(),
+            Some("foo ")
         );
     }
 

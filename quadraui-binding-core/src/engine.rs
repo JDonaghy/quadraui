@@ -26,13 +26,12 @@ use quadraui::DrawsPrimitives;
 use quadraui::{
     wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
     CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsLayout,
-    ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx,
-    EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent, ListViewEvent,
-    MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
-    PointerShape, Rect, RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis,
-    ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
-    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
-    TreeTableNodeData, UiEvent, WidgetId,
+    ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost,
+    Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent, ListViewEvent, MenuBar,
+    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect,
+    RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent,
+    TextDisplayEvent, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip,
+    TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -57,7 +56,6 @@ use crate::semantic::{
     focus_scoped_key_event, scripted_key_press, scripted_region_click, semantic_event_for_hit,
     DragGestureWireEvent,
 };
-use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
 use crate::wire::DragRole;
 
@@ -208,10 +206,11 @@ impl LayoutContent {
     /// [`FormController`] for a `"form"` extra leaf; a
     /// `KeyPressed`/`CharTyped`/`ClipboardPaste` routes to whichever leaf
     /// holds keyboard focus, through that same `FormController` for a
-    /// `"form"` leaf and through
-    /// [`crate::semantic::focus_scoped_key_event`]/
-    /// [`crate::text_input::text_input_insert_event`] for every other
-    /// kind.
+    /// `"form"` leaf, through `engine`'s generic widget dispatch for a
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf (a text input's
+    /// caret, selection and undo state live in `engine`'s per-widget
+    /// store like any main-tree leaf's), and through
+    /// [`crate::semantic::focus_scoped_key_event`] for every other kind.
     ///
     /// Escape is deliberately routed only into a focused `"form"` leaf
     /// (never wrapped into a focused `Tree`/`List`/`TabBar`'s own
@@ -227,7 +226,7 @@ impl LayoutContent {
         event: &UiEvent,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
-        text_editors: &TextEditorCache,
+        engine: &InteractionEngine,
     ) -> Option<quadraui::Reaction> {
         use quadraui::Reaction;
 
@@ -331,13 +330,13 @@ impl LayoutContent {
                         );
                     }
                 }
-                let resolved = focus_scoped_key_event(
-                    focused,
-                    key,
-                    *modifiers,
-                    &self.hits.borrow(),
-                    text_editors,
-                );
+                if let Some(reaction) =
+                    self.dispatch_widget_input(focused, event, backend, sink, engine)
+                {
+                    return reaction;
+                }
+                let resolved =
+                    focus_scoped_key_event(focused, key, *modifiers, &self.hits.borrow());
                 // `focus_scoped_key_event` echoes the original
                 // `KeyPressed` back when `focused` names no leaf in this
                 // subtree at all (or one with no key semantics of its
@@ -349,34 +348,42 @@ impl LayoutContent {
                 }
                 Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
             }
-            UiEvent::CharTyped(ch) => {
+            UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_) => {
                 let focused = backend.focus_tree().focused_id().copied()?;
                 if let Some(area) = self.form_leaf_area(focused) {
                     return self.route_form_event(focused, area, event, backend, sink);
                 }
-                let resolved = text_input_insert_event(
-                    focused,
-                    &self.hits.borrow(),
-                    EditOp::InsertChar(*ch),
-                    text_editors,
-                )?;
-                Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
-            }
-            UiEvent::ClipboardPaste(text) => {
-                let focused = backend.focus_tree().focused_id().copied()?;
-                if let Some(area) = self.form_leaf_area(focused) {
-                    return self.route_form_event(focused, area, event, backend, sink);
-                }
-                let resolved = text_input_insert_event(
-                    focused,
-                    &self.hits.borrow(),
-                    EditOp::InsertText(text.clone()),
-                    text_editors,
-                )?;
-                Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
+                self.dispatch_widget_input(focused, event, backend, sink, engine)?
             }
             _ => None,
         }
+    }
+
+    /// Routes a key or committed text to the focused
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf `focused` of this
+    /// subtree through `engine`'s generic widget dispatch. The outer
+    /// `None` means `focused` is no generic leaf here; `Some(None)` that
+    /// the leaf left the event unclaimed.
+    fn dispatch_widget_input(
+        &self,
+        focused: WidgetId,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+        engine: &InteractionEngine,
+    ) -> Option<Option<quadraui::Reaction>> {
+        let (area, widget) = dyn_widget_hit(&self.hits.borrow(), focused)?;
+        let routed = routed_input_event(event)?;
+        let outcome = engine.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink);
+        Some(match outcome.event {
+            Some(replacement) => Some(
+                outcome
+                    .reaction
+                    .merge(sink.dispatch(&replacement, Some(&HitDetail::WidgetBody))),
+            ),
+            None if outcome.consumed => Some(outcome.reaction),
+            None => None,
+        })
     }
 
     /// Routes `event` into the overlay-scoped [`FormController`] cached
@@ -602,23 +609,53 @@ fn scroll_child_into_view(
 }
 
 /// Whether the leaf hit for `focused` already claims PageUp/PageDown/Home/
-/// End for its own semantics — a focused `TextInput`'s caret (`Home`/`End`
-/// via [`crate::text_input::text_input_key_event`]) or a focused
-/// `TextDisplay`'s own paging (routed through
-/// [`crate::semantic::focus_scoped_key_event`] into
+/// End for its own semantics — a focused `TextDisplay`'s own paging
+/// (routed through [`crate::semantic::focus_scoped_key_event`] into
 /// `UiEvent::TextDisplay(.., KeyPressed)`). Checked before
 /// [`InteractionEngine::handle`] lets an enclosing `Scroll` claim those
-/// keys instead, so a scrollable form (the canonical use for a `Scroll`
-/// wrapping a `TextInput`) never loses caret movement, and a focused
-/// `TextDisplay` never loses its own page-by-page scrolling, to the
-/// enclosing container.
+/// keys instead, so a focused `TextDisplay` never loses its own
+/// page-by-page scrolling to the enclosing container. A generic widget
+/// leaf (a text input's caret, say) never reaches that check: its own
+/// `Interactive::handle` sees the key first and claims it there.
 fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> bool {
     hit_map.iter().any(|hit| match hit {
         PaintedHit::TextDisplay { id, .. } => *id == focused,
-        PaintedHit::Extra { id, extra, .. } => {
-            *id == focused && extra_as::<TextInput>(extra).is_some()
-        }
         _ => false,
+    })
+}
+
+/// The key a generic leaf's persistent state is stored under: the
+/// widget's own id, which is what [`quadraui::DrawsPrimitives::draw_dyn`]
+/// reads the state back by at paint time, else the leaf's tree-address id
+/// `leaf` for a widget that carries none.
+fn dyn_state_key(leaf: WidgetId, widget: &dyn DynWidget) -> WidgetId {
+    widget.id().copied().unwrap_or(leaf)
+}
+
+/// Exchanges `store` with this thread's runtime widget-state store —
+/// [`InteractionEngine::paint_with_widget_state`]'s install and restore.
+fn swap_widget_states(store: &RefCell<quadraui::WidgetStateStore>) {
+    quadraui::with_widget_states(|runtime| std::mem::swap(runtime, &mut *store.borrow_mut()));
+}
+
+/// The [`RoutedEvent`] a focused generic leaf receives for a
+/// `KeyPressed`/`CharTyped`/`ClipboardPaste`: the key itself, or the typed
+/// or pasted text as committed text. `None` for any other event.
+fn routed_input_event(event: &UiEvent) -> Option<RoutedEvent> {
+    Some(match event {
+        UiEvent::KeyPressed {
+            key,
+            modifiers,
+            repeat,
+            ..
+        } => RoutedEvent::Key(KeyEvent {
+            key: key.clone(),
+            modifiers: *modifiers,
+            repeat: *repeat,
+        }),
+        UiEvent::CharTyped(c) => RoutedEvent::Text(c.to_string()),
+        UiEvent::ClipboardPaste(text) => RoutedEvent::Text(text.clone()),
+        _ => return None,
     })
 }
 
@@ -1050,7 +1087,7 @@ fn dispatch_layout_dialog(
     event: &UiEvent,
     backend: &mut dyn Backend,
     sink: &mut dyn EventSink,
-    text_editors: &TextEditorCache,
+    engine: &InteractionEngine,
 ) -> LayoutDialogOutcome {
     use quadraui::Reaction;
 
@@ -1069,7 +1106,7 @@ fn dispatch_layout_dialog(
                     return LayoutDialogOutcome::Resolved(id);
                 }
             }
-            match dialog.content.dispatch(event, backend, sink, text_editors) {
+            match dialog.content.dispatch(event, backend, sink, engine) {
                 Some(reaction) => LayoutDialogOutcome::Claimed(reaction),
                 None => LayoutDialogOutcome::Claimed(Reaction::Continue),
             }
@@ -1089,7 +1126,7 @@ fn dispatch_layout_dialog(
                     return LayoutDialogOutcome::Resolved(id);
                 }
             }
-            if let Some(reaction) = dialog.content.dispatch(event, backend, sink, text_editors) {
+            if let Some(reaction) = dialog.content.dispatch(event, backend, sink, engine) {
                 return LayoutDialogOutcome::Claimed(reaction);
             }
             if matches!(key, Key::Named(NamedKey::Escape)) {
@@ -1100,7 +1137,7 @@ fn dispatch_layout_dialog(
             LayoutDialogOutcome::Claimed(Reaction::Continue)
         }
         UiEvent::CharTyped(..) | UiEvent::ClipboardPaste(..) => {
-            match dialog.content.dispatch(event, backend, sink, text_editors) {
+            match dialog.content.dispatch(event, backend, sink, engine) {
                 Some(reaction) => LayoutDialogOutcome::Claimed(reaction),
                 None => LayoutDialogOutcome::Claimed(Reaction::Continue),
             }
@@ -1212,16 +1249,10 @@ pub struct InteractionEngine {
     /// `Dropped` alongside whatever else the same events already produce,
     /// through [`EventSink::dispatch_drag_gesture`].
     gesture_drag: RefCell<Option<GestureDrag>>,
-    /// Per-`TextInput` [`quadraui::TextEditor`] session, keyed by
-    /// `WidgetId`, that survives across keystrokes — see
-    /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
-    /// cache is needed at all, including its own `undo_stack`.
-    text_editors: TextEditorCache,
     /// Framework-owned per-widget state store, keyed by `WidgetId`,
     /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
     /// own module doc for its controlled/uncontrolled resolution and GC
-    /// policies. [`Self::set_hits`] sweeps it every frame alongside
-    /// [`Self::text_editors`]'s own pruning. [`Self::handle`]'s own
+    /// policies. [`Self::set_hits`] sweeps it every frame. [`Self::handle`]'s own
     /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
     /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
     /// it back (merged with whatever the descriptor pins) via
@@ -1236,11 +1267,13 @@ pub struct InteractionEngine {
     widget_state: WidgetState,
     /// Per-[`crate::layout::LeafDescriptor::Widget`] [`DynWidget::State`][DynWidget],
     /// type-erased behind [`quadraui::WidgetStateStore`] and keyed by
-    /// `WidgetId` — the generic seam's own counterpart of [`Self::widget_state`],
-    /// which only ever resolves the handful of named fields
-    /// (cursor/scroll/active-tab) the six fixed leaf kinds carry.
-    /// [`Self::dispatch_dyn_widget_click`] is the only reader/writer today;
-    /// [`Self::set_hits`] prunes it to just the ids still painted as a
+    /// [`dyn_state_key`] — the generic seam's own counterpart of
+    /// [`Self::widget_state`], which only ever resolves the handful of
+    /// named fields (cursor/scroll/active-tab) the six fixed leaf kinds
+    /// carry. Event dispatch reads and writes it; a paint pass reads it
+    /// through [`Self::paint_with_widget_state`], so a widget paints from
+    /// the same state (a text input's caret, say) its own handling walked.
+    /// [`Self::set_hits`] prunes it to just the widgets still painted as a
     /// `PaintedHit::Widget` this frame, mirroring [`Self::widget_state`]'s
     /// own per-frame sweep.
     dyn_widget_state: RefCell<quadraui::WidgetStateStore>,
@@ -1546,30 +1579,10 @@ impl InteractionEngine {
     /// binding's own paint pass (`draw_bands`/`paint_layout`) has fully
     /// populated `hits`.
     ///
-    /// Also prunes [`Self::text_editors`] down to just the ids still
-    /// painted as a `"text_input"` extra this frame — mirroring
-    /// [`Self::sync_forms`]'s own "painted this frame" retain for
-    /// [`Self::form_controllers`]. Without this, a `TextInput` that stops
-    /// rendering (its host removes it, navigates away, ...) leaves its
-    /// cached [`quadraui::TextEditor`] — buffer, cursor, and up to
-    /// `UNDO_HISTORY_LIMIT` full undo snapshots — in the map forever.
-    ///
     /// Also sweeps [`Self::widget_state`] via [`WidgetState::gc`] — its own
     /// "seen this frame" marks, not `hits`, drive what survives; see that
     /// type's own module doc.
     pub fn set_hits(&self, hits: Vec<PaintedHit>) {
-        let live_text_inputs: Vec<WidgetId> = hits
-            .iter()
-            .filter_map(|hit| match hit {
-                PaintedHit::Extra { id, extra, .. } if extra_as::<TextInput>(extra).is_some() => {
-                    Some(*id)
-                }
-                _ => None,
-            })
-            .collect();
-        self.text_editors
-            .borrow_mut()
-            .retain(|id, _| live_text_inputs.contains(id));
         // Same "painted this frame" retain for the windowed-leaf request
         // bookkeeping: a leaf that stops rendering (or stops sending an
         // `items_window`) must not leave its last request behind to
@@ -1581,7 +1594,7 @@ impl InteractionEngine {
         let live_dyn_widgets: Vec<WidgetId> = hits
             .iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Widget { id, .. } => Some(*id),
+                PaintedHit::Widget { id, widget, .. } => Some(dyn_state_key(*id, widget.as_ref())),
                 _ => None,
             })
             .collect();
@@ -1589,6 +1602,26 @@ impl InteractionEngine {
             .borrow_mut()
             .retain(|id| live_dyn_widgets.contains(id));
         *self.hit_map.borrow_mut() = hits;
+    }
+
+    /// Runs `paint` — a binding's paint pass over its tree
+    /// ([`crate::render::paint_layout`] and friends) — with this engine's
+    /// per-widget state installed as the store
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] paints from, so every generic
+    /// leaf paints from the state its own event handling walked: a text
+    /// input's caret, a palette's query caret, a picker's highlight.
+    /// Whatever the thread's store held before is put back afterwards,
+    /// also when `paint` unwinds.
+    pub fn paint_with_widget_state<R>(&self, paint: impl FnOnce() -> R) -> R {
+        struct Installed<'a>(&'a RefCell<quadraui::WidgetStateStore>);
+        impl Drop for Installed<'_> {
+            fn drop(&mut self) {
+                swap_widget_states(self.0);
+            }
+        }
+        swap_widget_states(&self.dyn_widget_state);
+        let _installed = Installed(&self.dyn_widget_state);
+        paint()
     }
 
     /// Inserts `overlay` into [`Self::overlays`] at the position
@@ -2343,8 +2376,7 @@ impl InteractionEngine {
     /// `render_completions`/`render_float`/`render_rich_text_popup`), each
     /// painted at its own fixed spot in `host::render_overlays`'s old call
     /// sequence. Call once per render, after the binding's own paint pass
-    /// and [`InteractionEngine::sync_menu_bar`]/[`InteractionEngine::sync_forms`]/
-    /// [`InteractionEngine::sync_text_input_carets`].
+    /// and [`InteractionEngine::sync_menu_bar`]/[`InteractionEngine::sync_forms`].
     pub fn render_overlays(&self, backend: &mut dyn Backend) {
         for overlay in &self.overlays {
             match overlay {
@@ -2914,47 +2946,6 @@ impl InteractionEngine {
         Some(FormEvent::FocusChanged { id })
     }
 
-    /// Repaints every standalone `"text_input"` extra this frame whose
-    /// cached [`quadraui::TextEditor`] (seeded by [`text_input_click_event`]/
-    /// [`text_input_insert_event`]) disagrees with the descriptor's own
-    /// `cursor_line`/`cursor_col` — the same "paint after everything else,
-    /// from the richer live state" overlay [`Self::sync_forms`] uses for
-    /// `"form"`. Without this, `text_input_click_event`'s `SetCursor`
-    /// moves the caret only *logically*: the next keystroke starts from
-    /// the clicked position, but nothing ever paints it there, since
-    /// [`crate::extra_paint::ExtraPaint::paint`] for `TextInput` draws the
-    /// raw descriptor — whose `cursor_col` is normally `0`, because
-    /// `FormEvent::TextInputChanged`/`Committed` carry no cursor for a
-    /// host to echo back onto it. Call once per render, after the extras
-    /// loop already painted the plain input and after
-    /// [`Self::sync_forms`] (order between the two doesn't matter — they
-    /// never touch the same extra kind).
-    pub fn sync_text_input_carets(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let editors = self.text_editors.borrow();
-        for hit in hits {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(text_input) = extra_as::<TextInput>(extra) else {
-                continue;
-            };
-            let Some(editor) = editors.get(id) else {
-                continue;
-            };
-            let live = (editor.input.cursor_line, editor.input.cursor_col);
-            if live == (text_input.cursor_line, text_input.cursor_col) {
-                continue;
-            }
-            let mut repainted = text_input.clone();
-            repainted.cursor_line = live.0;
-            repainted.cursor_col = live.1;
-            backend.draw_dyn(*area, &repainted, &());
-        }
-    }
-
     /// Translates a [`TreeTableController::handle`] outcome into the
     /// `Reaction` [`Self::handle`]'s own `"tree_table_controller"` routing
     /// blocks return: `None` for [`TreeTableControllerEvent::Ignored`] —
@@ -3163,9 +3154,7 @@ impl InteractionEngine {
                 Overlay::LayoutDialog(embedded) => Some(embedded),
                 _ => None,
             })
-            .map(|embedded| {
-                dispatch_layout_dialog(embedded, event, backend, sink, &self.text_editors)
-            });
+            .map(|embedded| dispatch_layout_dialog(embedded, event, backend, sink, self));
         match layout_dialog_outcome {
             Some(LayoutDialogOutcome::Resolved(id)) => {
                 // Closing regardless of what `sink` itself returns —
@@ -3331,7 +3320,7 @@ impl InteractionEngine {
                     // landed inside the popover is still claimed either
                     // way: it visually hit the popover, so the tree
                     // painted underneath must never see it.
-                    match content.dispatch(event, backend, sink, &self.text_editors) {
+                    match content.dispatch(event, backend, sink, self) {
                         Some(result) => return Some(result),
                         None if inside == Some(true) => return Some(Reaction::Continue),
                         None => {}
@@ -3585,20 +3574,8 @@ impl InteractionEngine {
         let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), focused) else {
             return DynWidgetClickOutcome::default();
         };
-        let routed = match event {
-            UiEvent::KeyPressed {
-                key,
-                modifiers,
-                repeat,
-                ..
-            } => RoutedEvent::Key(KeyEvent {
-                key: key.clone(),
-                modifiers: *modifiers,
-                repeat: *repeat,
-            }),
-            UiEvent::CharTyped(c) => RoutedEvent::Text(c.to_string()),
-            UiEvent::ClipboardPaste(text) => RoutedEvent::Text(text.clone()),
-            _ => return DynWidgetClickOutcome::default(),
+        let Some(routed) = routed_input_event(event) else {
+            return DynWidgetClickOutcome::default();
         };
         self.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink)
     }
@@ -3812,7 +3789,7 @@ impl InteractionEngine {
         let mut intents = DynWidgetIntents::default();
         let handled = {
             let mut states = self.dyn_widget_state.borrow_mut();
-            let state = states.state_for(id, widget.as_ref());
+            let state = states.state_for(dyn_state_key(id, widget.as_ref()), widget.as_ref());
             let mut host = DynWidgetEventHost {
                 units,
                 focused: self.dyn_widget_focus(backend),
@@ -4906,8 +4883,7 @@ impl InteractionEngine {
                     false
                 };
                 // Generic counterpart of the per-kind arms
-                // `focus_scoped_key_event` below has for `Checkbox`/
-                // `TextInput`/... — forwards straight to the focused
+                // `focus_scoped_key_event` below has — forwards straight to the focused
                 // leaf's own `ScriptedExtra::scripted_key_pressed` when it
                 // has one, since that function's `UiEvent`-only return has
                 // no room for the `bool` a script's own `on_event` answers
@@ -4917,13 +4893,7 @@ impl InteractionEngine {
                 if scripted_key_press(&self.hit_map.borrow(), focused, key) {
                     scripted_reaction = Reaction::Redraw;
                 }
-                event = focus_scoped_key_event(
-                    focused,
-                    key,
-                    *modifiers,
-                    &self.hit_map.borrow(),
-                    &self.text_editors,
-                );
+                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
                 if nav_applied {
                     // A windowed leaf's cursor move can scroll past the
                     // slice its app has loaded — ask for the rows that
@@ -4931,35 +4901,6 @@ impl InteractionEngine {
                     // reaches the app.
                     let dispatched = Reaction::Redraw.merge(sink.dispatch(&event, None));
                     return dispatched.merge(self.dispatch_rows_requested_after_nav(focused, sink));
-                }
-            }
-        }
-
-        // IME/compose and clipboard-paste text has no `KeyPressed` of its
-        // own to route through `focus_scoped_key_event` above — resolve it
-        // the same way, directly against whichever `TextInput` extra
-        // currently holds focus.
-        if let UiEvent::CharTyped(ch) = &event {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertChar(*ch),
-                    &self.text_editors,
-                ) {
-                    event = form_event;
-                }
-            }
-        }
-        if let UiEvent::ClipboardPaste(text) = &event {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertText(text.clone()),
-                    &self.text_editors,
-                ) {
-                    event = form_event;
                 }
             }
         }
@@ -5157,21 +5098,12 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
-                // A non-double click on any extra's body places a text
-                // caret first (a side effect on `text_editors` only, with
-                // no event to swap in; see `text_input_click_event`), then
-                // resolves through `semantic_event_for_hit`'s `ExtraBody`
-                // arm. Keeping every `ExtraBody` outcome in this one arm
-                // means two of them can never fire for the same click.
+                // A non-double click on any extra's body resolves through
+                // `semantic_event_for_hit`'s `ExtraBody` arm. Keeping every
+                // `ExtraBody` outcome in this one arm means two of them can
+                // never fire for the same click.
                 if !double_click && matches!(detail, HitDetail::ExtraBody) {
                     if let Some(position) = event_position(&event) {
-                        text_input_click_event(
-                            &self.hit_map.borrow(),
-                            *id,
-                            position,
-                            quadraui::TextInputMeasure::from_metrics(&backend.measure()),
-                            &self.text_editors,
-                        );
                         if let Some(semantic) = semantic_event_for_hit(
                             *id,
                             detail,
@@ -12909,7 +12841,10 @@ mod tests {
         leaf_then_buttons_column(
             LayoutNode::Leaf(LayoutLeaf {
                 id: "input".to_string(),
-                descriptor: LeafDescriptor::Extra(Rc::new(text_input)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "text_input",
+                    widget: Rc::new(text_input),
+                },
                 scroll_px: None,
             }),
             14,
@@ -13347,16 +13282,11 @@ mod tests {
 
     /// `End` on a focused `TextInput` that is a direct child of a `Scroll`
     /// with room to page (`max_offset > 0`) must move the caret, never
-    /// page the enclosing container — `focused_leaf_claims_page_keys`'s
-    /// whole reason to exist. The `TextInput` starts with its cursor at
-    /// column 0 of a non-empty line, so `End` is a real cursor move (not a
-    /// no-op the old, ungated routing could coincidentally get right), and
-    /// moving it changes no text (`EditOp::MoveLineEnd` never touches
-    /// `lines`), so [`crate::text_input::apply_text_input_edit`] returns
-    /// `None` and [`crate::semantic::focus_scoped_key_event`] falls back
-    /// to the raw `KeyPressed` — the signal this test checks for, rather
-    /// than a `ScrollOffsetChanged` the old routing would have emitted
-    /// instead (and returned early on, never reaching this fallback).
+    /// page the enclosing container: the widget's own `Interactive::handle`
+    /// claims the key before the container's page-key routing runs. The
+    /// `TextInput` starts with its cursor at column 0 of a non-empty line,
+    /// so `End` is a real cursor move, and a character typed next lands
+    /// after the last one.
     #[test]
     fn end_on_a_focused_text_input_inside_a_scroll_moves_the_caret_not_the_scroll() {
         let mut driver = scroll_with_leaf_driver(text_input_then_buttons_column);
@@ -13381,16 +13311,16 @@ mod tests {
             "End on a focused TextInput inside a Scroll must never page the container: {:?}",
             sink.dispatched
         );
+        drop(sink);
+        driver.dispatch(UiEvent::CharTyped('!'));
+        let sink = driver.app().sink.borrow();
         assert!(
             sink.dispatched.iter().any(|(event, _)| matches!(
                 event,
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::End),
-                    ..
-                }
+                UiEvent::Form(_, quadraui::FormEvent::TextInputChanged { value, .. })
+                    if value == "hello!"
             )),
-            "the raw KeyPressed must still reach the binding once the TextInput's own \
-             cursor-only move leaves `focus_scoped_key_event` with nothing to substitute: {:?}",
+            "End must have moved the caret to the end of the line: {:?}",
             sink.dispatched
         );
     }
@@ -13441,15 +13371,13 @@ mod tests {
     /// well-behaved real binding — deliberately never echoes
     /// `TextInput::has_focus` back as `true` once the engine focuses it.
     /// Regression fixture for the "engine focus is authoritative,
-    /// `has_focus` is cosmetic" contract
-    /// [`crate::text_input`]'s own module doc states: key routing for a
-    /// focused `"text_input"`/`"password"`/`"textarea"` extra is keyed
-    /// entirely by `backend.focus_tree().focused_id()`
-    /// ([`focus_scoped_key_event`]/`text_input_insert_event`'s own
-    /// `focused` parameter), never by the descriptor's own `has_focus`
-    /// field, so a host that never echoes it still keeps every keystroke
-    /// reaching the cached [`quadraui::TextEditor`] and being applied to
-    /// `value` via `FormEvent::TextInputChanged`.
+    /// `has_focus` is cosmetic" contract: key routing for a focused
+    /// `"text_input"`/`"password"`/`"textarea"` leaf is keyed entirely by
+    /// `backend.focus_tree().focused_id()`
+    /// ([`InteractionEngine::dispatch_dyn_widget_key`]), never by the
+    /// descriptor's own `has_focus` field, so a host that never echoes it
+    /// still keeps every keystroke reaching the widget's own state and
+    /// being applied to `value` via `FormEvent::TextInputChanged`.
     struct NeverEchoesFocusTextInputLogic {
         value: RefCell<String>,
         engine: InteractionEngine,
@@ -13467,7 +13395,10 @@ mod tests {
                 .with_cursor_col(self.value.borrow().chars().count());
             let node = LayoutNode::Leaf(LayoutLeaf {
                 id: "input".to_string(),
-                descriptor: LeafDescriptor::Extra(std::rc::Rc::new(text_input)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "text_input",
+                    widget: std::rc::Rc::new(text_input),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -13493,7 +13424,7 @@ mod tests {
         }
     }
 
-    /// Three keystrokes into a `"text_input"` extra the engine already
+    /// Three keystrokes into a `"text_input"` leaf the engine already
     /// focuses (via a direct `backend.set_focus`, mirroring a host's own
     /// click-to-focus or Tab-cycling outcome) must all land, in order,
     /// even though [`NeverEchoesFocusTextInputLogic::render`] never once

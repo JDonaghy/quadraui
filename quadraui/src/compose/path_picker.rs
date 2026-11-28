@@ -592,7 +592,7 @@ pub struct PathPicker<K: PickerKind> {
 /// [`Interactive::State`] for [`PathPicker`]: the composed palette's own
 /// editing state (the query caret and selection anchor).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathPickerEditState {
     /// The composed palette's state.
     pub palette: PaletteState,
@@ -733,7 +733,7 @@ impl<K: PickerKind> PathPicker<K> {
             states
                 .get(&self.id)
                 .and_then(|s| s.downcast_ref::<PathPickerEditState>())
-                .copied()
+                .cloned()
                 .unwrap_or_default()
         });
         let rect = Rect::new(0.0, 0.0, 80.0, (visible_rows + PALETTE_CHROME_ROWS) as f32);
