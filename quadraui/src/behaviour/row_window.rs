@@ -238,7 +238,12 @@ impl HostLatch<usize> {
     /// app's when its descriptor value changed since the widget last saw
     /// it, or, before the widget has seen one, when it is non-zero; that
     /// scroll stands as sent. Returns whether the scroll moved.
-    pub fn follow_selection(&mut self, descriptor: usize, viewport_rows: usize, row: usize) -> bool {
+    pub fn follow_selection(
+        &mut self,
+        descriptor: usize,
+        viewport_rows: usize,
+        row: usize,
+    ) -> bool {
         let app_scrolls = match self.seen() {
             Some(seen) => *seen != descriptor,
             None => descriptor != 0,
