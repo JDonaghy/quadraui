@@ -61,7 +61,7 @@ test("a list selection the app moves scrolls into view", () => {
   assert.ok(app.screen().includes("item-0"));
   state.selected = 150;
   assert.ok(app.screen().includes("item-150"));
-  assert.ok((app.widgetState("list") as any).scroll_offset > 0);
+  assert.ok((app.widgetState("list")?.scrollOffset ?? 0) > 0);
 });
 
 test("a list scroll the app pins stays put", () => {
@@ -77,5 +77,5 @@ test("a data table selection the app moves scrolls into view", () => {
   assert.ok(app.screen().includes("row-0"));
   state.selected = 120;
   assert.ok(app.screen().includes("row-120"));
-  assert.ok((app.widgetState("table") as any).scroll_offset > 0);
+  assert.ok((app.widgetState("table")?.scrollOffset ?? 0) > 0);
 });
