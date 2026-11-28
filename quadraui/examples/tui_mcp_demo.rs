@@ -28,8 +28,7 @@
 use quadraui::control::{CommandError, CommandRegistry, CommandSpec};
 use quadraui::{
     AppLogic, Backend, Decoration, Key, ListItem, ListView, ListViewEvent, NamedKey, Reaction,
-    Rect, ScreenLayout, StyledSpan, StyledText, Surface, TextDisplay, TextDisplayLine, UiEvent,
-    WidgetId,
+    Rect, ScreenLayout, StyledText, Surface, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 use serde_json::{json, Value};
 
