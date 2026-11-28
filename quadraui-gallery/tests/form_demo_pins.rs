@@ -28,7 +28,14 @@ fn form_demo_scrolling_variant_paints_the_pinned_screens() {
     driver.set_double_click_folding(false);
     click_text(&mut driver, "Form");
     click_text(&mut driver, "Scrolling");
-    let mut pins = ScreenPins::new(FIXTURES, "gallery_form_scrolling");
+    // The sidebar lists the Terminal demo only in a `terminal` build, so
+    // each feature set has its own fixture.
+    let fixture = if cfg!(feature = "terminal") {
+        "gallery_form_scrolling_terminal"
+    } else {
+        "gallery_form_scrolling"
+    };
+    let mut pins = ScreenPins::new(FIXTURES, fixture);
     pins.step("initial", &driver);
 
     let (sx, sy) = driver.find("Setting 3").expect("Setting 3 painted");
