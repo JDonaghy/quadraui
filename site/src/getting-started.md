@@ -1,61 +1,39 @@
-# Getting Started
+# Getting started
 
-## Add the dependency
+quadraui has one renderer, written in Rust, and three ways to drive it. Pick
+the language you write apps in; each quick start takes about five minutes
+and ends with the same counter app running in your terminal and then in a
+native window.
 
-quadraui is published on [crates.io](https://crates.io/crates/quadraui)
-(latest `0.2.2`) — add it with the backend feature(s) your app needs:
+| | Install | Quick start |
+|---|---|---|
+| **Rust** | `cargo add quadraui --features tui` | [Rust](quick-start/rust.md) |
+| **Python** 3.8+ | `pip install quadraui` | [Python](quick-start/python.md) |
+| **Node.js** 22+ / TypeScript | `npm install @quadraui/node` | [Node and TypeScript](quick-start/node.md) |
 
-```toml
-[dependencies]
-quadraui = { version = "0.2", features = ["tui"] }
-```
+## Which backends you get
 
-To track unreleased work instead, depend on the `develop` branch:
+The terminal backend works everywhere. A native window needs that
+platform's backend compiled in:
 
-```toml
-[dependencies]
-quadraui = { git = "https://github.com/JDonaghy/quadraui", branch = "develop", features = ["tui"] }
-```
+| | Terminal | macOS window | Windows window | Linux (GTK4) window |
+|---|---|---|---|---|
+| Rust | `tui` feature | `macos` feature | `win` feature | `gtk` feature (needs `libgtk-4-dev`) |
+| Python wheel from PyPI | yes | yes | yes | build from source |
+| Node package from npm | yes | build from source | build from source | build from source |
 
-The backend features:
+The Linux Python wheel and the npm packages leave the native backends out
+because GTK cannot be bundled into a portable wheel and the prebuilt Node
+addons are built headless. Each quick start shows the source build.
 
-| Feature | Backend |
-|---|---|
-| `tui` | Terminal, via ratatui |
-| `gtk` | GTK4, via Cairo + Pango (needs `libgtk-4-dev` / `pkg-config` to build) |
-| `macos` | Core Graphics + Core Text (only compiles on `target_os = "macos"`) |
-| `win` | Direct2D + DirectWrite |
+## Try it without writing code
 
-## Run the example
+The gallery shows every widget, on whichever backend you build it for:
 
 ```sh
 git clone https://github.com/JDonaghy/quadraui
 cd quadraui
-cargo run -p quadraui --example hello --features tui
+cargo run -p quadraui-gallery --features tui      # or gtk, macos, win
 ```
 
-Press any key to bump the counter; `q` to quit. Swap `--features tui` for
-`--features gtk` (needs GTK4 installed) to run the exact same `Hello` app
-as a native window instead.
-
-## Explore the gallery
-
-```sh
-cargo run -p quadraui-gallery --features tui
-```
-
-Every primitive this site's [Gallery](gallery/index.md) documents lives in
-`quadraui-gallery/src/demos/` — one `Demo` implementation per primitive,
-with a Code tab showing its own source and a Data tab showing the plain
-JSON it renders.
-
-## Where to go next
-
-- [Gallery](gallery/index.md) — every primitive, with its code sample and
-  a backend-support grid.
-- [docs.rs](https://docs.rs/quadraui) — API reference for the published
-  release (or `cargo doc -p quadraui --features tui,gtk --open` from a
-  checkout for unreleased work).
-- [crates.io](https://crates.io/crates/quadraui) — the published crate.
-- [GitHub repository](https://github.com/JDonaghy/quadraui) — source,
-  issues, and `CLAUDE.md`/`CONTRIBUTING.md` for contributing.
+Or browse the generated [Widget gallery](gallery/index.md) on this site.
