@@ -191,10 +191,12 @@ That is what the milestone's paint↔click round-trip tests run against, and it 
 from a headless shell. Only a live-HWND GUI smoke needs a desktop, and that tier is
 operator-run.
 
-**Scope warning for every rasteriser issue in this milestone.** They all replace
-`todo!()` stubs in the *same* file, `quadraui/src/win/backend.rs`. Touch only the
-`draw_*` methods your issue names — a drive-by fix to a neighbouring stub is what
-turns a serialized lane into a rebase conflict.
+**Scope warning for Win paint work.** No widget has Win-specific code: every
+widget paints through `PaintSurface`, which `quadraui/src/win/surface.rs`
+implements over Direct2D. A Win-only paint bug is fixed in that surface (or in
+the widget itself, for every backend at once), never by adding a per-widget
+method to `src/win/backend.rs` — `tests/backend_method_ratchet.rs` and
+`tests/per_backend_file_ratchet.rs` reject both.
 
 ## Reference consumer: vimcode — where each pattern was prototyped
 
@@ -205,7 +207,7 @@ moved since — verify in `~/src/vimcode` before relying on one).
 
 | quadraui feature | vimcode reference code |
 |-----------------|----------------------|
-| `Backend::draw_frame()` (#199) | `src/gtk/draw.rs::draw_editor()` — 3874-line orchestration function that calls each `draw_*` in z-order. This is the spec for what `draw_frame` must do. |
+| Whole-frame paint (#199; today `ScreenLayout` + `Surface::Widget`) | the whole-frame paint in `src/gtk/draw.rs` — a 3874-line orchestration function that paints each part of the window in z-order. It lists every layer a frame paint must cover. |
 | `FrameHitMap` / unified click dispatch (#197, #198) | `src/gtk/click.rs::pixel_to_click_target()` — zone detection pipeline using `screen_zone_hit_test` + `window_zone_hit_test`. Shows every click zone the hit map must cover. |
 | GTK widget tree (#202 Stage 1) | `src/gtk/mod.rs::fn init()` (~2122 lines) — creates every GTK widget, event controller, and draw closure. This is the mechanical boilerplate `AppShell` must generate. |
 | Event wiring (#202 Stage 2) | `src/gtk/mod.rs::fn init()` event controller blocks + `enum Msg` (~333 variants) + `fn update()` (~736-line dispatch). Shows every GDK event type that must be translated. |

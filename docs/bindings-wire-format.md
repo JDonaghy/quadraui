@@ -43,7 +43,9 @@ A `"row"`/`"column"`/`"grid"`/`"split"`/`"tabs"`/
 `"min"`, `"max"` when it's itself a `"row"`/`"column"` child, and the
 chrome keys `"padding"`, `"margin"`, `"gap"` where that node kind supports
 them -- see each node's own field table in the generated reference for
-exactly which it accepts.
+exactly which it accepts. A `"row"`/`"column"` also takes `"wrap": true`,
+which flows children that would overflow the main axis onto a new line;
+each line resolves its own `"justify"`/`"align"`.
 
 Every node kind, including a `"leaf"`, also accepts an optional `"style"`
 key (`StyleValue` in the generated reference): every `Theme` colour field
@@ -58,13 +60,12 @@ siblings, and anything above it in the tree, are unaffected. A nested
 names, and everything it doesn't name falls through to whatever the
 ancestor already set.
 
-**Only `"padding"` feeds back into layout, and only for a `"button"`
-leaf.** Overriding it changes that leaf's own measured size (so a
-`"Content"`-sized sibling, or this scroll's own content length, can shift
-because of it), not just how it paints. Every other metric token
-(`"corner_radius"`, `"border_width"`, and the rest) still affects paint
-only, never this frame's layout -- a `"Content"`-sized sibling never
-shifts because of one of those deeper in the tree.
+**A metric override is in effect while its subtree is measured, not only
+while it paints.** A token a widget's own `Primitive::measure` reads --
+`"padding"` on a `"button"`, for one -- changes that leaf's natural size,
+so a `"Content"`-sized sibling, or the enclosing scroll's content length,
+can shift because of it. A token a widget reads only when painting
+(`"corner_radius"`, `"border_width"`) never moves layout.
 
 **Which token a leaf actually reads varies by kind and, for `"button"`, by
 variant** -- a `"bg"` override reaches a plain `"row"`/`"column"`/`"split"`/
@@ -216,19 +217,27 @@ A `UiEvent` the app's event callback receives takes one of two JSON shapes:
 2. **Single-key tagged object** -- every other variant is
    `{"<Tag>": <payload>}`, optionally alongside a sibling `"hit"` key (the
    hit-tested sub-region a pointer landed on, when the binding attached one
-   -- see `_UiEventDict`'s own doc in the generated reference). Most tags'
-   payload is the event's own data directly (e.g. `MouseDown`'s payload has
-   its own nullable `widget` field, since a click can land outside any
-   widget).
+   -- see `HitDetail` in the generated reference). An event from a generic
+   widget leaf carries `"hit": {"kind": "widget_body"}`. Most tags' payload
+   is the event's own data directly: `MouseDown`'s payload has its own
+   nullable `widget` field, since a click can land outside any widget, and
+   a small widget's own report names the widget inside its payload
+   (`{"SwitchToggled": {"widget": id, "value": true}}`,
+   `{"ButtonActivated": {"widget": id}}`,
+   `{"RadioGroupSelectionChanged": {"widget": id, "index": 1}}`).
 
-A subset of the tagged variants are **widget-wrapped**: their payload is a
+Most widgets report **widget-wrapped** events instead: the payload is a
 `[widget_id, sub_event]` 2-tuple rather than a flat object, because the
-event belongs to one specific widget's own event type rather than
-`UiEvent`'s shared vocabulary -- `Tree`, `List`, `Form`, `Palette`,
-`TabBar`, `StatusBar`, `ActivityBar`, `Terminal`, `TextDisplay`, `Chart`,
-`DataTable`, and `Toolbar`. An app dispatches on `widget_id` first, then
-hands `sub_event` to that widget kind's own event handling -- and
-`sub_event` can itself be a bare string (e.g. `TerminalEvent`'s
+event belongs to that widget's own event type rather than `UiEvent`'s
+shared vocabulary -- `Tree`, `List`, `Form`, `Palette`, `TabBar`,
+`StatusBar`, `ActivityBar`, `Toolbar`, `AppMenu`, `Terminal`,
+`TextDisplay`, `Chart`, `Canvas`, `DataTable`, `TreeTable`,
+`TreeTableController`, `CellGrid`, `MultiSectionView`, `ScrollView`,
+`Editor`, `Minimap`, `Board`, `PipelineView`, `DiffView`, `MessageList`,
+`FindReplace` and `ShellView`, among others (`_UiEventDict` in the
+generated reference lists every tag). An app dispatches on `widget_id`
+first, then hands `sub_event` to that widget kind's own event handling --
+and `sub_event` can itself be a bare string (e.g. `TerminalEvent`'s
 `"SelectEnd"`, `PaletteEvent`'s `"Closed"`) or a tagged object, by the exact
 same two-shape rule as `UiEvent` itself. See each `*Event` def's own table
 in the generated reference for its variants.
@@ -239,7 +248,7 @@ Several leaf descriptors carry a field that mirrors a piece of state the
 binding's engine also tracks per widget across frames, in a
 `quadraui::WidgetStateStore` -- a scroll offset, a checked flag, a focused
 index, a menu bar's open dropdown. Every such field is optional
-(`field_opt` in the generated reference: the key may be omitted) and
+(*Required* is "no" in the generated reference: the key may be omitted) and
 follows the same resolution rule, applied per widget id
 (`WidgetStateStore::resolve` for a host-resolved value, the widget's own
 `Interactive::State` for a generic widget kind):
@@ -258,6 +267,53 @@ binding author having to implement the choice itself. `scroll_offset`,
 `focused_index`, and `checked` across the leaf descriptors in the generated
 reference below are the common examples.
 
+### Selection and scroll on `list`, `tree`, `data_table`, `text_display` and `tab_bar`
+
+These widgets apply a stricter "controlled" test: a descriptor value wins
+only when it **changed** since the widget last saw it. A render callback
+that sends the same `selected_idx`, `selected_path`, `scroll_offset` or
+active tab every frame leaves the widget to keep its own selection and
+scroll, so a key or click moves it with no echo from the app. A new value
+moves the widget, and a selection the app moves out of view scrolls into
+view unless the same frame also sends a new `scroll_offset`. To pin a
+scroll, keep it in the app and send each change as a new value. Every
+move is still reported (`SelectionChanged`, `ScrollOffsetChanged`,
+`TabActivated`, ...), so an app that wants to own the value can.
+
+## Windowed collections: `items_window` and `RowsRequested`
+
+A `list`, `tree`, `data_table` or `text_display` too long to send whole
+sends a slice of its rows plus where the slice sits in the whole
+collection:
+
+```text
+{"id": "rows", "list": {"id": "rows", "items": [ ...rows 5000 to 5049... ],
+  "items_window": {"start": 5000, "total": 1000000}}}
+```
+
+`items` (or `rows`, `lines`) are rows `start..` of `total`. Every index on
+the wire is absolute: `selected_idx`, `scroll_offset` and the row index in
+every event count from the start of the whole collection, not of the
+slice. The widget sizes its scrollbar from `total` and paints a
+placeholder for each row outside the slice. When a key, click, wheel notch
+or scrollbar drag brings rows it does not have into view, the widget
+emits, once per new range:
+
+```json
+{"RowsRequested": {"id": "rows", "start": 4980, "count": 60}}
+```
+
+The app answers by sending rows `start..start + count` on the next frame
+with `items_window.start` set to `start`. `count` is bounded by a few
+viewports, never by `total`. A widget asks only after input, never at
+paint time, so the render callback sends the rows the first viewport
+shows itself; a viewport that grows on resize paints placeholders until
+the next input asks. `scroll_px` (on `list`, `tree` and `data_table`) is an
+optional scroll position finer than a whole row (see its field table).
+A `cell_grid` asks for its cells through its own
+`{"CellGrid": [id, {"CellsRequested": ...}]}` instead.
+`quadraui-py/examples/windowed_list_demo.py` is a runnable example.
+
 ### `Form.focused_field`
 
 A `"form"` leaf's own `focused_field` follows the rule above, with a
@@ -268,10 +324,11 @@ richer uncontrolled behaviour than a plain scroll offset or checked flag:
   or keypress just did inside the form, the same strong pin
   `LayoutScroll::offset` gets.
 - **Uncontrolled** -- the render callback leaves `focused_field` unset
-  (omitted, or explicitly `null`). The host's `InteractionEngine` then owns
-  moving it itself: Tab/Shift-Tab cycle between the form's own fields and
-  leave the form once a cycle at either end has nowhere left to go inside
-  it (handing focus to the next app-level Tab stop instead); Up/Down move
+  (omitted, or explicitly `null`). The form then tracks field focus in its
+  own widget state (`FormState::focused_field`): Tab/Shift-Tab cycle
+  between the form's own fields and leave the form once a cycle at either
+  end has nowhere left to go inside it (handing focus to the next
+  app-level Tab stop instead); Up/Down move
   between fields the currently-focused one doesn't already consume for
   itself (a `DatePicker`/`ComboBox`/`NumberInput`/`RadioGroup` field
   claims Up/Down internally); and clicking a field focuses it. Either way,
@@ -328,24 +385,25 @@ checks an incoming tree's `"wire_version"` against it:
 
 - **Absent key** -- treated as version `1`. Every render callback written
   before this field existed, in either binding, keeps decoding unchanged.
-- **`wire_version` <= the host's constant** -- accepted. The wire shape only
-  ever grows additively (new optional keys, never a changed or removed one
-  -- see `quadraui/docs/PRIMITIVE_RULES.md` rule 8), so a tree built against
-  an older version is still fully decodable by a newer host.
+- **`wire_version` <= the host's constant** -- accepted by the version
+  check. The tree still has to decode against this release's shapes: a
+  release can remove or rename a node kind, a key or an event, and each
+  binding's `CHANGELOG.md` lists those.
 - **`wire_version` > the host's constant** -- rejected with a decode error
   naming both versions, since a binding newer than this host may emit a
   shape this decoder doesn't know about yet.
 
-The constant only moves alongside a real additive wire-shape change, and
+The constant is `1`. It moves only together with a wire-shape change, and
 only once both `quadraui-py` and `quadraui-node` emit the new value.
 
 ## Unknown optional wire key policy
 
-Every wire struct `quadraui-binding-core` decodes by hand (every
-`LayoutNode` variant, `LayoutLeafNode`, `RenderFrameDict`, the `run_shell`/
-`runShell` `config` object, ...) reports a key outside its own documented
-vocabulary — a misspelt optional key like `"cursr"` or `"focussed"` — rather
-than either silently dropping it or always hard-failing:
+Every wire struct `quadraui-binding-core` decodes (every `LayoutNode`
+variant, `LayoutLeafNode`, `RenderFrameDict`, every leaf kind's descriptor
+body, the `run_shell`/`runShell` `config` object, ...) reports a key
+outside its own documented vocabulary — a misspelt optional key like
+`"cursr"` or `"focussed"` — rather than either silently dropping it or
+always hard-failing:
 
 - **Default: warn.** The key reaches a binding's own diagnostic hook (if
   one is registered — `QuiApp`'s `on_unknown_key`/`onUnknownKey`) at most

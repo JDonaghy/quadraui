@@ -78,14 +78,38 @@ Each frame:
 4. The app updates its state, and the next frame's descriptors show the
    result.
 
-**Who owns which state.** Visible content and selection (which tab is
-active, which rows exist, what text a field holds, whether a dropdown is
-open) are descriptor fields the app owns and sets every frame. A widget
-keeps only what it needs between events (hover, a pressed segment, an
-in-progress drag, a keyboard cursor inside the widget) in its
+**Who owns which state.** Content (which rows exist, what a label says)
+is descriptor data the app sends every frame. A widget keeps what it
+needs between events (hover, a pressed segment, an in-progress drag, a
+caret, its own selection, scroll, expansion or active tab) in its
 `Interactive::State`, which the runtime stores per `WidgetId` in
 `WidgetStateStore` so it survives the descriptor being rebuilt. A widget
-whose id stops appearing loses that state.
+whose id stops appearing loses that state. Selection-like descriptor
+fields (`selected_idx`, `scroll_offset`, an `AppMenu`'s `view`) are
+controlled only when the app changes them: a value the app keeps
+resending unchanged leaves the widget to resolve it from its own state,
+and a new value moves the widget (D-035). Each move is still reported
+as the widget's event, so an app that wants to own the value can. The binding layer keeps the
+same store per binding host, so a widget painted from Python or Node.js
+remembers its caret or highlight the same way (§5).
+
+**Collections larger than a frame.** `ListView`, `TreeView`,
+`DataTable` and `TextDisplay` take `items_window: Option<ItemsWindow>`:
+the descriptor carries a slice of rows plus where it sits in the whole
+collection (`start`, `total`). The widget lays out and paints only a
+viewport-sized band, sizes its scrollbar from `total`, paints
+placeholders for rows outside the slice, and after input that reaches
+them reports `UiEvent::RowsRequested { id, start, count }` through
+`Interactive::data_requested`. `behaviour::row_window` holds the band
+arithmetic and the request latch, so a range is asked for once.
+
+**The app layer.** `quadraui::app` is a model-view-update layer over the
+same frame: an app implements `View` (`view` builds a `Node<Msg>` tree of
+`column`/`row` containers and leaves, `update` applies a message), and
+`Run` adapts it to `AppLogic`. It lays the tree out through the core
+stack solver, so the Python (`quadraui.app`) and Node
+(`@quadraui/node/app`) app layers, which build the same tree through
+binding-core, size and focus it the same way.
 
 **Why not retained mode with diffing (React, Relm)?** A simpler mental
 model, no stale-widget or identity-mismatch bugs, and far less work per
@@ -113,7 +137,20 @@ every backend:
   `RoutedEvent` against the same `Layout` paint used, `State` is what it
   remembers between events, and `popups` (with `OPENS_POPUPS`) declares
   dropdowns, calendars and submenus that paint and hit-test above the
-  frame. A widget with no behaviour uses `non_interactive!`.
+  frame. Defaulted hooks cover content the widget needs loaded
+  after an input (`data_requested`), a summary of the state it resolved
+  (`state_summary`), an app event that names it (`follow_event`) and
+  state a layout settled before paint (`settle`). A widget with no
+  behaviour uses `non_interactive!`.
+
+Text editing is one shared core, not per-widget code.
+`behaviour::text_edit` ([`src/behaviour/text_edit.rs`](../src/behaviour/text_edit.rs))
+maps a key to an `EditOp` and applies it through `EditView` (lines plus
+caret) or `apply_flat_edit_op` (a flat `String`); `EditHistory` serves
+undo and redo. `TextInput`, `TextField`, `CommandLine`, `TextArea`,
+`PasswordInput`, `Palette`, `FindReplace` and a `Form`'s text fields all
+edit through it, so caret movement, word motion, selection and undo
+behave the same in every one of them.
 
 `DynWidget` is the type-erased view of any `Interactive` widget, provided
 by a blanket impl. `Surface::Widget` and `DrawsPrimitives::draw_dyn`
@@ -142,22 +179,30 @@ handling belongs in its `Interactive` impl, not in a controller.
 
 ### 3.4 Backends: platform services and rasterisers
 
-A backend implements the `Backend` trait: frame lifecycle, measurement,
-input translation, and platform services (clipboard, file and message
-dialogs, notifications, native menus, tray, window control, secret
-storage, OS file drop). It also supplies a drawing surface: a pixel
-backend implements `PaintSurface` (fill, stroke, text runs and lines,
-images, clips, shadows), and the TUI backend supplies a `CellSurface`
-(glyphs, styles, borders, cursor, inline graphics).
+A backend implements the `Backend` trait, which holds platform services
+only: the viewport and frame lifecycle, theme, style and fonts, text and
+cell measurement, input (event polling, the waker, accelerators, text
+regions and hit zones), native menus and context menus, window drag,
+resize and cursor, the modal and drag stacks, the focus tree and focus
+ring, clipping, frame capture and screenshots, and the `services()`,
+`window()` and `tray()` handles behind which clipboard, file and message
+dialogs, notifications, secret storage and OS file drop live. It also
+supplies a drawing surface through `paint_surface()` or `cell_surface()`:
+a pixel backend implements `PaintSurface` (fill, stroke, text runs and
+lines, images, clips, shadows), and the TUI backend supplies a
+`CellSurface` (glyphs, styles, borders, cursor, inline graphics). A
+widget reaches the terminal only through `CellSurface` verbs; the
+terminal library's own buffer is not part of the public API.
 
-**A widget never needs a `Backend` method.** Backends hold no
-per-widget code, so adding a widget touches no backend and adding a
-backend touches no widget.
-
-<!-- TODO(0.12 final pass): after W9 (#2980, #2981, #2982), confirm no
-widget-specific Backend draw_*/…_layout method survives
-(backend_method_ratchet at its final count) and that the list of
-service groups above matches the trait. -->
+**A widget never needs a `Backend` method.** The trait has no
+`draw_<widget>` or `<widget>_layout` method, and no backend module has a
+per-widget file, so adding a widget touches no backend and adding a
+backend touches no widget. When a widget needs a drawing operation no
+surface offers, the fix is a new backend-neutral `PaintSurface` or
+`CellSurface` verb that every backend implements.
+`tests/backend_method_ratchet.rs` pins the trait at its 66 platform
+methods and fails on any widget-shaped one, and
+`tests/per_backend_file_ratchet.rs` fails on a per-widget backend file.
 
 `BackendCaps` reports what the running backend can do. Where a terminal
 cannot do something (a tray icon, a native dialog) the backend degrades
@@ -242,9 +287,11 @@ bindings possible; breaking one would break them.
    string label.
 2. **Events are plain data.** A widget emits a `UiEvent` carrying its
    `WidgetId`; the app routes on the id. No closure crosses the API.
-3. **Descriptors are serialisable.** Every widget struct under
-   `src/primitives/` implements `Serialize` and `Deserialize`, so a descriptor can be built from JSON, a Lua table
-   or a Python dict.
+3. **Descriptors are serialisable.** Every widget descriptor under
+   `src/primitives/` implements `Serialize` and `Deserialize`, so a
+   descriptor can be built from JSON, a Lua table or a Python dict.
+   `quadraui::decode_widget(kind, value)` turns a kind name and a value
+   into a `Box<dyn DynWidget>` through the `widget_kinds!` table.
 4. **Ids can be namespaced.** An app can reserve a prefix per plugin
    (`"plugin:my-ext:send"`) so plugin ids never collide with its own.
 5. **No global handlers.** Every event names the widget it came from.
@@ -255,9 +302,19 @@ bindings possible; breaking one would break them.
    has widget-specific code (§3.4).
 8. **Paint and hit-test share one layout.** `handle` and `sub_regions`
    read the same `Layout` that `paint` and `paint_cells` draw from.
-
-<!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979),
-check invariants 3 and 6 against the final py/node wire surface. -->
+9. **Bindings use the same widgets.** `quadraui-binding-core`, which the
+   Python and Node.js packages share, decodes a widget leaf into a
+   generic `LeafDescriptor::Widget` and paints, hit-tests and routes it
+   through the widget's own `Primitive` and `Interactive` impls, with no
+   per-kind paint or event code; `LeafDescriptor::Widget` is the only leaf
+   variant, and a render frame carries one map of widgets. A kind
+   is either in the static `WIDGET_KINDS` table or registered at runtime
+   with `register_widget_kind`, so a binding or a crate linking
+   binding-core adds a kind with no table edit. Each widget's
+   `Interactive::State` lives in one `WidgetStateStore` per
+   `InteractionEngine` (`with_widget_states`), and
+   `paint_with_widget_state` installs it for the paint pass, so a widget
+   paints from the state its own event handling walked.
 
 ---
 
@@ -274,7 +331,14 @@ ones that shape everything above:
   LSP) stays in the app; it is not part of quadraui.
 - **Native menu bars:** global on macOS, in-window elsewhere (§3.6).
 - **One crate, backends behind features:** `tui`, `gtk`, `macos`, `win`,
-  plus optional `terminal`, `a11y` and `control`.
+  plus optional `tui-images`, `terminal`, `a11y`, `control` and `schema`.
+  None is on by default.
+- **Python wheels carry the native backend on every desktop OS.** The
+  Linux wheels (x86_64 and aarch64) come in two tags: a
+  `manylinux_2_39` wheel with both a TUI-only and a GTK build of the
+  extension, which loads the GTK build when the host has GTK 4.10 or
+  newer and falls back to the TUI-only build when it does not, and a
+  TUI-only `manylinux_2_17` wheel for older hosts.
 - **Rust 2021.** `rust-version` in `quadraui/Cargo.toml` is the real
   dependency floor, not a fixed offset from the latest stable; see that
   field's own comment and D-019 rule 7 in `DECISIONS.md`.

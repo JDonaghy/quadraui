@@ -46,8 +46,12 @@ has the table.
 - **Text.** Rust has `text("...")`, Python `Text("...")` and Node `<text>` /
   `Text()`, all sized to their content. A span's `fg`/`bg` are optional
   everywhere.
-- **Native windows.** The Linux Python wheel and the npm addons are
-  terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
+- **Native windows.** The Python wheels open a native window on macOS,
+  Windows and Linux (x86_64 and aarch64, glibc 2.39+ with GTK 4.10+); an
+  older Linux host gets a terminal-only wheel. The prebuilt npm addons are
+  terminal-only on every platform, so a native Node window needs the addon
+  built from source with `--features macos|gtk|win`; see
+  [Getting started](getting-started.md#which-backends-you-get).
 
 ## Reference
 

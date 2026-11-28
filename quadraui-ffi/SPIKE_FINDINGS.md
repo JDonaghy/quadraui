@@ -49,9 +49,10 @@ emit the same payload shape:
 - `handle_mouse_down` does **real geometric hit-testing**: it derives the
   same rect `render` paints into from `backend.viewport()`, looks up the
   active list's handle, maps the click position into rect-local
-  coordinates, and calls `backend.list_layout(rect, list).hit_test(local_x,
-  local_y)` — the same `Backend` method `draw_list` itself resolves
-  through, so paint and hit-test can't drift apart. Only a hit on
+  coordinates, and calls
+  `DrawsPrimitives::layout_primitive(backend, rect, list).layout.hit_test(local_x,
+  local_y)` — the same layout the list's own paint resolves, so paint and
+  hit-test can't drift apart. Only a hit on
   `ListViewHit::Item(idx)` emits `list_item_activated`; a hit on the
   title/border/empty area falls back to `None` (the host gets the raw
   `MouseDown` instead).

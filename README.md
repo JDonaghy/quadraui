@@ -154,11 +154,7 @@ run it from a clone until 0.12 ships.
   implements two traits: `Primitive` (lay out and paint) and
   `Interactive` (focus, input, popups). The same code paints on all four
   backends; a backend supplies drawing verbs and platform services and
-  holds no per-widget code.
-  <!-- TODO(0.12 final pass): true once W6-W9 land. After W5 two
-  primitive modules have no Primitive impl and paint through legacy
-  Backend methods (multi_section_view and find_replace), and the backends
-  still hold their rasterisers. After W9 confirm both. -->
+  holds none of any widget's layout, paint or input logic.
 - **Paint and click share one layout.** A widget's `layout(...)` result
   is what it paints from and what its event handler hit-tests against.
   Mouse clicks cannot drift from what is on screen, because both read the
@@ -279,7 +275,9 @@ For sibling-checkout development, use
 Then:
 
 - Run the hero counter above:
-  `cargo run -p quadraui-hero --features tui --bin counter`. Then try
+  `cargo run -p quadraui-hero --features tui --bin counter`. It is a
+  `quadraui::app::View`; Step 0 of the guide compares that with the
+  `AppLogic` and `ShellApp` runners. Then try
   `hello` (`quadraui/examples/hello.rs`, the same idea on `ShellApp`) and
   `tui_demo` / `gtk_demo`, which use one `AppLogic` body under two runners.
 - Or start a new app from the `templates/app` starter —
@@ -421,13 +419,6 @@ The exceptions are the two shared-math modules `layout_metrics` and
 `row_stack`, which hold arithmetic several widgets reuse rather than a
 widget of their own. Among them:
 
-<!-- TODO(0.12 final pass): the claim above that every module except
-layout_metrics and row_stack implements Primitive and Interactive holds once
-W6 (#2971 MultiSectionView, and FindReplace split off F5) lands. Today
-these lack it: multi_section_view and find_replace. After W9 re-run
-`git grep -n "Primitive for"` over src/primitives and confirm none is missing;
-recount the modules against readme_truth. -->
-
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
@@ -448,11 +439,6 @@ or a whole app-level flow (a shell, a menu system, a form dialog), so an
 app matches on semantic events (`AppMenuEvent::Activated`,
 `SidebarEvent::RowSelected`) instead of raw mouse coordinates. A single
 widget's own input handling lives in its `Interactive` impl, not here:
-<!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
-re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
-(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays).
-readme_truth's readme_compose_table_names_every_compose_controller checks
-the table against the module list. -->
 
 | Controller | What it handles |
 |---|---|
@@ -490,8 +476,12 @@ common, so none of them re-derives its own: `ensure_visible` /
 into view), `FlatNav` (clamped or wrapping index movement with
 disabled-item skipping) and `TreeNavCore` (the row-type-agnostic core
 `TreeView` navigates with: selection by path, arrow/page/Home/End
-movement, scroll-follow and scrollbar drag over any flattened rows), and
-`Typeahead` (debounced type-to-jump).
+movement, scroll-follow and scrollbar drag over any flattened rows),
+`Typeahead` (debounced type-to-jump), `text_edit` (the one text-editing
+core, with undo, behind every editable widget) and `row_window` (the
+windowing that lets `ListView`, `TreeView`, `DataTable` and `TextDisplay`
+page through a collection the app sends a slice at a time, asking for
+more rows with `UiEvent::RowsRequested`).
 
 **Platform services:** clipboard, file open/save and folder dialogs,
 message dialogs, notifications, `open_url`, reveal-in-file-manager, move

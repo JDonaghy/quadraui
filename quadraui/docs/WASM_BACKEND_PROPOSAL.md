@@ -154,9 +154,9 @@ one: same core crate, same descriptor/event model, different glue.
 Rust core (unchanged)                 Browser
 ──────────────────────                ───────
 AppLogic / ShellApp (unchanged)
-  draw_tree / draw_list / draw_form ─┐
-  → primitives::*::native_surface_   │ each verb → Canvas2D call
-    paint(&mut dyn PaintSurface) ────┤
+  every widget's Primitive::paint ───┐
+  (DrawsPrimitives::draw_dyn)        │ each verb → Canvas2D call
+    → &mut dyn PaintSurface ─────────┤
 WasmBackend: impl PaintSurface ──────┘
   + WindowControl (resize/title→
     document.title, no real window)

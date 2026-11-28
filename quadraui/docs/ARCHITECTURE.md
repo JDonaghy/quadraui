@@ -32,21 +32,6 @@
   no per-widget painter, layout or routing. See the root `README.md`'s
   *Status* section for how far each backend gets today, and
   [`../BACKEND.md`](../BACKEND.md) for what implementing one involves.
-  <!-- TODO(0.12 final pass): after W9 (#2981 plus the residue sweep), confirm
-  src/{tui,gtk,macos,win}/ hold no per-widget file (today: tree.rs, list.rs,
-  data_table.rs, split.rs, split_tree.rs, chart.rs, board.rs, diff_view.rs,
-  pipeline_view.rs, message_list.rs, multi_section_view.rs, progress.rs,
-  spinner.rs, scrollbar.rs and others) and no draw_<widget> method in any
-  backend.rs. If any survive, name them here as legacy. -->
-
-**GTK hosting helpers** in `quadraui/src/gtk/`:
-
-- `MenuOverlay` — encapsulates the DrawingArea boilerplate for
-  `AppMenu` dropdown popups when the menu bar lives in a separate
-  titlebar widget. Handles the negative-y coordinate transform,
-  `set_focusable(false)`, `can_target` toggling, surface clearing,
-  and draw/click/motion wiring. Apps that use the single-DA runner
-  don't need this — the dropdown paints on the same surface.
 
 **Cross-backend runtime** sits at the top of `quadraui/src/`, shared by
 all four backends:
@@ -79,16 +64,16 @@ all four backends:
   the full shell chrome (activity bar + sidebar + main content) instead
   of implementing `AppLogic` directly. Each backend's `run_with_shell()`
   owns window creation, event wiring, and chrome rendering; the
-  consumer renders only its own content. `shell_adapter.rs` is the
-  shared `AppLogic` impl every backend's shell runner instantiates.
-  <!-- TODO(0.12 final pass): after W7/DC2 (#2958, AppShell -> ShellView),
-  re-check this bullet's file names and what run_with_shell hands
-  render_content. -->
+  consumer renders only its own content, in
+  `ShellApp::render_content(backend, &ShellLayout)`, from the rects the
+  `ShellView` chrome (`compose/app_shell.rs`) laid out.
+  `shell_adapter.rs` is the shared `AppLogic` impl every backend's shell
+  runner instantiates.
 
 `Backend` is `pub` but sealed: no implementation outside this crate
-(D-013), and `tests/backend_method_ratchet.rs` lets its method count only
-shrink. A new widget never adds a `Backend` method or a file under a
-backend directory; if a painter needs something no surface can do, the
+(D-013), and `tests/backend_method_ratchet.rs` pins its body to an exact
+list of platform-service methods. A new widget never adds a `Backend`
+method or a file under a backend directory; if a painter needs something no surface can do, the
 new verb goes on `PaintSurface` or `CellSurface` for every backend.
 
 **Audits.** `docs/audits/FRAMEWORK_AUDIT_2026-09-26.md` is the most recent

@@ -33,12 +33,31 @@ task:
         )
 ```
 
+A list, tree, table, text display or tab bar follows a value you pass
+only when it changes. Passing the same `selected` every frame therefore
+never fights the keyboard: the widget moves, reports the move, and goes
+where you send it next.
+
 To read widget state you did not control, ask for it by id:
 `app.widget_state("tasks:list")` in Python, `app.widgetState(...)` in Node.
 
 In Rust the split is in the widget contract itself: anything the app sets
 is a field on the widget struct, and the widget's private
 `Interactive::State` lives in the runtime's per-id store.
+
+## Collections too large to send
+
+A list, tree, table or text display can hold a million rows without the
+app sending them all. Send a slice and say where it sits with
+`items_window: {"start": ..., "total": ...}` (`Some(ItemsWindow::new(start,
+total))` in Rust). The widget scrolls over the whole `total`, paints
+placeholders for rows it does not have, and when input brings them into
+view it sends `{"RowsRequested": {"id", "start", "count"}}`
+(`UiEvent::RowsRequested` in Rust); answer by sending those rows next
+frame. Every index stays absolute. `quadraui-py/examples/windowed_list_demo.py`
+is a complete example, and the
+[wire format](https://github.com/JDonaghy/quadraui/blob/develop/docs/bindings-wire-format.md)
+has the rules.
 
 ## If you know...
 

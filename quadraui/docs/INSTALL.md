@@ -54,6 +54,17 @@ declared.
 | `win` | `quadraui::win`: Win32 native backend (Direct2D + DirectWrite) | Windows (MSVC). Type-checks elsewhere, runs only on Windows |
 | `terminal` | `quadraui::terminal_engine`: PTY + vt100 + scrollback, for embedding a terminal in your app | Any. No renderer of its own; pairs with any backend |
 
+Three optional features add to a backend rather than being one. None is on by default:
+
+| Feature | Gives you | Pulls in |
+|---|---|---|
+| `tui-images` | Real pixels for `Image` widgets and `Canvas` image ops on a terminal that speaks the Kitty graphics protocol (`quadraui::tui::image_decode`). Without it, or on another terminal, an image paints its `fallback_text` | `tui`, and the `image` crate (PNG, JPEG, GIF, WebP) |
+| `a11y` | `From` conversions from quadraui's `A11yRole`/`A11yInfo` accessibility model to `accesskit` types. The model and `a11y::tree` snapshots compile without it | the `accesskit` crate |
+| `control` | `quadraui::control`: a cloneable, `Send` `ControlHandle` that another thread uses to snapshot a running app's accessibility tree, route an accessibility action or synthesise keys, through the same dispatch real input takes. Each runner (`tui`, `gtk`, `macos`, `win`) hands one out from `attach_control` | nothing |
+
+A fourth, `schema`, derives `schemars::JsonSchema` on every wire-facing type; it exists for
+`quadraui-binding-core`'s wire-schema export and an app does not need it.
+
 Platform services (clipboard, trash, secret store) come with each backend feature; you do
 not enable them separately.
 
@@ -111,8 +122,9 @@ backend yourself: with the GTK 4 `-dev`/`-devel` package and a Rust toolchain in
 On every PR that touches `quadraui-py`, the wheels workflow installs from a directory
 holding both wheels into clean containers: `ubuntu:24.04`, `fedora:40` and `fedora:42`
 with GTK (a window must paint), `ubuntu:24.04` and `fedora:42` without GTK (`run_native()`
-must raise naming `libgtk-4.so.1`), and `debian:12` (pip must pick the TUI-only wheel). The
-reasoning is in
+must raise naming `libgtk-4.so.1`), and `debian:12` (pip must pick the TUI-only wheel). On
+an aarch64 runner it repeats the `ubuntu:24.04` (with and without GTK) and `debian:12` rows
+against the aarch64 wheels. The reasoning is in
 [`quadraui-py/docs/LINUX_NATIVE_WHEELS.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-py/docs/LINUX_NATIVE_WHEELS.md).
 
 ### macOS
@@ -169,6 +181,8 @@ work but is not checked.
 | Windows (`windows-latest`) | `tui`, `win` | build, tests, clippy, cross-backend conformance matrix |
 | macOS (`macos-latest`) | `macos` | build, tests, clippy, conformance matrix. Runs on PRs that touch `quadraui/src`, and weekly |
 | macOS (`macos-latest`) | `gtk`, `macos,tui,gtk` | tests against Homebrew GTK, cross-backend parity |
+| Linux, Windows (the `tui` + `win` matrix) | `a11y`, `tui-images`, `control` | each on its own: its tests and clippy. `control` also with `tui` |
+| Linux, Windows, macOS | `gtk,control`, `win,control`, `macos,control` | the control-channel test on that backend |
 
 ## Next
 

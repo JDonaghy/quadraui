@@ -31,6 +31,18 @@ RUSTFLAGS="-D warnings" cargo check -p quadraui --features macos \
     --target aarch64-apple-darwin --all-targets
 ```
 
+**Binding changes:** a change under `quadraui-binding-core/`,
+`quadraui-py/` or `quadraui-node/`, or to any descriptor, event or style
+type a binding serialises, also runs the binding suites and the
+wire-type check (from the repo root):
+
+```bash
+cargo test -p quadraui-binding-core
+scripts/test_quadraui_py.sh            # builds the extension, runs pytest
+(cd quadraui-node && npm ci && npm run build:debug && npm test)
+scripts/check_wire_types.sh            # generated .pyi / .d.ts are current
+```
+
 **Mini-app validation:** if the change affects a widget consumed by
 the kubeui demos, verify they still build:
 
@@ -55,9 +67,14 @@ table in the same PR.
 | `tui + win (build, test, clippy)` | ubuntu-latest **and** windows-latest, both blocking | `cargo build`/`test`/`clippy --features tui`; benches (verify-only); the `win`-feature compile check and arithmetic-only unit tests on Linux; the macOS cross-target compile check; on windows-latest, a real `--features win` build, test and clippy against Direct2D (`src/win/testing.rs`'s `HeadlessSurface`); the Tier-3 pty smoke suite (`--features tui,terminal --test tui_pty_smoke`); the `terminal_engine` unit tests; the `a11y`, `tui-images` and `control` feature legs; the conformance matrix, uploaded as an artifact per OS (plus the `win` C0 and Tier-1 tables on windows-latest) |
 | `gtk (build, test, clippy)` | ubuntu-latest | `cargo build`/`test`/`clippy --features gtk,tui` (both backends, for `cross_backend_parity.rs` and every two-backend widget test); quadraui-py `check` under `gtk`/`macos`/`win`; the gtk+tui conformance matrix, uploaded as an artifact |
 | `quadraui-py (maturin develop + pytest)` | ubuntu-latest | The Python binding's test suite |
+| `Cross-language parity (Rust / Python / Node, TUI)` | ubuntu-latest | `examples/parity/{rust,python,node}`, one app in three languages, driven by one input script; `scripts/parity_check.py` fails unless every step renders the same cell grid and fires the same app updates in each language |
+| `template` | ubuntu-latest | Generates `templates/app` with `cargo generate` and builds and tests it |
 | `downstream consumers (compile truth)` | ubuntu-latest | `cargo check --all-targets` against coord-tui and vimcode, both redirected onto this PR's quadraui checkout |
 | `gallery capture (tui/gtk/windows)` | ubuntu-latest, windows-latest | Renders the gallery pages to PNGs, uploaded as artifacts for visual review |
 | `macOS` (separate workflow, `macos.yml`) | macos-latest; push to `develop` and PRs to `main` touching `quadraui/src/**`, plus weekly and manual dispatch | `cargo build`/`test`/`clippy --features macos` — the only CI place `src/macos`'s tests (including `MacDriver`'s) run. A develop PR is tested on a Mac by the coordinator's Test stage instead |
+| `quadraui-ffi` (separate workflow, `ffi.yml`) | per-OS matrix | `quadraui-ffi` build, test and clippy |
+| `npm test (plain build) + npm pack` (separate workflow, `quadraui-node-build.yml`) | ubuntu-latest | The Node.js binding's test suite and package build |
+| Python wheels (separate workflow, `quadraui-py-wheels.yml`) | per-OS matrix, plus `ubuntu-24.04` and `ubuntu-24.04-arm` | `wheel (<os>)` builds the per-OS wheels, including the TUI-only `manylinux_2_17` Linux wheel; `wheel (linux, gtk, <arch>)` builds the `manylinux_2_39` wheel carrying both the TUI-only and the GTK build of the extension for x86_64 and aarch64; `linux smoke (<distro>)` installs from both Linux wheels into clean distro containers, with and without GTK, and checks which wheel pip picks, the TUI path, and either a painted GTK frame under Xvfb or the `UnsupportedError` a host without GTK gets |
 | `fuzz` (separate workflow, `fuzz.yml`) | ubuntu-latest, `schedule` (daily) + `workflow_dispatch` only, never `push`/`pull_request` | `cargo +nightly fuzz run <target>` for each target in `quadraui/fuzz/fuzz_targets/`, 5 minutes each; see "Property tests and fuzzing" below |
 
 ## Property tests and fuzzing (quadraui#1130)
@@ -666,7 +683,8 @@ backends get pixel checks. Don't try to share these.
 
 `quadraui::testing::FrameInventory` (`quadraui/src/testing/mod.rs`, no
 backend feature gate) is the backend-neutral answer to "what did this
-frame paint, and where":
+frame paint, and where" (a shape summary with the private fields
+elided, so not compilable as written):
 
 ```rust,ignore
 pub struct TextRun { pub text: String, pub bounds: Rect }
@@ -813,12 +831,31 @@ tests in `tests/tui_example_driver.rs`.)
 ### The tiers (a new backend's burn-down checklist)
 
 - **C0 — Boot (day one).** Construct the backend headless;
-  `begin_frame`/`end_frame`; sane viewport; draw every case in
-  `tests/conformance/c0.rs`'s `CASES` once with a canned descriptor — no
-  panic **and** an observable frame (non-empty `text_runs()` for a
-  text-bearing case, or a registered zone). This turns silent no-op
-  paint paths into visible red/green immediately.
-  <!-- TODO(0.12 final pass): after W9, re-read tests/conformance/c0.rs. Today CASES holds one entry per legacy Backend draw_* method and `cases_cover_every_draw_method_on_the_trait` enforces that; once the per-widget methods are gone the cases are `draw_dyn(<Type>)` and the coverage rule changes. Describe what CASES must cover then, and name the test that holds it. -->
+  `begin_frame`/`end_frame`; sane viewport; paint every primitive once
+  with a canned descriptor — no panic **and** an observable frame
+  (non-empty `text_runs()` for a text-bearing case, or a registered
+  zone). This turns silent no-op paint paths into visible red/green
+  immediately. Two tables cover it, because a widget paints through
+  `DrawsPrimitives::draw_dyn` and only frame-level chrome is a `Backend`
+  method:
+  - **Widgets:** the sealed slice
+    `tests/acceptance/ms-11/c0_paint_smoke.rs` (run by
+    `cargo test --test acceptance --features tui,gtk`) paints one
+    `draw_dyn(<Type>)` case per primitive (status bar, tab bar, command
+    line, message list, text display, list, tree, pipeline, diff view,
+    tooltip, spinner, progress bar, scrollbar, terminal divider, drop
+    overlay) on TUI and GTK, and asserts every case survives, reports
+    its text, and is observable; a chrome-only case must register a
+    zone.
+  - **Frame-level `Backend` draws:** `tests/conformance/c0.rs`'s `CASES`
+    has one entry per `draw_*` method the `Backend` trait declares,
+    which is `draw_focus_ring` alone.
+    `cases_cover_every_draw_method_on_the_trait` parses the trait body
+    and fails if `CASES` and the trait disagree in either direction, and
+    `draw_fns_outside_the_backend_trait_are_declared_exempt` requires
+    every other `fn draw_*` in `backend.rs` (`draw_dyn`,
+    `draw_primitive`, which no backend can override) to be listed with
+    its reason in `NON_TRAIT_DRAW_FNS`.
 - **C1 — Interaction core (mandatory for "complete").** The Tier-1
   scenarios: click routing, keyboard focus, modal occlusion,
   scroll-under-cursor, split relayout, tab close, menu
@@ -870,21 +907,27 @@ dialog.blocks_click_through         1  pass  pass
 ...
 ```
 
-### Burn-down columns: registered, reported, not gating (quadraui#708)
+### Burn-down columns: every column gates today; a new backend joins as burn-down (quadraui#708)
+
+**Every column registered today is blocking.** In the scenario suite
+that is `tui`, `tui-vt100`, `gtk`, `macos` and `win`; in
+`c0_paint_smoke` it is `tui`, `gtk` and `win` (on Windows). A `FAIL` or
+`PANIC` cell in any of them fails the test. macOS runs the scenario
+suite but has no C0 column.
 
 A backend whose paint paths are still landing needs a column *before* it
 can pass one — otherwise "the artifact is the implementation checklist"
 is impossible to satisfy, because adding the column would red every PR on
 that platform's CI leg. `runner::Gating` separates the two decisions:
 
-- `BackendReg::register::<F>(name)` — **blocking.** A `FAIL` cell fails
-  `conformance_matrix`. Every scenario-suite column (`tui`, `tui-vt100`,
-  `gtk`, `macos`, `win`) is registered this way.
-- `BackendReg::register_burn_down::<F>(name)` — **reported, not gating.**
-  Cells render identically in the matrix and the detail block, the
-  artifact still carries them, and a legend under the table names every
-  non-gating column so a reader can never mistake one for a regression.
-  A newly added backend starts here.
+- `BackendReg::register::<F>(name)` / `Gating::Blocking` — **blocking.**
+  A `FAIL` cell fails `conformance_matrix` (or `c0_paint_smoke`).
+- `BackendReg::register_burn_down::<F>(name)` / `Gating::BurnDown` —
+  **reported, not gating.** Cells render identically in the matrix and
+  the detail block, the artifact still carries them, and a legend under
+  the table names every non-gating column so a reader can never mistake
+  one for a regression. A newly added backend starts here; no column
+  uses it today.
 
 Burn-down is self-expiring, not a permanent exemption: if a burn-down
 column runs at least one scenario and fails *none* of them,
@@ -895,13 +938,13 @@ anything.
 
 **`c0_paint_smoke` shares the same `runner::Gating` enum**, applied to
 its per-case grid: each column in that test's `Column` list carries a
-`gating` field. `win` is `Gating::BurnDown` there today; its
-`PANIC`/`FAIL` cells print on a "non-gating C0 gap(s)" line separate from
-the blocking gap list and are excluded from the assertion. The same
-legend and the same self-expiring promotion check apply: a burn-down
-column with zero failing cases fails `c0_paint_smoke` until it is moved
-to `Gating::Blocking`. There is no capability-skip concept at this tier
-— every case always runs — so only "ever failed" counts.
+`gating` field. A `Gating::BurnDown` column's `PANIC`/`FAIL` cells
+print on a "non-gating C0 gap(s)" line separate from the blocking gap
+list and are excluded from the assertion. The same legend and the same
+self-expiring promotion check apply: a burn-down column with zero
+failing cases fails `c0_paint_smoke` until it is moved to
+`Gating::Blocking`. There is no capability-skip concept at this tier —
+every case always runs — so only "ever failed" counts.
 
 ### TUI: two observers, one row each (quadraui#555)
 
@@ -1052,7 +1095,8 @@ Everything else — the fixture registry, the step interpreter, the
 matrix — is backend-agnostic. `DynDriver` is the object-safe view of
 `ConformanceDriver` (which is `Sized`, so it can't be a trait object);
 one blanket impl covers every present and future driver. The new
-backend's C0 column is one more `columns.push` in `c0_paint_smoke`.
+backend's C0 column is one more `columns.push` in `c0_paint_smoke`, with
+`gating: Gating::BurnDown` until it passes.
 
 ### Capabilities: a skip must name what's missing
 
@@ -1082,9 +1126,7 @@ assertable zone ids is therefore explicit:
 | `<id>:<name>` | any widget that names a sub-part with `Interactive::sub_region_name` | every frame that sub-part exists |
 | `app-shell:window`, `app-shell:activity-bar`, `app-shell:main-content` | `ShellView` (id `app-shell`) | always |
 | `app-shell:title-bar`, `app-shell:sidebar-header`, `app-shell:sidebar-content`, `app-shell:divider`, `app-shell:bottom-panel`, `app-shell:command-line`, `app-shell:status-bar` | `ShellView` | when that region exists this frame |
-| the panel's own id, e.g. `panel:explorer` | the app shell, one per activity-bar item | every frame |
-
-<!-- TODO(0.12 final pass): after W7 (#2958 deletes AppShell), confirm what registers the per-panel activity-row zones (`panel:explorer`, …) — today `AppShell::render` registers them by hand — and update the last row. -->
+| the panel's own id, e.g. `panel:explorer` | `ShellView::render`, one per activity-bar item | every frame it paints the shell |
 
 Every driver forwards whatever the frame registered, so a zone available
 on one backend is available on all; `tests/widget_contract_shell_view.rs`
@@ -1104,14 +1146,16 @@ Before writing an `assert_inside` against a new widget, give it a
 ### Known coordinate-free gaps
 
 - **Split-divider drag.** A split divider has no text on the pixel
-  backends — it's a filled rect — and publishes no zone, so there is
-  nothing for `drag_text` to name. `split.direction_toggle_relayout` and
+  backends — it's a filled rect. `Split` and `SplitTree` name it as a
+  sub-region (`Interactive::sub_regions`), so a Rust driver test reaches
+  it with `painted_sub_center`, but neither gives it a
+  `sub_region_name`, so it publishes no zone and a scenario has nothing
+  for `drag_text` to name. `split.direction_toggle_relayout` and
   `split.resize_via_keyboard` cover split relayout relationally instead.
-  Unblocked by a divider zone plus a zone-anchored drag step.
+  Unblocked by a divider `sub_region_name` plus a zone-anchored drag
+  step.
 - **Editor click-to-caret** needs a caret-position read-back on
   `ConformanceDriver`.
-
-<!-- TODO(0.12 final pass): after W5 (#2968 ports Split/SplitTree onto the contract), check whether the divider is now a named sub-region published as a zone; if so, rewrite the split-divider gap. -->
 
 ## Backend testability requirement
 
@@ -1131,6 +1175,36 @@ A new backend ships with its harness on day one: a driver implementing
 `DriverInput` and `ConformanceDriver`, including `inventory()` (see the
 `FrameInventory` backend checklist above), and a column in both
 conformance tests.
+
+## Structural ratchets: one implementation per widget
+
+The widget contract is held by source-parsing tests (each parses real
+source with `syn`, not a line grep) plus one CI script. They run in the
+ordinary `cargo test --features tui`, so a PR that reintroduces
+per-backend widget code fails locally before review.
+
+| Test | What it pins |
+|---|---|
+| `tests/backend_method_ratchet.rs` | `trait Backend` declares exactly the 66 platform methods in `BACKEND_PLATFORM_METHODS`; no trait method is named `draw_*` (other than `draw_focus_ring`) or ends in `_layout`; no `Primitive` type in `src/primitives/` has a bespoke `draw_<stem>`/`<stem>_layout` pair on the trait |
+| `tests/per_backend_file_ratchet.rs` | each of `src/{tui,gtk,macos,win}/` holds exactly the platform files `PLATFORM_FILES` names; each directory's non-test line count may only shrink (`RATCHET_WRITE=1` re-derives `BACKEND_BASELINES`); `frame::Surface` has exactly `Widget` and `Opaque` |
+| `tests/widget_contract_coverage.rs` | every type in the `widget_kinds!` table and every non-test `impl Primitive` also has `impl Interactive` or `non_interactive!` |
+| `tests/duplicate_symbols_deny_list.rs` | symbols the contract replaced stay gone from the non-test source (comments included) of `quadraui`, `quadraui-binding-core`, `quadraui-py/src` and `quadraui-node/src`; `trait Backend` declares none of the removed widget methods; no backend file is named after a widget |
+| `scripts/backend_loc_ratchet.py` (CI job `Backend line-count ratchet`) | the non-test line counts of the four backend directories and `quadraui-binding-core/src` against `scripts/backend_loc_baseline.json`; growth past a small allowance and any shrink both fail, and `--write` lowers shrunk entries |
+
+A widget that needs a drawing operation no surface verb offers adds a
+`PaintSurface` or `CellSurface` verb, never a `Backend` method, so none
+of these numbers moves when a widget is added. A PR that shrinks a
+backend directory lowers both line-count baselines in the same change.
+
+The binding layer has the same guarantee from the other side.
+`quadraui-binding-core/tests/third_binding.rs` builds a host from
+`quadraui` and `quadraui-binding-core`'s public API alone and decodes,
+lays out, paints and routes a built-in kind, a runtime-registered kind
+and a scripted kind through the generic widget leaf, with the engine's
+widget state installed for paint
+(`InteractionEngine::paint_with_widget_state`).
+`quadraui-binding-core/tests/out_of_crate_widget.rs` does the same for a
+widget defined outside both crates.
 
 ## Backend `todo!()` gate (quadraui#923)
 
@@ -1483,31 +1557,23 @@ toward "things that genuinely need eyes".
      rather than reporting "dismissed with no choice".
 
 - **macOS tests still depend on the host having Menlo installed**
-  (quadraui#1110, second half — deliberately **not** done by the
-  `tools/lint` extraction above). `MacDriver::new` (`src/macos/testing.rs`)
-  installs `make_font("Menlo", 14.0)` as the default font before every
-  headless macOS test runs, mirroring what `macos::run` installs for a
-  real window, and roughly a dozen individual tests additionally call
-  `make_font("Menlo", …).expect("Menlo installed on every macOS host")`
-  directly (`macos/text.rs`, `macos/status_bar.rs`, `macos/minimap.rs`,
-  `macos/toolbar.rs`) — 82 `"Menlo"` string literals across 37 files in
-  `src/macos/` in total (`rg '"Menlo"' quadraui/src/macos | wc -l`), most
-  of them reached transitively through `MacDriver::new`. `#929`'s
-  `Backend::register_font_from_memory` (`macos::text::register_font_from_memory`)
-  exists and is exercised by its own unit tests, but nothing wires an
-  embedded test-font's bytes into `MacDriver::new` or the direct
-  `make_font("Menlo", …)` call sites yet — a fork/CI runner without
-  Menlo (any non-macOS-with-full-font-set host, or a locked-down macOS
-  image) still fails the whole `--features macos` test leg on font
-  lookup, not on anything the PR under test actually changed. Doing this
-  right means picking (or generating) an embeddable monospace font,
-  re-deriving every pixel-metric assertion tuned to Menlo's actual glyph
-  advances against the embedded font's metrics instead, and re-verifying
-  `cargo test --features macos` on a real macOS host — large enough that
-  it needs its own tracked issue and its own PR rather than riding along
-  with the `tools/lint` extraction (which only moves *maintainer-workflow*
-  meta-tests, and touches nothing under `src/macos/`). Today this is
-  mitigated, not solved: `.github/workflows/macos.yml` only runs on
-  `macos-latest`, which ships Menlo, so CI itself doesn't hit this gap —
-  it is a real gap for anyone running `cargo test --features macos` on a
-  macOS host that lacks it.
+  (quadraui#1110). `MacDriver::new` (`src/macos/testing.rs`) installs
+  `make_font("Menlo", 14.0)` as the default font before every headless
+  macOS test runs, mirroring what `macos::run` installs for a real
+  window, and the unit tests in `src/macos/backend.rs`,
+  `src/macos/surface.rs`, `src/macos/text.rs` and
+  `src/macos/headless.rs` call `make_font("Menlo", …)` directly — 57
+  `"Menlo"` string literals across 6 files in `src/macos/`
+  (`rg '"Menlo"' quadraui/src/macos | wc -l`).
+  `Backend::register_font_from_memory`
+  (`macos::text::register_font_from_memory`) exists and has its own
+  unit tests, but nothing wires an embedded test font's bytes into
+  `MacDriver::new` or the direct `make_font("Menlo", …)` call sites, so
+  a macOS host without Menlo (a locked-down image, a fork's runner)
+  fails the whole `--features macos` test leg on font lookup rather
+  than on anything the PR under test changed. Fixing it means choosing
+  an embeddable monospace font, re-deriving every pixel-metric
+  assertion tuned to Menlo's glyph advances, and re-verifying
+  `cargo test --features macos` on a real Mac. `.github/workflows/macos.yml`
+  runs only on `macos-latest`, which ships Menlo, so CI does not hit
+  this gap.

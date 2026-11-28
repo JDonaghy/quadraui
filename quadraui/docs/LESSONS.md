@@ -10,12 +10,9 @@ The rules below are written against the widget contract. A widget is one
 type that implements `Primitive` (layout and paint, `src/primitive.rs`)
 and `Interactive` (behaviour, `src/interactive.rs`). It is painted
 through `DrawsPrimitives::draw_dyn` or `Surface::Widget`, and routed
-through a `FrameTree`. Backends are platform services and rasterisers;
-they have no per-widget methods.
-
-<!-- TODO(0.12 final pass): after W9 (#2981), confirm `trait Backend` has no
-widget-named draw_*/ *_layout method (backend_method_ratchet baseline 66, 111
-today). -->
+through a `FrameTree` (or, from Python and Node.js, through
+binding-core's generic widget leaf). Backends are platform services and
+rasterisers; they have no per-widget methods.
 
 ## Paint/click drift is the structural bug class quadraui exists to eliminate
 
@@ -300,6 +297,24 @@ driver, or before the repaint it samples). Never weaken a tint
 assertion to tolerate leftover hover. A test that needs a specific hover
 pins it instead: pass an explicit `InteractionState` as `draw_dyn`'s
 `state`, or build a `PaintEnv` with `with_interaction`.
+
+## A controlled field needs a working default when the host never echoes it
+
+First hit (2026-11-27, #2977): once the binding `menu_bar` leaf decoded
+to core `AppMenu`, a menu bar in an app that never echoed the menu's
+open state back (quadraui-files) would not open. `AppMenu` kept which
+menu was open only in its descriptor `view`, the host rebuilt the
+descriptor every frame with the default `view`, and each click's open
+was thrown away on the next frame.
+
+The rule: a widget whose visible state is a descriptor field the host
+owns (controlled mode) must also work when the host leaves that field at
+its default. Treat the default as *uncontrolled*: keep the state the
+widget's own `handle` moves to in `Interactive::State`, and paint from
+that until the host sets the field. `AppMenu::view` does this: at
+`AppMenuView::default()` the open menu lives in `AppMenuState`. Test the
+widget both ways, once with a host that echoes every event back into the
+descriptor and once with a host that does not.
 
 ## What NOT to do
 

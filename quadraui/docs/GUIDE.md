@@ -20,6 +20,11 @@ input. Step 3 below also paints some widgets by hand at a `Rect` it
 computes itself. See "How a host paints, routes and tests a widget" in
 [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) for the whole host side.
 
+The Rust blocks in Steps 2 to 5 are consecutive pieces of one `src/main.rs` (Step
+5's test goes in a `#[cfg(test)]` module); put together in order they build and
+the test passes against this release. Each is marked `ignore` for rustdoc because
+no single piece compiles on its own.
+
 Every code sample here opens with `use quadraui::prelude::*;`. The
 prelude is a deliberately small subset of quadraui's ~500 crate-root
 exports — the two runner traits, the event/geometry types, and a
@@ -31,22 +36,31 @@ front door.
 
 ## Step 0: which runner do I want?
 
-quadraui has two ways to plug your app into a backend, and picking the
+quadraui has three ways to plug your app into a backend, and picking the
 wrong one wastes the most time of anything in this guide. Decide before
 you write any code:
 
 | You want | Implement | Call | Feels like |
 |---|---|---|---|
+| The shortest path: state, a view of it, and messages that change it, the same shape as the Python and Node app layers | [`View`] (`quadraui::app`) | `run_tui(app)` / `run_native(app)` | Elm or iced: `view` builds a `column`/`row` tree of nodes each frame, a node maps its events to a `Msg`, and `update` applies it. The README's counter is this shape. |
 | Full control over every pixel/cell — you lay out everything yourself | [`AppLogic`] | `quadraui::tui::run(app)` / `quadraui::gtk::run(app)` | A blank canvas: one `render`, one `handle`, you own all of it. |
 | VS-Code-style chrome for free — activity bar, sidebar, title bar, status bar, bottom panel — and you fill in the *content* of each panel | [`ShellApp`] | `quadraui::tui::shell_runner::run_with_shell(app, config)` / the GTK equivalent | A window manager you configure, not one you build. |
 
+`View` covers apps built from `column`/`row` stacks of the leaves
+`quadraui::app` provides (`text`, `button`, `list`, `form`,
+`status_bar`) plus any widget wrapped with `widget` through the `Leaf`
+trait. Its `Run` adapter implements `AppLogic`, so a `View` app still
+runs under `TuiDriver` and every backend's `run`; when you need a split,
+your own hit-testing or direct control of each frame, write the
+`AppLogic` yourself, as below.
+
 **This guide uses `AppLogic`.** Our two-pane app is simple enough that
-building the split ourselves is less code than configuring an
-`AppShell`. Reach for `ShellApp` when you find yourself manually
+building the split ourselves is less code than configuring a
+`ShellView`. Reach for `ShellApp` when you find yourself manually
 reimplementing an activity bar, a collapsible sidebar, or a bottom
-panel with tabs — `AppShell` (what `ShellApp` runs inside) already has
-all of that, and the `ShellView` / `AppShell` section of
-[`COMPOSE.md`](COMPOSE.md) shows how to fill its panels.
+panel with tabs — `ShellView` (what `ShellApp` runs inside) already has
+all of that, and the `ShellView` section of [`COMPOSE.md`](COMPOSE.md)
+shows how to fill its panels.
 
 Both traits' methods take a `&mut dyn Backend` — the same trait object
 either way, so switching from `AppLogic` to `ShellApp` later doesn't
@@ -77,7 +91,7 @@ instead.
 use std::cell::Cell;
 
 use quadraui::prelude::*;
-use quadraui::{DrawsPrimitives, FrameTree, TreeEvent}; // draw_dyn
+use quadraui::{DrawsPrimitives, FrameTree, TreeEvent}; // draw_primitive, draw_dyn
 
 struct TwoPane {
     split: Split,
@@ -169,12 +183,6 @@ split hands back.
 
 ## Step 3: rendering and input
 
-<!-- TODO(0.12 final pass): after W5 (#2968 ports Split/SplitTree onto the
-contract) and W9 (#2981 deletes draw_split/split_layout), replace the
-`backend.draw_split` call below with the contract way to get a split's pane
-rects (paint the Split as a widget and read its layout), and compile the
-sample against the release. The tree half already uses the contract. -->
-
 ```rust,ignore
 impl AppLogic for TwoPane {
     type AreaId = ();
@@ -183,8 +191,9 @@ impl AppLogic for TwoPane {
         let viewport = backend.viewport();
         let bounds = Rect::new(0.0, 0.0, viewport.width, viewport.height);
 
-        // Split gives us two rectangles; we decide what goes in each one.
-        let panes = backend.draw_split(bounds, &self.split);
+        // Painting the split draws its divider and returns its layout:
+        // two pane rectangles, and we decide what goes in each one.
+        let panes = backend.draw_primitive(bounds, &self.split);
         self.tree_rect.set(panes.first_bounds);
 
         backend.draw_dyn(panes.first_bounds, &self.tree_view(), &());
@@ -288,22 +297,35 @@ conformance) once your app grows past one screen.
   describes the widget, its layout and the events it emits.
   [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) covers writing your own
   widget and how a host paints, routes and tests one.
-- **`AppShell` / `ShellApp`**: if your app grows an activity bar, a
+- **`ShellView` / `ShellApp`**: if your app grows an activity bar, a
   resizable sidebar, or tabs, revisit Step 0. [`COMPOSE.md`](COMPOSE.md)
-  documents `AppShell` and the other controllers that coordinate several
-  widgets.
+  documents `ShellView` and the other compose-layer widgets that
+  coordinate several widgets.
+- **Collections too large to send whole**: `ListView`, `TreeView`,
+  `DataTable` and `TextDisplay` load rows on demand. Send only a slice
+  of rows and set `items_window: Some(ItemsWindow::new(start, total))`
+  to say where the slice sits in the whole collection. The widget sizes
+  its scrollbar from `total`, moves its cursor and scroll by absolute
+  index, and paints placeholders for rows it does not have. When a key,
+  click or wheel notch brings unloaded rows into view, `handle` receives
+  `UiEvent::RowsRequested { id, start, count }`: send rows `start..start
+  + count` and set `items_window.start = start`. A widget asks only
+  after input, so send the rows the first viewport shows yourself.
+  `quadraui/tests/row_window_driver.rs` drives all four widgets this
+  way; `quadraui::behaviour::row_window` holds the arithmetic.
 - **A second backend**: everything above is TUI-specific only in
   `main()`. Swap `quadraui::tui::run` for `quadraui::gtk::run` (behind
   the `gtk` feature) and the exact same `AppLogic` impl draws with
   Cairo/Pango instead of ratatui — that's the cross-backend portability
   commitment `CLAUDE.md` describes.
 - **Testing your own `Backend`-consuming code without a real backend**:
-  [`quadraui::testing::RecordingBackend`] is a fully-implemented
-  `Backend` for unit tests that need *some* backend to hand a function,
-  not a specific one's real rendering — see its doc for what it records
-  and what it deliberately leaves `unimplemented!()`.
+  [`quadraui::testing::RecordingBackend`] is a headless `Backend` for
+  unit tests that need *some* backend to hand a function, not a specific
+  one's real rendering — see its doc for what it records and which
+  platform services it leaves `unimplemented!()`.
 
 [`AppLogic`]: ../src/runner.rs
 [`ShellApp`]: ../src/shell.rs
+[`View`]: ../src/app/view.rs
 [`quadraui::tui::testing::TuiDriver`]: ../src/tui/testing.rs
 [`quadraui::testing::RecordingBackend`]: ../src/testing/mod.rs
