@@ -103,8 +103,16 @@ jobs:
           # ships `aarch64` only, no Intel Mac leg.
           - os: macos-latest
             platform: darwin-arm64
+          # The Linux binary is linked against `@napi-rs/cross-toolchain`'s
+          # glibc 2.17 sysroot (`--use-napi-cross`), not the runner's own
+          # glibc: built natively on `ubuntu-latest` (glibc 2.39) it would
+          # refuse to load on every older distro, including Debian 12 -- the
+          # base of the official `node` container images -- Ubuntu 22.04 and
+          # RHEL 9. 2.17 is the same floor the `manylinux: auto` wheel in
+          # `quadraui-py-wheels.yml` ships.
           - os: ubuntu-latest
             platform: linux-x64-gnu
+            build_args: --target x86_64-unknown-linux-gnu --use-napi-cross
           - os: windows-latest
             platform: win32-x64-msvc
     runs-on: ${{ matrix.os }}
@@ -125,8 +133,24 @@ jobs:
           workspaces: ". -> target"
       - name: Install npm dependencies
         run: npm ci
+      # The pinned toolchain (rust-toolchain.toml) ships rust-std for the
+      # host triple only, so an explicit `--target` needs it added.
+      - name: Add the Linux cross target
+        if: matrix.platform == 'linux-x64-gnu'
+        run: rustup target add x86_64-unknown-linux-gnu
       - name: Build the native addon (release)
-        run: npm run build
+        run: npm run build -- ${{ matrix.build_args }}
+      - name: Check the Linux binary loads on glibc 2.17
+        if: matrix.platform == 'linux-x64-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          newest=$(objdump -T quadraui-node.linux-x64-gnu.node | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "newest glibc symbol version required: ${newest}"
+          if [ "$(printf '%s\n' "${newest}" GLIBC_2.17 | sort -V | tail -1)" != GLIBC_2.17 ]; then
+            echo "::error::quadraui-node.linux-x64-gnu.node requires ${newest}, newer than the glibc 2.17 floor" >&2
+            exit 1
+          fi
       # Smoke-tests this platform's own freshly built binary before it ever
       # reaches an artifact upload -- the same "prove it is loadable" gate
       # `quadraui-node-build.yml` runs for the build-from-source path, and
@@ -235,5 +259,23 @@ jobs:
       # anyway.
       - name: Publish per-platform optional-dependency packages
         run: npx napi pre-publish -t npm --no-gh-release
+      # npm refuses to attach a trusted publisher to a package that does not
+      # exist yet, so the first version of each package is published by hand
+      # and this workflow's run for that same tag finds it already on the
+      # registry. `napi pre-publish` above already skips an already-published
+      # platform package; this skips the root one the same way instead of
+      # failing on npm's "cannot publish over the previously published
+      # versions" error. Any other `npm view` outcome (the package or version
+      # is not on npm yet, a registry hiccup) falls through to `npm publish`,
+      # which then reports the real error itself.
       - name: Publish @quadraui/node
-        run: npm publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if [ "$(npm view "${name}@${version}" version 2>/dev/null || true)" = "${version}" ]; then
+            echo "${name}@${version} is already on npm; skipping publish"
+            exit 0
+          fi
+          npm publish
