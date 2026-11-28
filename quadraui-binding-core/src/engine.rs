@@ -4958,7 +4958,7 @@ mod tests {
 
     /// A 20x5 sheet with only 2 loaded rows — deliberately fewer than a
     /// 10-cell-tall viewport needs, so the very first routed event
-    /// exercises [`InteractionEngine::dyn_widget_cells_requested`] without
+    /// exercises the engine's generic `DynWidget::data_requested` call without
     /// any scroll having happened yet. `cells[r][c]` is `"r{r}c{c}"`, a
     /// value every test can assert against unambiguously by position.
     fn small_window_cell_grid() -> CellGrid {
@@ -5055,7 +5055,7 @@ mod tests {
     }
 
     /// The loaded `cells` window (2 rows) doesn't cover what a 10-cell-tall
-    /// viewport needs — [`InteractionEngine::dyn_widget_cells_requested`]
+    /// viewport needs — the engine's generic `DynWidget::data_requested` call
     /// catches this on the very first routed event, with no scroll
     /// required to trigger it.
     #[test]
@@ -5087,6 +5087,100 @@ mod tests {
             "a 2-row loaded window under a taller viewport should request more rows: {:?}",
             dispatched
         );
+    }
+
+    /// A generic `"list"` leaf whose descriptor carries an `items_window`
+    /// asks for rows through the engine's generic `data_requested` call:
+    /// End moves its cursor past the loaded slice, and the engine delivers
+    /// exactly one `RowsRequested` for the tail, never repeated for the
+    /// same range.
+    #[test]
+    fn a_generic_windowed_list_leaf_requests_rows_once_per_range() {
+        struct ListLogic {
+            engine: InteractionEngine,
+            sink: RefCell<RecordingSink>,
+        }
+
+        fn windowed_list() -> quadraui::ListView {
+            quadraui::ListView {
+                id: WidgetId::new("rows"),
+                title: None,
+                items: (0..30)
+                    .map(|i| quadraui::ListItem {
+                        text: quadraui::StyledText::plain(format!("row-{i}")),
+                        icon: None,
+                        detail: None,
+                        decoration: Default::default(),
+                    })
+                    .collect(),
+                selected_idx: 0,
+                scroll_offset: 0,
+                items_window: Some(quadraui::ItemsWindow::new(0, 100_000)),
+                scroll_px: None,
+                has_focus: true,
+                bordered: false,
+                h_scroll: 0,
+                max_content_width: None,
+                show_v_scrollbar: true,
+                striped: false,
+            }
+        }
+
+        impl AppLogic for ListLogic {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let area = viewport_rect(backend);
+                let content = LayoutNode::Leaf(LayoutLeaf {
+                    id: "rows".to_string(),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "list",
+                        widget: Rc::new(windowed_list()),
+                    },
+                    scroll_px: None,
+                });
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &content, &mut hits);
+                render_overlays(&self.engine, backend, hits);
+            }
+
+            fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+                self.engine.tab_stops()
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let logic = ListLogic {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 30, 10);
+        driver.render();
+        let (x, y) = driver.find("row-2").expect("a loaded row paints");
+        driver.click(x, y);
+        driver.press_named(NamedKey::End);
+        driver.press_named(NamedKey::End);
+        let requests: Vec<(usize, usize)> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .filter_map(|(ev, _)| match ev {
+                UiEvent::RowsRequested { id, start, count } if *id == WidgetId::new("rows") => {
+                    Some((*start, *count))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requests.len(), 1, "one request for the tail: {requests:?}");
+        let (start, count) = requests[0];
+        assert_eq!(start + count, 100_000, "the request reaches the last row");
+        assert!(count < 100, "bounded by the viewport, never the total");
     }
 
     /// Mirrors [`small_window_cell_grid`] but with `frozen_rows: 1` and
