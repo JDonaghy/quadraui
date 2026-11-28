@@ -7,7 +7,9 @@ renderer.
 > The `quadraui` wheel on PyPI is the last release (0.11 today); it has
 > the `quadraui.app` layer used here, but a detail on these pages can be
 > newer. To run exactly what they describe, build from a clone:
-> `cd quadraui/quadraui-py && maturin develop --release`.
+> `cd quadraui/quadraui-py && maturin develop --release`. A clone still
+> reports version 0.11.0 until the release bumps it, so the version
+> number does not tell the two apart.
 
 ## 1. Install
 
@@ -60,7 +62,7 @@ The three parts:
 - **Update** is the callbacks: `on_click=self.inc` on a node, and
   `on_event` for input no single widget owns, such as a global shortcut.
 
-Three details the sample does not explain:
+Details the sample does not explain:
 
 - **`Text("...")`** is one line of plain text, sized to its content. For
   colours, use a `TextDisplay`: it takes a list of lines, each a list of
@@ -70,15 +72,18 @@ Three details the sample does not explain:
   to 80x24. A live `run_tui()` fills the terminal and `run_native()` opens
   a window, and both ignore it.
 - **Layout.** `Column` and `Row` split their space equally between the
-  children that do not ask for a size. `Text` asks for its content size, so
-  the label takes one row; `Row(..., size="content")` gives the buttons
-  their natural height, and they share its width. Any node takes `size=`
-  (pixels as an `int`, `"30%"`, `"2fr"` or `"content"`) and `min=`/`max=`
-  ([Layout](../concepts/layout.md)).
-- **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a
-  focused widget used the key (a text field takes `q` as a letter). Call
-  `app.quit()` from any callback to quit yourself, and pass
-  `App(..., quit_keys=False)` to turn the keys off.
+  children that do not ask for a size. Only `Text` asks for its content
+  size by default, so the label takes one row; every other node, `Form`
+  and `List` included, takes an equal share unless you give it a size.
+  `Row(..., size="content")` gives the buttons their natural height, and
+  they share its width; a one-line `Form` wants `size="content"` too. Any
+  node takes `size=` (pixels as an `int`, `"30%"`, `"2fr"` or
+  `"content"`) and `min=`/`max=` ([Layout](../concepts/layout.md)).
+- **Quitting.** `q` and Escape quit unless the focused widget takes the
+  key (a text field types `q`, a list keeps it), and Ctrl-C quits unless
+  a focused text field takes it. Call `app.quit()` from any callback to
+  quit yourself, and pass `App(..., quit_keys=False)` to turn the keys
+  off.
 
 ## 3. Run it in the terminal
 
@@ -164,6 +169,13 @@ The harness methods you will use most:
 | `screen()`, `screen_lines()` | The frame as text. |
 | `find(id=..., role=..., text=...)` | A widget, to read (`.text`, `.state`) or act on (`.click()`, `.focus()`, `.row(...)`). |
 
+**Typing into a field.** Keys go to the focused widget, and a click moves
+focus to what it lands on, so after `click_text("-")` typed keys reach the
+`-` button. To type into a form, focus it first: `find(id="form").focus()`
+puts focus on its first field, and clicking a field's label
+(`click_text("New")`) focuses that field. A field's own id names the field
+inside the form, not a widget, so `find(id="draft")` finds nothing.
+
 **Two quick clicks are two clicks.** Clicks less than 400 ms and 1.5
 cells apart fold into a double-click, which a list, table or tree row
 treats as "open"; a button, or any widget with no double-click meaning,
@@ -179,19 +191,27 @@ The counter uses two widgets. The
 [parity app](https://github.com/JDonaghy/quadraui/tree/develop/examples/parity),
 a todo list CI runs in all three languages, adds a text field, a list and
 a status bar. List items are one line each (`{"text": {"spans": [...]}}`),
-unlike a `TextDisplay`, which takes a list of lines:
+unlike a `TextDisplay`, which takes a list of lines, and `segment` builds a
+status-bar segment:
 
 <!-- sample: examples/parity/python/todo.py -->
 ```python
+from quadraui.app import App, Button, Column, Form, List, Row, StatusBar, TextInputField
+
+
 def item(text):
     return {"text": {"spans": [{"text": text}]}}
+
+
+def segment(text):
+    return {"text": f" {text} ", "fg": {"r": 220, "g": 220, "b": 220, "a": 255}, "bg": {"r": 40, "g": 40, "b": 60, "a": 255}}
 ```
 
 <!-- sample: examples/parity/python/todo.py -->
 ```python
     def view(self):
         return Column(
-            Form([TextInputField(self.draft, id="draft", label="New", on_change=self.edit, on_submit=self.add)], id="form"),
+            Form([TextInputField(self.draft, id="draft", label="New", on_change=self.edit, on_submit=self.add)], id="form", size="content"),
             List([item(t) for t in self.todos], id="todos", on_select=self.select),
             Row(Button("Add", id="add", on_click=self.add), Button("Clear", id="clear", on_click=self.clear)),
             StatusBar([segment(f"{len(self.todos)} todos")], [segment(f"selected {self.selected}")], id="status"),
@@ -200,6 +220,11 @@ def item(text):
 
 - A text field lives in a `Form`. `on_change(text)` gets the whole new
   value after each keystroke; `on_submit(text)` fires on Enter.
+  `size="content"` keeps the one-line form one line tall.
+- `on_submit` passes the text and `on_click` passes nothing, so the file's
+  `add`, wired to both, is `def add(self, *_)`.
+- Tab leaves the form after its last field, for the list and then the
+  buttons; clicking a button moves focus to it, away from the field.
 - `on_select(index)` gets the selected row's index. Pass `selected=` to
   pin the selection yourself ([State](../concepts/state.md)).
 - `self.log` in that file records each update for the parity check; your

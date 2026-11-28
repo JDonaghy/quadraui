@@ -72,7 +72,7 @@ What each Python / Node callback receives, and the Rust event it answers:
 |---|---|---|
 | Button | `on_click()` / `onClick()` | `.on_click(msg)`: `ButtonActivated { widget }` |
 | List | `on_select(index)`, `on_activate(index)`, `on_selection(indices)`, `on_context_menu(index, position)`, `on_click(index, button)` | `.on_select(Msg::Select)`: `List(id, ListViewEvent::SelectionChanged { idx })`, `ItemActivated { idx }`, `SelectionSet { indices }`, `ContextMenuRequested { idx, position }`, `ItemClicked { idx, button, .. }` |
-| Tree | `on_select(path)`, `on_activate(path)`, `on_row_click(path)`, `on_toggle_expand(path)`, `on_selection(paths)`, `on_context_menu(path, position)`; a path is a list of indices | `Tree(id, TreeEvent::SelectionChanged { path })`, `RowActivated`, `RowClicked { path, button, .. }`, `RowToggleExpand`, `SelectionSet { paths }`, `ContextMenuRequested { path, position }` |
+| Tree | `on_select(path)`, `on_activate(path)`, `on_click(path, button)`, `on_toggle_expand(path)`, `on_selection(paths)`, `on_context_menu(path, position)`; a path is a list of indices | `Tree(id, TreeEvent::SelectionChanged { path })`, `RowActivated`, `RowClicked { path, button, .. }`, `RowToggleExpand`, `SelectionSet { paths }`, `ContextMenuRequested { path, position }` |
 | Table | `on_select(row)`, `on_activate(row)`, `on_header_click(column)`, `on_selection(rows)`, `on_context_menu(row, position)`, `on_click(row, button)` | `DataTable(id, DataTableEvent::RowSelected { idx })`, `RowActivated`, `HeaderClicked { col }`, `SelectionSet { indices }`, `ContextMenuRequested { idx, position }`, `RowClicked { idx, button, .. }` |
 | Tabs | `on_activate(index)`, `on_close(index)` | `TabBar(id, TabBarEvent::TabActivated { index })`, `TabClosed { index }` |
 | Status bar | `on_segment_click(segment_id)` | `StatusBar(id, StatusBarEvent::SegmentClicked { id })` |
@@ -111,7 +111,8 @@ text selection, so the keyboard chords are the dependable path there.
 
 - **React:** `onClick` and friends, but the handler mutates your state
   directly; there is no `setState`. The next render picks the change up.
-- **Elm / iced:** Rust's `UiEvent` is your `Msg`, already defined: match it
-  in `handle` instead of declaring your own message enum.
+- **Elm / iced:** the same shape in Rust: declare a `Msg` enum, map each
+  node's events to it (`.on_click(Msg::Inc)`, `.on(..)`), and match it in
+  one `View::update`. `View::on_event` maps the events no node claimed.
 - **Textual:** like `on_button_pressed`, but attached to the node rather
   than found by a method name.

@@ -41,8 +41,10 @@ A widget is one type implementing two traits:
   clicks, keys, popups. Paint and hit-testing cannot disagree, because both
   read one layout.
 
-This one paints a block of colour and has no behaviour (from the README;
-CI compiles and paints it):
+This one paints a block of colour and has no behaviour (from the README,
+which also shows its struct and its `A11yPrimitive` impl, the
+accessibility description every widget declares; CI compiles and paints
+it):
 
 <!-- sample: quadraui/tests/readme_own_widget.rs -->
 ```rust,noplayground

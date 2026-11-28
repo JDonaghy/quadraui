@@ -69,8 +69,15 @@ The three parts:
   input no single widget owns, such as a global shortcut.
 
 Lowercase tags are quadraui's built-in widgets, typed from the same
-generated schema as the Rust side, so a misspelled prop fails `tsc`, and
-so does a wrong argument to `App`.
+generated schema as the Rust side, so an editor or `tsc` flags a misspelled
+prop or a wrong argument to `App`. `run_tui.ts` (step 3) strips the types
+without checking them; to type-check your own file, give it the
+`tsconfig.json` under [From npm](#from-npm-after-012).
+
+The file is CommonJS, the module style Node's `require` loads: `import`
+brings in quadraui, `require.main === module` starts the app only when the
+file itself is run (not when a test loads it), and `module.exports` is what
+a test imports.
 
 Some details the sample does not explain:
 
@@ -82,15 +89,17 @@ Some details the sample does not explain:
   defaults to 80x24. A live `runTui()` fills the terminal and `runNative()`
   opens a window, and both ignore it.
 - **Layout.** `<column>` and `<row>` split their space equally between the
-  children that do not ask for a size. `<text>` asks for its content size,
-  so the label takes one row; `<row size="content">` gives the buttons
-  their natural height, and they share its width. Any element takes
-  `size` (pixels as a number, `"30%"`, `"2fr"` or `"content"`) and
-  `min`/`max` ([Layout](../concepts/layout.md)).
-- **Quitting.** Ctrl-C always quits, and `q` or Escape quit unless a
-  focused widget used the key (a text field takes `q` as a letter). Call
-  `app.quit()` from any handler to quit yourself, and pass `quitKeys:
-  false` to turn the keys off.
+  children that do not ask for a size. Only `<text>` asks for its content
+  size by default, so the label takes one row; every other element,
+  `<form>` and `<list>` included, takes an equal share unless you give it
+  a size. `<row size="content">` gives the buttons their natural height,
+  and they share its width; a one-line `<form>` wants `size="content"`
+  too. Any element takes `size` (pixels as a number, `"30%"`, `"2fr"` or
+  `"content"`) and `min`/`max` ([Layout](../concepts/layout.md)).
+- **Quitting.** `q` and Escape quit unless the focused widget takes the
+  key (a text field types `q`, a list keeps it), and Ctrl-C quits unless
+  a focused text field takes it. Call `app.quit()` from any handler to
+  quit yourself, and pass `quitKeys: false` to turn the keys off.
 
 ## 3. Run it in the terminal
 
@@ -144,9 +153,26 @@ console.log(h.screen());
 if (!h.contains("Count: 1")) throw new Error(h.screen());
 ```
 
-In a file you run with `run_tui.ts`, the same two modules are plain
-`import { App } from "@quadraui/node/app"` and
-`import { harness } from "@quadraui/node/testing"`.
+A test of your own app is a file of its own, run the same way
+(`node examples/hero/node/run_tui.ts ~/counter/counter.test.tsx`), with
+plain imports. This one is `examples/hero/node/counter.test.tsx`:
+
+<!-- sample: examples/hero/node/counter.test.tsx -->
+```tsx
+import { App } from "@quadraui/node/app";
+import { harness } from "@quadraui/node/testing";
+
+const { Counter } = require("./counter.tsx");
+
+const counter = new Counter();
+const h = harness(new App(30, 5, { view: () => counter.view() }));
+h.clickText("+");
+h.clickText("+");
+h.clickText("-");
+if (!h.contains("Count: 1")) throw new Error(h.screen());
+console.log("ok");
+```
+
 The harness methods you will use most:
 
 | Method | Does |
@@ -158,6 +184,13 @@ The harness methods you will use most:
 | `contains(text)`, `assertText(...texts)` | Checks the frame. |
 | `screen()`, `screenLines()` | The frame as text. |
 | `find({ id, role, text })` | A widget, to read or act on (`.click()`, `.focus()`, `.row(...)`). |
+
+**Typing into a field.** Keys go to the focused widget, and a click moves
+focus to what it lands on, so after `clickText("-")` typed keys reach the
+`-` button. To type into a form, focus it first: `find({ id: "form"
+}).focus()` puts focus on its first field, and clicking a field's label
+(`clickText("New")`) focuses that field. A field's own id names the field
+inside the form, not a widget, so `find({ id: "draft" })` finds nothing.
 
 **Two quick clicks are two clicks.** Clicks less than 400 ms and 1.5
 cells apart fold into a double-click, which a list, table or tree row
@@ -174,7 +207,12 @@ a status bar. From `examples/parity/node/todo.tsx`:
 
 <!-- sample: examples/parity/node/todo.tsx -->
 ```tsx
+import { App, TextInputField } from "@quadraui/node/app";
+
 const item = (text: string) => ({ text: { spans: [{ text }] } });
+const grey = { r: 220, g: 220, b: 220, a: 255 };
+const navy = { r: 40, g: 40, b: 60, a: 255 };
+const segment = (text: string) => ({ text: ` ${text} `, fg: grey, bg: navy });
 ```
 
 <!-- sample: examples/parity/node/todo.tsx -->
@@ -183,7 +221,7 @@ const item = (text: string) => ({ text: { spans: [{ text }] } });
     const draft = TextInputField("New", this.draft, { id: "draft", onChange: (t: string) => this.edit(t), onSubmit: () => this.add() });
     return (
       <column>
-        <form id="form" fields={[draft]} />
+        <form id="form" size="content" fields={[draft]} />
         <list id="todos" items={this.todos.map(item)} onSelect={(i) => this.select(i)} />
         <row>
           <button id="add" label="Add" onClick={() => this.add()} />
@@ -200,7 +238,11 @@ const item = (text: string) => ({ text: { spans: [{ text }] } });
 - A text field is a `TextInputField(label, value, options)` from
   `@quadraui/node/app`, placed in a `<form>`'s `fields`. `onChange(text)`
   gets the whole new value after each keystroke; `onSubmit(text)` fires on
-  Enter.
+  Enter. `size="content"` keeps the one-line form one line tall.
+- `segment` is the file's own helper: a status-bar segment is `{ text, fg,
+  bg }`.
+- Tab leaves the form after its last field, for the list and then the
+  buttons; clicking a button moves focus to it, away from the field.
 - `onSelect(index)` gets the selected row's index. Pass `selected` to pin
   the selection yourself ([State](../concepts/state.md)).
 - The file's `log` records each update for the parity check; your app does

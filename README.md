@@ -129,8 +129,12 @@ All three are run headless in CI with the same clicks (`examples/hero/`).
 ```sh
 cargo add quadraui --features tui   # add gtk, macos or win for a native window
 pip install quadraui
-npm install @quadraui/node
+npm install @quadraui/node          # published with 0.12; until then, build from a clone
 ```
+
+These track `develop`, which becomes 0.12: crates.io and PyPI carry 0.11
+today and npm has no package yet, so each quick start below shows how to
+run it from a clone until 0.12 ships.
 
 📖 **[Docs and quick starts](https://jdonaghy.github.io/quadraui)**
 ([Rust](https://jdonaghy.github.io/quadraui/quick-start/rust.html) ·
@@ -163,11 +167,12 @@ npm install @quadraui/node
   in the 2026-09-26 audit. The runtime is event-driven: an app with
   nothing to do renders nothing.
 - **Declarative, serialisable widgets.** Widgets are plain data
-  (`Serialize`), events are plain data routed by `WidgetId`, and no
-  closures cross the Rust API. That is what makes scripting practical
-  (vimcode lets Lua extensions declare quadraui views) and what the Python
-  and Node.js bindings are built on; their app layers add per-widget
-  callbacks on top.
+  (`Serialize`), events are plain data routed by `WidgetId`, and no widget
+  holds a closure. That is what makes scripting practical (vimcode lets
+  Lua extensions declare quadraui views) and what the Python and Node.js
+  bindings are built on. The app layers in all three languages attach
+  handlers to the view's nodes, outside the widgets: callbacks in Python
+  and Node, event-to-message closures in Rust.
 - **Honest about capabilities.** `BackendCaps` tells an app what the
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
@@ -181,8 +186,8 @@ npm install @quadraui/node
 
 **A good fit:** keyboard-driven developer, ops and data tools (editors,
 dashboards, log viewers, database and HTTP clients) that should run in a
-terminal over SSH *and* as a native window, written in Rust, by people
-comfortable with a pre-1.0 API.
+terminal over SSH *and* as a native window, written in Rust, Python or
+TypeScript, by people comfortable with a pre-1.0 API.
 
 **Not a fit, today:**
 
@@ -250,8 +255,9 @@ tracker.
 quadraui = { version = "0.11", features = ["tui", "gtk"] }
 ```
 
-**Python and Node.js** — `pip install quadraui` and
-`npm install @quadraui/node`. Both bindings are the same Rust renderer
+**Python and Node.js** — `pip install quadraui`, and
+`npm install @quadraui/node` once 0.12 publishes it (until then the Node
+quick start builds it from a clone). Both bindings are the same Rust renderer
 under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
 Node). Each has a five-minute quick start on the docs site:
 [Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
@@ -357,6 +363,9 @@ fn paint_swatch(frame: &mut ScreenLayout, rect: Rect) {
     });
 }
 ```
+
+`A11yPrimitive` is the accessibility description every widget declares;
+no backend reads it yet (see "Not a fit, today" above).
 
 `Surface::Widget` paints any widget through `DrawsPrimitives::draw_dyn`,
 on every backend. A widget that reacts to input implements `Interactive`

@@ -1,11 +1,14 @@
 # Focus
 
 One widget at a time has **keyboard focus**. Keys go to it first; keys it
-does not use reach your app (`on_event` in Python and Node, `handle` in
-Rust), which is how the counter's `q` works while a button has focus.
+does not use reach your app (`on_event` in Python and Node,
+`View::on_event` in Rust), which is how the counter's `q` works while a
+button has focus.
 
 - **Tab** and **Shift+Tab** move focus through every focus stop on screen,
-  in the order the widgets declare them.
+  in reading order (top to bottom, then left to right). Inside a form, Tab
+  moves from field to field and, past the last field, on to the next
+  widget.
 - **Clicking** a focusable widget focuses it.
 - A widget can have several stops: each row of a list, each field of a
   form, each cell of a grid.
@@ -26,8 +29,11 @@ its text. A form shows its focused field with its own highlight instead.
 ## Setting focus
 
 In Python and Node, pass `has_focus` / `hasFocus` to the widget that should
-hold focus, as the task list does: `List(..., has_focus=True)`. In Rust a
-widget asks for focus from its event handler through `EventCx::request_focus`.
+hold focus, as the task list does: `List(..., has_focus=True)`. In a
+headless test, `h.find(id="form").focus()` (Node: `h.find({ id: "form"
+}).focus()`) moves keyboard focus to a widget, and on a form to its first
+field. In Rust a widget asks for focus from its event handler through
+`EventCx::request_focus`.
 
 A modal overlay, such as a dialog, holds focus until it closes; see
 [Popups](popups.md).

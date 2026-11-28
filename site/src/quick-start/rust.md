@@ -8,14 +8,15 @@ native window also needs GTK4's development files
 
 ```sh
 cargo new counter && cd counter
-cargo add quadraui --features tui
+cargo add quadraui --git https://github.com/JDonaghy/quadraui --branch develop --features tui
 ```
 
 > **Versions.** These pages track `develop`, which becomes 0.12. The last
-> crates.io release is 0.11, and some APIs used here are newer. Until 0.12
-> is published, pin a `develop` commit rather than following its tip (the
-> same advice the README gives):
-> `cargo add quadraui --git https://github.com/JDonaghy/quadraui --rev <commit-sha> --features tui`
+> crates.io release is 0.11, which lacks the app layer this page uses, so
+> until 0.12 is published take the crate from git as above.
+> `cargo add` records the commit it fetched in `Cargo.lock`, so the build
+> stays on it until you run `cargo update`. After 0.12 it is
+> `cargo add quadraui --features tui`.
 
 ## 2. Write the app
 
@@ -75,15 +76,19 @@ The three parts:
   message redraws; return `Command::Exit` to quit.
 
 Children share their container equally unless they ask otherwise, exactly
-as in Python and Node. `text` sizes itself to its lines, so the label takes
-one row, and `.content()` gives the row of buttons its natural height; the
-two buttons share its width. `.fixed(px)`, `.weight(w)`, `.percent(p)`,
+as in Python and Node. Only `text` sizes itself to its lines by default, so
+the label takes one row; every other node, `form` and `list` included,
+takes an equal share. `.content()` gives the row of buttons its natural
+height, and the two buttons share its width; a one-line `form` wants
+`.content()` too. `.fixed(px)`, `.weight(w)`, `.percent(p)`,
 `.min(px)` and `.max(px)` do what they say, and `.gap(px)` spaces a
 container's children. Sizes are surface pixels; the terminal rounds them up
 to whole cells of 8×16 pixels, so `.gap(16.0)` between rows is one line.
 
-`q`, Escape and Ctrl-C quit when no widget took the key. A view that wants
-them overrides `quits_on`; one that wants other keys overrides `on_event`.
+`q` and Escape quit unless the focused widget takes the key (a text field
+types `q`, a list keeps it), and Ctrl-C quits unless a focused text field
+takes it: the same rule as Python and Node. A view that wants those keys
+overrides `quits_on`; one that wants other keys overrides `on_event`.
 
 ## 3. Run it in the terminal
 
@@ -95,7 +100,8 @@ Click `+` and `-`. `q` quits.
 
 Run it in a real terminal (tmux and ssh are fine). The terminal backend
 asks the terminal for its cursor position at startup, so it fails when
-input is piped or there is no terminal.
+input is piped or there is no terminal; a scripted run goes through
+`TuiDriver` instead (step 5).
 
 ## 4. Run it in a native window
 
@@ -111,6 +117,9 @@ Enable a native backend feature and call `run_native` instead of
 `run_native(Counter::default())` opens a window on the native backend this
 build enables, and returns `RunError::Backend(BackendError::Unsupported)`
 when there is none, so an app can fall back to `run_tui`.
+`run_native_with(Counter::default(), NativeOptions::new("Counter"))` also
+titles the window, as Python's `run_native(title=...)` and Node's
+`runNative(title)` do.
 
 Enable `tui` and a native feature together to choose at run time, for
 example from a `--tui` flag.
@@ -152,6 +161,11 @@ fn plus_plus_minus_counts_to_one() {
     }
     assert!(driver.screen_contains("Count: 2"), "{}", driver.screen());
     click_label(&mut driver, "-");
+    let screen = driver.screen();
+    println!("{screen}");
+    assert!(screen.contains("Count: 1"), "{screen}");
+    assert_eq!(driver.app().count, 1);
+}
 ```
 
 - The `#[path]` line compiles `src/main.rs` into the test as module
@@ -162,8 +176,9 @@ fn plus_plus_minus_counts_to_one() {
   trait every runner and test driver takes. It derefs to your view, so
   `driver.app().count` reads the state. `click(x, y)`
   takes cell coordinates; `find(text)` gives the coordinates of painted
-  text. `press(key)`, `type_char(c)`, `screen()` and `app()` do what their
-  names say. Tab and bar parts have helpers by id, such as
+  text. `press(key)` takes a `Key`: `Key::Named(NamedKey::Enter)` or
+  `Key::Char('a')`. `type_char(c)`, `ctrl_char(c)`, `screen()` and `app()`
+  do what their names say. Tab and bar parts have helpers by id, such as
   `tab_center(&bar_id, 2)`.
 - **Two quick clicks are two clicks**: clicks less than 400 ms and 1.5
   cells apart fold into a left `UiEvent::DoubleClick`, which a list, table
@@ -181,25 +196,55 @@ The counter uses two widgets. The
 is a todo list CI runs in all three languages, with a text field, a list
 and a status bar. Its Rust version, `examples/parity/rust/src/main.rs`,
 shows the parts the counter does not: a form with a text field, a list
-and a status bar, each mapping its events to a message:
+and a status bar, each mapping its events to a message. The state and the
+messages:
+
+<!-- sample: examples/parity/rust/src/main.rs -->
+```rust,noplayground
+pub struct Todo {
+    pub draft: String,
+    pub todos: Vec<String>,
+    pub selected: usize,
+    /// Every update, in order: what the parity runner compares.
+    pub log: Vec<String>,
+}
+```
+
+<!-- sample: examples/parity/rust/src/main.rs -->
+```rust,noplayground
+#[derive(Clone)]
+pub enum Msg {
+    Edit(String),
+    Add,
+    Select(usize),
+    Clear,
+}
+```
+
+and the start of the view:
 
 <!-- sample: examples/parity/rust/src/main.rs -->
 ```rust,noplayground
         let draft = text_field("draft", &self.draft).label("New");
         column([
-            form([draft.on_change(Msg::Edit).on_submit(|_| Msg::Add)]).id("form"),
+            form([draft.on_change(Msg::Edit).on_submit(|_| Msg::Add)])
+                .id("form")
+                .content(),
             list(&self.todos)
                 .selected(self.selected)
                 .id("todos")
                 .on_select(Msg::Select),
 ```
 
-`on_change` gets the field's whole new text and `on_submit` fires on Enter.
-`list(items)` makes one row per item; `.selected(i)` is the row the app
-shows selected, and `.on_select` reports a new one. Leave the form's
-focused field alone: the runner keeps it, as the Python and Node engines
-do. `log` records each update for the parity check; your app does not need
-it.
+`on_change` gets the field's whole new text as a `String` and `on_submit`
+fires on Enter. `list(items)` makes one row per item (anything
+`Into<String>`); `.selected(i)` takes the `usize` row the app shows
+selected, and `.on_select` reports a new one as a `usize`. Leave the form's
+focused field alone: the runner keeps it while the form has focus, as the
+Python and Node engines do. Tab leaves the form after its last field, and
+clicking a button moves focus to the button, so type into the field again
+by clicking it. `log` records each update for the parity check; your app
+does not need it.
 
 Any widget can be a node: `widget(descriptor)` takes one built in full
 (it implements `Leaf`), and `.with(|w: &mut ListView| ...)` edits a field
