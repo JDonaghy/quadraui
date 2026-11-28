@@ -2600,10 +2600,19 @@ pub trait DrawsPrimitives: Backend {
         let mut layout = lay_out(self);
         // The widget records what this layout resolved (a selection the app
         // moved, scrolled into view) before it paints, and paints the
-        // layout of the state it recorded.
+        // layout of the state it recorded. A widget with no state yet only
+        // gains one when it records something.
         let settled = w.id().is_some_and(|id| {
             crate::widget_state::try_with_widget_states(|store| {
-                w.settle(store.state_for(*id, w), layout.as_ref())
+                if store.contains(id) {
+                    return w.settle(store.state_for(*id, w), layout.as_ref());
+                }
+                let mut fresh = w.new_state();
+                let changed = w.settle(fresh.as_mut(), layout.as_ref());
+                if changed {
+                    store.insert(*id, fresh);
+                }
+                changed
             })
             .unwrap_or(false)
         });
