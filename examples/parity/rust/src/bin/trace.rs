@@ -41,7 +41,10 @@ fn frame(driver: &mut TuiDriver<Run<todo::Todo>>, input: Value) -> Value {
                 .collect()
         })
         .collect();
-    let events = std::mem::take(&mut driver.app_mut().log);
+    let mut events = std::mem::take(&mut driver.app_mut().log);
+    if driver.exited() {
+        events.push("quit".into());
+    }
     json!({ "input": input, "rows": rows, "styles": styles, "events": events })
 }
 
@@ -83,6 +86,8 @@ fn main() {
             }
         } else if let Some(name) = step.get("key") {
             driver.press(key(name.as_str().unwrap()));
+        } else if let Some(c) = step.get("ctrl") {
+            driver.ctrl_char(c.as_str().unwrap().chars().next().unwrap());
         } else {
             panic!("unknown step {step}");
         }

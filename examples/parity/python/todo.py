@@ -18,7 +18,7 @@ class Todo:
 
     def view(self):
         return Column(
-            Form([TextInputField(self.draft, id="draft", label="New", on_change=self.edit, on_submit=self.add)], id="form"),
+            Form([TextInputField(self.draft, id="draft", label="New", on_change=self.edit, on_submit=self.add)], id="form", size="content"),
             List([item(t) for t in self.todos], id="todos", on_select=self.select),
             Row(Button("Add", id="add", on_click=self.add), Button("Clear", id="clear", on_click=self.clear)),
             StatusBar([segment(f"{len(self.todos)} todos")], [segment(f"selected {self.selected}")], id="status"),

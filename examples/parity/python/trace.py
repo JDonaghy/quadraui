@@ -24,7 +24,7 @@ def hex_rgb(rgb):
     return "%02x%02x%02x" % tuple(rgb)
 
 
-def frame(h, todo, input_step):
+def frame(h, app, todo, input_step):
     rows = h.screen().rstrip("\n").split("\n")
     styles = []
     for y in range(HEIGHT):
@@ -34,14 +34,17 @@ def frame(h, todo, input_step):
             row.append(hex_rgb(fg) + "/" + hex_rgb(bg))
         styles.append(row)
     events, todo.log[:] = list(todo.log), []
+    if app.step() is False:
+        events.append("quit")
     return {"input": input_step, "rows": rows, "styles": styles, "events": events}
 
 
 def main():
     script = json.load(open(sys.argv[1]))
     todo = Todo()
-    h = harness(App(WIDTH, HEIGHT, view=todo.view))
-    trace = [frame(h, todo, None)]
+    app = App(WIDTH, HEIGHT, view=todo.view)
+    h = harness(app)
+    trace = [frame(h, app, todo, None)]
     for step in script:
         if "click" in step:
             h.click_at(*step["click"])
@@ -49,9 +52,11 @@ def main():
             h.type(step["type"])
         elif "key" in step:
             h.press(step["key"])
+        elif "ctrl" in step:
+            h.press(step["ctrl"], ctrl=True)
         else:
             raise ValueError(f"unknown step {step!r}")
-        trace.append(frame(h, todo, step))
+        trace.append(frame(h, app, todo, step))
     json.dump(trace, sys.stdout)
 
 

@@ -4,8 +4,8 @@
     {
       "id": "controlled-list-ignores-arrow-keys",
       "lang": "rust",
-      "steps": [9],
-      "region": [0, 9, 40, 1],
+      "steps": [19],
+      "region": [0, 8, 40, 1],
       "events": true,
       "reason": "Down on a focused List whose selection the app pins (selected != 0) moves the selection and fires SelectionChanged in Rust. In Python/Node the pinned selection latches as controlled, the key is not routed to on_select/onSelect, and nothing changes."
     }

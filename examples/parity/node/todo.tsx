@@ -15,7 +15,7 @@ export class Todo {
     const draft = TextInputField("New", this.draft, { id: "draft", onChange: (t: string) => this.edit(t), onSubmit: () => this.add() });
     return (
       <column>
-        <form id="form" fields={[draft]} />
+        <form id="form" size="content" fields={[draft]} />
         <list id="todos" items={this.todos.map(item)} onSelect={(i) => this.select(i)} />
         <row>
           <button id="add" label="Add" onClick={() => this.add()} />

@@ -13,15 +13,18 @@ written once in each language:
 The app is a `New` text field, a list of todos, `Add` and `Clear` buttons and
 a status bar. Typing edits the draft, and Enter or `Add` appends it.
 Clicking a row selects it, and `Clear` empties the list. The script also
-covers keyboard focus: a clicked button, the focused list and Tab back into
-the form each paint their focus the same way in all three languages. Every update also
+covers keyboard focus and the quit keys: a clicked button, the focused list
+and Tab back into the form each paint their focus the same way in all three
+languages, Tab past the form's field moves on to the list and the buttons,
+Ctrl-C typed into the field leaves the app running, and Escape quits it. Every update also
 appends a line such as `edit Bu`, `add Tea` or `select 1` to the app's `log`,
 the same vocabulary in every language.
 
 Each tracer runs its app headless on the TUI backend at 40x12 cells and drives
-it with [`script.json`](script.json): clicks at cell coordinates, typed text and
-named keys. After the first paint and after every step it records the glyph,
-foreground and background of every cell, plus the log lines that step added.
+it with [`script.json`](script.json): clicks at cell coordinates, typed text,
+named keys and Ctrl chords (`{"ctrl": "c"}`). After the first paint and after
+every step it records the glyph, foreground and background of every cell, plus
+the log lines that step added and `quit` once the app has asked to quit.
 [`scripts/parity_check.py`](../../scripts/parity_check.py) runs all three and
 fails on the first step where Rust or Node differs from Python. It prints both
 frames side by side and lists every differing cell.

@@ -46,7 +46,9 @@ impl View for Todo {
     fn view(&self) -> Node<Msg> {
         let draft = text_field("draft", &self.draft).label("New");
         column([
-            form([draft.on_change(Msg::Edit).on_submit(|_| Msg::Add)]).id("form"),
+            form([draft.on_change(Msg::Edit).on_submit(|_| Msg::Add)])
+                .id("form")
+                .content(),
             list(&self.todos)
                 .selected(self.selected)
                 .id("todos")
