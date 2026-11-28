@@ -190,17 +190,16 @@ descendant's `{"class": "secondary"}` against that narrowed theme.
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
 -- exactly one `<kind>` key is present alongside `"id"`. `LayoutLeafNode`'s
 own field table in the generated reference lists every registered kind key
-and the descriptor type it carries: the fixed kinds
-(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"text_display"`,
-`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`) and every generic widget
-kind (`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
-`quadraui::widget_kinds!` table declares, such as `"button"`, `"form"`,
+and the descriptor type it carries: every widget kind
+(`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
+`quadraui::widget_kinds!` table declares, such as `"text_display"`,
+`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`, `"button"`, `"form"`,
 `"menu_bar"`, `"text_input"` and `"palette"`, plus any kind a binding
-registers at runtime). A generic kind decodes into its core widget and is
+registers at runtime). Each kind decodes into its core widget and is
 painted, hit-tested and routed through that widget's own
-`Primitive`/`Interactive` implementation. Adding a kind to either list is
-what adds its row to `LayoutLeafNode`'s table below -- this page never
-lists them by hand.
+`Primitive`/`Interactive` implementation, which keeps its own selection,
+scroll and similar state. Adding a kind to that list is what adds its row
+to `LayoutLeafNode`'s table below -- this page never lists them by hand.
 
 `RenderFrameDict` is the older, flat, per-slot shape some callbacks return
 instead of a `LayoutNode` tree: the same kind keys as `LayoutLeafNode`, but
