@@ -233,8 +233,15 @@ def test_row_children_take_their_size_along_the_width():
 
 def test_a_content_sized_row_takes_its_tallest_child_height():
     app = App(20, 6, view=lambda: Column(Row(Text("ab"), Text("cd"), size="content"), Text("below", size=None)))
-    assert _row_of(app.screen(), "abcd") == 0
+    assert _row_of(app.screen(), "ab") == 0
+    assert _row_of(app.screen(), "cd") == 0
     assert _row_of(app.screen(), "below") == 1
+
+
+def test_content_sized_text_in_a_row_shows_its_whole_line():
+    app = App(30, 2, view=lambda: Row(Text("Name:"), Text("Ada Lovelace")))
+    assert "Name:" in app.screen().split("\n")[0]
+    assert "Ada Lovelace" in app.screen().split("\n")[0]
 
 
 def test_a_content_sized_column_adds_its_children_and_gaps():

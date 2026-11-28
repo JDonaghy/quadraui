@@ -276,8 +276,16 @@ test("Row children take their size along the width", () => {
 
 test("a content-sized row takes its tallest child's height", () => {
   const app = new App(20, 6, { view: () => Column([Row([Text("ab"), Text("cd")], { size: "content" }), Text("below", { size: "EqualShare" })]) });
-  assert.equal(rowOf(app.screen(), "abcd"), 0);
+  assert.equal(rowOf(app.screen(), "ab"), 0);
+  assert.equal(rowOf(app.screen(), "cd"), 0);
   assert.equal(rowOf(app.screen(), "below"), 1);
+});
+
+test("content-sized Text in a row shows its whole line", () => {
+  const app = new App(30, 2, { view: () => Row([Text("Name:"), Text("Ada Lovelace")]) });
+  const first = app.screen().split("\n")[0];
+  assert.ok(first.includes("Name:"), first);
+  assert.ok(first.includes("Ada Lovelace"), first);
 });
 
 test("a content-sized column adds its children and gaps", () => {

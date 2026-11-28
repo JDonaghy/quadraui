@@ -457,6 +457,9 @@ fragment step for this package (that mechanism, and
 
 ### Fixed
 
+- `Text` in a `Row` (sized to its content by default) is as wide as its
+  line plus the gutter a `TextDisplay` row reserves, so each label shows
+  whole instead of wrapping into an empty one-row slot (#3107).
 - A `Column` or `Row` sized `"content"` (`size: "content"`, or
   `<row size="content">`) measures its children (their sizes end to end
   plus the gaps, and the largest across) instead of collapsing to nothing, the same measure the Rust app layer gives a stack (#3107).

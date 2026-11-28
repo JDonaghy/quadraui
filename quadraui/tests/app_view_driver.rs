@@ -252,6 +252,31 @@ fn text_takes_its_content_height_and_leaves_the_rest_to_its_siblings() {
     assert_eq!(at(&driver, "lines"), Some((0, 1)), "{}", driver.screen());
 }
 
+struct Labels;
+
+impl View for Labels {
+    type Msg = ();
+    fn view(&self) -> Node<()> {
+        row([text("Name:"), text("Ada Lovelace")])
+    }
+    fn update(&mut self, _: ()) -> Command {
+        Command::None
+    }
+}
+
+#[test]
+fn text_in_a_row_takes_its_whole_line_width() {
+    let driver = TuiDriver::new(Run::new(Labels), 30, 2);
+    let first = driver
+        .screen()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(first.contains("Name:"), "{}", driver.screen());
+    assert!(first.contains("Ada Lovelace"), "{}", driver.screen());
+}
+
 #[derive(Default)]
 struct Todo {
     draft: String,

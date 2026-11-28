@@ -1457,25 +1457,10 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
         return NaturalSize::NONE;
     };
     match &leaf.descriptor {
-        LeafDescriptor::TextDisplay(text) => {
-            let width = text
-                .lines
-                .iter()
-                .map(|line| {
-                    let line_text: String =
-                        line.spans.iter().map(|span| span.text.as_str()).collect();
-                    // `TextDisplay` is an `EditorClassPrimitive` (see
-                    // `quadraui::font_role`) -- its own lines paint in
-                    // `FontRole::Editor`, not the chrome font a `Button`/
-                    // `TabBar` label uses.
-                    backend.measure_text(&line_text, FontRole::Editor).0
-                })
-                .fold(0.0_f32, f32::max);
-            NaturalSize {
-                width: Some(width),
-                height: Some(text.lines.len() as f32 * line_height),
-            }
-        }
+        LeafDescriptor::TextDisplay(text) => NaturalSize {
+            width: Some(text.natural_cols() as f32 * backend.char_width()),
+            height: Some(text.lines.len() as f32 * line_height),
+        },
         LeafDescriptor::List(list) => NaturalSize {
             width: None,
             height: Some(list.items.len() as f32 * line_height),

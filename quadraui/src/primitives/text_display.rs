@@ -102,6 +102,33 @@ fn default_auto_scroll() -> bool {
     true
 }
 
+/// Glyph prefixed to every continuation row of a wrapped
+/// [`TextDisplay`] line. Without it, a wrapped
+/// row and a genuinely new line are visually identical, so a reader
+/// can't tell "this continues" from "this is unrelated."
+/// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
+/// space: a single narrow glyph, so it costs a small, predictable,
+/// constant column budget on every row (see
+/// [`wrap_continuation_marker_width`]).
+pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
+
+/// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
+/// [`crate::text_util::display_width`]).
+pub(crate) fn wrap_continuation_marker_width() -> usize {
+    crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
+}
+
+/// Column budget consumed by `line`'s timestamp prefix (its display
+/// width plus one separating space), or `0` when the line has none.
+/// Shared by every backend so the wrap column accounting always agrees
+/// with how much room the timestamp actually occupies.
+pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
+    line.timestamp
+        .as_ref()
+        .map(|ts| crate::text_util::display_width(ts) + 1)
+        .unwrap_or(0)
+}
+
 /// Backend-shared line-wrapping math for [`TextDisplay`].
 ///
 /// Every rasteriser — `tui`, and the shared [`native_surface_paint::paint`]
@@ -127,32 +154,7 @@ fn default_auto_scroll() -> bool {
 mod wrap {
     use super::{StyledSpan, TextDisplayLine};
 
-    /// Glyph prefixed to every continuation row of a wrapped
-    /// [`super::TextDisplay`] line. Without it, a wrapped
-    /// row and a genuinely new line are visually identical, so a reader
-    /// can't tell "this continues" from "this is unrelated."
-    /// U+21B3 (DOWNWARDS ARROW WITH TIP RIGHTWARDS) plus a separating
-    /// space: a single narrow glyph, so it costs a small, predictable,
-    /// constant column budget on every row (see
-    /// [`wrap_continuation_marker_width`]).
-    pub(crate) const WRAP_CONTINUATION_MARKER: &str = "\u{21B3} ";
-
-    /// Display-cell width of [`WRAP_CONTINUATION_MARKER`] (see
-    /// [`crate::text_util::display_width`]).
-    pub(crate) fn wrap_continuation_marker_width() -> usize {
-        crate::text_util::display_width(WRAP_CONTINUATION_MARKER)
-    }
-
-    /// Column budget consumed by `line`'s timestamp prefix (its display
-    /// width plus one separating space), or `0` when the line has none.
-    /// Shared by every backend so the wrap column accounting always agrees
-    /// with how much room the timestamp actually occupies.
-    pub(crate) fn line_timestamp_cols(line: &TextDisplayLine) -> usize {
-        line.timestamp
-            .as_ref()
-            .map(|ts| crate::text_util::display_width(ts) + 1)
-            .unwrap_or(0)
-    }
+    use super::{line_timestamp_cols, wrap_continuation_marker_width};
 
     /// Word-wrap one [`TextDisplayLine`]'s spans to `col_budget` display
     /// cells. Thin, backend-shared adapter over
@@ -302,9 +304,7 @@ mod wrap {
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub(crate) use wrap::{
-    content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count, WRAP_CONTINUATION_MARKER,
-};
+pub(crate) use wrap::{content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count};
 
 /// One line in a `TextDisplay`. Carries styled spans plus an optional
 /// decoration tag (Error/Warning/Muted/Header) for log-level styling and
@@ -621,6 +621,26 @@ impl TextDisplay {
             title: None,
             show_scrollbar: false,
         }
+    }
+
+    /// The display cells this display needs to show every line on one
+    /// row: its widest line's text plus the gutter every row reserves for
+    /// a timestamp or wrap marker, plus a scrollbar cell when it shows one.
+    pub fn natural_cols(&self) -> usize {
+        let widest = self
+            .lines
+            .iter()
+            .map(|line| {
+                let text: usize = line
+                    .spans
+                    .iter()
+                    .map(|span| crate::text_util::display_width(&span.text))
+                    .sum();
+                text + line_timestamp_cols(line).max(wrap_continuation_marker_width())
+            })
+            .max()
+            .unwrap_or(0);
+        widest + usize::from(self.show_scrollbar)
     }
 
     /// Append a line to the end of the buffer. Honours `max_lines` by
@@ -1561,8 +1581,8 @@ impl crate::primitive::Primitive for TextDisplay {
     }
 
     /// One row per buffer line (unwrapped) plus a title row when one is
-    /// set — what a container sizing this display to its content would
-    /// give it.
+    /// set, and [`TextDisplay::natural_cols`] wide — what a container
+    /// sizing this display to its content would give it.
     fn measure(
         &self,
         ctx: &crate::primitive::LayoutCtx,
@@ -1570,7 +1590,11 @@ impl crate::primitive::Primitive for TextDisplay {
     ) -> crate::NaturalSize {
         let row_h = ctx.line_height.max(1.0);
         let rows = self.lines.len() as f32 + f32::from(u8::from(self.title.is_some()));
-        crate::NaturalSize::new(None, Some((rows * row_h).min(avail.height)))
+        let width = self.natural_cols() as f32 * ctx.char_width;
+        crate::NaturalSize::new(
+            Some(width.min(avail.width)),
+            Some((rows * row_h).min(avail.height)),
+        )
     }
 
     /// `rect` is the display's own area, title row included. On a cell
@@ -2694,6 +2718,21 @@ mod cell_paint_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn natural_cols_is_the_widest_line_plus_the_row_gutter() {
+        let mut display = TextDisplay::new(WidgetId::new("t"));
+        display.lines = vec![
+            TextDisplayLine::plain("ab"),
+            TextDisplayLine::plain("abcde"),
+        ];
+        let marker = wrap_continuation_marker_width();
+        assert_eq!(display.natural_cols(), 5 + marker);
+        display.lines[1].timestamp = Some("12:00:00".into());
+        assert_eq!(display.natural_cols(), 5 + 9);
+        display.show_scrollbar = true;
+        assert_eq!(display.natural_cols(), 5 + 9 + 1);
+    }
     use crate::types::{Color, StyledSpan};
 
     fn line(text: &str) -> TextDisplayLine {
