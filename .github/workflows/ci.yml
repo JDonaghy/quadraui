@@ -1186,7 +1186,7 @@ jobs:
       # terminal-chrome build pays for no image decoder, which means the
       # plain `--features tui` steps above never compile it and its
       # `#[cfg(test)]` unit tests would otherwise never run under CI. Same
-      # "own feature, own steps, same job" shape as `layout`/`a11y` above;
+      # "own feature, own steps, same job" shape as `a11y` above;
       # the `--lib tui::image_decode` filter keeps it to the tests this
       # step exists for instead of re-running the whole `--lib` corpus the
       # plain `tui` step already covers.
@@ -1515,7 +1515,7 @@ jobs:
       # One feature failing its floor must not hide another's result.
       fail-fast: false
       matrix:
-        feature: [none, tui, gtk, win, terminal, layout]
+        feature: [none, tui, gtk, win, terminal]
     env:
       RUSTFLAGS: ""
     steps:
