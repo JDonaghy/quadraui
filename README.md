@@ -94,68 +94,51 @@ if (require.main === module) {
 module.exports = { Counter };
 ```
 
-**Rust**: the same three parts on the lower-level `AppLogic` trait. Rust has
-no declarative `Column`/`Row` yet, so this view places widgets by hand.
+**Rust**: the same three parts. A node maps its events to a message, and
+one `update` applies it, as in Elm and iced. `.content()` sizes a child to
+fit and `.gap()` spaces a container; leave them out and children share the
+space equally, as in Python and Node.
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust
 use quadraui::prelude::*;
-use quadraui::{primitive::DynWidget, Button, FrameTree, StyledSpan};
-use std::cell::Cell;
 
 #[derive(Default)]
 pub struct Counter {
     pub count: i32,
-    cell: Cell<(f32, f32)>,
 }
 
-impl Counter {
-    fn view(&self) -> ScreenLayout {
-        let (w, h) = self.cell.get(); // one character cell, in this backend's units
-        let text = StyledSpan::plain(format!("Count: {}", self.count));
-        let mut label = TextDisplay::new(WidgetId::new("count"));
-        label.lines = vec![TextDisplayLine {
-            spans: vec![text],
-            decoration: Default::default(),
-            timestamp: None,
-        }];
-        let mut ui = ScreenLayout::new();
-        let mut put = |col: f32, row: f32, cols: f32, widget: Box<dyn DynWidget>| {
-            let rect = Rect::new(col * w, row * h, cols * w, h);
-            ui.push(Surface::Widget { rect, widget })
-        };
-        put(0.0, 0.0, 20.0, Box::new(label));
-        put(0.0, 2.0, 5.0, Box::new(Button::new("dec".into(), "-")));
-        put(6.0, 2.0, 5.0, Box::new(Button::new("inc".into(), "+")));
-        ui
-    }
+#[derive(Clone)]
+pub enum Msg {
+    Inc,
+    Dec,
 }
 
-impl AppLogic for Counter {
-    type AreaId = ();
-    fn render(&self, backend: &mut dyn Backend, _: ()) {
-        self.cell.set((backend.char_width(), backend.line_height()));
-        self.view().draw(backend);
+impl View for Counter {
+    type Msg = Msg;
+    fn view(&self) -> Node<Msg> {
+        column([
+            text(format!("Count: {}", self.count)).id("count").content(),
+            row([
+                button("-").id("dec").on_click(Msg::Dec).content(),
+                button("+").id("inc").on_click(Msg::Inc).content(),
+            ])
+            .gap(8.0)
+            .content(),
+        ])
+        .gap(16.0)
     }
-    fn frame_tree(&self, _: ()) -> FrameTree {
-        self.view().into_frame_tree()
-    }
-    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
-            UiEvent::KeyPressed {
-                key: Key::Char('q'),
-                ..
-            } => return Reaction::Exit,
-            _ => return Reaction::Continue,
+    fn update(&mut self, msg: Msg) -> Command {
+        match msg {
+            Msg::Inc => self.count += 1,
+            Msg::Dec => self.count -= 1,
         }
-        Reaction::Redraw
+        Command::None
     }
 }
 
 fn main() -> Result<(), quadraui::RunError> {
-    quadraui::tui::run(Counter::default()) // or gtk::run, macos::run, win::run: same Counter
+    run_tui(Counter::default()) // or run_native: the same Counter in a window
 }
 ```
 
@@ -207,7 +190,7 @@ npm install @quadraui/node
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 8,500 tests, including headless
+- **Heavily tested.** Around 8,600 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.

@@ -13,12 +13,12 @@ through all three.
 |---|---|---|---|
 | Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `require("@quadraui/node/app")` |
 | State | struct fields | object attributes | class fields |
-| View | `ScreenLayout` of widgets at rects | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
-| Update | `fn handle(&mut self, UiEvent) -> Reaction` | `on_click=self.inc` | `onClick={() => this.count++}` |
-| Global keys | `UiEvent::KeyPressed` in `handle` | `on_event=` + `key_name(event)` | `onEvent:` + `keyName(event)` |
-| Run, terminal | `quadraui::tui::run(app)` | `App(...).run_tui()` | `new App(...).runTui()` |
-| Run, window | `quadraui::{gtk,macos,win}::run(app)` | `.run_native(title=...)` | `.runNative(title)` |
-| Quit | return `Reaction::Exit` | raise `SystemExit` | stop the live handle |
+| View | `fn view(&self)` returning `column([...])` | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
+| Update | `.on_click(Msg::Inc)` + `fn update(&mut self, Msg)` | `on_click=self.inc` | `onClick={() => this.count++}` |
+| Global keys | `fn on_event(&self, &UiEvent)` | `on_event=` + `key_name(event)` | `onEvent:` + `keyName(event)` |
+| Run, terminal | `run_tui(app)` | `App(...).run_tui()` | `new App(...).runTui()` |
+| Run, window | `run_native(app)` | `.run_native(title=...)` | `.runNative(title)` |
+| Quit | `q`/Escape/Ctrl-C, or return `Command::Exit` | raise `SystemExit` | stop the live handle |
 | Test headless | `TuiDriver` | `quadraui.testing.harness` | `@quadraui/node/testing` |
 | Reusable parts | your own `Primitive` | `Component`, `Widget` | `Component`, `defineWidget` |
 | Hot reload | rebuild | `App.enable_hot_reload` | `App.enableHotReload` |
@@ -29,12 +29,15 @@ has the table.
 
 ## Where they differ today
 
-- **Update style.** Python and Node put callbacks on nodes. Rust matches
-  events by widget id in one `handle`, as Elm does, which keeps closures
-  and borrows out of the Rust API.
-- **Layout.** Python and Node have `Column`/`Row`; Rust places widgets in
-  rectangles (or uses `ShellApp` or the `layout` feature).
-- **Quitting.** There is no default quit key in Python or Node. Python
+- **Update style.** Python and Node put callbacks on nodes. A Rust node
+  maps its events to a message value, and one `update` applies it, as Elm
+  and iced do, which keeps `&mut self` borrows out of the view.
+- **Child sizes.** Rust nodes take `.content()`, `.fixed(px)`,
+  `.weight(w)`, `.min(px)` and `.max(px)`, and containers `.gap(px)`;
+  Python and Node children share their container equally.
+- **Quitting.** Rust quits on `q`, Escape or Ctrl-C when no widget took
+  the key (`quits_on` opts out). There is no default quit key in Python or
+  Node. Python
   raises `SystemExit` from `on_event`. Node cannot stop a live session from
   inside a handler (`app.stopLive()` throws there), so the counter's
   `quit()` defers `live.stop()` and `app.stopLive()` with `setImmediate`.
@@ -43,8 +46,8 @@ has the table.
   app and JSX entry points need #2801 to load from `node_modules`; until
   then Node apps run from a clone ([Node quick start](quick-start/node.md)).
 - **Text.** Python lets a span leave out `fg`/`bg`; the TypeScript type
-  requires both (`null` for the theme's colour). Rust uses
-  `StyledSpan::plain`.
+  requires both (`null` for the theme's colour). Rust's `text("...")` is
+  one plain line.
 - **Native windows.** The Linux Python wheel and the npm addons are
   terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
 

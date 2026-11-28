@@ -12,7 +12,8 @@ each language:
 | Node (TSX) | [`node/counter.tsx`](node/counter.tsx) | `node examples/hero/node/run_tui.ts` | `node examples/hero/node/run_headless.ts` |
 
 A native window: `cargo run -p quadraui-hero --features tui,macos --bin
-counter-native` (or `tui,gtk` / `tui,win`) runs the same Rust `Counter`. In
+counter-native` (or `tui,gtk` / `tui,win`) runs the same Rust `Counter`
+through `run_native`. In
 Python and Node, swap `run_tui()` for `run_native(...)`. `q` quits all three.
 `node examples/hero/node/run_tui.ts path/to/app.tsx` runs a JSX file of your
 own the same way, which is how the Node quick start runs a reader's app until
@@ -26,9 +27,9 @@ Textual and React. Each one is a plain object with three parts:
 | Part | Rust | Python | Node / JSX |
 |---|---|---|---|
 | **State** | `struct Counter { count: i32 }` | `self.count = 0` | `count = 0` |
-| **View**: state to a widget tree, rebuilt each frame | `fn view(&self) -> ScreenLayout` | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
-| **Update**: events change state | `fn handle(&mut self, event) -> Reaction`, matching `ButtonActivated { widget }` by id | `on_click=self.inc` callbacks on the nodes | `onClick={() => this.count++}` callbacks on the elements |
-| **Run** | `quadraui::tui::run(Counter::default())` | `App(30, 5, view=counter.view).run_tui()` | `new App(30, 5, { view }).runTui()` |
+| **View**: state to a widget tree, rebuilt each frame | `fn view(&self) -> Node<Msg>` returning `column([...])` | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
+| **Update**: events change state | `.on_click(Msg::Inc)` on the nodes, applied by `fn update(&mut self, msg: Msg)` | `on_click=self.inc` callbacks on the nodes | `onClick={() => this.count++}` callbacks on the elements |
+| **Run** | `run_tui(Counter::default())` | `App(30, 5, view=counter.view).run_tui()` | `new App(30, 5, { view }).runTui()` |
 
 None of them bind data, mark anything dirty, or ask for a redraw. A changed
 `count` appears because the next frame calls `view()` again. Widget ids
@@ -36,9 +37,13 @@ None of them bind data, mark anything dirty, or ask for a redraw. A changed
 script the headless runners drive (`+`, `-`, `+`, expecting `Count: 1`).
 
 The one real difference is update. Python and Node attach callbacks to nodes.
-Rust matches events by widget id in one `handle`, the way Elm's `update`
-matches messages. Both are idiomatic for their language. The README can put
-them side by side under one heading: "state, view, update".
+A Rust node maps its events to a message value, and one `update` applies it,
+the way Elm and iced do. Both are idiomatic for their language. The README
+can put them side by side under one heading: "state, view, update".
+
+The Rust view also sizes its children (`.content()`, `.gap(..)`): the label
+takes one line and the buttons their own width. Without those calls it lays
+out exactly as the Python and Node versions do, each child an equal share.
 
 ## How each is checked
 
@@ -77,55 +82,14 @@ over ssh. `build.rs` embeds the Common-Controls v6 manifest that any
 Rust gaps first, then the ones shared by all three languages, then the
 binding-only ones.
 
-1. **Rust has no declarative layout, so its view is twice as long.** Python
-   and Node return `Column(label, Row(dec, inc))` and the engine lays it
-   out. Rust has no `Column`/`Row`: the app hand-places a `Rect` for each
-   widget, in character-cell units, inside a `ScreenLayout`. The row and
-   column solver exists, but only in `quadraui-binding-core::layout`
-   (`LayoutNode::{Row, Column, Leaf, ...}`), where Rust apps can't reach it.
-2. **Rust builds the view twice, and the second build can't see the
-   backend.** `AppLogic::render` paints. `AppLogic::frame_tree` rebuilds the
-   same widgets so the runtime can route clicks to them. `frame_tree` gets
-   no `Backend`, so the hero stores the last-seen cell size in a
-   `Cell<(f32, f32)>` during `render`, purely so the second build can lay
-   out the same way. A reader will see this as noise.
-
-   **The smallest fix covers gaps 1 and 2 (proposal only; not built here).**
-   The widget-contract plan already says binding-core keeps no layout solver
-   of its own (#2828 rule 7), so the solver is moving into `quadraui` anyway.
-   Move `LayoutNode` (`Row`/`Column`/`Leaf`) and its solver into `quadraui`,
-   then add one adapter:
-
-   ```rust
-   pub trait View {
-       fn view(&self) -> LayoutNode;
-       fn update(&mut self, event: UiEvent) -> Reaction;
-   }
-   // quadraui::app::Run<V: View> implements AppLogic: render() resolves and
-   // paints the tree and caches the resolved FrameTree; frame_tree() returns
-   // that cache. A View then runs on every backend's existing runner.
-   ```
-
-   The Rust hero would then be:
-
-   ```rust
-   impl View for Counter {
-       fn view(&self) -> LayoutNode {
-           column([text(format!("Count: {}", self.count)).id("count"),
-                   row([button("-").id("dec"), button("+").id("inc")])])
-       }
-       fn update(&mut self, event: UiEvent) -> Reaction { /* the same match */ }
-   }
-   fn main() -> Result<(), RunError> { quadraui::tui::run(Run(Counter::default())) }
-   ```
-
-   That is the same length and shape as the Python and Node versions. It
-   adds no callbacks or closures to Rust. `update` stays an Elm-style match
-   on widget ids, which avoids the borrow and lifetime problems that
-   callbacks capturing `&mut self` would cause.
+1. **Rust had no declarative layout** (closed). The app layer
+   (`quadraui::app`) gives it `column`/`row` nodes laid out by the core
+   stack solver, with per-child sizes.
+2. **Rust built its view twice** (closed). `Run`, the app layer's
+   `AppLogic` adapter, builds the view once per frame and routes against
+   the frame it kept, so the app no longer stashes the cell size.
 3. **No language has a one-line text label.**
-   - Rust needs a three-field `TextDisplayLine { spans, decoration,
-     timestamp }`. It has no `Default` and no `plain()`.
+   - Rust has `text("...")` in the app layer.
    - Python and Node need `{"spans": [{"text": ..., "fg": None, "bg":
      None}]}`.
 
@@ -138,8 +102,9 @@ binding-only ones.
    click `+ - +` to work around it. A button should activate on every
    press.
 5. **Python and Node can't quit the same way Rust does.**
-   - Rust returns `Reaction::Exit`. Python raises `SystemExit` from
-     `on_event`, which works.
+   - Rust quits on `q`, Escape or Ctrl-C by default, or when `update`
+     returns `Command::Exit`. Python raises `SystemExit` from `on_event`,
+     which works.
    - Node: calling `app.stopLive()` from `onEvent` throws "The same native
      value cannot be borrowed mutably while another borrow is active".
      `quadraui-node/examples/rating.ts --tui` uses exactly that pattern, so
@@ -160,9 +125,9 @@ binding-only ones.
    focus ring at all. So a cross-language parity test that compares frames
    cell for cell (#3077) would fail on focus styling before it gets to
    anything else.
-8. **App-layer children always take equal shares of space.** The wire
-   accepts per-child `"size"`/`"min"`/`"max"`, but the `Column`/`Row` node
-   constructors don't expose them. The label therefore takes half the
+8. **Python and Node app-layer children always take equal shares of
+   space.** The wire accepts per-child `"size"`/`"min"`/`"max"`, but the
+   `Column`/`Row` node constructors don't expose them (Rust nodes do). The label therefore takes half the
    height, and each button stretches across half the width, sitting at the
    bottom of its cell.
 9. **Node can't run JSX directly.** `node/load_jsx.ts` compiles

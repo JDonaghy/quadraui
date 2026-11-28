@@ -20,10 +20,8 @@ use std::path::{Path, PathBuf};
 /// on click timing.
 const SHOWN_COUNT: i32 = 3;
 
-fn counter() -> hero::Counter {
-    let mut c = hero::Counter::default();
-    c.count = SHOWN_COUNT;
-    c
+fn counter() -> quadraui::app::Run<hero::Counter> {
+    quadraui::app::Run::new(hero::Counter { count: SHOWN_COUNT })
 }
 
 fn main() {

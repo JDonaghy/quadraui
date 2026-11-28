@@ -35,36 +35,48 @@ The focused widget sees a key first, so `on_event` gets only the keys it
 did not use: Enter on a focused button presses the button, and Tab moves
 focus ([Focus](focus.md)).
 
-## Rust: one `handle`, matched by id
+## Rust: messages and one `update`
 
-Rust apps get every event in one method and match on it, as in Elm's
-`update`:
+A Rust node maps its events to a message value you define, and one
+`update` applies it, as in Elm and iced:
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust,noplayground
-    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
+                button("-").id("dec").on_click(Msg::Dec).content(),
+                button("+").id("inc").on_click(Msg::Inc).content(),
 ```
 
-`handle` returns a `Reaction`: `Redraw` after a change, `Continue` when
-nothing changed, `Exit` to quit.
+<!-- sample: examples/hero/rust/src/main.rs -->
+```rust,noplayground
+    fn update(&mut self, msg: Msg) -> Command {
+        match msg {
+            Msg::Inc => self.count += 1,
+            Msg::Dec => self.count -= 1,
+        }
+        Command::None
+    }
+```
+
+Every message redraws; `update` returns `Command::Exit` to quit. Events no
+widget took go to the view's optional `on_event(&self, &UiEvent)`, which
+may return a message, and then to `quits_on`: by default `q`, Escape and
+Ctrl-C quit. `.on(|id, event| ...)` on any node maps any `UiEvent` the
+widget emits.
 
 ## Common events
 
 What each Python / Node callback receives, and the Rust event it answers:
 
-| Widget | Python / Node callback | Rust `UiEvent` |
+| Widget | Python / Node callback | Rust node handler, and the `UiEvent` it answers |
 |---|---|---|
-| Button | `on_click()` / `onClick()` | `ButtonActivated { widget }` |
-| List | `on_select(index)`, `on_activate(index)` | `List(id, ListViewEvent::SelectionChanged { idx })`, `ItemActivated { idx }` |
+| Button | `on_click()` / `onClick()` | `.on_click(msg)`: `ButtonActivated { widget }` |
+| List | `on_select(index)`, `on_activate(index)` | `.on_select(Msg::Select)`: `List(id, ListViewEvent::SelectionChanged { idx })`; `ItemActivated { idx }` |
 | Tree | `on_select(path)`, `on_activate(path)`, `on_row_click(path)`, `on_toggle_expand(path)`; a path is a list of indices | `Tree(id, TreeEvent::SelectionChanged { path })`, `RowActivated`, `RowClicked`, `RowToggleExpand` |
 | Table | `on_select(row)`, `on_activate(row)`, `on_header_click(column)` | `DataTable(id, DataTableEvent::RowSelected { idx })`, `RowActivated`, `HeaderClicked { col }` |
 | Tabs | `on_activate(index)`, `on_close(index)` | `TabBar(id, TabBarEvent::TabActivated { index })`, `TabClosed { index }` |
 | Status bar | `on_segment_click(segment_id)` | `StatusBar(id, StatusBarEvent::SegmentClicked { id })` |
-| Text field (in a `Form`) | `on_change(text)`, `on_submit(text)` | `Form(id, FormEvent::TextInputChanged { value, .. })`, `TextInputCommitted { .. }` |
-| Any key | `on_event(event)` + `key_name` | `KeyPressed { key, modifiers, .. }` |
+| Text field (in a `Form`) | `on_change(text)`, `on_submit(text)` | `text_field(..).on_change(Msg::Edit)`, `.on_submit(..)`: `Form(id, FormEvent::TextInputChanged { value, .. })`, `TextInputCommitted { .. }` |
+| Any key | `on_event(event)` + `key_name` | `View::on_event`: `KeyPressed { key, modifiers, .. }` |
 
 `on_change` gets the field's whole new value, not the key that changed it.
 The full list of events and their payloads is generated from one Rust

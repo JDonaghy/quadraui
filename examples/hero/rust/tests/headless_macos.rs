@@ -7,11 +7,12 @@
 #[path = "../src/main.rs"]
 mod hero;
 
+use quadraui::app::Run;
 use quadraui::macos::testing::MacDriver;
 
 #[test]
 fn plus_minus_plus_counts_to_one_in_a_native_surface() {
-    let mut driver = MacDriver::new(hero::Counter::default(), 400, 200);
+    let mut driver = MacDriver::new(Run::new(hero::Counter::default()), 400, 200);
     driver.render();
     assert!(driver.screen_contains("Count: 0"));
     for label in ["+", "-", "+"] {

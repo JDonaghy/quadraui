@@ -7,8 +7,8 @@ also use.
 | Part | What it is | quadraui |
 |---|---|---|
 | **State** | Your data. Plain fields on a plain object. | a struct / object you own |
-| **View** | A function from state to a widget tree. Runs every frame. | `view()` returning nodes (Python, Node) or a `ScreenLayout` (Rust) |
-| **Update** | Code that changes state when an event arrives. | callbacks on nodes (Python, Node), or one `handle(event)` (Rust) |
+| **View** | A function from state to a widget tree. Runs every frame. | `view()` returning nodes |
+| **Update** | Code that changes state when an event arrives. | callbacks on nodes (Python, Node), or messages applied by one `update` (Rust) |
 
 There is no data binding, no observable, no "mark dirty" call. After an
 event is handled, the view runs again and quadraui repaints.
@@ -17,8 +17,8 @@ event is handled, the view runs again and quadraui repaints.
 
 | Framework | State | View | Update |
 |---|---|---|---|
-| **Elm** | `Model` | `view : Model -> Html Msg` | `update : Msg -> Model -> Model`. Rust's `handle` is this: one match over events, keyed by widget id. |
-| **iced** | your `struct` | `fn view(&self) -> Element<Message>` | `fn update(&mut self, Message)`. Same as Rust `AppLogic`, except events carry a `WidgetId` instead of a message enum you define. |
+| **Elm** | `Model` | `view : Model -> Html Msg` | `update : Msg -> Model -> Model`. Rust's `View::update` is this: nodes map events to your `Msg`, and one match applies it. |
+| **iced** | your `struct` | `fn view(&self) -> Element<Message>` | `fn update(&mut self, Message)`. The same as Rust's `View`: `button("+").on_click(Msg::Inc)`, `column([...])`, `row([...])`. |
 | **React** | `useState` / fields | a component returning JSX | `onClick` props. The Node layer is this, with JSX and `Component` for local state, but the whole view re-renders every event; there is no diffing for you to manage. |
 | **Textual** | widget attributes | `compose()` | `on_button_pressed` handlers. The Python layer puts the handler on the node instead: `Button("+", on_click=self.inc)`. Layout comes from `Column`/`Row`, not CSS. |
 
