@@ -139,9 +139,12 @@ GTK 4.10 had not already ruled out.
 - on Linux, when the loaded module has no native backend, sets
   `native_unavailable_reason`. `quadraui/__init__.py` then installs a
   `QuiApp.run_native` that raises `UnsupportedError` with that reason. The
-  message includes the loader's own error, e.g.
-  `libgtk-4.so.1: cannot open shared object file: No such file or directory`,
-  plus the install command for apt, dnf and pacman.
+  message includes the loader's own error and the install command for apt,
+  dnf and pacman. The loader names only the first `DT_NEEDED` entry it cannot
+  resolve. On a stock `ubuntu:24.04` container that is
+  `libpangoft2-1.0.so.0`, not GTK, as CI showed. So `_ext` also tries to
+  open `libgtk-4.so.1` with `ctypes`, and if that fails the message says
+  `(libgtk-4.so.1 is not installed)`.
 - `QUADRAUI_DISABLE_GTK=1` skips the GTK variant, for processes that never
   open a window. Loading GTK adds about 9 to 12 ms to `import quadraui`
   (warm cache, precision), against about 1 ms for the GTK-free module.

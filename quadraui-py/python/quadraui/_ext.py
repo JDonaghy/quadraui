@@ -49,6 +49,22 @@ _GTK_INSTALL_HINT = (
 )
 
 
+def _gtk_probe() -> str:
+    """Names ``libgtk-4.so.1`` as missing when the loader cannot open it.
+
+    The loader's own error names only the first unresolved ``DT_NEEDED``
+    entry, which on a host without GTK is often a Pango or Cairo library
+    rather than GTK itself.
+    """
+    import ctypes
+
+    try:
+        ctypes.CDLL("libgtk-4.so.1")
+    except OSError:
+        return " (libgtk-4.so.1 is not installed)"
+    return ""
+
+
 def _load() -> ModuleType:
     global native_unavailable_reason
     gtk_error: Optional[ImportError] = None
@@ -71,8 +87,9 @@ def _load() -> ModuleType:
             )
         elif gtk_error is not None:
             native_unavailable_reason = (
-                "run_native needs the system GTK 4 libraries, but the GTK build of "
-                f"quadraui could not be loaded: {gtk_error}. {_GTK_INSTALL_HINT}"
+                f"run_native needs the system GTK 4 libraries{_gtk_probe()}, but the "
+                f"GTK build of quadraui could not be loaded: {gtk_error}. "
+                f"{_GTK_INSTALL_HINT}"
             )
         else:
             native_unavailable_reason = (
