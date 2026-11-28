@@ -429,11 +429,9 @@ impl ScrolledForm {
             RoutedEvent::Pointer {
                 kind: PointerKind::Up(MouseButton::Left),
                 ..
-            } => {
-                if state.thumb_drag.take().is_some() {
-                    cx.release_pointer();
-                    return Handled::Consumed;
-                }
+            } if state.thumb_drag.take().is_some() => {
+                cx.release_pointer();
+                return Handled::Consumed;
             }
             _ => {}
         }
