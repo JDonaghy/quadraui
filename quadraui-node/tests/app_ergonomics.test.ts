@@ -274,6 +274,18 @@ test("Row children take their size along the width", () => {
   assert.equal(app.screen().split("\n")[0].indexOf("cd"), 4);
 });
 
+test("a content-sized row takes its tallest child's height", () => {
+  const app = new App(20, 6, { view: () => Column([Row([Text("ab"), Text("cd")], { size: "content" }), Text("below", { size: "EqualShare" })]) });
+  assert.equal(rowOf(app.screen(), "abcd"), 0);
+  assert.equal(rowOf(app.screen(), "below"), 1);
+});
+
+test("a content-sized column adds its children and gaps", () => {
+  const app = new App(20, 8, { view: () => Column([Column([Text("a"), Text("b")], { gap: 16, size: "content" }), Text("below", { size: "EqualShare" })]) });
+  assert.equal(rowOf(app.screen(), "b"), 2);
+  assert.equal(rowOf(app.screen(), "below"), 3);
+});
+
 test("<button size> in JSX reaches the wire", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "qu-size-jsx-"));
   const file = path.join(dir, "sized.tsx");

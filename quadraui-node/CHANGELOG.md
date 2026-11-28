@@ -457,6 +457,9 @@ fragment step for this package (that mechanism, and
 
 ### Fixed
 
+- A `Column` or `Row` sized `"content"` (`size: "content"`, or
+  `<row size="content">`) measures its children (their sizes end to end
+  plus the gaps, and the largest across) instead of collapsing to nothing, the same measure the Rust app layer gives a stack (#3107).
 - `QuiApp.cellColors`'s declared return type is the
   `[[r, g, b], [r, g, b]] | null` tuple it returns, instead of an undeclared
   `CellColors` name that failed `tsc` for any consumer without

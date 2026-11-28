@@ -460,6 +460,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- A `Column` or `Row` sized `"content"` measures its children (their sizes
+  end to end plus the gaps, and the largest across) instead of collapsing
+  to nothing, the same measure the Rust app layer gives a stack (#3107).
 - While a modal overlay (`show_overlay("message_dialog", ...)` and the
   other modal kinds) is open, a click, pointer move or key it does not use
   no longer reaches the widget painted beside or beneath it.

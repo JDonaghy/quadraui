@@ -615,23 +615,11 @@ impl<M> Node<M> {
                 } else {
                     quantise_vertical(style.gap, m.line_height)
                 };
-                let mut main: Option<f32> = None;
-                let mut cross: Option<f32> = None;
-                for (i, child) in children.iter().enumerate() {
-                    let n = child.natural(ctx, m, avail);
-                    if let Some(v) = n.main(*horizontal) {
-                        let lead = if i == 0 { 0.0 } else { gap };
-                        main = Some(main.unwrap_or(0.0) + lead + v);
-                    }
-                    if let Some(v) = n.cross(*horizontal) {
-                        cross = Some(cross.map_or(v, |c: f32| c.max(v)));
-                    }
-                }
-                if *horizontal {
-                    NaturalSize::new(main, cross)
-                } else {
-                    NaturalSize::new(cross, main)
-                }
+                NaturalSize::stacked(
+                    children.iter().map(|child| child.natural(ctx, m, avail)),
+                    *horizontal,
+                    gap,
+                )
             }
         }
     }

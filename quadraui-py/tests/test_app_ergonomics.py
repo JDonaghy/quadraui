@@ -231,6 +231,18 @@ def test_row_children_take_their_size_along_the_width():
     assert app.screen().split("\n")[0].index("cd") == 4
 
 
+def test_a_content_sized_row_takes_its_tallest_child_height():
+    app = App(20, 6, view=lambda: Column(Row(Text("ab"), Text("cd"), size="content"), Text("below", size=None)))
+    assert _row_of(app.screen(), "abcd") == 0
+    assert _row_of(app.screen(), "below") == 1
+
+
+def test_a_content_sized_column_adds_its_children_and_gaps():
+    app = App(20, 8, view=lambda: Column(Column(Text("a"), Text("b"), gap=16, size="content"), Text("below", size=None)))
+    assert _row_of(app.screen(), "b") == 2
+    assert _row_of(app.screen(), "below") == 3
+
+
 @pytest.mark.parametrize(
     "size, wire",
     [(3, {"Fixed": 3}), ("30%", {"Percent": 0.3}), ("2fr", {"Weight": 2.0}), ("content", "Content"), ({"Weight": 1.5}, {"Weight": 1.5})],

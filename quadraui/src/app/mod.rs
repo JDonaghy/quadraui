@@ -36,7 +36,7 @@
 //! }
 //!
 //! fn main() -> Result<(), quadraui::RunError> {
-//!     run_tui(Counter::default())
+//!     run_native(Counter::default()) // or run_tui, with the `tui` feature
 //! }
 //! ```
 //!

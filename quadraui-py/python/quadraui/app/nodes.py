@@ -1022,7 +1022,7 @@ def Text(
     line of `text`. Sized to its content by default, so a label in a
     `Column` takes one row rather than an equal share; pass `size=None` for
     an equal share instead."""
-    lines = [{"spans": [{"text": line}]} for line in text.split("\n")]
+    lines: list["TextDisplayLineDescriptor"] = [{"spans": [{"text": line}]} for line in text.split("\n")]
     return TextDisplay(lines, id=id, size=size, min=min, max=max)
 
 

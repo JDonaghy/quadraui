@@ -286,6 +286,30 @@ impl NaturalSize {
             self.width
         }
     }
+
+    /// The natural size of a stack (a `Row` when `horizontal`, else a
+    /// `Column`) whose children measure `children`: their main-axis
+    /// extents end to end with `gap` (native units) before every child but
+    /// the first, and the largest cross-axis extent. An axis no child
+    /// measures stays `None`.
+    pub fn stacked(children: impl IntoIterator<Item = Self>, horizontal: bool, gap: f32) -> Self {
+        let mut main: Option<f32> = None;
+        let mut cross: Option<f32> = None;
+        for (i, child) in children.into_iter().enumerate() {
+            if let Some(v) = child.main(horizontal) {
+                let lead = if i == 0 { 0.0 } else { gap };
+                main = Some(main.unwrap_or(0.0) + lead + v);
+            }
+            if let Some(v) = child.cross(horizontal) {
+                cross = Some(cross.map_or(v, |c| c.max(v)));
+            }
+        }
+        if horizontal {
+            Self::new(main, cross)
+        } else {
+            Self::new(cross, main)
+        }
+    }
 }
 
 // ── Shared visible-range walk ────────────────────────────────────────────
@@ -636,6 +660,20 @@ mod tests {
         assert_eq!(NaturalSize::NONE, NaturalSize::default());
         assert_eq!(NaturalSize::NONE.main(true), None);
         assert_eq!(NaturalSize::NONE.cross(true), None);
+    }
+
+    #[test]
+    fn a_stack_adds_main_extents_and_gaps_and_takes_the_widest_cross() {
+        let children = [
+            NaturalSize::new(Some(3.0), Some(1.0)),
+            NaturalSize::new(None, Some(4.0)),
+            NaturalSize::new(Some(5.0), None),
+        ];
+        let row = NaturalSize::stacked(children, true, 1.0);
+        assert_eq!(row, NaturalSize::new(Some(9.0), Some(4.0)));
+        let column = NaturalSize::stacked(children, false, 2.0);
+        assert_eq!(column, NaturalSize::new(Some(5.0), Some(7.0)));
+        assert_eq!(NaturalSize::stacked([], true, 1.0), NaturalSize::NONE);
     }
 
     // ── visible_range_walk ──────────────────────────────────────────
