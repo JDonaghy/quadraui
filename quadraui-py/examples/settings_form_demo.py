@@ -12,11 +12,8 @@ then prints what each callback recorded):
     python quadraui-py/examples/settings_form_demo.py
 
 Run in a real terminal (Tab/Shift-Tab move between fields, Space toggles
-the checkbox, arrow keys adjust the dropdown, typing edits the text
-fields, `q`/Escape quits -- the `Form`-embedded slider has no
-`FormController` arm yet, so its value only moves via a11y
-Increment/Decrement, not a real drag or arrow key; use the standalone
-`Slider` leaf for an interactive one):
+the checkbox, arrow keys adjust the dropdown and the slider, typing edits
+the text fields, `q`/Escape quits):
 
     python quadraui-py/examples/settings_form_demo.py --tui
 """

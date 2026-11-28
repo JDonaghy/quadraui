@@ -325,17 +325,15 @@ test("extra primitives coexist with the primitive leaves in one render object", 
   assert.ok(app.screenContains("Downloading"));
 });
 
-// Table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry that has a
+// Table proving every interactive generic widget kind that has a
 // dedicated `FormEvent` round-trips through a literal inline layout-tree
 // leaf -- a `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a
 // render callback returns. Each case dispatches the events a real app
 // would push (a focusing click, then a key/char where the kind needs one)
 // and asserts the final event the handler receives. `progress`/`spinner`/
 // `image` have no event at all, so neither appears here. `switch` and
-// `radio_group` ride the generic `WIDGET_KINDS` seam rather than
-// `ExtraPaint`, and emit a bare top-level event instead of a `Form`-wrapped
-// one, but are kept here too for parity coverage of the same literal-leaf
-// shape.
+// `radio_group` emit a bare top-level event instead of a `Form`-wrapped
+// one.
 const INLINE_LEAF_CASES: Array<{
   name: string;
   tree: unknown;
@@ -348,9 +346,9 @@ const INLINE_LEAF_CASES: Array<{
     // `paint_leaf` keys the painted hit by the leaf id specifically
     // because a render callback may reuse the same descriptor id across
     // leaves, so both the click-to-focus `FocusChanged` and the
-    // `SwitchToggled` it emits must agree on "leaf:1". `switch` rides the
-    // generic `WIDGET_KINDS` seam, not `ExtraPaint`, so its click resolves
-    // to a bare `SwitchToggled` event rather than a `Form`-wrapped one.
+    // `SwitchToggled` it emits must agree on "leaf:1". A `switch` click
+    // resolves to a bare `SwitchToggled` event rather than a `Form`-wrapped
+    // one.
     name: "switch",
     tree: { row: [{ id: "leaf:1", switch: { id: "sw:embedded", value: false } }] },
     events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } }],
@@ -394,8 +392,7 @@ const INLINE_LEAF_CASES: Array<{
     expected: [
       { FocusChanged: "rg:1" },
       // `RadioGroup::select` resolves a click straight to the clicked
-      // option -- no `Form` wrapper, since `RadioGroup` is a
-      // `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+      // option -- no `Form` wrapper, since `RadioGroup` has its own event.
       { RadioGroupSelectionChanged: { widget: "rg:1", index: 1 } },
       // The arrow key routes through `InteractionEngine`'s own
       // dyn-widget-key dispatch, which attaches a `hit` dict even to a
@@ -575,10 +572,9 @@ const INLINE_LEAF_CASES: Array<{
     expected: [
       { FocusChanged: "ta:1" },
       null,
-      // The focusing click lands at column 0 (the default cursor position
-      // for a textarea with no explicit `cursor`), so Enter's inserted
-      // newline lands before "hi", not after it.
-      ["ta:1", { TextInputChanged: { id: "ta:1", value: "\nhi" } }],
+      // A textarea with no explicit `cursor` edits from the end of its
+      // value, so Enter's inserted newline lands after "hi".
+      ["ta:1", { TextInputChanged: { id: "ta:1", value: "hi\n" } }],
     ],
   },
 ];
@@ -622,14 +618,55 @@ for (const { name, tree, events, expected } of INLINE_LEAF_CASES) {
   });
 }
 
-// The four chrome-bar kinds below each have their own click-routing
-// mechanism (`ExtraPaint::paint_chrome`'s `chrome_hits` for
-// toolbar/status_bar/activity_bar, `render_overlays`'s `sync_menu_bar` for
-// menu_bar) that doesn't fit `INLINE_LEAF_CASES`' generic "one Form event
-// per pushed event" shape above, so each gets its own test here instead of
-// a table row -- proving the same semantic event a flat-slot chrome bar
-// dispatches from a render callback's flat `{"<kind>": {...}}` object
-// still reaches the handler when the bar is painted as a literal inline
+// A focused `text_input` edits through the core text state: Ctrl+Backspace
+// and Ctrl+Delete delete a word, Ctrl+Left jumps one, Home/End reach the
+// line's ends, and Ctrl+Z/Ctrl+Shift+Z undo and redo -- with the caret the
+// input's own state walked to, never one the app echoes back.
+test("text_input word, line-end and undo keys edit through the core state", () => {
+  const app = new QuiApp(40, 20);
+  const state = { value: "foo bar" };
+  app.setRender(() => ({ text_input: { id: "ti:1", lines: [state.value] } }));
+  app.screen();
+  app.setHandler((event: any) => {
+    const changed = event.Form?.[1]?.TextInputChanged;
+    if (changed) state.value = changed.value;
+  });
+  // Content starts two cells in (border + padding): x = 9 is column 7, the
+  // end of "foo bar".
+  app.pushEvent({ MouseDown: { button: "Left", position: { x: 9.0, y: 1.0 }, modifiers: {} } });
+  app.run(1);
+  const key = (named: string, modifiers: Record<string, boolean> = {}) => {
+    app.pushEvent({ KeyPressed: { key: { Named: named }, modifiers, repeat: false } });
+    app.run(1);
+  };
+  key("Backspace", { ctrl: true });
+  assert.equal(state.value, "foo ");
+  key("Home");
+  app.pushEvent({ CharTyped: "X" });
+  app.run(1);
+  assert.equal(state.value, "Xfoo ");
+  key("End");
+  key("Left", { ctrl: true });
+  key("Delete", { ctrl: true });
+  assert.equal(state.value, " ");
+  app.pushEvent({ KeyPressed: { key: { Char: "z" }, modifiers: { ctrl: true }, repeat: false } });
+  app.run(1);
+  assert.equal(state.value, "Xfoo ");
+  app.pushEvent({
+    KeyPressed: { key: { Char: "z" }, modifiers: { ctrl: true, shift: true }, repeat: false },
+  });
+  app.run(1);
+  assert.equal(state.value, " ");
+});
+
+// The four chrome-bar kinds below each report events that don't fit
+// `INLINE_LEAF_CASES`' generic "one Form event per pushed event" shape
+// above -- toolbar/status_bar/activity_bar their own click events, and
+// menu_bar the application menu's view changes plus `MenuActivated` -- so
+// each gets its own test here instead of a table row, proving the same
+// semantic event a flat-slot chrome bar dispatches from a render
+// callback's flat `{"<kind>": {...}}` object still reaches the handler
+// when the bar is painted as a literal inline
 // `{ row: [{ id, <kind>: {...} }] }` leaf.
 
 test("inline tree leaf toolbar click emits Toolbar(ButtonClicked)", () => {
@@ -757,11 +794,64 @@ test("inline tree leaf activity_bar click emits ActivityBar(ItemClicked)", () =>
 });
 
 test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", () => {
-  // `render_overlays`'s `sync_menu_bar` call reads the hit map generically
-  // -- it never distinguishes a flat-slot `"menu_bar"` from one painted
-  // through an inline leaf -- so `Alt+F` opens the bar's one top-level menu
-  // and `Enter` activates its sole leaf item exactly as it would for a
-  // slot-painted bar.
+  // The `"menu_bar"` leaf is the application menu, routed like any other
+  // leaf: once it holds focus (Tab, its only stop), `Alt+F` opens the
+  // bar's one top-level menu and `Enter` activates its sole leaf item.
+  // Which menu is open is the app's to keep: it echoes every
+  // `AppMenu(..., { Changed: view })` back onto the descriptor.
+  const app = new QuiApp(40, 20);
+  let view: Record<string, unknown> = {};
+  app.setRender(() => ({
+    row: [
+      {
+        id: "menu_bar:main",
+        menu_bar: {
+          id: "menu_bar:main",
+          items: [
+            {
+              id: "menu:file",
+              label: "&File",
+              submenu: [
+                {
+                  id: "menu:file:save",
+                  label: { spans: [{ text: "Save", fg: null, bg: null }] },
+                },
+              ],
+            },
+          ],
+          ...view,
+        },
+      },
+    ],
+  }));
+  app.screen();
+
+  const received: any[] = [];
+  app.setHandler((event: any) => {
+    received.push(event);
+    if (event.AppMenu) {
+      view = event.AppMenu[1].Changed;
+    }
+  });
+  for (const [key, modifiers] of [
+    [{ Named: "Tab" }, {}],
+    [{ Char: "f" }, { alt: true }],
+    [{ Named: "Enter" }, {}],
+  ] as const) {
+    app.pushEvent({ KeyPressed: { key, modifiers, repeat: false } });
+    app.run(1);
+  }
+
+  assert.ok(
+    received.some((event) => event.MenuActivated === "menu:file:save"),
+    `expected a MenuActivated event, got: ${JSON.stringify(received)}`,
+  );
+});
+
+test("a menu_bar whose app never echoes its view still opens on its Alt mnemonic", () => {
+  // Leaving every view key out makes the menu uncontrolled: it keeps its
+  // own open dropdown, so an app with no `AppMenu` handling still has a
+  // working menu.
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
     row: [
@@ -786,22 +876,55 @@ test("inline tree leaf menu_bar Alt activation then Enter emits MenuActivated", 
     ],
   }));
   app.screen();
-
   const received: any[] = [];
-  app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({
-    KeyPressed: { key: { Char: "f" }, modifiers: { alt: true }, repeat: false },
+  app.setHandler((event: any) => {
+    received.push(event);
   });
-  app.run(1);
-  app.pushEvent({
-    KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false },
-  });
-  app.run(1);
+  for (const [key, modifiers] of [
+    [{ Named: "Tab" }, {}],
+    [{ Char: "f" }, { alt: true }],
+  ] as const) {
+    app.pushEvent({ KeyPressed: { key, modifiers, repeat: false } });
+    app.run(1);
+  }
+  assert.ok(app.screenContains("Save"), app.screen());
 
+  app.pushEvent({ KeyPressed: { key: { Named: "Enter" }, modifiers: {}, repeat: false } });
+  app.run(1);
   assert.ok(
     received.some((event) => event.MenuActivated === "menu:file:save"),
     `expected a MenuActivated event, got: ${JSON.stringify(received)}`,
   );
+  assert.ok(!app.screenContains("Save"), app.screen());
+});
+
+test("a focused tab_bar delivers a key it does not use once, as its own KeyPressed", () => {
+  const app = new QuiApp(40, 20);
+  app.setRender(() => ({
+    tab_bar: { id: "tabs", tabs: [{ label: "One" }, { label: "Two" }] },
+  }));
+  const received: any[] = [];
+  app.setHandler((event: any) => {
+    received.push(event);
+  });
+  const lines = app.screen().split("\n");
+  const row = lines.findIndex((line: string) => line.includes("One"));
+  const col = lines[row].indexOf("One");
+  app.pushEvent({
+    MouseDown: { button: "Left", position: { x: col + 0.5, y: row + 0.5 }, modifiers: {} },
+  });
+  app.run(1);
+  received.length = 0;
+
+  app.pushEvent({ KeyPressed: { key: { Named: "Delete" }, modifiers: {}, repeat: false } });
+  app.run(1);
+
+  const keys = received.filter(
+    (event) => event.KeyPressed || (event.TabBar && event.TabBar[1].KeyPressed),
+  );
+  assert.equal(keys.length, 1, JSON.stringify(received));
+  assert.equal(keys[0].TabBar[0], "tabs");
+  assert.equal(keys[0].TabBar[1].KeyPressed.key, "Delete");
 });
 
 test("inline tree leaf markdown renders formatting and link click emits RichTextLinkClicked", () => {
@@ -861,8 +984,7 @@ test("inline tree leaf markdown renders formatting and link click emits RichText
 });
 
 test("inline tree leaf find_replace renders its query text", () => {
-  // `FindReplacePanel` carries no `id` field of its own (see
-  // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage
+  // `FindReplacePanel` carries no `id` field of its own, so this is its first coverage
   // in this file, via an inline leaf. `hit_regions` drives both click
   // routing AND which content the TUI rasteriser paints
   // (the cell painter walks it to place the find/replace input
@@ -949,9 +1071,8 @@ test("inline tree leaf palette renders its item text", () => {
 // paint-only inline leaf proof: a literal
 // `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a render
 // callback returns, decodes through `layout_leaf_from_value`'s generic
-// `EXTRA_PRIMITIVE_KINDS` loop and paints through the matching
-// `ExtraPaint` impl, same as it already does for the eight chrome-bar
-// kinds just above.
+// widget loop and paints through the widget's own contract, same as it
+// already does for the eight chrome-bar kinds just above.
 test("inline tree leaf message_list renders a row's text", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
@@ -1144,7 +1265,7 @@ test("inline tree leaf chart renders its x_label", () => {
 });
 
 // `editor`/`canvas` are a tab stop and a bare hit target (`canvas`, which
-// `ExtraPaint::tab_stop` leaves non-focusable) with no dedicated semantic
+// takes no focus) with no dedicated semantic
 // event of their own -- a click reaches the handler as the raw `MouseDown`
 // with `widget` resolved to the leaf's id, same as a render callback's
 // flat-slot path. `terminal` is a widget-contract kind whose own

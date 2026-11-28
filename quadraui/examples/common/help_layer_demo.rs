@@ -176,9 +176,14 @@ impl ShellApp for HelpLayerDemo {
         );
         backend.draw_dyn(rect, &hint, &());
 
-        if let Some((palette, _)) = &self.palette {
+        if let Some((palette, state)) = &self.palette {
+            // The palette's state lives on this demo, not in the runtime's
+            // store, so it is lent to the store for the paint, which draws
+            // the caret from it.
             let popup = popup_rect(layout.window_bounds, backend);
-            backend.draw_dyn(popup, palette, &());
+            quadraui::lend_widget_state(palette.id, state.clone(), || {
+                backend.draw_dyn(popup, palette, &());
+            });
         } else {
             // `active_view_help()` is `None` for the Settings panel — the
             // overlay's own fallback (a visible "no help available"
@@ -223,10 +228,6 @@ impl ShellApp for HelpLayerDemo {
             };
             if let Handled::Event(action) = &handled {
                 palette.apply(action, visible_rows);
-            }
-            // A caret-only key answers `Consumed` yet moves the live caret.
-            if !matches!(handled, Handled::Ignored) {
-                palette.sync_caret(&state);
             }
             match handled {
                 Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {

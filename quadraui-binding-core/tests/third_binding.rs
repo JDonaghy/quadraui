@@ -2,8 +2,10 @@
 //! public API, with no `quadraui-py`/`quadraui-node` code in the loop: the
 //! shape a third binding (a Lua host binding `binding-core` directly)
 //! takes. Each frame decodes a wire layout tree, resolves the engine's
-//! stored widget state into it, paints it through a `TuiBackend`, and
-//! routes input back through the engine to a host-side event sink.
+//! stored widget state into it, paints it through a `TuiBackend` with the
+//! engine's per-widget state installed
+//! (`InteractionEngine::paint_with_widget_state`), and routes input back
+//! through the engine to a host-side event sink.
 //!
 //! Overlays take the same route: a `show_overlay(kind, descriptor, anchor)`
 //! call decodes through `decode_overlay` and opens through
@@ -13,7 +15,11 @@
 //! The tree mixes a built-in kind (`"button"`) with a kind the host
 //! registers at runtime (`"host_toggle"`), so the same frame proves both
 //! halves of the generic leaf: the static `widget_kinds!` table and the
-//! runtime kind registry.
+//! runtime kind registry. A stateful built-in kind (`"tree_table_controller"`)
+//! shows the engine keeping widget state across frames a host decodes
+//! afresh each time.
+//! A script-defined widget (`"scripted_widget"`,
+//! registered through `register_scripted_widget`) takes the same route.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,7 +103,9 @@ impl AppLogic for HostApp {
             &windows,
         );
         let mut hits = Vec::new();
-        paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+        self.engine.paint_with_widget_state(|| {
+            paint_layout_windowed(backend, area, &node, &mut hits, &windows)
+        });
         render_overlays(&self.engine, backend, hits);
     }
 
@@ -106,8 +114,48 @@ impl AppLogic for HostApp {
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        self.engine
-            .handle(event, backend, &mut *self.sink.borrow_mut())
+        let seen = self.sink.borrow().events.len();
+        let reaction = self
+            .engine
+            .handle(event, backend, &mut *self.sink.borrow_mut());
+        let changes: Vec<_> = self.sink.borrow().events[seen..]
+            .iter()
+            .filter_map(|event| match event {
+                UiEvent::AppMenu(_, quadraui::AppMenuEvent::Changed(view)) => Some(view.clone()),
+                _ => None,
+            })
+            .collect();
+        for view in changes {
+            echo_menu_view(&mut self.view, &view);
+        }
+        reaction
+    }
+}
+
+/// Writes an application menu's reported view back onto every
+/// `"menu_bar"` descriptor in `view`, the way a scripting host's own state
+/// update would: the open menu and its highlights are the app's to keep.
+fn echo_menu_view(view: &mut serde_json::Value, menu: &quadraui::AppMenuView) {
+    match view {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::Object(bar)) = map.get_mut("menu_bar") {
+                let serde_json::Value::Object(fields) =
+                    serde_json::to_value(menu).expect("the view serialises")
+                else {
+                    unreachable!("a view serialises to an object");
+                };
+                bar.extend(fields);
+            }
+            for child in map.values_mut() {
+                echo_menu_view(child, menu);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                echo_menu_view(item, menu);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -212,7 +260,6 @@ fn registering_a_reserved_node_key_as_a_kind_is_refused() {
         "tabs",
         "text_input",
         "text_display",
-        "scripted_widget",
         "style",
         "a11y",
         "id",
@@ -226,6 +273,107 @@ fn registering_a_reserved_node_key_as_a_kind_is_refused() {
         );
         assert!(!quadraui::widget_kinds::runtime_widget_kinds().contains(&reserved));
     }
+    assert!(
+        matches!(
+            quadraui_binding_core::register_widget_kind("scripted_widget", decode),
+            Err(quadraui::widget_kinds::KindError::Duplicate(_))
+        ),
+        "binding-core owns the scripted_widget kind"
+    );
+}
+
+/// A script-defined widget: one clickable region over its right half,
+/// recording every event its script receives.
+struct HostScript {
+    log: std::rc::Rc<RefCell<Vec<String>>>,
+}
+
+impl quadraui_binding_core::ScriptWidget for HostScript {
+    fn measure(
+        &self,
+        _ctx: &quadraui::primitive::LayoutCtx,
+        constraints: quadraui_binding_core::ScriptedConstraints,
+    ) -> quadraui_binding_core::ScriptedSize {
+        quadraui_binding_core::ScriptedSize {
+            width: constraints.max_width.unwrap_or(10.0),
+            height: constraints.max_height.unwrap_or(1.0),
+        }
+    }
+
+    fn paint(
+        &self,
+        _ctx: &quadraui::primitive::LayoutCtx,
+        _props: &quadraui_binding_core::ScriptedProps,
+        rect: Rect,
+    ) -> quadraui_binding_core::ScriptedPaint {
+        quadraui_binding_core::ScriptedPaint {
+            ops: Vec::new(),
+            regions: vec![quadraui::CanvasRegion {
+                id: WidgetId::new("stars:right"),
+                rect: Rect::new(rect.width / 2.0, 0.0, rect.width / 2.0, rect.height),
+                cursor: None,
+            }],
+        }
+    }
+
+    fn on_event(
+        &self,
+        event: &quadraui_binding_core::ScriptedInputEvent,
+        props: &quadraui_binding_core::ScriptedProps,
+        _state: &quadraui_binding_core::ScriptedState,
+    ) -> bool {
+        self.log.borrow_mut().push(format!("{event:?} {props}"));
+        true
+    }
+}
+
+/// A host registers a script-defined widget through binding-core's
+/// public API, names it in its view as a `"scripted_widget"` leaf, and a
+/// click on its region reaches both the script and the host's sink.
+#[test]
+fn a_host_routes_a_click_into_a_script_defined_widget() {
+    let log = std::rc::Rc::new(RefCell::new(Vec::new()));
+    quadraui_binding_core::register_scripted_widget(quadraui_binding_core::ScriptedPrimitive::new(
+        WidgetId::new("stars"),
+        HostScript { log: log.clone() },
+        true,
+    ));
+    let view = serde_json::json!({
+        "column": [
+            {"id": "stars", "scripted_widget": {"id": "stars", "props": {"value": 3}}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 10, 4);
+    driver.render();
+    driver.click(8.0, 0.0);
+
+    assert_eq!(log.borrow().len(), 1, "{:?}", log.borrow());
+    assert!(
+        log.borrow()[0].contains("RegionClicked"),
+        "{:?}",
+        log.borrow()
+    );
+    assert!(
+        log.borrow()[0].contains("\"value\":3"),
+        "{:?}",
+        log.borrow()
+    );
+    let id = WidgetId::new("stars");
+    assert!(
+        driver.app().sink.borrow().events.contains(&UiEvent::Canvas(
+            id,
+            quadraui::CanvasEvent::RegionClicked {
+                region: WidgetId::new("stars:right"),
+                button: quadraui::MouseButton::Left,
+                modifiers: quadraui::Modifiers::default(),
+                x: 8.0,
+                y: 0.0,
+            }
+        )),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+    quadraui_binding_core::unregister_scripted_widget("stars");
 }
 
 /// A host's `show_overlay("context_menu", ...)` decodes, opens, paints and
@@ -270,5 +418,234 @@ fn a_host_opens_a_context_menu_and_receives_its_activation() {
             .contains(&UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))),
         "{:?}",
         driver.app().sink.borrow().events
+    );
+}
+
+/// A text input's caret is the widget's own state: a host that never
+/// echoes a cursor back still sees the caret painted where `End` moved it,
+/// and typing lands there, with nothing text-specific in the host.
+#[test]
+fn a_host_text_input_paints_its_caret_from_the_engines_widget_state() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "name", "text_input": {"id": "name", "lines": ["hello"], "has_focus": true}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 24, 8);
+    driver.render();
+    let (x, y) = driver.find("hello").expect("the input paints its value");
+    let (x, y) = (x as u16, y as u16);
+    let caret_at = |driver: &TuiDriver<HostApp>, col: u16| {
+        driver.style_at(x + col, y) != driver.style_at(x + col + 1, y)
+            && driver.style_at(x + col, y) != driver.style_at(x + col - 1, y)
+    };
+    driver.click(f32::from(x), f32::from(y));
+    driver.press_named(quadraui::NamedKey::End);
+    driver.render();
+    assert!(caret_at(&driver, 5), "the caret paints after the last char");
+    assert!(
+        !caret_at(&driver, 0),
+        "the descriptor's column-0 caret is not painted"
+    );
+
+    driver.type_char('!');
+    assert!(
+        driver
+            .app()
+            .sink
+            .borrow()
+            .events
+            .iter()
+            .any(|event| matches!(
+                event,
+                UiEvent::Form(_, FormEvent::TextInputChanged { value, .. }) if value == "hello!"
+            )),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+}
+
+/// A built-in kind whose behaviour lives in its own `Interactive::State`:
+/// the host decodes the same view every frame, yet the branch the user
+/// expanded stays expanded, because the engine keeps the widget's state
+/// across frames and paint reads it back. The expand reaches the host as
+/// an ordinary `UiEvent`.
+#[test]
+fn a_stateful_kind_keeps_its_state_across_freshly_decoded_frames() {
+    let label = |text: &str| serde_json::json!([{"spans": [{"text": text}]}]);
+    let view = serde_json::json!({
+        "column": [{"id": "files", "tree_table_controller": {
+            "id": "files",
+            "columns": [{"title": "Name", "width": {"Flex": 1.0}}],
+            "nodes": [{
+                "id": "src", "cells": label("src"), "has_children": true,
+                "children": [{"id": "src/lib.rs", "cells": label("lib.rs")}],
+            }],
+            "selected_id": "src",
+        }}]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 8);
+    driver.render();
+    assert!(!driver.screen_contains("lib.rs"), "{}", driver.screen());
+
+    let (x, y) = driver.find("src").expect("the root row paints");
+    driver.click(x, y);
+    driver.type_char(' ');
+    driver.render();
+    driver.render();
+
+    assert!(driver.screen_contains("lib.rs"), "{}", driver.screen());
+    assert!(
+        driver
+            .app()
+            .sink
+            .borrow()
+            .events
+            .contains(&UiEvent::TreeTableModel(
+                WidgetId::new("files"),
+                quadraui::TreeTableModelEvent::ToggleExpand {
+                    id: "src".to_string(),
+                    expand: true,
+                }
+            )),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+}
+
+/// A host reads a widget's stored `Interactive::State` through the
+/// engine, keyed by the widget's id: after `End`, the text input's state
+/// holds the caret at the end of its value.
+#[test]
+fn a_host_reads_a_widgets_stored_state_through_the_engine() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "name", "text_input": {"id": "name", "lines": ["hello"], "has_focus": true}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 24, 8);
+    driver.render();
+    let (x, y) = driver.find("hello").expect("the input paints its value");
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::End);
+    driver.render();
+
+    let id = WidgetId::new("name");
+    let caret = driver.app().engine.with_widget_states(|states| {
+        states
+            .get(&id)
+            .and_then(|state| {
+                state.downcast_ref::<quadraui::primitives::text_input::TextInputState>()
+            })
+            .and_then(|state| state.caret)
+    });
+    assert_eq!(caret, Some((0, 5)));
+}
+
+/// The engine's widget state is installed only for the paint pass: the
+/// thread's own store is back in place once it returns.
+#[test]
+fn paint_with_widget_state_restores_the_threads_own_store() {
+    let id = WidgetId::new("outside");
+    quadraui::with_widget_states(|states| {
+        states.state_for(id, &quadraui::Checkbox::new(id));
+    });
+    let engine = InteractionEngine::new();
+    let seen_inside = engine
+        .paint_with_widget_state(|| quadraui::with_widget_states(|states| states.contains(&id)));
+    assert!(
+        !seen_inside,
+        "the engine's own store is the one painted from"
+    );
+    assert!(quadraui::with_widget_states(|states| states.contains(&id)));
+    quadraui::with_widget_states(|states| states.remove(&id));
+}
+
+/// A widget's popups route through the engine with no host code of their
+/// own: a click on the menu bar reports the opened view, the host echoes
+/// it, and a click on a row of the dropdown — a popup the menu owns —
+/// activates it.
+#[test]
+fn a_host_menu_bar_opens_its_dropdown_popup_and_activates_a_row() {
+    let view = serde_json::json!({
+        "column": [
+            {"id": "bar", "menu_bar": {"id": "bar", "items": [
+                {"id": "menu:file", "label": "&File", "submenu": [
+                    {"id": "menu:file:save", "label": {"spans": [{"text": "Save", "fg": null, "bg": null}]}},
+                ]},
+            ]}},
+            {"id": "save", "button": {"id": "save", "label": "Go"}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 12);
+    driver.render();
+    let (x, y) = driver.find("File").expect("the bar paints its items");
+    driver.click(x, y);
+    driver.render();
+    let (x, y) = driver
+        .find("Save")
+        .unwrap_or_else(|| panic!("the dropdown paints:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    let events = &driver.app().sink.borrow().events;
+    assert!(
+        events.iter().any(
+            |e| matches!(e, UiEvent::MenuActivated(id) if *id == WidgetId::new("menu:file:save"))
+        ),
+        "{events:?}"
+    );
+}
+
+/// A form's field focus, caret and scroll are its own stored state: a host
+/// that never echoes a form event back still has Tab walk the fields and
+/// typing land in the focused one.
+#[test]
+fn a_host_form_walks_its_fields_and_edits_with_nothing_echoed() {
+    let field = |id: &str| {
+        serde_json::json!({
+            "id": id,
+            "label": {"spans": [{"text": id, "fg": null, "bg": null}]},
+            "kind": {"TextInput": {"value": ""}},
+        })
+    };
+    let view = serde_json::json!({
+        "column": [
+            {"id": "settings", "form": {"id": "settings", "fields": [field("a"), field("b")]}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 30, 8);
+    driver.render();
+    for _ in 0..3 {
+        driver.press_named(quadraui::NamedKey::Tab);
+        driver.render();
+    }
+    driver.press(quadraui::Key::Char('x'));
+
+    let id = WidgetId::new("settings");
+    let form_events: Vec<FormEvent> = driver
+        .app()
+        .sink
+        .borrow()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Form(form, event) if *form == id => Some(event.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        form_events,
+        vec![
+            FormEvent::FocusChanged {
+                id: WidgetId::new("a")
+            },
+            FormEvent::FocusChanged {
+                id: WidgetId::new("b")
+            },
+            FormEvent::TextInputChanged {
+                id: WidgetId::new("b"),
+                value: "x".into()
+            },
+        ]
     );
 }

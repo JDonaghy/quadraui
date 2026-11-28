@@ -483,7 +483,8 @@ exports.getCurrentCtx = getCurrentCtx;
  * Wraps `measure`/`paint`/`onEvent`/`a11y` -- plain JS functions, each
  * called with a single packed argument -- in a script-defined widget and
  * registers it against `id`, so the very next `"scripted_widget"` leaf
- * naming that same `id` the current render callback's own return value
+ * whose payload (`{"id": id, "props": ...}`) names that same `id` the
+ * current render callback's own return value
  * decodes into picks it up. Must be called synchronously from inside a
  * running render/event-handler callback -- see the native binding's own
  * doc comment (`quadraui-node/src/lib.rs`'s "Script widgets" module

@@ -950,7 +950,7 @@ function TextArea(value: string, options: TextAreaOptions = {}): Node {
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
     const payload: Record<string, unknown> = { id: nodeId, value };
-    if (placeholder !== undefined) payload.placeholder = placeholder;
+    if (placeholder != null) payload.placeholder = placeholder;
     if (cursor !== undefined) payload.cursor = cursor;
     if (hasFocus !== undefined) payload.has_focus = hasFocus;
     if (visibleRows !== undefined) payload.visible_rows = visibleRows;

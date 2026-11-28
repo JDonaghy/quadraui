@@ -74,8 +74,8 @@ test("a region click calls onRate exactly once", () => {
 
 test("a focused key press calls onRate exactly once", () => {
   // Regression coverage for the duplicate-dispatch bug a sibling binding
-  // hit: if `InteractionEngine::handle`'s own generic
-  // `scripted_key_press` forwarding were ever joined by a second,
+  // hit: if `InteractionEngine::handle`'s generic focused-widget key
+  // routing were ever joined by a second,
   // binding-side dispatch of the same key, `onRate` would fire twice for
   // one `Right` press -- invisible in `rating`/`screen()` assertions
   // alone (`_rate` is idempotent), so this counts invocations directly.

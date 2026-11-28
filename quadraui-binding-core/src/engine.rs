@@ -10,29 +10,25 @@
 //! callback — the one binding-specific step this engine cannot do itself.
 
 use std::cell::{Ref, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    AppMenu, AppMenuEvent, AppMenuState, ContextMenuController, ContextMenuOutcome, FormController,
-    FormControllerAction, FormDialog, FormDialogAction, FormDialogState, Handled, MenuDef,
-    MessageDialog, MessageDialogState, TreeTableController, TreeTableControllerEvent,
+    ContextMenuController, ContextMenuOutcome, FormDialog, FormDialogState, Handled, MessageDialog,
 };
 use quadraui::primitive::DynWidget;
-use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
-    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsLayout,
-    ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx,
-    EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent, ListViewEvent,
-    MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
-    PointerShape, Rect, RichTextPopup, RichTextPopupLayout, RoutedEvent, ScrollAxis,
-    ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit,
-    ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
-    TreeTableNodeData, UiEvent, WidgetId,
+    wheel_row_delta, Backend, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
+    CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
+    ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
+    FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
+    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupLayout,
+    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, Toast, ToastCorner,
+    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -40,7 +36,6 @@ use crate::drag::{
     gesture_target_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
     tree_scroll_state, ActiveDrag, DataTableColumnDrag, GestureDrag, ScrollDrag, ScrollbarDrag,
 };
-use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
     data_table_rows_and_viewport, event_position, hit_test_painted, list_rows_and_viewport,
     set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport, windowed_leaf_extent,
@@ -53,12 +48,7 @@ use crate::host::{
 };
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
-use crate::semantic::{
-    focus_scoped_key_event, scripted_key_press, scripted_region_click, semantic_event_for_hit,
-    DragGestureWireEvent,
-};
-use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
-use crate::widget_state::WidgetState;
+use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent};
 use crate::wire::DragRole;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
@@ -88,12 +78,6 @@ struct LayoutContent {
     /// hit-test and focus-cycle the subtree exactly like the main tree's
     /// own hit map already does.
     hits: RefCell<Vec<PaintedHit>>,
-    /// Mirrors [`InteractionEngine::form_controllers`], scoped the same
-    /// way — a `"form"` extra nested anywhere in the subtree gets its own
-    /// [`FormController`], kept deliberately separate from the main tree's
-    /// cache so closing the overlay can never drop a main-tree form's live
-    /// edit/undo state.
-    forms: RefCell<HashMap<WidgetId, FormController>>,
 }
 
 impl LayoutContent {
@@ -101,18 +85,11 @@ impl LayoutContent {
         Self {
             node,
             hits: RefCell::new(Vec::new()),
-            forms: RefCell::new(HashMap::new()),
         }
     }
 
     /// Paints the subtree into `area`, recording the result into
-    /// [`Self::hits`] and syncing any nested `"form"` extra leaf into
-    /// [`Self::forms`]. Mirrors [`InteractionEngine::sync_forms`]'s own
-    /// body, with no `form_rects`/`form_order` of its own: a `"form"`
-    /// leaf's rect is already in the hits (each `PaintedHit::Extra`'s own
-    /// `area`), and iterating the hits themselves (rather than a
-    /// separately-tracked order) gives the same deterministic "paint
-    /// order" guarantee that field exists to provide.
+    /// [`Self::hits`].
     ///
     /// `extra_stops` are focusable rects belonging to the overlay's own
     /// chrome rather than the subtree — a layout dialog's buttons — so
@@ -121,39 +98,11 @@ impl LayoutContent {
     fn render(&self, backend: &mut dyn Backend, area: Rect, extra_stops: &[(WidgetId, Rect)]) {
         let mut painted = Vec::new();
         paint_layout(backend, area, &self.node, &mut painted);
-        let mut seen = Vec::new();
-        for hit in &painted {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(form) = extra_as::<Form>(extra) else {
-                continue;
-            };
-            seen.push(*id);
-            let engine_focused = backend.focus_tree().focused_id() == Some(id);
-            let mut controllers = self.forms.borrow_mut();
-            let is_new = !controllers.contains_key(id);
-            let controller = controllers
-                .entry(*id)
-                .or_insert_with(|| FormController::new(id.as_str().to_string()));
-            controller.set_form(form.clone());
-            if is_new {
-                controller.set_scroll_offset(form.scroll_offset);
-            }
-            controller.set_has_focus(form.has_focus || engine_focused);
-            controller.render_and_cache(backend, *area);
-        }
-        self.forms.borrow_mut().retain(|id, _| seen.contains(id));
 
         // Keep keyboard focus inside the overlay: a just-opened one has
         // nothing clicked in it yet, and `backend`'s own focus manager
         // still names whatever the main tree last focused (or nothing at
-        // all) — the same immediate-focus convention `FloatContent::Form`'s
-        // own `set_has_focus(true)` establishes for a bare `Form` popover.
-        // Checked every frame (not just the first) rather than tracked
+        // all). Checked every frame (not just the first) rather than tracked
         // with its own "already focused once" flag, since the only two
         // ways focus can legitimately change while the overlay is open —
         // `Self::dispatch`'s own click-to-focus and
@@ -181,53 +130,36 @@ impl LayoutContent {
         tab_stops_from_hits(&self.hits.borrow())
     }
 
-    /// The absolute rect this frame painted the `"form"` extra leaf with
-    /// this `id` into, or `None` if `id` isn't one (or isn't present at
-    /// all this frame).
-    fn form_leaf_area(&self, id: WidgetId) -> Option<Rect> {
-        self.hits.borrow().iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hid,
-                area,
-                extra,
-                ..
-            } if *hid == id && extra_as::<Form>(extra).is_some() => Some(*area),
-            _ => None,
-        })
-    }
-
     /// Routes `event` into the subtree, exactly as the main tree's own
     /// `event -> hit -> semantic` dispatch would: a positioned
     /// `MouseDown`/`DoubleClick` click-focuses the leaf it landed on
     /// (mirroring [`InteractionEngine::handle`]'s own click-to-focus
-    /// convention) and then resolves to that leaf's semantic event —
-    /// a synthesized [`quadraui::UiEvent::ButtonActivated`] for a
-    /// `"button"`-kind [`HitDetail::WidgetBody`],
-    /// [`crate::semantic::semantic_event_for_hit`] for a `Tree`/`List`/
-    /// `DataTable`/`TabBar`/`Checkbox`/... leaf, the owning
-    /// [`FormController`] for a `"form"` extra leaf; a
+    /// convention) and then resolves through the leaf itself — a generic
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf through its own
+    /// [`DynWidget::handle`] (via `engine`), every other leaf through
+    /// [`crate::semantic::semantic_event_for_hit`]; a
     /// `KeyPressed`/`CharTyped`/`ClipboardPaste` routes to whichever leaf
-    /// holds keyboard focus, through that same `FormController` for a
-    /// `"form"` leaf and through
-    /// [`crate::semantic::focus_scoped_key_event`]/
-    /// [`crate::text_input::text_input_insert_event`] for every other
+    /// holds keyboard focus, through `engine`'s generic widget dispatch
+    /// for a [`crate::layout::LeafDescriptor::Widget`] leaf (a text
+    /// input's caret, selection and undo state, a form's field focus,
+    /// live in `engine`'s per-widget store like any main-tree leaf's), and
+    /// through [`crate::semantic::focus_scoped_key_event`] for every other
     /// kind.
     ///
-    /// Escape is deliberately routed only into a focused `"form"` leaf
-    /// (never wrapped into a focused `Tree`/`List`/`TabBar`'s own
-    /// `KeyPressed` variant the way any other key is): the overlay itself
-    /// owns Escape — dismissing a popover, resolving a dialog to its
-    /// cancel button — and only an open `ComboBox` field inside the
-    /// subtree outranks that.
+    /// Escape a focused generic leaf has no use for, and Escape on any
+    /// other leaf, is left unclaimed: the overlay itself owns Escape —
+    /// dismissing a popover, resolving a dialog to its cancel button —
+    /// and only a leaf that answers it (an open `ComboBox`, a form field)
+    /// outranks that.
     ///
     /// `None` means nothing in the subtree claimed `event`, leaving the
     /// caller's own fallback (Escape dismissal, modal swallowing) to run.
     fn dispatch(
         &self,
         event: &UiEvent,
+        engine: &InteractionEngine,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
-        text_editors: &TextEditorCache,
     ) -> Option<quadraui::Reaction> {
         use quadraui::Reaction;
 
@@ -257,45 +189,40 @@ impl LayoutContent {
                         return Some(reaction);
                     }
                 }
-                // A `"button"`-kind `WidgetBody` hit is resolved directly
-                // here rather than through `InteractionEngine`'s own
-                // `dispatch_dyn_widget_click` (whose `dyn_widget_state`/
-                // `dyn_widget_capture` caches live on the main engine, not
-                // this subtree's own smaller `LayoutContent`): a `Button`
-                // leaf nested in a popover/dialog needs nothing beyond a
-                // plain click-to-activate, so its activation is
-                // synthesized right here. Only the first press of a
-                // double-click activates, mirroring `Button::handle`'s own
-                // `PointerKind::Down`-only match on the main tree (which
-                // ignores `PointerKind::DoubleClick` outright) — without
-                // this guard both presses would fire `ButtonActivated`.
-                if matches!(detail, HitDetail::WidgetBody) && !double_click {
-                    let is_button = dyn_widget_hit(&self.hits.borrow(), id)
-                        .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
-                    if is_button {
-                        let activated = UiEvent::ButtonActivated { widget: id };
+                if matches!(detail, HitDetail::WidgetBody) {
+                    let hit = dyn_widget_hit(&self.hits.borrow(), id);
+                    if let Some((area, widget)) = hit {
+                        let routed = RoutedEvent::Pointer {
+                            kind: if double_click {
+                                PointerKind::DoubleClick(button)
+                            } else {
+                                PointerKind::Down(button)
+                            },
+                            sub: None,
+                            local: Point::new(position.x - area.x, position.y - area.y),
+                            mods: modifiers,
+                        };
+                        let outcome =
+                            engine.dyn_widget_dispatch(id, &widget, area, routed, backend, sink);
                         return Some(
                             reaction
                                 .merge(Reaction::Redraw)
-                                .merge(sink.dispatch(&activated, Some(&HitDetail::WidgetBody))),
+                                .merge(outcome.reaction)
+                                .merge(match outcome.event {
+                                    Some(resolved) => {
+                                        sink.dispatch(&resolved, Some(&HitDetail::WidgetBody))
+                                    }
+                                    None => Reaction::Continue,
+                                }),
                         );
                     }
-                }
-                if let Some(area) = self.form_leaf_area(id) {
-                    let routed = self.route_form_event(id, area, event, backend, sink);
-                    return Some(match routed {
-                        Some(r) => reaction.merge(r),
-                        None => reaction.merge(Reaction::Redraw),
-                    });
                 }
                 let semantic = semantic_event_for_hit(
                     id,
                     &detail,
-                    button,
                     modifiers,
                     double_click,
                     &self.hits.borrow(),
-                    position,
                 );
                 let resolved = semantic.unwrap_or_else(|| event.clone());
                 Some(
@@ -306,38 +233,23 @@ impl LayoutContent {
             }
             UiEvent::KeyPressed { key, modifiers, .. } => {
                 let focused = backend.focus_tree().focused_id().copied()?;
-                if let Some(area) = self.form_leaf_area(focused) {
-                    return self.route_form_event(focused, area, event, backend, sink);
+                let routed = quadraui::compose::routed_event(event, Rect::default(), &[])?;
+                let child_focus = engine.dyn_widget_focus(backend);
+                if let Some((_, reaction)) =
+                    tab_past_child_stops(&self.hits.borrow(), child_focus, event, backend, sink)
+                {
+                    return Some(reaction);
+                }
+                if let Some(reaction) =
+                    self.dispatch_focused_widget(focused, routed, engine, backend, sink)
+                {
+                    return reaction;
                 }
                 if matches!(key, Key::Named(NamedKey::Escape)) {
                     return None;
                 }
-                // Mirrors the click arm above: `focus_scoped_key_event` has
-                // no `PaintedHit::Widget` arm (a focused `WIDGET_KINDS` leaf
-                // in the main tree instead reaches
-                // `InteractionEngine::dispatch_dyn_widget_key`, which keys
-                // off caches — `dyn_widget_state`/`dyn_widget_capture` —
-                // that live on the main engine, not this smaller subtree),
-                // so a focused `"button"`-kind leaf needs its own
-                // Enter/Space activation synthesized right here too.
-                if matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
-                    let is_button = dyn_widget_hit(&self.hits.borrow(), focused)
-                        .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
-                    if is_button {
-                        let activated = UiEvent::ButtonActivated { widget: focused };
-                        return Some(
-                            Reaction::Redraw
-                                .merge(sink.dispatch(&activated, Some(&HitDetail::WidgetBody))),
-                        );
-                    }
-                }
-                let resolved = focus_scoped_key_event(
-                    focused,
-                    key,
-                    *modifiers,
-                    &self.hits.borrow(),
-                    text_editors,
-                );
+                let resolved =
+                    focus_scoped_key_event(focused, key, *modifiers, &self.hits.borrow());
                 // `focus_scoped_key_event` echoes the original
                 // `KeyPressed` back when `focused` names no leaf in this
                 // subtree at all (or one with no key semantics of its
@@ -349,67 +261,39 @@ impl LayoutContent {
                 }
                 Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
             }
-            UiEvent::CharTyped(ch) => {
+            UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_) => {
                 let focused = backend.focus_tree().focused_id().copied()?;
-                if let Some(area) = self.form_leaf_area(focused) {
-                    return self.route_form_event(focused, area, event, backend, sink);
-                }
-                let resolved = text_input_insert_event(
-                    focused,
-                    &self.hits.borrow(),
-                    EditOp::InsertChar(*ch),
-                    text_editors,
-                )?;
-                Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
-            }
-            UiEvent::ClipboardPaste(text) => {
-                let focused = backend.focus_tree().focused_id().copied()?;
-                if let Some(area) = self.form_leaf_area(focused) {
-                    return self.route_form_event(focused, area, event, backend, sink);
-                }
-                let resolved = text_input_insert_event(
-                    focused,
-                    &self.hits.borrow(),
-                    EditOp::InsertText(text.clone()),
-                    text_editors,
-                )?;
-                Some(Reaction::Redraw.merge(sink.dispatch(&resolved, None)))
+                let routed = quadraui::compose::routed_event(event, Rect::default(), &[])?;
+                self.dispatch_focused_widget(focused, routed, engine, backend, sink)?
             }
             _ => None,
         }
     }
 
-    /// Routes `event` into the overlay-scoped [`FormController`] cached
-    /// for `id` (a `"form"` extra leaf [`Self::dispatch`] already resolved
-    /// `id`/`area` for), translating its [`Handled<FormControllerAction>`]
-    /// into the same `UiEvent::Form`/[`quadraui::Reaction`] shape a
-    /// main-tree `"form"` leaf already produces. `None` for
-    /// `Handled::Ignored` (or no such controller at all) — the caller's
-    /// own fallback keeps running.
-    fn route_form_event(
+    /// Routes a focused keystroke or text to `focused` when it is a
+    /// generic [`crate::layout::LeafDescriptor::Widget`] leaf in this
+    /// subtree, through its own [`DynWidget::handle`]. The outer `None`
+    /// means `focused` is not such a leaf; `Some(None)` means it is but
+    /// answered [`Handled::Ignored`], leaving the event unclaimed.
+    fn dispatch_focused_widget(
         &self,
-        id: WidgetId,
-        area: Rect,
-        event: &UiEvent,
+        focused: WidgetId,
+        routed: RoutedEvent,
+        engine: &InteractionEngine,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
-    ) -> Option<quadraui::Reaction> {
-        use quadraui::Reaction;
-
-        let outcome = self
-            .forms
-            .borrow_mut()
-            .get_mut(&id)
-            .map(|controller| controller.handle_event(event, backend, area))?;
-        match outcome {
-            Handled::Event(FormControllerAction::FormAction(form_event)) => {
-                Some(Reaction::Redraw.merge(sink.dispatch(&UiEvent::Form(id, form_event), None)))
-            }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Some(Reaction::Redraw)
-            }
-            Handled::Ignored => None,
-        }
+    ) -> Option<Option<quadraui::Reaction>> {
+        let (area, widget) = dyn_widget_hit(&self.hits.borrow(), focused)?;
+        let outcome = engine.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink);
+        Some(match outcome.event {
+            Some(resolved) => Some(
+                quadraui::Reaction::Redraw
+                    .merge(outcome.reaction)
+                    .merge(sink.dispatch(&resolved, Some(&HitDetail::WidgetBody))),
+            ),
+            None if outcome.consumed => Some(outcome.reaction),
+            None => None,
+        })
     }
 }
 
@@ -420,9 +304,7 @@ impl LayoutContent {
 /// different `hits` slice. `Split`/`SplitTree` are chrome around other
 /// content, not focusable leaves themselves, so they are skipped; a
 /// `SidebarPanel`'s header is a [`PaintedHit::Widget`] whose
-/// `FocusSpec::None` keeps it out too; `Extra` is a tab stop only when its
-/// descriptor opts in via [`crate::extra_paint::ExtraPaint::tab_stop`]
-/// (currently `TextInput`); `TextDisplay` is always one
+/// `FocusSpec::None` keeps it out too; `TextDisplay` is always one
 /// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
 /// every other variant yields its id and bounding `Rect`.
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
@@ -431,7 +313,6 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             PaintedHit::Tree { id, area, .. }
             | PaintedHit::List { id, area, .. }
             | PaintedHit::DataTable { id, area, .. }
-            | PaintedHit::TabBar { id, area, .. }
             | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
             PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
             // A `Scroll` is chrome around its own content, like
@@ -439,120 +320,105 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             // leaves are the tab stops, reached via their own
             // `PaintedHit` arms once scrolled into view.
             PaintedHit::Scroll { .. } => None,
-            PaintedHit::Extra {
-                id, area, extra, ..
-            } => extra.tab_stop().then_some((*id, *area)),
-            // Mirrors `Extra`'s own opt-in above, through `DynWidget`'s
-            // own focus contract rather than a bespoke `tab_stop` bool:
-            // only `FocusSpec::Stop` (a single, whole-widget stop) counts.
-            // `FocusSpec::Children` (per-sub-target stops) has no
-            // `PaintedHit::Widget` field to report more than one
-            // `(WidgetId, Rect)` from yet — a widget that needs
-            // per-sub-target stops extends this arm with a finer-grained
-            // `HitDetail::WidgetBody` of its own. `IconGrid`, `CellGrid`,
-            // `Switch` and `Button` each report `FocusSpec::Stop`
-            // (`CellGrid` only once it has at least one row and column),
-            // so each is a tab stop through this generic path.
-            PaintedHit::Widget { id, area, widget } => {
-                matches!(widget.focus(), quadraui::FocusSpec::Stop).then_some((*id, *area))
-            }
+            // Through `DynWidget`'s own focus contract: a widget that
+            // takes focus at all is one stop as a whole. One
+            // with per-child stops (`FocusSpec::Children`, a form's
+            // fields) walks those itself once focused — see
+            // `stops_around_focused_children`.
+            PaintedHit::Widget { id, area, widget } => match widget.focus() {
+                quadraui::FocusSpec::Stop => Some((*id, *area)),
+                quadraui::FocusSpec::Children(stops) if !stops.is_empty() => Some((*id, *area)),
+                _ => None,
+            },
         })
         .collect()
 }
 
-// ─── `Form.focused_field`, uncontrolled by default ─────────────────────────
-//
-// `Form.focused_field: Option<WidgetId>` already has a real "unset" state
-// at the type level — unlike `Split::ratio`/`TabItem::is_active` (plain
-// `f32`/`bool`, needing `host::resolved_tab_active_index`'s own
-// baseline-latch workaround since neither has an "uncontrolled" sentinel
-// to compare against), it's the exact same shape `LayoutScroll::offset`
-// already resolves through `WidgetState::resolve` directly — see
-// `host::resolve_scroll_offset`. `resolve`'s own generic signature takes
-// `Option<V>` as "is this controlled"; here `V` is itself `Option<WidgetId>`
-// (the stored/resolved type, since "no field focused" is a legitimate
-// resting state, not a sentinel to special-case), so `form.focused_field`
-// is lifted one level via `.map(Some)` before being passed in: `None`
-// (uncontrolled) passes straight through, `Some(id)` (controlled) becomes
-// `Some(Some(id))` — [`WidgetState::resolve`]'s own `Some(value)` arm then
-// pins `value = Some(id)` outright, every frame, overwriting whatever an
-// engine-driven move stored in between (same strong pin
-// `host::resolve_scroll_offset`'s own controlled case gets, not the
-// weaker "only pins the frame it changes" baseline-latch one).
-
-/// Resolves `form.focused_field` for [`InteractionEngine::sync_forms`] to
-/// feed its cached [`FormController`] — the `Form` counterpart of
-/// `host::resolve_scroll_offset`. `Some(id)` (controlled) wins outright
-/// every frame and is written back, so a later frame that goes back to
-/// `None` resumes from it rather than an older engine-owned value. `None`
-/// (uncontrolled) resolves to whatever [`InteractionEngine::handle`]'s
-/// own Tab/Shift-Tab/Up/Down/click routing last persisted via
-/// [`apply_form_focus_changed`] (or stays `None` the first time this form
-/// id is seen).
-fn resolve_form_focused_field(widget_state: &WidgetState, form: &Form) -> Option<WidgetId> {
-    widget_state.resolve(form.id, form.focused_field.map(Some), || None)
+/// Whether `id` is a generic leaf in `hits` whose focus is per-child
+/// ([`quadraui::FocusSpec::Children`]).
+fn has_child_focus_stops(hits: &[PaintedHit], id: WidgetId) -> bool {
+    dyn_widget_hit(hits, id)
+        .is_some_and(|(_, widget)| matches!(widget.focus(), quadraui::FocusSpec::Children(_)))
 }
 
-/// Persists `new_field` as `form_id`'s own engine-owned focused field —
-/// call whenever [`InteractionEngine::handle`]'s own form-focus routing
-/// (Tab/Shift-Tab between fields, Up/Down between fields, or a field
-/// click) decides on a new one. A later [`resolve_form_focused_field`]
-/// call overwrites this the moment the matching `Form.focused_field` is
-/// `Some` again — mirrors `host::apply_scroll_offset`'s own "the next
-/// resolve decides whether this sticks" shape.
-fn apply_form_focus_changed(widget_state: &WidgetState, form_id: WidgetId, new_field: WidgetId) {
-    widget_state.set(form_id, Some(new_field));
-}
-
-/// Whether `form`'s current `focused_field` sits at the end `delta` would
-/// move past — `delta > 0` (Tab) checks the last entry of `stops`,
-/// `delta < 0` (Shift-Tab) the first — or there is nothing in `stops` to
-/// move between at all. `focused_field: None` is never itself a boundary
-/// in either direction: [`quadraui::compose::form_controller::FormController::move_focus`]
-/// already resolves `None` to the first field for Tab and the last for
-/// Shift-Tab, the same "enter at the end you came from" behavior a
-/// boundary hit at either real end gets — so this only forwards the key
-/// into the controller for it to do that, rather than second-guessing it
-/// into "leave the form" (Shift-Tab) while Tab correctly stays. Mirrors
-/// [`quadraui::compose::FormDialog`]'s
-/// own boundary check (which decides whether to forward a Tab/Shift-Tab
-/// keypress into its embedded form or hand focus to its own button row
-/// instead); this is the main-tree counterpart
-/// [`InteractionEngine::handle_form_tab`] uses to decide whether to hand
-/// focus to the next/previous *app-level* tab stop instead.
-fn form_focus_at_boundary(form: &Form, stops: &[WidgetId], delta: isize) -> bool {
-    if stops.is_empty() {
-        return true;
+/// [`tab_stops_from_hits`], less `focused` when it is a generic leaf with
+/// per-child focus stops: while such a leaf holds focus, Tab goes to the
+/// leaf so it walks its own children, rather than to the host's cycle,
+/// which would step straight past them. Tab past its last child (or
+/// Shift-Tab past its first) moves on through [`tab_past_child_stops`].
+fn stops_around_focused_children(
+    hits: &[PaintedHit],
+    focused: Option<WidgetId>,
+) -> Vec<(WidgetId, Rect)> {
+    let mut stops = tab_stops_from_hits(hits);
+    if let Some(focused) = focused.filter(|id| has_child_focus_stops(hits, *id)) {
+        stops.retain(|(id, _)| *id != focused);
     }
-    match form
-        .focused_field
-        .and_then(|id| stops.iter().position(|s| *s == id))
-    {
-        Some(i) if delta > 0 => i + 1 >= stops.len(),
-        Some(0) if delta < 0 => true,
-        _ => false,
-    }
+    stops
 }
 
-/// What [`InteractionEngine::handle_form_tab`] decided for a Tab/
-/// Shift-Tab keypress reaching a focused main-tree `"form"` extra.
-enum FormTabOutcome {
-    /// Engine focus moved off the form entirely, to the next/previous
-    /// app-level tab stop — the `Reaction` already reflects every side
-    /// effect of that move (the `FocusChanged` dispatch, any "scroll
-    /// fully into view", and a forced redraw), so the caller returns it
-    /// immediately rather than continuing to process the original
-    /// `KeyPressed`.
-    LeftForm(quadraui::Reaction),
-    /// Moved between fields inside the form — the caller converts the
-    /// original `KeyPressed` into `UiEvent::Form(form_id, _)` and lets
-    /// the rest of [`InteractionEngine::handle`] dispatch it normally,
-    /// same as every other `FormEvent` a focused form produces.
-    Moved(FormEvent),
-    /// Nothing changed (no cached controller for this id, or its own
-    /// `handle_event` had no use for the synthesized key) — the caller
-    /// leaves the original `KeyPressed` untouched.
-    PassThrough,
+/// A plain Tab/Shift-Tab on a focused generic leaf with per-child focus
+/// stops whose focused child — the one it last requested focus for — is
+/// its last (or first): focus leaves the leaf for the next (or previous)
+/// stop in `hits`' tab order, rather than the leaf wrapping round its own
+/// children. The leaf [`stops_around_focused_children`] leaves out while it
+/// holds focus rejoins the cycle here. Returns the newly focused stop and
+/// the reaction to the move; `None` for any other event, a leaf not at
+/// either end of its children, or when there is nowhere else to go — the
+/// key then goes to the leaf itself.
+fn tab_past_child_stops(
+    hits: &[PaintedHit],
+    focused: Option<quadraui::FocusAddress>,
+    event: &UiEvent,
+    backend: &mut dyn Backend,
+    sink: &mut dyn EventSink,
+) -> Option<(WidgetId, quadraui::Reaction)> {
+    let UiEvent::KeyPressed {
+        key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
+        modifiers,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return None;
+    }
+    let forward = matches!(named, NamedKey::Tab) && !modifiers.shift;
+    let (focused, sub) = focused?;
+    let (_, widget) = dyn_widget_hit(hits, focused)?;
+    let quadraui::FocusSpec::Children(stops) = widget.focus() else {
+        return None;
+    };
+    let pos = stops.iter().position(|stop| Some(stop.sub) == sub)?;
+    let at_end = if forward {
+        pos + 1 >= stops.len()
+    } else {
+        pos == 0
+    };
+    if !at_end {
+        return None;
+    }
+    let next = next_stop_after(hits, focused, forward)?;
+    let mut reaction = quadraui::Reaction::Redraw;
+    if backend.set_focus(Some(next)) {
+        reaction = reaction.merge(sink.dispatch(&UiEvent::FocusChanged(Some(next)), None));
+    }
+    Some((next, reaction))
+}
+
+/// The stop after (`forward`) or before `from` in `hits`' full tab order,
+/// wrapping — where focus moves once Tab leaves a leaf with per-child
+/// stops past its last child. `None` when `from` is not a stop or is the
+/// only one.
+fn next_stop_after(hits: &[PaintedHit], from: WidgetId, forward: bool) -> Option<WidgetId> {
+    let stops = tab_stops_from_hits(hits);
+    if stops.len() < 2 {
+        return None;
+    }
+    let idx = stops.iter().position(|(id, _)| *id == from)?;
+    let next = quadraui::focus::cycle_index(idx, if forward { 1 } else { -1 }, stops.len());
+    Some(stops[next].0)
 }
 
 /// `Reaction::Continue`, unless a tooltip auto-dismissed earlier in the
@@ -602,24 +468,27 @@ fn scroll_child_into_view(
 }
 
 /// Whether the leaf hit for `focused` already claims PageUp/PageDown/Home/
-/// End for its own semantics — a focused `TextInput`'s caret (`Home`/`End`
-/// via [`crate::text_input::text_input_key_event`]) or a focused
-/// `TextDisplay`'s own paging (routed through
-/// [`crate::semantic::focus_scoped_key_event`] into
+/// End for its own semantics — a focused `TextDisplay`'s own paging
+/// (routed through [`crate::semantic::focus_scoped_key_event`] into
 /// `UiEvent::TextDisplay(.., KeyPressed)`). Checked before
 /// [`InteractionEngine::handle`] lets an enclosing `Scroll` claim those
-/// keys instead, so a scrollable form (the canonical use for a `Scroll`
-/// wrapping a `TextInput`) never loses caret movement, and a focused
-/// `TextDisplay` never loses its own page-by-page scrolling, to the
-/// enclosing container.
+/// keys instead, so a focused `TextDisplay` never loses its own
+/// page-by-page scrolling to the enclosing container. A generic widget
+/// leaf (a text input's caret, say) never reaches that check: its own
+/// `Interactive::handle` sees the key first and claims it there.
 fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> bool {
     hit_map.iter().any(|hit| match hit {
         PaintedHit::TextDisplay { id, .. } => *id == focused,
-        PaintedHit::Extra { id, extra, .. } => {
-            *id == focused && extra_as::<TextInput>(extra).is_some()
-        }
         _ => false,
     })
+}
+
+/// The key a generic leaf's persistent state is stored under: the
+/// widget's own id, which is what [`quadraui::DrawsPrimitives::draw_dyn`]
+/// reads the state back by at paint time, else the leaf's tree-address id
+/// `leaf` for a widget that carries none.
+fn dyn_state_key(leaf: WidgetId, widget: &dyn DynWidget) -> WidgetId {
+    widget.id().copied().unwrap_or(leaf)
 }
 
 /// Whether `event` is a bare Escape press: the host's dismiss key for an
@@ -634,44 +503,6 @@ fn is_escape(event: &UiEvent) -> bool {
     )
 }
 
-/// The [`RoutedEvent`] an imperative overlay painted at `bounds` receives
-/// for `event`: a press, a double-click or a wheel notch landing inside
-/// it, in its own local space. `None` for anything else, which the
-/// overlay does not see.
-fn overlay_pointer_event(event: &UiEvent, bounds: Rect) -> Option<RoutedEvent> {
-    let local = |position: &Point| Point::new(position.x - bounds.x, position.y - bounds.y);
-    match event {
-        UiEvent::MouseDown {
-            button,
-            position,
-            modifiers,
-            ..
-        } if bounds.contains(*position) => Some(RoutedEvent::Pointer {
-            kind: PointerKind::Down(*button),
-            sub: None,
-            local: local(position),
-            mods: *modifiers,
-        }),
-        UiEvent::DoubleClick { position, .. } if bounds.contains(*position) => {
-            Some(RoutedEvent::Pointer {
-                kind: PointerKind::DoubleClick(MouseButton::Left),
-                sub: None,
-                local: local(position),
-                mods: Modifiers::default(),
-            })
-        }
-        UiEvent::Scroll {
-            delta, position, ..
-        } if bounds.contains(*position) => Some(RoutedEvent::Wheel {
-            dx: delta.x,
-            dy: delta.y,
-            local: local(position),
-            mods: Modifiers::default(),
-        }),
-        _ => None,
-    }
-}
-
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
 /// itself: handing a resolved [`UiEvent`] (and, for a pointer event that
 /// landed on a specific sub-area, its [`HitDetail`]) to the binding's own
@@ -683,42 +514,12 @@ fn overlay_pointer_event(event: &UiEvent, bounds: Rect) -> Option<RoutedEvent> {
 pub trait EventSink {
     fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> quadraui::Reaction;
 
-    /// A `"tree_table_controller"` extra's cached [`TreeTableController`]
-    /// (`id` is the extra's own, not the event's node id) reported `event`
-    /// — [`InteractionEngine::sync_tree_tables`]/[`InteractionEngine::handle`]'s
-    /// own per-widget-id routing, mirroring the main `dispatch` above but
-    /// carrying an already wire-shaped [`TreeTableControllerWireEvent`]
-    /// rather than a [`quadraui::UiEvent`]: `quadraui::UiEvent` has no
-    /// variant for this hierarchical, id-keyed controller yet (its
-    /// flat-model `TreeTable`'s own `TreeTableEvent` carries a positional
-    /// `idx`/`path`, and has no `ChildrenRequested`/ascending-aware
-    /// `SortChanged` counterpart at all), so a binding wires this default
-    /// method to its own callback however it threads a widget-scoped
-    /// event today, once it exposes `"tree_table_controller"` over its own
-    /// FFI surface.
-    ///
-    /// Defaults to ignoring the event and reporting
-    /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
-    /// (a binding's own callback bridge, a `RecordingSink` test double)
-    /// keeps compiling unchanged against this new default method until it
-    /// deliberately overrides it.
-    fn dispatch_tree_table_controller(
-        &mut self,
-        id: WidgetId,
-        event: TreeTableControllerWireEvent,
-    ) -> quadraui::Reaction {
-        let _ = (id, event);
-        quadraui::Reaction::Continue
-    }
-
     /// [`InteractionEngine::handle`]'s own drag-gesture arm/continue/clear
-    /// (see [`crate::drag::GestureDrag`]'s own doc) reported `event` —
-    /// mirrors [`Self::dispatch_tree_table_controller`]'s own default-method
-    /// rollout, carrying an already wire-shaped
+    /// (see [`crate::drag::GestureDrag`]'s own doc) reported `event`,
+    /// carrying an already wire-shaped
     /// [`crate::semantic::DragGestureWireEvent`] rather than a
-    /// [`quadraui::UiEvent`] for the identical reason that method does:
-    /// `quadraui::UiEvent` has no variant for a generic draggable/
-    /// drop-target gesture over an arbitrary leaf.
+    /// [`quadraui::UiEvent`]: `quadraui::UiEvent` has no variant for a
+    /// generic draggable/drop-target gesture over an arbitrary leaf.
     ///
     /// Defaults to ignoring the event and reporting
     /// [`quadraui::Reaction::Continue`] — every existing [`EventSink`] impl
@@ -733,10 +534,9 @@ pub trait EventSink {
     /// windowed `list`/`tree`/`data_table`/`text_display` leaf's viewport
     /// outside the slice its app currently has loaded, so the app needs to
     /// re-render that leaf with `event`'s rows — mirrors
-    /// [`Self::dispatch_tree_table_controller`]/[`Self::dispatch_drag_gesture`]'s
-    /// own default-method rollout, carrying a
-    /// [`crate::render::RowsRequestedEvent`] rather than a
-    /// [`quadraui::UiEvent`] for the identical reason those two do:
+    /// [`Self::dispatch_drag_gesture`]'s own default-method rollout,
+    /// carrying a [`crate::render::RowsRequestedEvent`] rather than a
+    /// [`quadraui::UiEvent`] for the identical reason it does:
     /// `quadraui::UiEvent` has no variant for a virtualised collection
     /// asking for more rows, so each binding surfaces this the way it
     /// surfaces any other synthesized event — see
@@ -758,59 +558,6 @@ pub trait EventSink {
     }
 }
 
-/// Wire-shaped mirror of [`TreeTableControllerEvent`] — the same field
-/// shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself
-/// has neither; it's an in-crate-only `quadraui::compose` type), and
-/// `Consumed`/`Ignored` dropped: [`InteractionEngine::handle`] only ever
-/// calls [`EventSink::dispatch_tree_table_controller`] for the five
-/// variants below, folding `Consumed`/`Ignored` straight into its own
-/// `Reaction` instead (see that method's own `TreeTableController` routing
-/// blocks).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum TreeTableControllerWireEvent {
-    /// Row selected — click or keyboard navigation. `id` is the selected
-    /// node's own [`quadraui::compose::NodeId`] (a plain `String`).
-    RowSelected { id: String },
-    /// Enter pressed, or a row/chevron double-clicked.
-    RowActivated { id: String },
-    /// A branch node's expand state flipped; its children were already
-    /// loaded (or this collapses).
-    ToggleExpand { id: String, expand: bool },
-    /// A lazy branch was expanded for the first time with no loaded
-    /// children — the host should fetch them and answer via
-    /// [`InteractionEngine::set_tree_table_children`].
-    ChildrenRequested { id: String },
-    /// A header click (re-)sorted every loaded level's children by `col`'s
-    /// cell text — see [`TreeTableController::header_clicked`]'s own doc
-    /// for how a host overrides the comparator via
-    /// [`InteractionEngine::set_tree_table_sort_override`].
-    SortChanged { col: usize, ascending: bool },
-}
-
-impl TreeTableControllerWireEvent {
-    /// Translates a [`TreeTableControllerEvent`] into its wire-shaped
-    /// counterpart — `None` for `Consumed`/`Ignored`, which
-    /// [`InteractionEngine::handle`]'s own callers fold into a `Reaction`
-    /// directly rather than ever handing to [`EventSink::dispatch_tree_table_controller`].
-    fn from_controller_event(event: TreeTableControllerEvent) -> Option<Self> {
-        match event {
-            TreeTableControllerEvent::RowSelected { id } => Some(Self::RowSelected { id }),
-            TreeTableControllerEvent::RowActivated { id } => Some(Self::RowActivated { id }),
-            TreeTableControllerEvent::ToggleExpand { id, expand } => {
-                Some(Self::ToggleExpand { id, expand })
-            }
-            TreeTableControllerEvent::ChildrenRequested { id } => {
-                Some(Self::ChildrenRequested { id })
-            }
-            TreeTableControllerEvent::SortChanged { col, ascending } => {
-                Some(Self::SortChanged { col, ascending })
-            }
-            TreeTableControllerEvent::Consumed | TreeTableControllerEvent::Ignored => None,
-        }
-    }
-}
-
 /// One entry in [`InteractionEngine::overlays`] — every anchored popup/
 /// dialog/toast/tooltip/float/completions/rich-text-popup surface a
 /// binding's own `show_*`/`dismiss_*` methods can open, now backed by one
@@ -824,30 +571,24 @@ impl TreeTableControllerWireEvent {
 enum Overlay {
     ContextMenu(ContextMenuController),
     /// The third slot is `Some` for a content-bearing float — a
-    /// "popover" opened via [`InteractionEngine::show_popover`]/
-    /// [`InteractionEngine::show_popover_layout`] — whose [`FloatContent`]
+    /// "popover" opened via [`InteractionEngine::show_popover_layout`] —
+    /// whose [`FloatContent`]
     /// this engine lays out, paints, and routes events into itself, and
     /// `None` for a plain chrome-only float opened via
     /// [`InteractionEngine::show_float`], whose content (if any) is
     /// painted by the host's own render path instead — see that method's
     /// own doc.
     Float(Float, FloatMeasure, Option<FloatContent>),
-    RichTextPopup(RichTextPopup, Point),
-    Completions(Completions, Point),
-    /// A modal [`MessageDialog`] and the state it keeps between events —
-    /// opened via [`InteractionEngine::open_message_dialog`].
-    Dialog(MessageDialog, MessageDialogState),
-    /// A modal [`FormDialog`] hosting a [`quadraui::Form`]'s fields, and
-    /// the state it keeps between events — opened via
-    /// [`InteractionEngine::open_form_dialog`]. Shares [`Overlay::rank`]
-    /// with [`Overlay::Dialog`] so only one modal dialog (of either kind)
-    /// is ever open at once.
-    FormDialog(FormDialog, FormDialogState),
+    /// A contract widget shown imperatively — a message or form dialog, a
+    /// completions list, a rich-text popup — painted through
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] and routed through its own
+    /// [`DynWidget::handle`], with its state in
+    /// [`InteractionEngine::widget_state`]. See [`WidgetOverlay`].
+    Widget(WidgetOverlay),
     /// A modal [`Dialog`] hosting an arbitrary [`LayoutNode`] subtree in
     /// its body — opened via [`InteractionEngine::open_layout_dialog`].
-    /// Shares [`Overlay::rank`] with [`Overlay::Dialog`] and
-    /// [`Overlay::FormDialog`], so only one modal dialog of any kind is
-    /// ever open at once.
+    /// Shares [`Overlay::rank`] with the modal [`WidgetOverlay`] kinds, so
+    /// only one modal dialog of any kind is ever open at once.
     LayoutDialog(Box<LayoutDialog>),
     Tooltip(Tooltip, Rect),
     /// Unlike every other variant, more than one of these can be in the
@@ -871,10 +612,7 @@ impl Overlay {
         match self {
             Overlay::ContextMenu(_) => 0,
             Overlay::Float(..) => 1,
-            Overlay::RichTextPopup(..) => 2,
-            Overlay::Completions(..) => 3,
-            Overlay::Dialog(..) => 4,
-            Overlay::FormDialog(..) => 4,
+            Overlay::Widget(entry) => entry.kind.rank(),
             Overlay::LayoutDialog(_) => 4,
             Overlay::Tooltip(..) => 5,
             Overlay::Toast(_) => 6,
@@ -882,20 +620,140 @@ impl Overlay {
     }
 }
 
+/// Which imperative surface an [`Overlay::Widget`] entry is: fixes its
+/// z-rank, where it is laid out and how it claims input. The widget
+/// itself is routed generically either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidgetOverlayKind {
+    /// [`MessageDialog`], opened via [`InteractionEngine::open_message_dialog`].
+    MessageDialog,
+    /// [`FormDialog`], opened via [`InteractionEngine::open_form_dialog`].
+    FormDialog,
+    /// [`Completions`], shown via [`InteractionEngine::show_completions`].
+    Completions,
+    /// [`RichTextPopup`], shown via [`InteractionEngine::show_rich_text_popup`].
+    RichTextPopup,
+}
+
+impl WidgetOverlayKind {
+    fn rank(self) -> u8 {
+        match self {
+            WidgetOverlayKind::RichTextPopup => 2,
+            WidgetOverlayKind::Completions => 3,
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog => 4,
+        }
+    }
+
+    /// A modal dialog: laid out over the whole viewport (it centres itself
+    /// there), routed every input event, and swallowing every press. A
+    /// non-modal popup is laid out at its anchor, routed only the presses
+    /// and wheel notches that land on it — every one of which it swallows
+    /// — and dismissed by Escape or a press outside it.
+    fn is_modal(self) -> bool {
+        matches!(
+            self,
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog
+        )
+    }
+}
+
+/// One [`Overlay::Widget`] entry: the widget, which surface it is, and
+/// the point a popup is anchored to (unused by a modal dialog).
+struct WidgetOverlay {
+    kind: WidgetOverlayKind,
+    widget: Box<dyn DynWidget>,
+    anchor: Point,
+}
+
+impl WidgetOverlay {
+    fn new(kind: WidgetOverlayKind, widget: impl DynWidget, anchor: Point) -> Self {
+        Self {
+            kind,
+            widget: Box::new(widget),
+            anchor,
+        }
+    }
+
+    /// The widget's own id — every overlay widget carries one.
+    fn id(&self) -> WidgetId {
+        self.widget
+            .id()
+            .copied()
+            .unwrap_or_else(|| WidgetId::new("overlay"))
+    }
+
+    fn widget_as<T: 'static>(&self) -> Option<&T> {
+        self.widget.as_any().downcast_ref::<T>()
+    }
+
+    fn widget_as_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        let widget: &mut dyn std::any::Any = &mut *self.widget;
+        widget.downcast_mut::<T>()
+    }
+
+    /// Writes an event the widget reported back into its own descriptor
+    /// where the surface keeps that value on the descriptor rather than in
+    /// its interaction state: a completions list's selected row, a
+    /// rich-text popup's scroll offset, a form dialog's focused field.
+    /// Returns whether anything changed.
+    fn apply_event(&mut self, event: &UiEvent) -> bool {
+        match (self.kind, event) {
+            (
+                WidgetOverlayKind::Completions,
+                UiEvent::List(_, ListViewEvent::SelectionChanged { idx }),
+            ) => self
+                .widget_as_mut::<Completions>()
+                .map(|completions| completions.selected_idx = *idx)
+                .is_some(),
+            (WidgetOverlayKind::RichTextPopup, UiEvent::ScrollOffsetChanged { new_offset, .. }) => {
+                self.widget_as_mut::<RichTextPopup>()
+                    .map(|popup| popup.scroll_top = *new_offset)
+                    .is_some()
+            }
+            (WidgetOverlayKind::FormDialog, UiEvent::Form(_, FormEvent::FocusChanged { id })) => {
+                self.widget_as_mut::<FormDialog>()
+                    .and_then(|dialog| dialog.form.as_mut())
+                    .map(|form| form.focused_field = Some(*id))
+                    .is_some()
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The event [`InteractionEngine::dyn_widget_dispatch_with_focus`] hands
+/// a widget: one its caller already routed, or a raw one to route against
+/// the widget's own layout.
+enum DispatchInput<'e> {
+    Routed(RoutedEvent),
+    Raw(&'e UiEvent),
+}
+
+/// How [`InteractionEngine::dyn_widget_dispatch_with_focus`] treats a
+/// widget's focus: whether it is part of the backend's focus tree, and so
+/// whether its `request_focus` moves real focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchFocus {
+    /// A layout-tree leaf: focus is the backend's, and a focus request
+    /// moves it.
+    Tree,
+    /// A popup floating over the focused editor: it never takes focus
+    /// from it, so its focus request is dropped.
+    Popup,
+    /// A modal dialog: the dialog is the whole world while it is open, so
+    /// every part of it holds focus.
+    Modal,
+}
+
 /// What a content-bearing [`Overlay::Float`] embeds in the float's own
-/// [`quadraui::FloatLayout::content_bounds`] — either a single
-/// [`quadraui::Form`]'s fields ([`InteractionEngine::show_popover`]) or an
-/// arbitrary [`LayoutNode`] subtree ([`InteractionEngine::show_popover_layout`]).
+/// [`quadraui::FloatLayout::content_bounds`]: an arbitrary [`LayoutNode`]
+/// subtree ([`InteractionEngine::show_popover_layout`]).
 enum FloatContent {
-    /// Routed through an embedded [`FormController`], the same
-    /// self-contained model [`Overlay::FormDialog`] uses for its own
-    /// form. See [`InteractionEngine::show_popover`]'s own doc.
-    Form(FormController),
     /// An arbitrary [`LayoutNode`] subtree, painted and routed through the
     /// shared [`LayoutContent`] — the same embedding
     /// [`Overlay::LayoutDialog`] uses for its own content. See
     /// [`InteractionEngine::show_popover_layout`]'s own doc.
-    Layout(LayoutContent),
+    Layout(Box<LayoutContent>),
 }
 
 /// A modal [`Dialog`] whose body hosts an arbitrary [`LayoutNode`] subtree
@@ -1048,9 +906,9 @@ fn release_content_focus(backend: &mut dyn Backend, content: &LayoutContent) {
 fn dispatch_layout_dialog(
     dialog: &LayoutDialog,
     event: &UiEvent,
+    engine: &InteractionEngine,
     backend: &mut dyn Backend,
     sink: &mut dyn EventSink,
-    text_editors: &TextEditorCache,
 ) -> LayoutDialogOutcome {
     use quadraui::Reaction;
 
@@ -1069,7 +927,7 @@ fn dispatch_layout_dialog(
                     return LayoutDialogOutcome::Resolved(id);
                 }
             }
-            match dialog.content.dispatch(event, backend, sink, text_editors) {
+            match dialog.content.dispatch(event, engine, backend, sink) {
                 Some(reaction) => LayoutDialogOutcome::Claimed(reaction),
                 None => LayoutDialogOutcome::Claimed(Reaction::Continue),
             }
@@ -1089,7 +947,7 @@ fn dispatch_layout_dialog(
                     return LayoutDialogOutcome::Resolved(id);
                 }
             }
-            if let Some(reaction) = dialog.content.dispatch(event, backend, sink, text_editors) {
+            if let Some(reaction) = dialog.content.dispatch(event, engine, backend, sink) {
                 return LayoutDialogOutcome::Claimed(reaction);
             }
             if matches!(key, Key::Named(NamedKey::Escape)) {
@@ -1100,7 +958,7 @@ fn dispatch_layout_dialog(
             LayoutDialogOutcome::Claimed(Reaction::Continue)
         }
         UiEvent::CharTyped(..) | UiEvent::ClipboardPaste(..) => {
-            match dialog.content.dispatch(event, backend, sink, text_editors) {
+            match dialog.content.dispatch(event, engine, backend, sink) {
                 Some(reaction) => LayoutDialogOutcome::Claimed(reaction),
                 None => LayoutDialogOutcome::Claimed(Reaction::Continue),
             }
@@ -1112,24 +970,8 @@ fn dispatch_layout_dialog(
 /// Owns every piece of state the `event -> hit -> semantic` orchestration
 /// needs across frames: the current frame's painted hits, an armed
 /// divider/scrollbar drag, per-widget text-input cursor cache, and the
-/// menu-bar/context-menu controllers. A binding's own `AppLogic` impl holds
+/// context-menu controller. A binding's own `AppLogic` impl holds
 /// exactly one of these and never needs its own copy of any of this state.
-/// The in-window menu behind a `"menu_bar"` extra, with its
-/// [`AppMenuState`].
-struct MenuBarHost {
-    menu: AppMenu,
-    state: AppMenuState,
-}
-
-impl Default for MenuBarHost {
-    fn default() -> Self {
-        Self {
-            menu: AppMenu::new(WidgetId::new("menu-system-bar"), Vec::new()),
-            state: AppMenuState::default(),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct InteractionEngine {
     /// Every primitive the binding's most recent [`quadraui::AppLogic::render`]
@@ -1212,49 +1054,32 @@ pub struct InteractionEngine {
     /// `Dropped` alongside whatever else the same events already produce,
     /// through [`EventSink::dispatch_drag_gesture`].
     gesture_drag: RefCell<Option<GestureDrag>>,
-    /// Per-`TextInput` [`quadraui::TextEditor`] session, keyed by
-    /// `WidgetId`, that survives across keystrokes — see
-    /// [`crate::text_input::apply_text_input_edit`]'s own doc for why a
-    /// cache is needed at all, including its own `undo_stack`.
-    text_editors: TextEditorCache,
-    /// Framework-owned per-widget state store, keyed by `WidgetId`,
-    /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
-    /// own module doc for its controlled/uncontrolled resolution and GC
-    /// policies. [`Self::set_hits`] sweeps it every frame alongside
-    /// [`Self::text_editors`]'s own pruning. [`Self::handle`]'s own
-    /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
-    /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
-    /// it back (merged with whatever the descriptor pins) via
-    /// [`crate::host::resolve_tree_cursor`]. [`Self::handle`]'s final
-    /// dispatch also writes a divider drag's ratio, a clicked tab's active
-    /// index, and a toggled tree row's expand state through
-    /// [`crate::host::apply_split_divider_drag`]/[`crate::host::apply_tab_activated`]/
-    /// [`crate::host::apply_tree_toggle_expand`]; a binding's own `render`
-    /// reads each back the same way, via
-    /// [`crate::host::resolve_split_ratio`]/[`crate::host::resolve_tab_bar_active`]/
-    /// [`crate::host::resolve_tree_expansion`].
-    widget_state: WidgetState,
-    /// Per-[`crate::layout::LeafDescriptor::Widget`] [`DynWidget::State`][DynWidget],
-    /// type-erased behind [`quadraui::WidgetStateStore`] and keyed by
-    /// `WidgetId` — the generic seam's own counterpart of [`Self::widget_state`],
-    /// which only ever resolves the handful of named fields
-    /// (cursor/scroll/active-tab) the six fixed leaf kinds carry.
-    /// [`Self::dispatch_dyn_widget_click`] is the only reader/writer today;
-    /// [`Self::set_hits`] prunes it to just the ids still painted as a
-    /// `PaintedHit::Widget` this frame, mirroring [`Self::widget_state`]'s
-    /// own per-frame sweep.
-    dyn_widget_state: RefCell<quadraui::WidgetStateStore>,
-    /// Owns the in-window dropdown behind a `"menu_bar"` extra: the
-    /// open/close/keyboard-nav/submenu state machine that turns a click on
-    /// a top-level item into an open dropdown and a selection into
-    /// `UiEvent::MenuActivated`.
-    menu_system: RefCell<MenuBarHost>,
-    /// The absolute bounds of the `"menu_bar"` extra [`InteractionEngine::sync_menu_bar`]
-    /// most recently painted, read by [`InteractionEngine::handle`] to call
-    /// [`quadraui::AppMenu::handle_ui_event`] with the same `bar_rect` the
-    /// paint pass used.
-    /// `None` whenever no `"menu_bar"` extra was present that frame.
-    menu_bar_rect: RefCell<Option<Rect>>,
+    /// The widget `backend`'s focus manager named as of the last
+    /// [`Self::render_overlays`]. [`Self::tab_stops`] leaves it out when
+    /// it is a generic leaf with per-child focus stops
+    /// ([`quadraui::FocusSpec::Children`]), so Tab reaches the leaf itself
+    /// and walks its children before focus moves on — the list a
+    /// binding's `AppLogic::extra_tab_stops` returns has no `Backend` to
+    /// ask.
+    painted_focus: RefCell<Option<WidgetId>>,
+    /// The typed values the binding host resolves for containers and the
+    /// fixed leaf kinds, keyed by `WidgetId` and surviving across frames
+    /// ([`quadraui::WidgetStateStore`]) — a `Tree`'s cursor, a
+    /// `Scroll`'s offset, a split's ratio, a tab strip's active index, a
+    /// tree's expansion. [`Self::handle`] writes those values through
+    /// [`crate::host`]'s `apply_*` helpers; a binding's own `render` reads
+    /// them back (merged with whatever the descriptor pins) through its
+    /// `resolve_*` helpers. [`Self::set_hits`] runs the store's frame
+    /// sweep every frame.
+    widget_state: RefCell<quadraui::WidgetStateStore>,
+    /// This engine's claim on the thread's runtime
+    /// [`quadraui::WidgetStateStore`], where it keeps every generic
+    /// [`DynWidget`] leaf's `Interactive::State` — the store
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] hands each widget back at
+    /// layout and paint, so a widget paints the state its events left. See
+    /// [`WidgetStateOwner`]. [`Self::set_hits`] drops the state of every id
+    /// not painted as a `PaintedHit::Widget` that frame.
+    widget_states: WidgetStateOwner,
     /// The one z-ordered overlay stack backing every `show_*`/`dismiss_*`
     /// surface below (context menu, dialog, toast, tooltip, completions,
     /// float, rich-text popup) — see [`Overlay`]'s own doc. Lowest
@@ -1277,42 +1102,6 @@ pub struct InteractionEngine {
     /// without re-deriving hit-testing from the raw position itself.
     /// `None` once the pointer has left every hoverable primitive.
     hover: RefCell<Option<(WidgetId, HitDetail)>>,
-    /// One [`FormController`] per `"form"` extra painted this (or a prior)
-    /// frame, keyed by the extra's own id — rebuilt from [`Self::sync_forms`]
-    /// every render so a submit/button click, toggle, or keystroke inside
-    /// it resolves through the SAME field-level routing a `Form`-embedding
-    /// host would get from driving `FormController` directly, instead of
-    /// staying paint-only. An entry survives across frames (unlike
-    /// [`Self::menu_system`]'s single instance) since, unlike `"menu_bar"`/
-    /// `"find_replace"`, nothing about `Form` makes it a singleton overlay —
-    /// a frame can legitimately paint more than one, each under its own id.
-    form_controllers: RefCell<HashMap<WidgetId, FormController>>,
-    /// The absolute bounds [`Self::sync_forms`] most recently painted each
-    /// [`Self::form_controllers`] entry into, read by
-    /// [`InteractionEngine::handle`] so a routed event's position
-    /// resolves against the same `rect` the paint pass used (`FormController::handle_event`
-    /// does its own position-relative hit-testing internally, unlike this
-    /// engine's `hit_map`-based primitives).
-    form_rects: RefCell<HashMap<WidgetId, Rect>>,
-    /// This frame's `"form"` extra ids, in the paint order
-    /// [`Self::sync_forms`] saw them — the `HashMap`s above have none, so
-    /// a `MouseDown` claim loop iterating `form_rects` directly would
-    /// resolve a same-frame rect overlap (which should never happen in
-    /// practice; [`Self::sync_forms`]'s own doc notes it) against a
-    /// nondeterministic order across runs. [`InteractionEngine::handle`]
-    /// walks this instead, so the invariant "at most one claims a given
-    /// click" is reproducible rather than merely usually true.
-    form_order: RefCell<Vec<WidgetId>>,
-    /// Which of [`Self::form_controllers`]' ids [`Self::sync_forms`] most
-    /// recently observed as `backend.focus_tree().focused_id()` itself —
-    /// unlike each controller's own [`FormController::has_focus`] (which
-    /// ORs in the descriptor's purely cosmetic `Form.has_focus`, see
-    /// [`Self::sync_forms`]'s own doc), this tracks *only* real engine
-    /// focus, so [`Self::tab_stops`] can tell "Tab should move within
-    /// this form's own fields" apart from "this form merely paints
-    /// itself as highlighted" without a `&dyn Backend` of its own to ask
-    /// (`AppLogic::tab_stops` takes none).
-    form_engine_focus: RefCell<HashSet<WidgetId>>,
     /// Which corner [`Self::overlays`]' [`Overlay::Toast`] entries stack
     /// in — set by the most recent [`Self::show_toast`] call. Not part of
     /// [`Overlay::Toast`] itself since it applies to the whole group, not
@@ -1320,31 +1109,9 @@ pub struct InteractionEngine {
     /// moves the whole stack, same caveat [`quadraui::ToastOverlay`]'s
     /// own single-`corner` field already carried.
     toast_corner: ToastCorner,
-    /// One [`TreeTableController`] per `"tree_table_controller"` extra
-    /// painted this (or a prior) frame, keyed by the extra's own id —
-    /// generalizes [`Self::form_controllers`]'s "one stateful controller
-    /// per widget id, rebuilt every render" pattern to this hierarchical
-    /// model. [`Self::sync_tree_tables`] seeds a newly-created entry from
-    /// the extra's own `nodes`/`selected_id` exactly once
-    /// ([`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]);
-    /// from then on the controller owns its own expand/selection/sort
-    /// state, same as [`Self::form_controllers`] owns `scroll_offset` from
-    /// its own creation onward.
-    tree_table_controllers: RefCell<HashMap<WidgetId, TreeTableController>>,
-    /// The absolute bounds and current `columns` [`Self::sync_tree_tables`]
-    /// most recently painted each [`Self::tree_table_controllers`] entry
-    /// with — [`TreeTableController::handle`] takes both as plain
-    /// arguments rather than storing them (see that method's own doc), so
-    /// [`Self::handle`]'s routing needs both back to call it.
-    tree_table_rects: RefCell<HashMap<WidgetId, (Rect, Vec<Column>)>>,
-    /// This frame's `"tree_table_controller"` extra ids, in the paint
-    /// order [`Self::sync_tree_tables`] saw them — mirrors
-    /// [`Self::form_order`]'s own doc for why a `MouseDown` claim loop
-    /// walks this rather than the `HashMap`s above directly.
-    tree_table_order: RefCell<Vec<WidgetId>>,
     /// The id of the [`PaintedHit::Widget`] leaf currently holding a
     /// [`quadraui::interactive::EventHost::capture_pointer`] request, if
-    /// any — the generic [`crate::extra_paint::WIDGET_KINDS`] seam's own
+    /// any — the generic [`crate::widget_kinds::WIDGET_KINDS`] seam's own
     /// counterpart of [`Self::active_drag`]/[`Self::scrollbar_drag`]/
     /// [`Self::column_drag`]/[`Self::scroll_drag`]. Set by
     /// [`Self::dyn_widget_dispatch`] when a `DynWidget::handle` call
@@ -1353,7 +1120,7 @@ pub struct InteractionEngine {
     /// every `MouseUp` — mirroring those four fields' own "`MouseUp`
     /// always ends it" reset.
     dyn_widget_capture: RefCell<Option<WidgetId>>,
-    /// The [`crate::extra_paint::WIDGET_KINDS`] leaf the pointer was last
+    /// The [`crate::widget_kinds::WIDGET_KINDS`] leaf the pointer was last
     /// over, so a move that leaves it routes a `Leave` there and one that
     /// arrives on another routes an `Enter` (see
     /// [`Self::route_dyn_widget_hover`]).
@@ -1410,6 +1177,27 @@ impl Default for DynWidgetClickOutcome {
     }
 }
 
+/// What [`InteractionEngine::route_widget_popups`] did with an event.
+enum PopupOutcome {
+    /// An open popup claimed the event; nothing under it sees it.
+    Claimed(quadraui::Reaction),
+    /// No popup claimed it; routing carries on, with this side effect (a
+    /// dismissal's or a hover's answer) folded into the result.
+    Unclaimed(quadraui::Reaction),
+}
+
+impl PopupOutcome {
+    fn reaction(&self) -> quadraui::Reaction {
+        match self {
+            Self::Claimed(r) | Self::Unclaimed(r) => *r,
+        }
+    }
+
+    fn exits(&self) -> bool {
+        matches!(self.reaction(), quadraui::Reaction::Exit)
+    }
+}
+
 /// [`EventCx::emit`]/[`EventCx::request_focus`]/[`EventCx::request_redraw`]'s
 /// outbox for one [`DynWidget::handle`] call — mirrors `quadraui::runtime`'s
 /// own private `WidgetHostIntents`/`WidgetEventHost` pair (the reference
@@ -1417,8 +1205,8 @@ impl Default for DynWidgetClickOutcome {
 /// recording what the widget asked for here, rather than reaching for
 /// `backend`/`sink` directly from inside [`DynWidgetEventHost`]'s own
 /// methods, sidesteps a second concurrent borrow of either while
-/// [`DynWidget::handle`] itself still holds `&mut dyn Any` into
-/// [`InteractionEngine::dyn_widget_state`].
+/// [`DynWidget::handle`] itself still holds `&mut dyn Any` into the
+/// thread's [`quadraui::WidgetStateStore`].
 #[derive(Default)]
 struct DynWidgetIntents {
     focus_request: Option<quadraui::FocusAddress>,
@@ -1447,12 +1235,15 @@ struct DynWidgetEventHost<'a> {
     /// The focused leaf and sub-part when this call began — see
     /// [`InteractionEngine::dyn_widget_focus`].
     focused: Option<quadraui::FocusAddress>,
+    /// Every part of the widget holds focus — a modal dialog, which is
+    /// the whole world while it is open (see [`DispatchFocus::Modal`]).
+    whole_world: bool,
     intents: &'a mut DynWidgetIntents,
 }
 
 impl EventHost for DynWidgetEventHost<'_> {
     fn is_focused(&self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) -> bool {
-        self.focused == Some((*id, sub))
+        self.whole_world || self.focused == Some((*id, sub))
     }
 
     fn request_focus(&mut self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) {
@@ -1498,6 +1289,79 @@ fn dyn_widget_hit(hit_map: &[PaintedHit], id: WidgetId) -> Option<(Rect, Rc<dyn 
     })
 }
 
+thread_local! {
+    /// The [`WidgetStateOwner`] whose states the thread's runtime
+    /// [`quadraui::WidgetStateStore`] holds right now; `0` for none.
+    static ACTIVE_STATE_OWNER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Every other owner's states, set aside while another owner's are in
+    /// the thread's store.
+    static STASHED_STATES: RefCell<HashMap<u64, quadraui::WidgetStateStore>> =
+        RefCell::new(HashMap::new());
+}
+
+/// One engine's widget states in the thread's runtime
+/// [`quadraui::WidgetStateStore`]. Paint reads that one store, so only one
+/// engine's states live in it at a time: [`Self::activate`] sets the
+/// current owner's aside and puts this one's back. An engine activates
+/// whenever it paints, routes an event or records a frame, so a
+/// host that builds a new app on a thread whose earlier app is still
+/// alive (or not yet collected) paints and routes the new app from its
+/// own states. Dropping the owner drops its states.
+struct WidgetStateOwner {
+    token: u64,
+}
+
+impl Default for WidgetStateOwner {
+    fn default() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            token: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// Puts owner `token`'s states in the thread's store (`0` names the
+/// thread's own, unowned states), setting aside whichever owner's were
+/// there, and returns that owner's token.
+fn activate_state_owner(token: u64) -> u64 {
+    let current = ACTIVE_STATE_OWNER.with(|active| active.replace(token));
+    if current != token {
+        STASHED_STATES.with(|stash| {
+            let mut stash = stash.borrow_mut();
+            let mine = stash.remove(&token).unwrap_or_default();
+            let theirs = quadraui::with_widget_states(|store| std::mem::replace(store, mine));
+            stash.insert(current, theirs);
+        });
+    }
+    current
+}
+
+impl WidgetStateOwner {
+    /// Puts this owner's states in the thread's store, setting aside
+    /// whichever owner's were there.
+    fn activate(&self) {
+        activate_state_owner(self.token);
+    }
+
+    /// Runs `f` against this owner's states.
+    fn with<R>(&self, f: impl FnOnce(&mut quadraui::WidgetStateStore) -> R) -> R {
+        self.activate();
+        quadraui::with_widget_states(f)
+    }
+}
+
+impl Drop for WidgetStateOwner {
+    fn drop(&mut self) {
+        let active = ACTIVE_STATE_OWNER.with(|active| active.get() == self.token);
+        if active {
+            ACTIVE_STATE_OWNER.with(|active| active.set(0));
+            quadraui::with_widget_states(|store| store.clear());
+        } else {
+            STASHED_STATES.with(|stash| stash.borrow_mut().remove(&self.token));
+        }
+    }
+}
+
 impl InteractionEngine {
     pub fn new() -> Self {
         Self::default()
@@ -1538,38 +1402,28 @@ impl InteractionEngine {
     /// painting a `Tree`) so the cursor [`Self::handle`]'s `KeyPressed`
     /// routing moved via [`crate::host::apply_tree_nav_key`] is what
     /// actually gets painted.
-    pub fn widget_state(&self) -> &WidgetState {
+    pub fn widget_state(&self) -> &RefCell<quadraui::WidgetStateStore> {
         &self.widget_state
+    }
+
+    /// Runs `f` against this engine's generic widget states: every
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf's and open widget
+    /// overlay's `Interactive::State`, keyed by the widget's own id (else
+    /// its leaf id).
+    pub fn with_widget_states<R>(&self, f: impl FnOnce(&mut quadraui::WidgetStateStore) -> R) -> R {
+        self.widget_states.with(f)
     }
 
     /// Replaces this frame's painted hits. Call once per render, after the
     /// binding's own paint pass (`draw_bands`/`paint_layout`) has fully
     /// populated `hits`.
     ///
-    /// Also prunes [`Self::text_editors`] down to just the ids still
-    /// painted as a `"text_input"` extra this frame — mirroring
-    /// [`Self::sync_forms`]'s own "painted this frame" retain for
-    /// [`Self::form_controllers`]. Without this, a `TextInput` that stops
-    /// rendering (its host removes it, navigates away, ...) leaves its
-    /// cached [`quadraui::TextEditor`] — buffer, cursor, and up to
-    /// `UNDO_HISTORY_LIMIT` full undo snapshots — in the map forever.
-    ///
-    /// Also sweeps [`Self::widget_state`] via [`WidgetState::gc`] — its own
-    /// "seen this frame" marks, not `hits`, drive what survives; see that
-    /// type's own module doc.
+    /// Also runs [`Self::widget_state`]'s frame sweep
+    /// ([`quadraui::WidgetStateStore::gc`]), which keeps every value the
+    /// binding host resolved this frame, and drops the
+    /// [`Self::widget_states`] of every generic widget neither painted this
+    /// frame nor open as an overlay.
     pub fn set_hits(&self, hits: Vec<PaintedHit>) {
-        let live_text_inputs: Vec<WidgetId> = hits
-            .iter()
-            .filter_map(|hit| match hit {
-                PaintedHit::Extra { id, extra, .. } if extra_as::<TextInput>(extra).is_some() => {
-                    Some(*id)
-                }
-                _ => None,
-            })
-            .collect();
-        self.text_editors
-            .borrow_mut()
-            .retain(|id, _| live_text_inputs.contains(id));
         // Same "painted this frame" retain for the windowed-leaf request
         // bookkeeping: a leaf that stops rendering (or stops sending an
         // `items_window`) must not leave its last request behind to
@@ -1577,18 +1431,49 @@ impl InteractionEngine {
         self.rows_requested
             .borrow_mut()
             .retain(|id, _| windowed_leaf_extent(&hits, *id).is_some());
-        self.widget_state.gc();
+        self.widget_state.borrow_mut().gc();
         let live_dyn_widgets: Vec<WidgetId> = hits
             .iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Widget { id, .. } => Some(*id),
+                PaintedHit::Widget { id, widget, .. } => Some(dyn_state_key(*id, widget.as_ref())),
                 _ => None,
             })
             .collect();
-        self.dyn_widget_state
-            .borrow_mut()
-            .retain(|id| live_dyn_widgets.contains(id));
+        let mut live_dyn_widgets = live_dyn_widgets;
+        for overlay in &self.overlays {
+            let content = match overlay {
+                Overlay::Float(_, _, Some(FloatContent::Layout(content))) => content,
+                Overlay::LayoutDialog(embedded) => &embedded.content,
+                _ => continue,
+            };
+            live_dyn_widgets.extend(content.hits.borrow().iter().filter_map(|hit| match hit {
+                PaintedHit::Widget { id, .. } => Some(*id),
+                _ => None,
+            }));
+        }
+        live_dyn_widgets.extend(self.overlay_widget_ids());
+        self.widget_states
+            .with(|states| states.retain(|id| live_dyn_widgets.contains(id)));
         *self.hit_map.borrow_mut() = hits;
+    }
+
+    /// Runs `paint` — a binding's paint pass over its tree
+    /// ([`crate::render::paint_layout`] and friends) — with this engine's
+    /// per-widget state installed as the store
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] paints from, so every generic
+    /// leaf paints from the state its own event handling walked: a text
+    /// input's caret, a palette's query caret, a picker's highlight.
+    /// Whatever the thread's store held before is put back afterwards,
+    /// also when `paint` unwinds.
+    pub fn paint_with_widget_state<R>(&self, paint: impl FnOnce() -> R) -> R {
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                activate_state_owner(self.0);
+            }
+        }
+        let _restore = Restore(activate_state_owner(self.widget_states.token));
+        paint()
     }
 
     /// Inserts `overlay` into [`Self::overlays`] at the position
@@ -1620,13 +1505,6 @@ impl InteractionEngine {
             .take_while(|o| o.rank() <= rank)
             .count();
         self.overlays.insert(at, overlay);
-    }
-
-    /// Applies `f` to every open overlay: how the host writes a change an
-    /// imperative overlay's widget reported (a moved highlight, a scrolled
-    /// body) back onto the descriptor it owns.
-    fn update_overlay(&mut self, f: impl FnMut(&mut Overlay)) {
-        self.overlays.iter_mut().for_each(f);
     }
 
     /// Removes the first entry matching `pred` (there is at most one,
@@ -1732,9 +1610,8 @@ impl InteractionEngine {
     /// Whether a message dialog opened via [`Self::open_message_dialog`]
     /// is currently open.
     pub fn dialog_open(&self) -> bool {
-        self.overlays
-            .iter()
-            .any(|o| matches!(o, Overlay::Dialog(..)))
+        self.widget_overlay(WidgetOverlayKind::MessageDialog)
+            .is_some()
     }
 
     /// Opens an in-canvas message/alert/confirm dialog built from `opts`,
@@ -1743,7 +1620,7 @@ impl InteractionEngine {
     /// gets the same hit-test precedence an open context menu already has.
     /// Replaces (and pops) any dialog already open. Also closes an open
     /// `"menu_bar"` dropdown or context-menu popup, if either is open: the
-    /// dialog paints on top of both ([`Overlay::Dialog`]'s own
+    /// dialog paints on top of both (its [`Overlay::Widget`] entry's
     /// [`Overlay::rank`] is higher than [`Overlay::ContextMenu`]'s), and
     /// [`Self::handle`] now routes the dialog ahead of both, so a popup
     /// left open underneath would be unreachable input it still holds
@@ -1753,9 +1630,6 @@ impl InteractionEngine {
         self.close_message_dialog(backend);
         self.close_form_dialog(backend);
         self.close_layout_dialog(backend);
-        if self.menu_system.borrow().menu.is_open() {
-            self.menu_system.borrow_mut().menu.dismiss(backend);
-        }
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
@@ -1765,7 +1639,13 @@ impl InteractionEngine {
             .modal_stack_handle()
             .borrow_mut()
             .push(dialog.dialog.id, bounds);
-        self.push_overlay(Overlay::Dialog(dialog, MessageDialogState::default()));
+        self.widget_states
+            .with(|states| states.remove(&dialog.dialog.id));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::MessageDialog,
+            dialog,
+            Point::default(),
+        )));
     }
 
     /// Closes the open message dialog (if any), popping its
@@ -1776,24 +1656,59 @@ impl InteractionEngine {
     /// all, or one the app wants to tear down from outside input, could
     /// never be cleared. A no-op (returns `false`) if nothing is open.
     pub fn close_message_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.remove_overlay(|o| matches!(o, Overlay::Dialog(..))) {
-            Some(Overlay::Dialog(open, _)) => {
-                backend
-                    .modal_stack_handle()
-                    .borrow_mut()
-                    .pop(&open.dialog.id);
+        self.close_modal_widget_overlay(WidgetOverlayKind::MessageDialog, backend)
+    }
+
+    /// Removes the open modal widget overlay of `kind`, popping its
+    /// [`quadraui::ModalStack`] entry and dropping its state. Returns
+    /// whether one was open.
+    fn close_modal_widget_overlay(
+        &mut self,
+        kind: WidgetOverlayKind,
+        backend: &mut dyn Backend,
+    ) -> bool {
+        match self.remove_overlay(|o| matches!(o, Overlay::Widget(entry) if entry.kind == kind)) {
+            Some(Overlay::Widget(open)) => {
+                let id = open.id();
+                backend.modal_stack_handle().borrow_mut().pop(&id);
+                self.widget_states.with(|states| states.remove(&id));
                 true
             }
             _ => false,
         }
     }
 
+    /// The open widget overlay of `kind`, if any.
+    fn widget_overlay(&self, kind: WidgetOverlayKind) -> Option<&WidgetOverlay> {
+        self.overlays.iter().find_map(|o| match o {
+            Overlay::Widget(entry) if entry.kind == kind => Some(entry),
+            _ => None,
+        })
+    }
+
+    fn widget_overlay_mut(&mut self, kind: WidgetOverlayKind) -> Option<&mut WidgetOverlay> {
+        self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::Widget(entry) if entry.kind == kind => Some(entry),
+            _ => None,
+        })
+    }
+
+    /// The ids of every open widget overlay, whose state
+    /// [`Self::set_hits`]'s frame sweep keeps while they stay open.
+    fn overlay_widget_ids(&self) -> Vec<WidgetId> {
+        self.overlays
+            .iter()
+            .filter_map(|o| match o {
+                Overlay::Widget(entry) => Some(entry.id()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether a form-hosting dialog opened via [`Self::open_form_dialog`]
     /// is currently open.
     pub fn form_dialog_open(&self) -> bool {
-        self.overlays
-            .iter()
-            .any(|o| matches!(o, Overlay::FormDialog(..)))
+        self.widget_overlay(WidgetOverlayKind::FormDialog).is_some()
     }
 
     /// Opens `dialog` — a [`FormDialog`] hosting a
@@ -1807,51 +1722,42 @@ impl InteractionEngine {
     /// across all of them. A binding's own `show_form_dialog` surface calls this, then
     /// pushes the app's current field values onto `dialog` every frame
     /// via [`Self::form_dialog_mut`] before
-    /// [`Self::render_overlays`] paints it — the same "app owns the
-    /// data, the widget's state owns the edits" contract a bare
-    /// [`FormController`] consumer already follows.
+    /// [`Self::render_overlays`] paints it — the app owns the data, the
+    /// widget's state owns the edits.
     pub fn open_form_dialog(&mut self, dialog: FormDialog, backend: &mut dyn Backend) {
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
         self.close_layout_dialog(backend);
-        if self.menu_system.borrow().menu.is_open() {
-            self.menu_system.borrow_mut().menu.dismiss(backend);
-        }
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
-        let state = FormDialogState::default();
-        let bounds = dialog.bounds(&state, backend);
+        let bounds = dialog.bounds(&FormDialogState::default(), backend);
         backend
             .modal_stack_handle()
             .borrow_mut()
             .push(dialog.id, bounds);
-        self.push_overlay(Overlay::FormDialog(dialog, state));
+        self.widget_states.with(|states| states.remove(&dialog.id));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::FormDialog,
+            dialog,
+            Point::default(),
+        )));
     }
 
     /// Closes the open form-dialog (if any), popping its
     /// [`quadraui::ModalStack`] entry. Returns whether one was open.
     /// Mirrors [`Self::close_message_dialog`]'s own doc.
     pub fn close_form_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.remove_overlay(|o| matches!(o, Overlay::FormDialog(..))) {
-            Some(Overlay::FormDialog(open, _)) => {
-                backend.modal_stack_handle().borrow_mut().pop(&open.id);
-                true
-            }
-            _ => false,
-        }
+        self.close_modal_widget_overlay(WidgetOverlayKind::FormDialog, backend)
     }
 
     /// Mutable access to the open form-dialog widget, if any — a
     /// binding's render path uses this to set its [`FormDialog::form`] and
-    /// [`FormDialog::body`] every frame before painting, the same "push
-    /// fresh state, then render" contract a bare [`FormController`]
-    /// consumer already follows.
+    /// [`FormDialog::body`] every frame before painting: push fresh
+    /// state, then render.
     pub fn form_dialog_mut(&mut self) -> Option<&mut FormDialog> {
-        self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(d, _) => Some(d),
-            _ => None,
-        })
+        self.widget_overlay_mut(WidgetOverlayKind::FormDialog)?
+            .widget_as_mut::<FormDialog>()
     }
 
     // ── Toast ────────────────────────────────────────────────────────
@@ -1976,26 +1882,37 @@ impl InteractionEngine {
     /// Shows `completions` anchored at `cursor` (the caret position in
     /// the backend's ABSOLUTE frame). Replaces any popup already open.
     pub fn show_completions(&mut self, completions: Completions, cursor: Point) {
-        self.push_overlay(Overlay::Completions(completions, cursor));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::Completions,
+            completions,
+            cursor,
+        )));
     }
 
     /// Closes the open completions popup (if any) without reporting a
     /// selection. Returns whether one was open.
     pub fn dismiss_completions(&mut self) -> bool {
-        self.remove_overlay(|o| matches!(o, Overlay::Completions(..)))
-            .is_some()
+        self.remove_widget_overlay(WidgetOverlayKind::Completions)
     }
 
     /// The open completions popup (if any) and the cursor position it was
-    /// anchored to, for [`Self::handle`]'s hit-test dispatch — cloned out
-    /// of [`Self::overlays`] so the caller can go on to call
-    /// [`Self::dismiss_completions`] (which needs `&mut self`) without a
-    /// borrow of the stack still outstanding.
+    /// anchored to.
+    #[cfg(test)]
     fn find_completions(&self) -> Option<(Completions, Point)> {
-        self.overlays.iter().find_map(|o| match o {
-            Overlay::Completions(c, p) => Some((c.clone(), *p)),
-            _ => None,
-        })
+        let entry = self.widget_overlay(WidgetOverlayKind::Completions)?;
+        Some((entry.widget_as::<Completions>()?.clone(), entry.anchor))
+    }
+
+    /// Removes the open widget overlay of `kind` and drops its state.
+    /// Returns whether one was open.
+    fn remove_widget_overlay(&mut self, kind: WidgetOverlayKind) -> bool {
+        match self.remove_overlay(|o| matches!(o, Overlay::Widget(entry) if entry.kind == kind)) {
+            Some(Overlay::Widget(open)) => {
+                self.widget_states.with(|states| states.remove(&open.id()));
+                true
+            }
+            _ => false,
+        }
     }
 
     fn completions_layout(
@@ -2021,7 +1938,7 @@ impl InteractionEngine {
     /// Opens `float` at `measure`'s size, pushing its resolved bounds
     /// onto the backend's [`quadraui::ModalStack`] via
     /// [`quadraui::ModalStack::push_float`] so other modal-aware code
-    /// gets the same hit-test precedence [`Overlay::Dialog`] already has.
+    /// gets the same hit-test precedence a modal dialog already has.
     /// Replaces (and pops) any float already open. **Content is not
     /// this call's concern** — same as [`quadraui::Backend::draw_float`]
     /// itself, the host paints whatever belongs in
@@ -2038,80 +1955,14 @@ impl InteractionEngine {
     }
 
     /// Opens `float` as a content-bearing popover: anchored and chromed
-    /// exactly like [`Self::show_float`], but with `form`'s fields laid
-    /// out and painted into [`quadraui::FloatLayout::content_bounds`] by
-    /// this engine itself (through an embedded [`FormController`])
-    /// rather than left to the host's own render path. Unlike a plain
-    /// [`Self::show_float`], [`Self::handle`] routes every event into
-    /// the embedded form while this is open — typing/toggling a field
-    /// emits the normal `UiEvent::Form(float.id, ..)` event, same shape
-    /// a `"form"` layout-tree leaf already emits — and a `MouseDown`
-    /// landing outside `float`'s own bounds dismisses it, in addition
-    /// to the Escape dismissal every focusable float already gets (see
-    /// [`Self::dispatch_overlays`]'s own doc). `float.focusable` is
-    /// forced to `true` regardless of what the caller set — a popover
-    /// with no keyboard focus of its own would leave `form`'s fields
-    /// permanently unreachable by keyboard. Tab/Shift+Tab stay trapped
-    /// inside `form`'s own fields — see [`Self::tab_stops`]'s own doc
-    /// for the other half of that trap. Replaces (and pops) any float
-    /// already open. Use [`Self::popover_mut`] afterward to push fresh
-    /// field values onto the still-open popover every frame, the same
-    /// "app owns the data, controller owns the edits" contract a bare
-    /// [`FormController`] consumer already follows — calling this again
-    /// instead would recreate the embedded controller from scratch,
-    /// discarding its own live cursor/selection/scroll state.
-    pub fn show_popover(
-        &mut self,
-        mut float: Float,
-        measure: FloatMeasure,
-        form: Form,
-        backend: &mut dyn Backend,
-    ) {
-        float.focusable = true;
-        self.close_float(backend);
-        let layout = float.layout(viewport_rect(backend), measure);
-        backend
-            .modal_stack_handle()
-            .borrow_mut()
-            .push_float(&float, layout.bounds);
-        let mut controller = FormController::new(float.id.as_str().to_string());
-        controller.set_form(form);
-        controller.set_has_focus(true);
-        self.push_overlay(Overlay::Float(
-            float,
-            measure,
-            Some(FloatContent::Form(controller)),
-        ));
-    }
-
-    /// Mutable access to a Form-content popover's embedded
-    /// [`FormController`] (opened via [`Self::show_popover`]), if one is
-    /// open — `None` for a plain [`Self::show_float`] float, a
-    /// [`Self::show_popover_layout`] popover, or no float at all. Mirrors
-    /// [`Self::form_dialog_mut`]'s own doc: a binding's render path calls
-    /// [`FormController::set_form`] through this every frame before
-    /// painting, the same "push fresh state, then render" contract a
-    /// bare `FormController` consumer already follows — without it, a
-    /// popover's fields are frozen at whatever `form` was passed to
-    /// [`Self::show_popover`] when it opened, since that method's own
-    /// `self.close_float(backend)` would otherwise be the only way to
-    /// refresh them, discarding the controller's own live
-    /// cursor/selection/scroll state in the process.
-    pub fn popover_mut(&mut self) -> Option<&mut FormController> {
-        self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::Float(_, _, Some(FloatContent::Form(c))) => Some(c),
-            _ => None,
-        })
-    }
-
-    /// Opens `float` as a content-bearing popover, like [`Self::show_popover`],
-    /// but with an arbitrary `content: LayoutNode` subtree instead of a
-    /// single [`quadraui::Form`] — laid out and painted into
+    /// exactly like [`Self::show_float`], with an arbitrary
+    /// `content: LayoutNode` subtree laid out and painted into
     /// [`quadraui::FloatLayout::content_bounds`] through
     /// [`crate::render::paint_layout`], the same function a binding's own
     /// render-callback path uses for its main tree, every frame this
     /// popover is open. `float.focusable` is forced to `true` regardless
-    /// of what the caller set, same reasoning as [`Self::show_popover`].
+    /// of what the caller set: a popover with no keyboard focus of its own
+    /// would leave its content unreachable by keyboard.
     /// Replaces (and pops) any float already open.
     ///
     /// Every leaf in `content` (at any nesting depth — directly, or
@@ -2129,8 +1980,7 @@ impl InteractionEngine {
     /// event. Tab/Shift-Tab cycle among the subtree's own stops and
     /// never leave the popover (see [`Self::tab_stops`]'s own doc for
     /// the other half of that cycle). A `MouseDown` landing outside
-    /// `float`'s own bounds dismisses it, same as [`Self::show_popover`];
-    /// one landing inside is routed into `content` and never reaches the
+    /// `float`'s own bounds dismisses it; one landing inside is routed into `content` and never reaches the
     /// tree painted underneath.
     pub fn show_popover_layout(
         &mut self,
@@ -2149,17 +1999,15 @@ impl InteractionEngine {
         self.push_overlay(Overlay::Float(
             float,
             measure,
-            Some(FloatContent::Layout(LayoutContent::new(content))),
+            Some(FloatContent::Layout(Box::new(LayoutContent::new(content)))),
         ));
     }
 
     /// Replaces an open `Layout`-content popover's subtree with `content`,
-    /// keeping its per-`"form"`-leaf edit state (cursor, selection,
-    /// scroll) alive — the "app owns the data, controller owns the edits"
-    /// contract [`Self::popover_mut`] documents, for a popover whose
-    /// content is a whole subtree rather than a single
-    /// [`quadraui::Form`]. Returns whether one was open (`false` for a
-    /// plain float, a `Form`-content popover, or no float at all).
+    /// keeping each leaf's stored interaction state (a form's cursor,
+    /// selection and scroll) alive — the app owns the data, the widget's
+    /// own state owns the edits. Returns whether one was open (`false`
+    /// for a plain float or no float at all).
     pub fn set_popover_content(&mut self, content: LayoutNode) -> bool {
         match self.overlays.iter_mut().find_map(|o| match o {
             Overlay::Float(_, _, Some(FloatContent::Layout(c))) => Some(c),
@@ -2213,9 +2061,6 @@ impl InteractionEngine {
         self.close_layout_dialog(backend);
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
-        if self.menu_system.borrow().menu.is_open() {
-            self.menu_system.borrow_mut().menu.dismiss(backend);
-        }
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
@@ -2248,7 +2093,7 @@ impl InteractionEngine {
     }
 
     /// Replaces an open layout dialog's subtree with `content`, keeping
-    /// its per-`"form"`-leaf edit state alive — the dialog counterpart of
+    /// each leaf's stored interaction state alive — the dialog counterpart of
     /// [`Self::set_popover_content`]. Returns whether one was open.
     pub fn set_layout_dialog_content(&mut self, content: LayoutNode) -> bool {
         match self.overlays.iter_mut().find_map(|o| match o {
@@ -2297,25 +2142,49 @@ impl InteractionEngine {
     /// editor cell it describes, in the backend's ABSOLUTE frame).
     /// Replaces any popup already open.
     pub fn show_rich_text_popup(&mut self, popup: RichTextPopup, anchor: Point) {
-        self.push_overlay(Overlay::RichTextPopup(popup, anchor));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::RichTextPopup,
+            popup,
+            anchor,
+        )));
     }
 
     /// Closes the open rich-text popup (if any) without reporting a link
     /// click. Returns whether one was open.
     pub fn dismiss_rich_text_popup(&mut self) -> bool {
-        self.remove_overlay(|o| matches!(o, Overlay::RichTextPopup(..)))
-            .is_some()
+        self.remove_widget_overlay(WidgetOverlayKind::RichTextPopup)
     }
 
     /// The open rich-text popup (if any) and the anchor it was shown
-    /// against, for [`Self::handle`]'s hit-test dispatch — see
-    /// [`Self::find_completions`]'s own doc for why this clones out of
-    /// [`Self::overlays`] rather than borrowing it.
+    /// against.
+    #[cfg(test)]
     fn find_rich_text_popup(&self) -> Option<(RichTextPopup, Point)> {
-        self.overlays.iter().find_map(|o| match o {
-            Overlay::RichTextPopup(p, a) => Some((p.clone(), *a)),
-            _ => None,
-        })
+        let entry = self.widget_overlay(WidgetOverlayKind::RichTextPopup)?;
+        Some((entry.widget_as::<RichTextPopup>()?.clone(), entry.anchor))
+    }
+
+    /// Where `entry` is laid out this frame: the whole viewport for a
+    /// modal dialog, which centres itself there, and the box its anchor
+    /// resolves to for a popup.
+    fn widget_overlay_bounds(&self, backend: &dyn Backend, entry: &WidgetOverlay) -> Rect {
+        let anchored = match entry.kind {
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog => None,
+            WidgetOverlayKind::Completions => entry
+                .widget_as::<Completions>()
+                .map(|c| self.completions_layout(backend, c, entry.anchor).bounds),
+            WidgetOverlayKind::RichTextPopup => entry
+                .widget_as::<RichTextPopup>()
+                .map(|p| self.rich_text_popup_layout(backend, p, entry.anchor).bounds),
+        };
+        anchored.unwrap_or_else(|| viewport_rect(backend))
+    }
+
+    /// Paints `entry` into `rect` with the state [`Self::widget_states`]
+    /// holds for it, which is where a widget's paint reads its own state
+    /// from ([`quadraui::PaintEnv::widget_state`]).
+    fn paint_widget_overlay(&self, backend: &mut dyn Backend, rect: Rect, entry: &WidgetOverlay) {
+        self.widget_states.activate();
+        backend.draw_dyn(rect, entry.widget.as_ref(), &());
     }
 
     fn rich_text_popup_layout(
@@ -2342,39 +2211,24 @@ impl InteractionEngine {
     /// (`render_ctx_menu`/`render_dialog`/`render_toast`/`render_tooltip`/
     /// `render_completions`/`render_float`/`render_rich_text_popup`), each
     /// painted at its own fixed spot in `host::render_overlays`'s old call
-    /// sequence. Call once per render, after the binding's own paint pass
-    /// and [`InteractionEngine::sync_menu_bar`]/[`InteractionEngine::sync_forms`]/
-    /// [`InteractionEngine::sync_text_input_carets`].
+    /// sequence. Call once per render, after the binding's own paint pass.
+    /// Also records the focused widget for [`Self::tab_stops`].
     pub fn render_overlays(&self, backend: &mut dyn Backend) {
+        *self.painted_focus.borrow_mut() = backend.focus_tree().focused_id().copied();
+        self.widget_states.activate();
         for overlay in &self.overlays {
             match overlay {
                 Overlay::ContextMenu(controller) => controller.render(backend),
                 Overlay::Float(float, measure, content) => {
                     let layout = self.float_layout(backend, float, *measure);
                     backend.draw_dyn(layout.bounds, float, &());
-                    match content {
-                        Some(FloatContent::Form(controller)) => {
-                            controller.render(backend, layout.content_bounds);
-                        }
-                        Some(FloatContent::Layout(content)) => {
-                            content.render(backend, layout.content_bounds, &[]);
-                        }
-                        None => {}
+                    if let Some(FloatContent::Layout(content)) = content {
+                        content.render(backend, layout.content_bounds, &[]);
                     }
                 }
-                Overlay::RichTextPopup(popup, anchor) => {
-                    let layout = self.rich_text_popup_layout(backend, popup, *anchor);
-                    backend.draw_dyn(layout.bounds, popup, &());
-                }
-                Overlay::Completions(completions, cursor) => {
-                    let layout = self.completions_layout(backend, completions, *cursor);
-                    backend.draw_dyn(layout.bounds, completions, &());
-                }
-                Overlay::Dialog(dialog, _) => {
-                    backend.draw_dyn(backend.viewport().rect(), dialog, &());
-                }
-                Overlay::FormDialog(dialog, state) => {
-                    backend.draw_dyn(backend.viewport().rect(), &dialog.painted(state), &());
+                Overlay::Widget(entry) => {
+                    let rect = self.widget_overlay_bounds(backend, entry);
+                    self.paint_widget_overlay(backend, rect, entry);
                 }
                 Overlay::LayoutDialog(embedded) => embedded.render(backend),
                 Overlay::Tooltip(tooltip, anchor) => {
@@ -2396,58 +2250,49 @@ impl InteractionEngine {
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
     /// `Split`/`SplitTree` are chrome around other content, not focusable
     /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
-    /// pointer-only header contributes none; `Extra` is a tab stop only when its
-    /// descriptor opts in via
-    /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently
-    /// `TextInput`); `TextDisplay` is always one (scroll/copy need
+    /// pointer-only header contributes none; `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
     ///
-    /// Returns empty while an [`Overlay::FormDialog`] or a Form-content
-    /// [`Overlay::Float`] (a popover opened via [`Self::show_popover`]) is
-    /// open, regardless of what the main tree itself painted this frame —
-    /// both trap Tab inside their own embedded form internally (see
-    /// [`FormDialog`]'s "Focus model" doc section and
-    /// [`Self::dispatch_overlays`]'s popover handling), so the main tree
-    /// must report no stops at all while either is open, or the global
-    /// cycle below would reach straight through the modal to whatever the
-    /// host painted underneath it. A `Layout`-content overlay — a popover
+    /// Returns empty while a form dialog is open, regardless of what the
+    /// main tree itself painted this frame — it traps Tab inside its own
+    /// embedded form internally (see [`FormDialog`]'s "Focus model" doc
+    /// section), so the main tree must report no stops at all while it is
+    /// open, or the global cycle below would reach straight through the
+    /// modal to whatever the host painted underneath it. A `Layout`-content overlay — a popover
     /// opened via [`Self::show_popover_layout`], or a dialog opened via
     /// [`Self::open_layout_dialog`] — instead reports *its own* content's
     /// stops here (plus, for the dialog, its own buttons, so Tab reaches
-    /// "OK"/"Cancel" without leaving the modal): unlike the two
-    /// self-contained cases above, nothing else traps Tab for it, so this
-    /// is the only place that can.
+    /// "OK"/"Cancel" without leaving the modal): nothing else traps Tab
+    /// for it, so this is the only place that can.
     /// `quadraui::runtime::preprocess_event` claims Tab/Shift+Tab
     /// unconditionally — cycling focus among whichever stops this
     /// returns, via `backend`'s own focus manager — whenever this is
     /// non-empty, *before* the key ever reaches [`Self::handle`].
     ///
-    /// Excludes a main-tree `"form"` extra's own stop while
-    /// [`Self::form_engine_focus`] names it (i.e. `backend`'s focus
-    /// manager named it as of the last [`Self::sync_forms`] call) — Tab
-    /// inside it is then [`Self::handle_form_tab`]'s job (move between
-    /// fields, then leave the form once a cycle at either end has
-    /// nowhere left to go inside it), not the generic cross-widget cycle
-    /// above. Unlike the `FormDialog`/popover case above, this removes
-    /// only that one entry rather than the whole list — every *other*
-    /// sibling stop stays reachable, and the form itself still appears
-    /// here (so Tab can reach it in the first place) until engine focus
-    /// actually lands on it.
+    /// Leaves out the focused leaf when it has per-child focus stops
+    /// ([`quadraui::FocusSpec::Children`], a form's fields) — see
+    /// [`stops_around_focused_children`]. Tab then reaches the leaf
+    /// itself, which walks its own children; past either end,
+    /// [`Self::handle`] moves focus on to the next stop instead.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
         if self.overlays.iter().any(|o| {
             matches!(
                 o,
-                Overlay::FormDialog(..) | Overlay::Float(_, _, Some(FloatContent::Form(_)))
+                Overlay::Widget(WidgetOverlay {
+                    kind: WidgetOverlayKind::FormDialog,
+                    ..
+                })
             )
         }) {
             return Vec::new();
         }
+        let focused = *self.painted_focus.borrow();
         if let Some(embedded) = self.overlays.iter().find_map(|o| match o {
             Overlay::LayoutDialog(embedded) => Some(embedded),
             _ => None,
         }) {
-            let mut stops = embedded.content.tab_stops();
+            let mut stops = stops_around_focused_children(&embedded.content.hits.borrow(), focused);
             stops.extend(embedded.button_stops.borrow().iter().copied());
             return stops;
         }
@@ -2455,12 +2300,9 @@ impl InteractionEngine {
             Overlay::Float(_, _, Some(FloatContent::Layout(content))) => Some(content),
             _ => None,
         }) {
-            return content.tab_stops();
+            return stops_around_focused_children(&content.hits.borrow(), focused);
         }
-        let mut stops = tab_stops_from_hits(&self.hit_map.borrow());
-        let form_engine_focus = self.form_engine_focus.borrow();
-        stops.retain(|(id, _)| !form_engine_focus.contains(id));
-        stops
+        stops_around_focused_children(&self.hit_map.borrow(), focused)
     }
 
     /// If `id` is a direct child of a `Scroll` (per
@@ -2476,8 +2318,8 @@ impl InteractionEngine {
     /// [`Self::handle`] without going through this engine's click-to-focus
     /// code at all). Every other offset-changing path (wheel, page keys,
     /// thumb drag, track paging) dispatches this same event, in both
-    /// controlled and uncontrolled mode — see [`crate::widget_state`]'s own
-    /// module doc — and this is no exception, even though `id` landing
+    /// controlled and uncontrolled mode — see [`quadraui::WidgetStateStore`]'s
+    /// own doc — and this is no exception, even though `id` landing
     /// here is itself a side effect of a focus change rather than a direct
     /// scroll gesture. Returns `Reaction::Continue` when nothing scrolled,
     /// so a caller can fold the result into its own `Reaction` via `merge`
@@ -2509,481 +2351,6 @@ impl InteractionEngine {
         ))
     }
 
-    /// Rebuilds [`Self::menu_system`]'s menu list from this frame's `"menu_bar"`
-    /// extra (if any) and paints its dropdown/submenu popups on top of the
-    /// plain bar `hits` already recorded, then remembers the bar's absolute
-    /// bounds in [`Self::menu_bar_rect`] for [`InteractionEngine::handle`] to
-    /// reuse. A no-op (and clears `menu_bar_rect`) when no `"menu_bar"`
-    /// extra was painted this frame. Call once per render, after `hits` is
-    /// fully built — the extras loop in `draw_bands`/`paint_leaf` already
-    /// painted the plain, non-interactive bar via `MenuBar`'s own
-    /// `ExtraPaint::paint`; this repaints it with `menu_system`'s own
-    /// open/focused state (and the dropdown, when one is open) layered on
-    /// top, the same "paint after everything else" contract
-    /// `ContextMenuController::render` documents for itself. Only the
-    /// *first* `"menu_bar"` extra painted this frame is wired up this
-    /// way — a second one in the same frame still paints (via `paint_leaf`'s
-    /// normal `Extra` path) but is not interactive.
-    ///
-    /// `menu_system.menu.render` draws from that `AppMenu`'s own
-    /// open/focused/id state (see `AppMenu::build_menu_bar`), not the descriptor's
-    /// `open_item`/`focused_item`/`id` fields — those are overridden, so a
-    /// binding that sets them declaratively (e.g. to render a pressed
-    /// visual) has no effect once the bar is interactive.
-    pub fn sync_menu_bar(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let found = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Extra { area, extra, .. } => {
-                extra_as::<MenuBar>(extra).map(|menu_bar| (*area, menu_bar))
-            }
-            _ => None,
-        });
-        let Some((area, menu_bar)) = found else {
-            // The `"menu_bar"` extra is gone from this frame (the app
-            // stopped rendering one, or swapped it for something else).
-            // Close any dropdown first so the dropdown's entry
-            // `AppMenu::handle_ui_event` pushed onto the modal stack
-            // gets popped — otherwise it leaks, and the dropdown would
-            // silently reappear (with nothing to hit-test it) if the
-            // extra ever comes back.
-            if self.menu_system.borrow().menu.is_open() {
-                self.menu_system.borrow_mut().menu.dismiss(backend);
-            }
-            *self.menu_bar_rect.borrow_mut() = None;
-            return;
-        };
-        let menus: Vec<MenuDef> = menu_bar
-            .items
-            .iter()
-            .map(|item| MenuDef {
-                id: item.id,
-                label: item.label.clone(),
-                disabled: item.disabled,
-                items: item.submenu.clone().unwrap_or_default(),
-            })
-            .collect();
-        let mut menu_system = self.menu_system.borrow_mut();
-        menu_system.menu.set_menus(menus);
-        menu_system.menu.render(backend, area);
-        *self.menu_bar_rect.borrow_mut() = Some(area);
-    }
-
-    /// Repaints every `"form"` extra painted this frame through its own
-    /// cached [`FormController`] (creating one the first time an id is
-    /// seen), so the form shows [`FormController`]'s own richer,
-    /// stateful rendering (its live scroll offset, in-progress text/date
-    /// edit overlay, ...) instead of just [`quadraui::Form`]'s own
-    /// plain, non-interactive [`crate::extra_paint::ExtraPaint::paint`] —
-    /// the same "paint after everything else, from the stateful
-    /// controller instead of the bare descriptor" pattern
-    /// [`Self::sync_menu_bar`] already uses for `"menu_bar"`. Call once
-    /// per render, after the extras loop in `draw_bands`/`paint_leaf`
-    /// already painted the plain bar. Unlike `sync_menu_bar`'s
-    /// single `"menu_bar"` instance, every `"form"` extra painted this
-    /// frame gets its own entry, keyed by its own id — a `"form"` is not
-    /// a singleton overlay the way `"menu_bar"`/`"find_replace"` are.
-    /// A cached entry whose id wasn't painted this frame is dropped, so a
-    /// form that stops rendering doesn't keep answering events forever.
-    ///
-    /// Seeds a newly-created controller's own `scroll_offset` from the
-    /// descriptor's `Form.scroll_offset` the first time its id is seen, so
-    /// a host that paints a non-zero `scroll_offset` on insert (the
-    /// contract the plain, non-controller `ExtraPaint::paint` path already
-    /// honours) doesn't silently lose it to `FormController::new`'s `0`
-    /// the moment the form gets wired through this cache. Only on
-    /// creation, not every frame: from then on `FormController` owns
-    /// `scroll_offset` itself (wheel/thumb-drag advance it internally, the
-    /// same "host doesn't have to echo it back" contract
-    /// `compose::form_controller`'s own module doc describes for the
-    /// cursor) — reseeding it from the descriptor on every frame would
-    /// snap a live scroll straight back to whatever stale value a host
-    /// that never echoes it keeps sending.
-    ///
-    /// `has_focus`, by contrast, IS reconciled every frame: the
-    /// descriptor's own `Form.has_focus` OR'd with whether `backend`'s
-    /// focus manager currently names this form. Unlike `scroll_offset`,
-    /// engine-level focus is already an authoritative value this engine
-    /// tracks continuously, so ORing it in is never destructive of a
-    /// legitimate internal source of truth the way reseeding
-    /// `scroll_offset` would be — and it's what makes the focused-row
-    /// highlight track engine focus in both directions: appearing the
-    /// very next render after a click moves focus onto the form (not just
-    /// after the first keystroke, the only other site that calls
-    /// `set_has_focus`), and clearing once focus moves elsewhere even if
-    /// the host keeps echoing a stale `focused_field`/`has_focus: true`.
-    pub fn sync_forms(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let mut seen = Vec::new();
-        for hit in hits {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(form) = extra_as::<Form>(extra) else {
-                continue;
-            };
-            seen.push(*id);
-            let engine_focused = backend.focus_tree().focused_id() == Some(id);
-            if engine_focused {
-                self.form_engine_focus.borrow_mut().insert(*id);
-            } else {
-                self.form_engine_focus.borrow_mut().remove(id);
-            }
-            // `Form.focused_field`'s own controlled/uncontrolled
-            // resolution — see that field's doc. `None` (uncontrolled)
-            // resumes from whatever `Self::handle`'s own Tab/Shift-Tab/
-            // Up/Down/click routing last persisted for this form id (or
-            // stays `None` the first time it's seen); `Some(id)`
-            // (controlled) wins outright and is written back so a later
-            // uncontrolled frame resumes from it instead of an older
-            // engine-owned value.
-            let mut form = form.clone();
-            form.focused_field = resolve_form_focused_field(&self.widget_state, &form);
-            let mut controllers = self.form_controllers.borrow_mut();
-            let is_new = !controllers.contains_key(id);
-            let controller = controllers
-                .entry(*id)
-                .or_insert_with(|| FormController::new(id.as_str().to_string()));
-            controller.set_form(form.clone());
-            if is_new {
-                controller.set_scroll_offset(form.scroll_offset);
-            }
-            controller.set_has_focus(form.has_focus || engine_focused);
-            controller.render_and_cache(backend, *area);
-            self.form_rects.borrow_mut().insert(*id, *area);
-        }
-        self.form_controllers
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        self.form_rects
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        self.form_engine_focus
-            .borrow_mut()
-            .retain(|id| seen.contains(id));
-        *self.form_order.borrow_mut() = seen;
-    }
-
-    /// The [`crate::extra_paint::TreeTableControllerDescriptor`]
-    /// counterpart of [`Self::sync_forms`]: every `"tree_table_controller"`
-    /// extra painted this frame gets its own cached
-    /// [`TreeTableController`] (creating and seeding one the first time an
-    /// id is seen, via [`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]),
-    /// repainted from that controller's own live expand/selection/sort
-    /// state instead of the plain, stateless [`crate::extra_paint::ExtraPaint::paint`]
-    /// every extra gets by default. Call once per render, after the extras
-    /// loop in `draw_bands`/`paint_leaf` already painted the plain
-    /// fallback.
-    ///
-    /// `has_focus`/`show_scrollbar`/`bordered` ARE reconciled every frame
-    /// (same as [`Self::sync_forms`]'s own `has_focus`): they're cosmetic,
-    /// host-echoed flags with no internal state of the controller's own to
-    /// clobber. `nodes`/`selected_id` are not — see [`Self::tree_table_controllers`]'s
-    /// own doc for why those are seeded once, on creation, and never again.
-    ///
-    /// A cached entry whose id wasn't painted this frame is dropped, so a
-    /// tree table that stops rendering doesn't keep answering events
-    /// forever.
-    pub fn sync_tree_tables(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let mut seen = Vec::new();
-        for hit in hits {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(descriptor) = extra_as::<TreeTableControllerDescriptor>(extra) else {
-                continue;
-            };
-            seen.push(*id);
-            let engine_focused = backend.focus_tree().focused_id() == Some(id);
-            let mut controllers = self.tree_table_controllers.borrow_mut();
-            let controller = controllers
-                .entry(*id)
-                .or_insert_with(|| descriptor.seed_controller());
-            controller.set_has_focus(descriptor.has_focus || engine_focused);
-            controller.set_show_scrollbar(descriptor.show_scrollbar);
-            controller.set_bordered(descriptor.bordered);
-            controller.render(backend, *area, descriptor.columns.clone());
-            self.tree_table_rects
-                .borrow_mut()
-                .insert(*id, (*area, descriptor.columns.clone()));
-        }
-        self.tree_table_controllers
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        self.tree_table_rects
-            .borrow_mut()
-            .retain(|id, _| seen.contains(id));
-        *self.tree_table_order.borrow_mut() = seen;
-    }
-
-    /// Answers a [`TreeTableControllerWireEvent::ChildrenRequested`] for
-    /// the `"tree_table_controller"` cached under `id`: attaches
-    /// `children` to `node_id` via [`TreeTableController::set_children`]
-    /// (found anywhere in the tree, not just at the top level — see that
-    /// method's own doc) and clears it from the controller's own pending-
-    /// request set. A no-op if `id` names no cached controller (it hasn't
-    /// been painted this frame, or at all yet).
-    pub fn set_tree_table_children(
-        &self,
-        id: WidgetId,
-        node_id: &str,
-        children: Vec<TreeTableNodeData>,
-    ) {
-        if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
-            controller.set_children(&node_id.to_string(), children);
-        }
-    }
-
-    /// Overrides the comparator a [`TreeTableControllerWireEvent::SortChanged`]
-    /// this engine already emitted applied by default: replaces every
-    /// loaded node under `id`'s cached controller with `nodes`, already
-    /// ordered however the host likes (numeric, locale-aware, ...) — a
-    /// thin [`TreeTableController::set_nodes`] forward, named for what a
-    /// binding's own sort-override call does with it. A no-op if `id`
-    /// names no cached controller.
-    pub fn set_tree_table_sort_override(&self, id: WidgetId, nodes: Vec<TreeTableNodeData>) {
-        if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
-            controller.set_nodes(nodes);
-        }
-    }
-
-    /// Tab/Shift-Tab inside a main-tree `"form"` extra that currently
-    /// holds engine focus — called from [`Self::handle`]'s own
-    /// `KeyPressed` routing once [`Self::tab_stops`]'s own exclusion (see
-    /// its doc) has let the key reach here instead of the generic
-    /// cross-widget cycle. `forward` is `true` for `Tab`, `false` for
-    /// `Shift+Tab`/`BackTab`.
-    ///
-    /// Not at either end of [`quadraui::primitives::form::focus_order`]:
-    /// forwards a synthesized `Tab`/`BackTab` into `form_id`'s own cached
-    /// [`FormController`], exactly as [`Self::handle`] already did for
-    /// every other `KeyPressed` reaching a focused form — its own
-    /// `move_focus` reseeds the new field's text/date-edit cursor and
-    /// scrolls it into view, which reimplementing the move here from
-    /// scratch would lose. At either end with another app-level stop to
-    /// leave to: hands engine focus to the next/previous one instead
-    /// (mirrors
-    /// [`quadraui::compose::FormDialog`]'s
-    /// own boundary check, which hands focus to its button row at the
-    /// same point) — "leaving the form" the same way Tab already leaves
-    /// any other single-stop widget. At either end with nowhere to leave
-    /// to (the form is this frame's only stop): forwards the key the same
-    /// way the non-boundary case does, so `move_focus`'s own wraparound
-    /// moves focus to the opposite end instead of going dead. `None` when
-    /// `form_id` names no cached controller at all (nothing to do; the
-    /// caller's own `KeyPressed` should keep flowing through
-    /// [`Self::handle`] unchanged).
-    fn handle_form_tab(
-        &self,
-        form_id: WidgetId,
-        rect: Rect,
-        forward: bool,
-        backend: &mut dyn Backend,
-        sink: &mut dyn EventSink,
-    ) -> Option<FormTabOutcome> {
-        let form = self
-            .form_controllers
-            .borrow()
-            .get(&form_id)
-            .and_then(|c| c.form().cloned())?;
-        let stops = focus_order(&form);
-        let delta: isize = if forward { 1 } else { -1 };
-        if form_focus_at_boundary(&form, &stops, delta) {
-            if let Some(next_id) = self.next_tab_stop_leaving(form_id, forward) {
-                let mut focus_reaction = quadraui::Reaction::Continue;
-                if backend.set_focus(Some(next_id)) {
-                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(next_id)), None);
-                    if matches!(focus_reaction, quadraui::Reaction::Exit) {
-                        return Some(FormTabOutcome::LeftForm(focus_reaction));
-                    }
-                    focus_reaction =
-                        focus_reaction.merge(self.scroll_focused_child_into_view(next_id, sink));
-                    if matches!(focus_reaction, quadraui::Reaction::Exit) {
-                        return Some(FormTabOutcome::LeftForm(focus_reaction));
-                    }
-                }
-                return Some(FormTabOutcome::LeftForm(
-                    quadraui::Reaction::Redraw.merge(focus_reaction),
-                ));
-            }
-            // Nowhere to leave to — the form is this frame's only tab
-            // stop, so falls through to the same key-forwarding below the
-            // non-boundary case uses. `FormController::move_focus`'s own
-            // `cycle_index` wraps `Some(i)` at either end back to the
-            // opposite one, so this still moves rather than going dead.
-        }
-        let key_event = UiEvent::KeyPressed {
-            key: Key::Named(if forward {
-                NamedKey::Tab
-            } else {
-                NamedKey::BackTab
-            }),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        };
-        let mut controllers = self.form_controllers.borrow_mut();
-        let controller = controllers.get_mut(&form_id)?;
-        controller.set_has_focus(true);
-        match controller.handle_event(&key_event, backend, rect) {
-            Handled::Event(FormControllerAction::FormAction(form_event)) => {
-                if let FormEvent::FocusChanged { id } = &form_event {
-                    apply_form_focus_changed(&self.widget_state, form_id, *id);
-                }
-                Some(FormTabOutcome::Moved(form_event))
-            }
-            _ => Some(FormTabOutcome::PassThrough),
-        }
-    }
-
-    /// The next (`forward`)/previous app-level tab stop after `form_id`
-    /// in this frame's own full [`tab_stops_from_hits`] order — the
-    /// "leave the form" half of [`Self::handle_form_tab`]. `None` when
-    /// `form_id` isn't one of this frame's stops (it was removed from
-    /// [`Self::hit_map`] between render and this keystroke) or it is the
-    /// only one (nothing to leave to).
-    fn next_tab_stop_leaving(&self, form_id: WidgetId, forward: bool) -> Option<WidgetId> {
-        let stops = tab_stops_from_hits(&self.hit_map.borrow());
-        if stops.len() < 2 {
-            return None;
-        }
-        let idx = stops.iter().position(|(id, _)| *id == form_id)?;
-        let next_idx = quadraui::focus::cycle_index(idx, if forward { 1 } else { -1 }, stops.len());
-        Some(stops[next_idx].0)
-    }
-
-    /// Up/Down field-to-field navigation for a focused main-tree `"form"`
-    /// — called from [`Self::handle`]'s own `KeyPressed` routing only
-    /// once `focused`'s own [`FormController::handle_event`] has already
-    /// reported [`Handled::Ignored`] for the identical keypress, meaning
-    /// the focused field itself has no use for Up/Down (a
-    /// `DatePicker`/`ComboBox`/`Dropdown`/`NumberInput`/`RadioGroup`
-    /// already claims both internally and never reaches here — trying the field first
-    /// and falling back to this instead of duplicating `FormController`'s
-    /// own per-kind knowledge of which keys each consumes). Clamps at
-    /// either end rather than wrapping or leaving the form — unlike
-    /// Tab/Shift-Tab, Up/Down has no "leave the form" contract.
-    fn maybe_move_form_focus_vertically(
-        &self,
-        form_id: WidgetId,
-        event: &UiEvent,
-    ) -> Option<FormEvent> {
-        let UiEvent::KeyPressed {
-            key: Key::Named(named @ (NamedKey::Up | NamedKey::Down)),
-            modifiers,
-            ..
-        } = event
-        else {
-            return None;
-        };
-        if modifiers.ctrl || modifiers.alt || modifiers.cmd {
-            return None;
-        }
-        let form = self
-            .form_controllers
-            .borrow()
-            .get(&form_id)
-            .and_then(|c| c.form().cloned())?;
-        let stops = focus_order(&form);
-        if stops.is_empty() {
-            return None;
-        }
-        let delta: isize = if matches!(named, NamedKey::Down) {
-            1
-        } else {
-            -1
-        };
-        let cur = form
-            .focused_field
-            .and_then(|id| stops.iter().position(|s| *s == id));
-        let next_idx = match cur {
-            Some(i) => {
-                let next = i as isize + delta;
-                if next < 0 || next as usize >= stops.len() {
-                    return None;
-                }
-                next as usize
-            }
-            None if delta > 0 => 0,
-            None => stops.len() - 1,
-        };
-        let id = stops[next_idx];
-        apply_form_focus_changed(&self.widget_state, form_id, id);
-        Some(FormEvent::FocusChanged { id })
-    }
-
-    /// Repaints every standalone `"text_input"` extra this frame whose
-    /// cached [`quadraui::TextEditor`] (seeded by [`text_input_click_event`]/
-    /// [`text_input_insert_event`]) disagrees with the descriptor's own
-    /// `cursor_line`/`cursor_col` — the same "paint after everything else,
-    /// from the richer live state" overlay [`Self::sync_forms`] uses for
-    /// `"form"`. Without this, `text_input_click_event`'s `SetCursor`
-    /// moves the caret only *logically*: the next keystroke starts from
-    /// the clicked position, but nothing ever paints it there, since
-    /// [`crate::extra_paint::ExtraPaint::paint`] for `TextInput` draws the
-    /// raw descriptor — whose `cursor_col` is normally `0`, because
-    /// `FormEvent::TextInputChanged`/`Committed` carry no cursor for a
-    /// host to echo back onto it. Call once per render, after the extras
-    /// loop already painted the plain input and after
-    /// [`Self::sync_forms`] (order between the two doesn't matter — they
-    /// never touch the same extra kind).
-    pub fn sync_text_input_carets(&self, backend: &mut dyn Backend, hits: &[PaintedHit]) {
-        let editors = self.text_editors.borrow();
-        for hit in hits {
-            let PaintedHit::Extra {
-                id, area, extra, ..
-            } = hit
-            else {
-                continue;
-            };
-            let Some(text_input) = extra_as::<TextInput>(extra) else {
-                continue;
-            };
-            let Some(editor) = editors.get(id) else {
-                continue;
-            };
-            let live = (editor.input.cursor_line, editor.input.cursor_col);
-            if live == (text_input.cursor_line, text_input.cursor_col) {
-                continue;
-            }
-            let mut repainted = text_input.clone();
-            repainted.cursor_line = live.0;
-            repainted.cursor_col = live.1;
-            backend.draw_dyn(*area, &repainted, &());
-        }
-    }
-
-    /// Translates a [`TreeTableController::handle`] outcome into the
-    /// `Reaction` [`Self::handle`]'s own `"tree_table_controller"` routing
-    /// blocks return: `None` for [`TreeTableControllerEvent::Ignored`] —
-    /// nothing claimed the event, so the caller's own fallback keeps
-    /// running, mirroring every `Handled::Ignored` check the `"form"`
-    /// blocks already make. `Some(Reaction::Redraw)` for `Consumed`;
-    /// `Some(reaction)` for each of the five real variants, folding in
-    /// whatever [`EventSink::dispatch_tree_table_controller`] itself
-    /// returns.
-    fn dispatch_tree_table_outcome(
-        &self,
-        id: WidgetId,
-        outcome: TreeTableControllerEvent,
-        sink: &mut dyn EventSink,
-    ) -> Option<quadraui::Reaction> {
-        use quadraui::Reaction;
-        if matches!(outcome, TreeTableControllerEvent::Ignored) {
-            return None;
-        }
-        Some(
-            match TreeTableControllerWireEvent::from_controller_event(outcome) {
-                Some(wire_event) => {
-                    Reaction::Redraw.merge(sink.dispatch_tree_table_controller(id, wire_event))
-                }
-                None => Reaction::Redraw,
-            },
-        )
-    }
-
     /// Whether the `"cell_grid"` [`PaintedHit::Widget`] painted under `id`
     /// this frame needs a fresh window of cell text —
     /// [`quadraui::CellGrid::cells_requested`] run against the SAME real
@@ -2994,7 +2361,7 @@ impl InteractionEngine {
     /// the frozen/loaded-window fields a probe would have to reconstruct,
     /// but the real, just-decoded [`CellGrid`] already has every one of
     /// them. `None` for anything that isn't a `CellGrid` (including every
-    /// other [`crate::extra_paint::WIDGET_KINDS`] member, and an `id` not
+    /// other [`crate::widget_kinds::WIDGET_KINDS`] member, and an `id` not
     /// painted this frame at all), and for a `CellGrid` whose loaded
     /// window already covers the resolved viewport.
     /// `pending` is the semantic event [`Self::dyn_widget_dispatch`] is
@@ -3048,6 +2415,107 @@ impl InteractionEngine {
         Some(UiEvent::CellGrid(id, event))
     }
 
+    /// Routes `event` into the open widget overlay of `kind`, if any,
+    /// through the widget's own [`DynWidget::handle`] — `None` when none is
+    /// open or it does not claim `event`, so routing carries on.
+    ///
+    /// A modal dialog is routed every input event, laid out over the
+    /// viewport, and claims every pointer, key and text input whether it
+    /// handles it or not, so none reaches whatever is painted beside or
+    /// beneath it; only events no widget handles (a resize, a window
+    /// close, an app event) travel on. A popup is routed the presses,
+    /// double-clicks and wheel notches that land on it and claims every
+    /// one of them, so none reaches whatever is painted beneath it; Escape
+    /// or a press outside it dismisses it.
+    ///
+    /// The event the widget reports reaches `sink`; a dialog's answer
+    /// ([`UiEvent::MessageDialogResolved`]) closes it, as does a
+    /// completions list's activation or keyboard hand-back, and
+    /// [`WidgetOverlay::apply_event`] writes descriptor-held values back.
+    fn dispatch_widget_overlay(
+        &mut self,
+        kind: WidgetOverlayKind,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> Option<quadraui::Reaction> {
+        use quadraui::Reaction;
+
+        let entry = self.widget_overlay(kind)?;
+        let id = entry.id();
+        let bounds = self.widget_overlay_bounds(backend, entry);
+        let modal = kind.is_modal();
+        if !modal {
+            if is_escape(event) {
+                self.remove_widget_overlay(kind);
+                return Some(Reaction::Redraw);
+            }
+            let position = match event {
+                UiEvent::MouseDown { position, .. }
+                | UiEvent::DoubleClick { position, .. }
+                | UiEvent::Scroll { position, .. } => *position,
+                _ => return None,
+            };
+            if !bounds.contains(position) {
+                if matches!(event, UiEvent::MouseDown { .. }) {
+                    self.remove_widget_overlay(kind);
+                    return Some(Reaction::Redraw);
+                }
+                return None;
+            }
+        }
+        let focus = if modal {
+            DispatchFocus::Modal
+        } else {
+            DispatchFocus::Popup
+        };
+        let outcome = self.dyn_widget_dispatch_with_focus(
+            id,
+            entry.widget.as_ref(),
+            bounds,
+            DispatchInput::Raw(event),
+            backend,
+            sink,
+            focus,
+        )?;
+        let mut reaction = outcome.reaction;
+        match outcome.event {
+            Some(resolved @ UiEvent::MessageDialogResolved(_)) => {
+                self.close_modal_widget_overlay(kind, backend);
+                reaction = reaction
+                    .merge(Reaction::Redraw)
+                    .merge(sink.dispatch(&resolved, None));
+            }
+            Some(activated @ UiEvent::CompletionItemActivated(..)) => {
+                self.remove_widget_overlay(kind);
+                reaction = reaction
+                    .merge(Reaction::Redraw)
+                    .merge(sink.dispatch(&activated, None));
+            }
+            Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. }))
+                if kind == WidgetOverlayKind::Completions =>
+            {
+                self.remove_widget_overlay(kind);
+                reaction = reaction.merge(Reaction::Redraw);
+            }
+            Some(reported) => {
+                let changed = self
+                    .widget_overlay_mut(kind)
+                    .is_some_and(|entry| entry.apply_event(&reported));
+                if changed || modal {
+                    reaction = reaction.merge(Reaction::Redraw);
+                }
+                reaction = reaction.merge(sink.dispatch(&reported, None));
+            }
+            None if outcome.consumed => {}
+            None if modal && matches!(event, UiEvent::MouseDown { .. }) => {
+                reaction = reaction.merge(Reaction::Redraw)
+            }
+            None => {}
+        }
+        Some(reaction)
+    }
+
     /// The single hit-test/dispatch pass over [`Self::overlays`],
     /// collapsing what used to be five hand-written per-kind blocks in
     /// [`Self::handle`] (menu-bar/context-menu routing stays separate —
@@ -3091,60 +2559,12 @@ impl InteractionEngine {
             }
         }
 
-        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::Dialog(d, s) => Some((d, s)),
-            _ => None,
-        }) {
-            match dialog.handle_event(state, event, &*backend) {
-                Handled::Event(choice) => {
-                    // The dialog is closing regardless of what `sink`
-                    // itself returns — force the repaint that takes it
-                    // off screen, same as the context-menu's own
-                    // `ContextMenuOutcome::Event` arm in `Self::handle`.
-                    self.close_message_dialog(backend);
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None)),
-                    );
-                }
-                Handled::Consumed => return Some(Reaction::Redraw),
-                Handled::Ignored => {}
-            }
-        }
-
-        // `FormDialog::handle_event` is also self-contained —
-        // typing a field, toggling a `FieldKind::Toggle`, Tab/Shift+Tab
-        // between fields and buttons, Enter/Escape on a button, and a
-        // click anywhere in the dialog are all resolved internally (see
-        // that type's own "Keyboard model" doc section). It returns
-        // `Handled::Ignored` for an event it has no use for — e.g. a
-        // `CharTyped`/arrow key while a button (not a field) holds
-        // keyboard focus — which falls through below, same pre-existing
-        // gap `Overlay::Dialog`'s own `MessageDialog` already has.
-        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(d, s) => Some((d, s)),
-            _ => None,
-        }) {
-            let dialog_id = dialog.id;
-            match dialog.handle_event(state, event, &*backend) {
-                Handled::Event(FormDialogAction::ButtonClicked(id)) => {
-                    // Closing regardless of what `sink` itself returns —
-                    // same "force the repaint" reasoning as the message
-                    // dialog's own `Handled::Event` arm above.
-                    self.close_form_dialog(backend);
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(id), None)),
-                    );
-                }
-                Handled::Event(FormDialogAction::FormAction(form_event)) => {
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::Form(dialog_id, form_event), None)),
-                    );
-                }
-                Handled::Consumed => return Some(Reaction::Redraw),
-                Handled::Ignored => {}
+        for kind in [
+            WidgetOverlayKind::MessageDialog,
+            WidgetOverlayKind::FormDialog,
+        ] {
+            if let Some(reaction) = self.dispatch_widget_overlay(kind, event, backend, sink) {
+                return Some(reaction);
             }
         }
 
@@ -3163,9 +2583,7 @@ impl InteractionEngine {
                 Overlay::LayoutDialog(embedded) => Some(embedded),
                 _ => None,
             })
-            .map(|embedded| {
-                dispatch_layout_dialog(embedded, event, backend, sink, &self.text_editors)
-            });
+            .map(|embedded| dispatch_layout_dialog(embedded, event, self, backend, sink));
         match layout_dialog_outcome {
             Some(LayoutDialogOutcome::Resolved(id)) => {
                 // Closing regardless of what `sink` itself returns —
@@ -3181,121 +2599,36 @@ impl InteractionEngine {
             Some(LayoutDialogOutcome::Ignored) | None => {}
         }
 
-        if let Some((completions, cursor)) = self.find_completions() {
-            if is_escape(event) {
-                self.dismiss_completions();
-                return Some(Reaction::Redraw);
-            }
-            let bounds = self
-                .completions_layout(backend, &completions, cursor)
-                .bounds;
-            if let Some(routed) = overlay_pointer_event(event, bounds) {
-                let id = completions.id;
-                let widget: Rc<dyn DynWidget> = Rc::new(completions);
-                let outcome =
-                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
-                let mut reaction = outcome.reaction;
-                match outcome.event {
-                    Some(event @ UiEvent::CompletionItemActivated(..)) => {
-                        self.dismiss_completions();
-                        reaction = reaction
-                            .merge(Reaction::Redraw)
-                            .merge(sink.dispatch(&event, None));
-                    }
-                    Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. })) => {
-                        self.dismiss_completions();
-                        reaction = reaction.merge(Reaction::Redraw);
-                    }
-                    Some(event) => {
-                        if let UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) = &event {
-                            self.update_overlay(|o| {
-                                if let Overlay::Completions(c, _) = o {
-                                    c.selected_idx = *idx;
-                                }
-                            });
-                            reaction = reaction.merge(Reaction::Redraw);
-                        }
-                        reaction = reaction.merge(sink.dispatch(&event, None));
-                    }
-                    None if outcome.consumed => {}
-                    None => {
-                        if matches!(event, UiEvent::MouseDown { .. }) {
-                            self.dismiss_completions();
-                            reaction = reaction.merge(Reaction::Redraw);
-                        } else {
-                            return None;
-                        }
-                    }
-                }
+        for kind in [
+            WidgetOverlayKind::Completions,
+            WidgetOverlayKind::RichTextPopup,
+        ] {
+            if let Some(reaction) = self.dispatch_widget_overlay(kind, event, backend, sink) {
                 return Some(reaction);
-            }
-            if let UiEvent::MouseDown { .. } = event {
-                self.dismiss_completions();
-                return Some(Reaction::Redraw);
-            }
-        }
-
-        if let Some((popup, anchor)) = self.find_rich_text_popup() {
-            if is_escape(event) {
-                self.dismiss_rich_text_popup();
-                return Some(Reaction::Redraw);
-            }
-            let bounds = self.rich_text_popup_layout(backend, &popup, anchor).bounds;
-            if let Some(routed) = overlay_pointer_event(event, bounds) {
-                let id = popup.id;
-                let widget: Rc<dyn DynWidget> = Rc::new(popup);
-                let outcome =
-                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
-                let mut reaction = outcome.reaction;
-                match outcome.event {
-                    Some(event) => {
-                        if let UiEvent::ScrollOffsetChanged { new_offset, .. } = &event {
-                            self.update_overlay(|o| {
-                                if let Overlay::RichTextPopup(p, _) = o {
-                                    p.scroll_top = *new_offset;
-                                }
-                            });
-                            reaction = reaction.merge(Reaction::Redraw);
-                        }
-                        reaction = reaction.merge(sink.dispatch(&event, None));
-                    }
-                    None if outcome.consumed => {}
-                    None if matches!(event, UiEvent::MouseDown { .. }) => {}
-                    None => return None,
-                }
-                return Some(reaction);
-            }
-            if let UiEvent::MouseDown { .. } = event {
-                self.dismiss_rich_text_popup();
-                return Some(Reaction::Redraw);
             }
         }
 
         // A content-bearing float ("popover", opened via
-        // `Self::show_popover`) claims a positioned mouse event landing
-        // inside its own bounds, and a position-less keyboard/clipboard
-        // event (typing, toggling a field, Tab/Shift-Tab, pasting, or
-        // Escape) — these route into its embedded `FormController`
-        // directly, the same self-contained model `Overlay::FormDialog`
-        // above uses. Escape is deliberately routed in here (rather than
-        // short-circuited before this block, the way `is_escape` used to)
-        // so a focused, open `ComboBox` field gets first claim on it —
-        // `FormController::handle_key`'s own combo-box interception
-        // closes the popup instead of leaving the whole popover dismissed
-        // out from under it, mirroring `FormDialog`'s own
-        // documented Escape precedence. A `MouseDown` landing outside the
-        // popover's own bounds dismisses it unconditionally, before any
-        // of that routing. Every other position-less `UiEvent`
-        // (`WindowResized`, `WindowClose`, `User(..)`, ...) has nothing
-        // to do with the popover's own fields, so it must fall through
-        // here (`{}`, not an early `return`) all the way to the final
-        // `sink.dispatch` in `Self::handle` — an app with a popover open
-        // still needs to see its window get resized or closed. A plain
-        // chrome-only float (content `None`) still does NOT claim mouse
-        // clicks here — its content is painted by the host, not this
-        // engine (see `Self::show_float`'s own doc) — so a click anywhere
-        // near one of those keeps flowing through the normal hit-map
-        // routing below.
+        // `Self::show_popover_layout`) claims a positioned mouse event
+        // landing inside its own bounds, and a position-less
+        // keyboard/clipboard event (typing, toggling a field,
+        // Tab/Shift-Tab, pasting, or Escape) — these route into its
+        // content subtree. Escape is deliberately routed in here (rather
+        // than short-circuited before this block) so a focused leaf that
+        // answers it — an open `ComboBox` field closing its list — gets
+        // first claim on it instead of the whole popover being dismissed
+        // out from under it. A `MouseDown` landing outside the popover's
+        // own bounds dismisses it unconditionally, before any of that
+        // routing. Every other position-less `UiEvent` (`WindowResized`,
+        // `WindowClose`, `User(..)`, ...) has nothing to do with the
+        // popover's content, so it must fall through here (`{}`, not an
+        // early `return`) all the way to the final `sink.dispatch` in
+        // `Self::handle` — an app with a popover open still needs to see
+        // its window get resized or closed. A plain chrome-only float
+        // (content `None`) still does NOT claim mouse clicks here — its
+        // content is painted by the host, not this engine (see
+        // `Self::show_float`'s own doc) — so a click anywhere near one of
+        // those keeps flowing through the normal hit-map routing below.
         if let Some((float, measure)) = self.overlays.iter().find_map(|o| match o {
             Overlay::Float(f, m, Some(_)) => Some((f.clone(), *m)),
             _ => None,
@@ -3331,38 +2664,10 @@ impl InteractionEngine {
                     // landed inside the popover is still claimed either
                     // way: it visually hit the popover, so the tree
                     // painted underneath must never see it.
-                    match content.dispatch(event, backend, sink, &self.text_editors) {
+                    match content.dispatch(event, self, backend, sink) {
                         Some(result) => return Some(result),
                         None if inside == Some(true) => return Some(Reaction::Continue),
                         None => {}
-                    }
-                } else {
-                    let outcome = self.overlays.iter_mut().find_map(|o| match o {
-                        Overlay::Float(f, _, Some(FloatContent::Form(c))) if f.id == float.id => {
-                            Some(c.handle_event(event, backend, layout.content_bounds))
-                        }
-                        _ => None,
-                    });
-                    match outcome {
-                        Some(Handled::Event(FormControllerAction::FormAction(form_event))) => {
-                            return Some(
-                                Reaction::Redraw.merge(
-                                    sink.dispatch(&UiEvent::Form(float.id, form_event), None),
-                                ),
-                            );
-                        }
-                        Some(
-                            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed,
-                        ) => {
-                            return Some(Reaction::Redraw);
-                        }
-                        // Falls through to the Escape-dismiss check just below
-                        // (for Escape the `FormController` had no use for —
-                        // e.g. no open `ComboBox` to close) and, past that,
-                        // all the way to `Self::handle`'s own final
-                        // `sink.dispatch` — same as `Overlay::FormDialog`'s
-                        // own `Handled::Ignored` arm above.
-                        Some(Handled::Ignored) | None => {}
                     }
                 }
             }
@@ -3483,13 +2788,51 @@ impl InteractionEngine {
         }
     }
 
+    /// Persists the handful of events [`Self::widget_state`] tracks
+    /// uncontrolled-by-default, regardless of what `sink` goes on to do
+    /// with them: a divider drag's resolved ratio
+    /// ([`crate::host::resolve_split_ratio`]'s own counterpart), a
+    /// clicked tab becoming active or a closed tab shifting whichever
+    /// index was active ([`crate::host::resolve_tab_bar_active`]'s), or
+    /// a toggled tree row's expand state
+    /// ([`crate::host::resolve_tree_expansion`]'s). Never changes `event`
+    /// itself — a controlled app's own handling of the same event is
+    /// unaffected. Returns [`Reaction::Redraw`] when it stored something:
+    /// a binding with no render callback of its own (so
+    /// `host::callback_reaction_for_render`'s render-triggered redraw
+    /// never kicks in) still needs the frame that paints the persisted
+    /// change, even when the sink leaves the event itself unhandled.
+    fn persist_widget_state(&self, event: &UiEvent) -> quadraui::Reaction {
+        use quadraui::Reaction;
+        match event {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } => {
+                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
+                Reaction::Redraw
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
+                apply_tab_activated(&self.widget_state, *id, *index);
+                Reaction::Redraw
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
+                apply_tab_closed(&self.widget_state, *id, *index);
+                Reaction::Redraw
+            }
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
+                apply_tree_toggle_expand(&self.widget_state, *id, path);
+                Reaction::Redraw
+            }
+            _ => Reaction::Continue,
+        }
+    }
+
     /// Routes a non-double-click-aware `MouseDown`/`DoubleClick` landing
     /// on `HitDetail::WidgetBody` through the matched
     /// [`crate::layout::LeafDescriptor::Widget`]'s own
-    /// [`DynWidget::handle`] — the generic seam's counterpart of
-    /// [`Self::handle`]'s own `HitDetail::ExtraBody` arm, which instead
-    /// special-cases each [`crate::extra_paint::ExtraPaint`] kind it
-    /// recognizes by downcast. Resolves `widget`'s layout fresh against
+    /// [`DynWidget::handle`]. Resolves `widget`'s layout fresh against
     /// `area` rather than reusing anything from paint time — see
     /// [`PaintedHit::Widget`]'s own doc for why nothing is stashed to
     /// reuse. An empty [`DynWidgetClickOutcome`] (no-op) when `id` doesn't
@@ -3562,8 +2905,8 @@ impl InteractionEngine {
     /// Routes a `KeyPressed`/`CharTyped`/`ClipboardPaste` to whichever
     /// [`crate::layout::LeafDescriptor::Widget`] leaf currently holds
     /// engine focus, through that leaf's own [`DynWidget::handle`] — the
-    /// generic seam's counterpart of the hand-written focused-key blocks
-    /// [`Self::handle`] already has for `"form"`/`"tree_table_controller"`.
+    /// generic seam's counterpart of the hand-written focused-key block
+    /// [`Self::handle`] has for a generic leaf.
     /// `CharTyped`/`ClipboardPaste` both map to [`RoutedEvent::Text`], the
     /// same shape a committed IME string arrives as — a widget whose
     /// `Interactive::handle` treats "text with no active edit" as the
@@ -3585,20 +2928,10 @@ impl InteractionEngine {
         let Some((area, widget)) = dyn_widget_hit(&self.hit_map.borrow(), focused) else {
             return DynWidgetClickOutcome::default();
         };
-        let routed = match event {
-            UiEvent::KeyPressed {
-                key,
-                modifiers,
-                repeat,
-                ..
-            } => RoutedEvent::Key(KeyEvent {
-                key: key.clone(),
-                modifiers: *modifiers,
-                repeat: *repeat,
-            }),
-            UiEvent::CharTyped(c) => RoutedEvent::Text(c.to_string()),
-            UiEvent::ClipboardPaste(text) => RoutedEvent::Text(text.clone()),
-            _ => return DynWidgetClickOutcome::default(),
+        let Some(routed) = quadraui::compose::routed_event(event, area, &[])
+            .filter(|r| matches!(r, RoutedEvent::Key(_) | RoutedEvent::Text(_)))
+        else {
+            return DynWidgetClickOutcome::default();
         };
         self.dyn_widget_dispatch(focused, &widget, area, routed, backend, sink)
     }
@@ -3752,36 +3085,35 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
-        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, true)
+        self.dyn_widget_dispatch_with_focus(
+            id,
+            widget.as_ref(),
+            area,
+            DispatchInput::Routed(routed),
+            backend,
+            sink,
+            DispatchFocus::Tree,
+        )
+        .unwrap_or_default()
     }
 
-    /// [`Self::dyn_widget_dispatch`] for a widget that is not part of the
-    /// focus tree: an imperative overlay (completions, a rich-text popup)
-    /// floats over the focused editor and must not take focus from it, so
-    /// its `request_focus` intent is dropped.
-    fn overlay_widget_dispatch(
-        &self,
-        id: WidgetId,
-        widget: &Rc<dyn DynWidget>,
-        area: Rect,
-        routed: RoutedEvent,
-        backend: &mut dyn Backend,
-        sink: &mut dyn EventSink,
-    ) -> DynWidgetClickOutcome {
-        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, false)
-    }
-
+    /// [`Self::dyn_widget_dispatch`]'s body, for any widget: `input` is
+    /// either an already-routed event or a raw one, which is routed here
+    /// against the widget's own layout and sub-regions
+    /// ([`quadraui::compose::routed_event`]) — `None` when a raw event is
+    /// one no widget handles. `focus` says how the widget relates to the
+    /// backend's focus (see [`DispatchFocus`]).
     #[allow(clippy::too_many_arguments)]
     fn dyn_widget_dispatch_with_focus(
         &self,
         id: WidgetId,
-        widget: &Rc<dyn DynWidget>,
+        widget: &dyn DynWidget,
         area: Rect,
-        routed: RoutedEvent,
+        input: DispatchInput<'_>,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
-        take_focus: bool,
-    ) -> DynWidgetClickOutcome {
+        focus: DispatchFocus,
+    ) -> Option<DynWidgetClickOutcome> {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
         // measurer, its style and the paint state the widget painted
@@ -3808,22 +3140,32 @@ impl InteractionEngine {
                 .with_paint_state(&painted);
             (ctx.units(), widget.layout(&ctx, area))
         };
+        let routed = match input {
+            DispatchInput::Routed(routed) => routed,
+            DispatchInput::Raw(event) => {
+                quadraui::compose::routed_event(event, area, &widget.sub_regions(layout.as_ref()))?
+            }
+        };
 
         let mut intents = DynWidgetIntents::default();
-        let handled = {
-            let mut states = self.dyn_widget_state.borrow_mut();
-            let state = states.state_for(id, widget.as_ref());
+        let focused = self.dyn_widget_focus(backend);
+        let handled = self.widget_states.with(|states| {
+            let state = states.state_for(dyn_state_key(id, widget), widget);
             let mut host = DynWidgetEventHost {
                 units,
-                focused: self.dyn_widget_focus(backend),
+                focused,
+                whole_world: focus == DispatchFocus::Modal,
                 intents: &mut intents,
             };
             let mut cx = EventCx::new(id, &mut host);
             widget.handle(state, &routed, layout.as_ref(), &mut cx)
-        };
+        });
 
         let mut outcome = DynWidgetClickOutcome::default();
-        if let Some((focus_id, sub)) = intents.focus_request.filter(|_| take_focus) {
+        if let Some((focus_id, sub)) = intents
+            .focus_request
+            .filter(|_| focus == DispatchFocus::Tree)
+        {
             *self.dyn_widget_focus_sub.borrow_mut() = Some((focus_id, sub));
             if backend.set_focus(Some(focus_id)) {
                 let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
@@ -3839,6 +3181,7 @@ impl InteractionEngine {
         if intents.redraw {
             outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
         }
+        let reported = !intents.emitted.is_empty();
         for emitted in intents.emitted {
             let reaction = sink.dispatch(&emitted, Some(&HitDetail::WidgetBody));
             outcome.reaction = outcome.reaction.merge(reaction);
@@ -3848,6 +3191,17 @@ impl InteractionEngine {
             Handled::Consumed => {
                 outcome.consumed = true;
                 outcome.reaction = outcome.reaction.merge(quadraui::Reaction::Redraw);
+            }
+            // A focused leaf that answers a key `Ignored` after emitting
+            // its own report of it (a tab bar's, list's or tree's scoped
+            // `KeyPressed`) has delivered that key once already, so the
+            // raw `KeyPressed` does not reach the handler as well.
+            Handled::Ignored
+                if reported
+                    && focus == DispatchFocus::Tree
+                    && matches!(routed, RoutedEvent::Key(_)) =>
+            {
+                outcome.consumed = true;
             }
             Handled::Ignored => {}
         }
@@ -3860,7 +3214,103 @@ impl InteractionEngine {
                 outcome.reaction = outcome.reaction.merge(reaction);
             }
         }
-        outcome
+        Some(outcome)
+    }
+
+    /// [`tab_past_child_stops`] against the main tree's hits, scrolling
+    /// the newly focused stop into view.
+    fn tab_past_child_stops(
+        &self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> Option<quadraui::Reaction> {
+        let focused = self.dyn_widget_focus(backend);
+        let (next, reaction) =
+            tab_past_child_stops(&self.hit_map.borrow(), focused, event, backend, sink)?;
+        if matches!(reaction, quadraui::Reaction::Exit) {
+            return Some(reaction);
+        }
+        Some(reaction.merge(self.scroll_focused_child_into_view(next, sink)))
+    }
+
+    /// Routes `event` against the popups the painted generic leaves have
+    /// open, through [`quadraui::popup::route_popup_event`] — the same
+    /// rules the widget-contract runtime applies — delivering each owner's
+    /// routed event through its own [`DynWidget::handle`] and dispatching
+    /// whatever it reports. Nothing routes while a modal is open: popups
+    /// do not paint then.
+    fn route_widget_popups(
+        &self,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> PopupOutcome {
+        if !backend.modal_stack_handle().borrow().is_empty() {
+            return PopupOutcome::Unclaimed(quadraui::Reaction::Continue);
+        }
+        let owners: Vec<(WidgetId, Rect, Rc<dyn DynWidget>)> = self
+            .hit_map
+            .borrow()
+            .iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Widget { id, area, widget } if widget.opens_popups() => {
+                    Some((*id, *area, Rc::clone(widget)))
+                }
+                _ => None,
+            })
+            .collect();
+        if owners.is_empty() {
+            return PopupOutcome::Unclaimed(quadraui::Reaction::Continue);
+        }
+        let popups = quadraui::popup::resolve_open_popups(
+            &*backend,
+            owners.iter().map(|(id, area, w)| (*id, *area, w.as_ref())),
+        );
+        if popups.is_empty() {
+            return PopupOutcome::Unclaimed(quadraui::Reaction::Continue);
+        }
+        let routing = quadraui::popup::route_popup_event(
+            event,
+            &*backend,
+            &popups,
+            self.dyn_widget_capture.borrow().is_some(),
+            |owner, position| {
+                owners
+                    .iter()
+                    .any(|(id, area, _)| id == owner && area.contains(position))
+            },
+        );
+        let mut reaction = quadraui::Reaction::Continue;
+        for (owner, routed) in routing.deliveries {
+            let Some((_, area, widget)) = owners.iter().find(|(id, _, _)| *id == owner) else {
+                continue;
+            };
+            let outcome = self
+                .dyn_widget_dispatch_with_focus(
+                    owner,
+                    widget.as_ref(),
+                    *area,
+                    DispatchInput::Routed(routed),
+                    backend,
+                    sink,
+                    DispatchFocus::Popup,
+                )
+                .unwrap_or_default();
+            reaction = reaction.merge(outcome.reaction);
+            if let Some(resolved) = outcome.event {
+                reaction = reaction
+                    .merge(quadraui::Reaction::Redraw)
+                    .merge(sink.dispatch(&resolved, Some(&HitDetail::WidgetBody)));
+            } else if outcome.consumed {
+                reaction = reaction.merge(quadraui::Reaction::Redraw);
+            }
+        }
+        if routing.claimed {
+            PopupOutcome::Claimed(reaction)
+        } else {
+            PopupOutcome::Unclaimed(reaction)
+        }
     }
 
     /// Routes one input event and returns how the host should react.
@@ -3877,6 +3327,7 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> quadraui::Reaction {
+        self.widget_states.activate();
         let pointer = if quadraui::interaction::track_pointer(&event) {
             quadraui::Reaction::Redraw
         } else {
@@ -3901,20 +3352,18 @@ impl InteractionEngine {
         // through this function the event takes.
         let mut tooltip_dismissed = false;
 
-        // Set when a resolved `HitDetail::CanvasRegion` click or a focused
-        // key press reaches a script-defined widget's own `on_event` (via
-        // `scripted_region_click`/`scripted_key_press`) and it reports the
-        // event as consumed — merged into the final `Reaction` below, the
-        // same way `tooltip_dismissed` is, so the widget's own repainted
-        // state shows even when `sink.dispatch` itself leaves `event`
-        // unhandled (nothing in this crate's own dispatch recognizes a
-        // script-defined widget's id, so it never claims the event on the
-        // widget's behalf).
-        let mut scripted_reaction = Reaction::Continue;
+        // The reaction a focused generic widget produced for a key it let
+        // travel on (`Handled::Ignored`) while still asking for a repaint —
+        // a script-defined widget whose script consumed the key does this
+        // so the app sees the key press too. Merged into the final
+        // `Reaction` below, the same way `tooltip_dismissed` is, so the
+        // widget's repainted state shows even when `sink.dispatch` itself
+        // leaves `event` unhandled.
+        let mut widget_key_reaction = Reaction::Continue;
 
         // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
         // valid drop target, below — merged into the final `Reaction` the
-        // same way `scripted_reaction` is. `drag_started_reaction`/
+        // same way `widget_key_reaction` is. `drag_started_reaction`/
         // `drag_over_reaction` are its arm/continue counterparts, set
         // further down once `hit`/the `MouseMoved` branch are reached.
         let mut gesture_reaction = Reaction::Continue;
@@ -3946,32 +3395,6 @@ impl InteractionEngine {
                         target,
                         target_detail,
                     });
-                }
-            }
-            // Mirrors the resets above for a `"form"` extra's own
-            // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
-            // arm clears `scroll_drag` unconditionally (it doesn't check
-            // position), so trying every cached controller here releases
-            // whichever one (if any) is mid-drag instead of leaving its
-            // thumb rendered pressed forever (`build_scrollbar_lh`'s
-            // `dragging` flag never clears otherwise).
-            for id in self.form_order.borrow().iter() {
-                let rect = self.form_rects.borrow().get(id).copied();
-                if let Some(rect) = rect {
-                    if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
-                        let _ = controller.handle_event(&event, backend, rect);
-                    }
-                }
-            }
-            // Same reset for a `"tree_table_controller"` extra's own
-            // scrollbar-thumb drag — `TreeTableController::handle`'s own
-            // `MouseUp` arm ends it unconditionally too.
-            for id in self.tree_table_order.borrow().iter() {
-                let ctx = self.tree_table_rects.borrow().get(id).cloned();
-                if let Some((rect, columns)) = ctx {
-                    if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(id) {
-                        let _ = controller.handle(&event, backend, rect, columns);
-                    }
                 }
             }
             // Ends a [`Self::dyn_widget_capture`] drag the same way — a
@@ -4044,25 +3467,17 @@ impl InteractionEngine {
             }
         }
 
-        // A widget popup (an open `ComboBox` list) paints above every
-        // leaf and overlay, but this host does not route popup events to
-        // the popup's owner, so a press, release, double-click or wheel
-        // landing on one stops here instead of reaching what it covers.
-        let on_popup = |p: Point| {
-            quadraui::popup::painted_popups()
-                .iter()
-                .any(|popup| popup.rect.contains(p))
-        };
-        if matches!(
-            event,
-            UiEvent::MouseDown { .. }
-                | UiEvent::MouseUp { .. }
-                | UiEvent::DoubleClick { .. }
-                | UiEvent::Scroll { .. }
-        ) && event_position(&event).is_some_and(on_popup)
-        {
-            return continue_or_tooltip_redraw(tooltip_dismissed);
+        // A widget's open popups (an open `ComboBox` list, an `AppMenu`
+        // dropdown) paint above every leaf, so they see the event first:
+        // an event landing on one reaches its owner, and nothing under it
+        // sees the event; a press elsewhere or Escape dismisses them.
+        let popup_routing = self.route_widget_popups(&event, backend, sink);
+        if matches!(popup_routing, PopupOutcome::Claimed(_)) || popup_routing.exits() {
+            return popup_routing
+                .reaction()
+                .merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
+        let popup_reaction = popup_routing.reaction();
 
         // One shared pass over `Self::overlays`, topmost (highest
         // `Overlay::rank`) first — toast (claims a `MouseDown` landing on
@@ -4078,59 +3493,15 @@ impl InteractionEngine {
             return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
         }
 
-        // A `"menu_bar"` extra's dropdown and a context-menu popup both own
-        // a full modal-input state machine that must see every event before
-        // the rest of this function's own routing — matching
-        // `AppMenu::handle_ui_event`/`ContextMenuController::handle`'s own doc
-        // ("call this before other UI routing"). Each reports `Ignored`
-        // immediately when nothing of theirs is open/relevant, so this is
-        // safe to run unconditionally even for an app with neither a menu
-        // bar nor an open context menu.
-        let mut menu_reaction = Reaction::Continue;
-        if let Some(bar_rect) = *self.menu_bar_rect.borrow() {
-            let was_open = self.menu_system.borrow().menu.is_open();
-            let menu_event = {
-                let mut host = self.menu_system.borrow_mut();
-                let MenuBarHost { menu, state } = &mut *host;
-                menu.handle_ui_event(state, &event, backend, bar_rect)
-            };
-            match menu_event {
-                Handled::Event(AppMenuEvent::Activated(id)) => {
-                    // Activation already closed the dropdown in
-                    // `menu_system`'s own state; force the repaint that
-                    // takes it off screen regardless of what `sink`
-                    // itself returns (mirrors `focus_reaction.merge`
-                    // below).
-                    return Reaction::Redraw
-                        .merge(sink.dispatch(&UiEvent::MenuActivated(id), None));
-                }
-                // Navigation/highlight only — nothing for the binding's own
-                // handler to react to, just a repaint so the new
-                // open/selected state shows. Exception: a `MouseMoved` with
-                // no dropdown open before or after this call only updated
-                // which top-level label is hover-highlighted — it isn't
-                // "consuming" the move in any sense a divider/scrollbar drag
-                // or the handler itself would care about, so let it keep
-                // flowing through the rest of this function instead of
-                // swallowing it here; this call's own repaint need folds
-                // into whatever `Reaction` that routing ends up producing.
-                Handled::Event(_) | Handled::Consumed => {
-                    let hover_only_on_closed_bar = !was_open
-                        && !self.menu_system.borrow().menu.is_open()
-                        && matches!(event, UiEvent::MouseMoved { .. });
-                    if hover_only_on_closed_bar {
-                        menu_reaction = Reaction::Redraw;
-                    } else {
-                        return Reaction::Redraw;
-                    }
-                }
-                Handled::Ignored => {}
-            }
-        }
+        // A context-menu popup owns a full modal-input state machine that
+        // must see every event before the rest of this function's own
+        // routing — matching `ContextMenuController::handle`'s own doc
+        // ("call this before other UI routing"). It reports `Ignored`
+        // immediately when nothing of its own is open, so this is safe
+        // to run unconditionally.
         match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
-                // Same reasoning as the `AppMenuEvent::Activated` arm above:
-                // activation/dismissal already closed the popup in
+                // Activation/dismissal already closed the popup in
                 // `ctx_menu`'s own state, so force the repaint regardless
                 // of what `sink` returns.
                 return Reaction::Redraw.merge(sink.dispatch(&ev, None));
@@ -4139,143 +3510,14 @@ impl InteractionEngine {
             ContextMenuOutcome::Ignored => {}
         }
 
-        // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a `"form"`
-        // extra that currently holds engine-level focus routes through
-        // that `Form`'s own cached `FormController` — `FormController::handle_event`'s
-        // own `has_focus` gate (see its module doc) is what makes this
-        // safe to try unconditionally even when no `"form"` extra is
-        // focused (or none exists this frame): `form_rects`/`form_controllers`
-        // then has no entry for the focused id, or `set_has_focus(true)`
-        // simply enables a gate nothing else reads.
-        //
-        // Plain Tab/Shift+Tab (no Ctrl/Alt/Cmd) is special-cased ahead of
-        // the generic dispatch below: `Self::tab_stops` excludes this
-        // form's own stop from the app-level cycle for as long as
-        // `Self::form_engine_focus` names it, specifically so the key
-        // reaches `Self::handle_form_tab` here instead — see that
-        // method's own doc for the "move between fields, then leave the
-        // form at either end" contract.
-        //
-        // Up/Down falls through to the generic dispatch first, same as
-        // every other key: only once that reports `Handled::Ignored`
-        // (the focused field itself has no use for Up/Down) does
-        // `Self::maybe_move_form_focus_vertically` treat it as a
-        // field-to-field move — see that method's own doc for why trying
-        // the field first is what keeps a
-        // `DatePicker`/`ComboBox`/`Dropdown`/`NumberInput`/`RadioGroup`'s
-        // own Up/Down handling working unchanged.
-        if matches!(
-            event,
-            UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
-        ) {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                if let Some(rect) = self.form_rects.borrow().get(&focused).copied() {
-                    let tab_direction = match &event {
-                        UiEvent::KeyPressed {
-                            key: Key::Named(named @ (NamedKey::Tab | NamedKey::BackTab)),
-                            modifiers,
-                            ..
-                        } if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
-                            Some(matches!(named, NamedKey::Tab) && !modifiers.shift)
-                        }
-                        _ => None,
-                    };
-                    if let Some(forward) = tab_direction {
-                        match self.handle_form_tab(focused, rect, forward, backend, sink) {
-                            Some(FormTabOutcome::LeftForm(reaction)) => {
-                                return reaction
-                                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
-                            }
-                            Some(FormTabOutcome::Moved(form_event)) => {
-                                event = UiEvent::Form(focused, form_event);
-                            }
-                            Some(FormTabOutcome::PassThrough) | None => {}
-                        }
-                    } else {
-                        // Scoped so the `RefMut` this borrows is dropped
-                        // before the `Handled::Ignored` arm below ever
-                        // calls `Self::maybe_move_form_focus_vertically`,
-                        // which borrows the same `RefCell` immutably —
-                        // keeping the mutable borrow alive across that
-                        // call (as a plain `if let` scrutinee would) is a
-                        // guaranteed `BorrowError` panic the moment the
-                        // focused field itself has no use for the key
-                        // (every non-text field kind, and any field-less
-                        // focus state at all).
-                        let handled = self.form_controllers.borrow_mut().get_mut(&focused).map(
-                            |controller| {
-                                controller.set_has_focus(true);
-                                controller.handle_event(&event, backend, rect)
-                            },
-                        );
-                        if let Some(handled) = handled {
-                            match handled {
-                                Handled::Event(FormControllerAction::FormAction(form_event)) => {
-                                    if let FormEvent::FocusChanged { id } = &form_event {
-                                        apply_form_focus_changed(&self.widget_state, focused, *id);
-                                    }
-                                    event = UiEvent::Form(focused, form_event);
-                                }
-                                Handled::Event(FormControllerAction::ScrollChanged) => {}
-                                Handled::Ignored => {
-                                    if let Some(form_event) =
-                                        self.maybe_move_form_focus_vertically(focused, &event)
-                                    {
-                                        event = UiEvent::Form(focused, form_event);
-                                    }
-                                }
-                                Handled::Consumed => {}
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // A `KeyPressed` landing on a focused `"tree_table_controller"`
-        // extra routes through its own cached [`TreeTableController`] —
-        // `TreeTableController::handle` does its own internal
-        // `Ignored`-when-nothing-to-do gate (it has no generic `KeyPressed`
-        // arm at all beyond [`crate::host`]'s own navigation keys), so
-        // trying this unconditionally is safe even when no tree-table
-        // controller is focused: `tree_table_rects` then has no entry for
-        // the focused id. Unlike `"form"`, there is no Tab/Shift-Tab
-        // special case — [`TreeTableController::handle`] never claims
-        // Tab/BackTab, so the generic cross-widget cycle already handles
-        // leaving it.
-        if matches!(event, UiEvent::KeyPressed { .. }) {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                let ctx = self.tree_table_rects.borrow().get(&focused).cloned();
-                if let Some((rect, columns)) = ctx {
-                    let outcome = self
-                        .tree_table_controllers
-                        .borrow_mut()
-                        .get_mut(&focused)
-                        .map(|controller| {
-                            controller.set_has_focus(true);
-                            controller.handle(&event, backend, rect, columns)
-                        });
-                    if let Some(outcome) = outcome {
-                        if let Some(reaction) =
-                            self.dispatch_tree_table_outcome(focused, outcome, sink)
-                        {
-                            return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
-                        }
-                    }
-                }
-            }
-        }
-
         // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a
-        // focused [`crate::extra_paint::WIDGET_KINDS`] leaf (e.g. a
+        // focused [`crate::widget_kinds::WIDGET_KINDS`] leaf (e.g. a
         // `"cell_grid"`) routes through its own [`DynWidget::handle`] —
-        // the generic seam's counterpart of the `"tree_table_controller"`
-        // block above. `DynWidget::handle` reports [`Handled::Ignored`]
-        // for anything it doesn't recognize, so trying this
-        // unconditionally is safe even when nothing focused names a
-        // `PaintedHit::Widget` this frame. `CharTyped`/`ClipboardPaste`
-        // reach this block (unlike the plain `KeyPressed`-only tree-table
-        // block above) because a widget like [`CellGrid`] treats both as
+        // `DynWidget::handle` reports [`Handled::Ignored`] for anything
+        // it doesn't recognize, so trying this unconditionally is safe
+        // even when nothing focused names a `PaintedHit::Widget` this
+        // frame. `CharTyped`/`ClipboardPaste` reach this block because a
+        // widget like [`CellGrid`] treats both as
         // the [`RoutedEvent::Text`] a committed IME string would produce
         // — see [`Self::dispatch_dyn_widget_key`]'s own doc for why that
         // means a paste never spreads past the cursor cell.
@@ -4283,14 +3525,19 @@ impl InteractionEngine {
             event,
             UiEvent::KeyPressed { .. } | UiEvent::CharTyped(_) | UiEvent::ClipboardPaste(_)
         ) {
+            if let Some(reaction) = self.tab_past_child_stops(&event, backend, sink) {
+                return reaction.merge(continue_or_tooltip_redraw(tooltip_dismissed));
+            }
             let outcome = self.dispatch_dyn_widget_key(&event, backend, sink);
             if matches!(outcome.reaction, Reaction::Exit) {
                 return outcome.reaction;
             }
             if let Some(replacement) = outcome.event {
+                let persisted = self.persist_widget_state(&replacement);
                 let reaction = sink.dispatch(&replacement, Some(&HitDetail::WidgetBody));
                 return outcome
                     .reaction
+                    .merge(persisted)
                     .merge(reaction)
                     .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             } else if outcome.consumed {
@@ -4298,256 +3545,10 @@ impl InteractionEngine {
                     .reaction
                     .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             }
+            widget_key_reaction = outcome.reaction;
         }
 
-        // A `MouseDown` lands on at most one `"form"` extra's own `rect`
-        // (`FormController::handle_event`'s own `click_inner` returns `Ignored`,
-        // with no mutation, for every other one — see its doc), so trying
-        // every cached controller, in `form_order`'s deterministic paint
-        // order, and stopping at the first non-`Ignored` result is safe
-        // regardless of how many `"form"` extras are
-        // painted this frame. This runs ahead of (and independently of)
-        // the generic hit-test/click-to-focus pipeline below, since
-        // `FormController` resolves which FIELD within the form a click
-        // landed on using its own internal layout — the generic pipeline
-        // only ever sees the form AS A WHOLE (one `WidgetId`, via
-        // `ExtraPaint::hit_test`'s whole-area check).
-        if matches!(event, UiEvent::MouseDown { .. }) {
-            let claim = self
-                .form_order
-                .borrow()
-                .iter()
-                .filter_map(|id| self.form_rects.borrow().get(id).map(|rect| (*id, *rect)))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find_map(|(id, rect)| {
-                    let outcome = self
-                        .form_controllers
-                        .borrow_mut()
-                        .get_mut(&id)
-                        .map(|controller| controller.handle_event(&event, backend, rect))?;
-                    (!matches!(outcome, Handled::Ignored)).then_some((id, outcome))
-                });
-            if let Some((id, outcome)) = claim {
-                // Mirrors the generic click-to-focus block below: a click
-                // a `FormController` just claimed also moves engine-level
-                // focus to the form's own id, so the `KeyPressed`/
-                // `CharTyped`/`ClipboardPaste` routing above can find it
-                // on the very next keystroke.
-                let mut focus_reaction = Reaction::Continue;
-                if backend.set_focus(Some(id)) {
-                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(id)), None);
-                    if matches!(focus_reaction, Reaction::Exit) {
-                        return focus_reaction;
-                    }
-                }
-                return match outcome {
-                    Handled::Event(FormControllerAction::FormAction(form_event)) => {
-                        // A click resolving to `FocusChanged` is exactly
-                        // "clicking a field focuses it" — persist it the
-                        // same way Tab/Shift-Tab/Up/Down do, so an
-                        // uncontrolled form (the app never echoes
-                        // `focused_field` back) still keeps the clicked
-                        // field focused on the next render.
-                        if let FormEvent::FocusChanged { id: field_id } = &form_event {
-                            apply_form_focus_changed(&self.widget_state, id, *field_id);
-                        }
-                        focus_reaction.merge(
-                            Reaction::Redraw
-                                .merge(sink.dispatch(&UiEvent::Form(id, form_event), None)),
-                        )
-                    }
-                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                        focus_reaction.merge(Reaction::Redraw)
-                    }
-                    Handled::Ignored => unreachable!("filtered out above"),
-                };
-            }
-        }
-
-        // A `MouseDown` or a `DoubleClick` (the second click of a pair
-        // `DoubleClickDetector` folded, e.g. the mouse half of
-        // `TreeTableControllerEvent::RowActivated`) lands on at most one
-        // `"tree_table_controller"` extra's own `rect` —
-        // [`TreeTableController::handle`]'s own `click`/`click_scrollbar`
-        // return `Ignored` for a position outside it — so trying every
-        // cached controller, in `tree_table_order`'s deterministic paint
-        // order, and stopping at the first non-`Ignored` result mirrors
-        // the `"form"` claim loop just above.
-        if matches!(
-            event,
-            UiEvent::MouseDown { .. } | UiEvent::DoubleClick { .. }
-        ) {
-            let claim = self
-                .tree_table_order
-                .borrow()
-                .iter()
-                .filter_map(|id| {
-                    self.tree_table_rects
-                        .borrow()
-                        .get(id)
-                        .cloned()
-                        .map(|ctx| (*id, ctx))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find_map(|(id, (rect, columns))| {
-                    let outcome = self
-                        .tree_table_controllers
-                        .borrow_mut()
-                        .get_mut(&id)
-                        .map(|controller| controller.handle(&event, backend, rect, columns))?;
-                    (!matches!(outcome, TreeTableControllerEvent::Ignored)).then_some((id, outcome))
-                });
-            if let Some((id, outcome)) = claim {
-                // Mirrors the `"form"` claim loop above: a click a
-                // `TreeTableController` just claimed also moves
-                // engine-level focus to the extra's own id, so the
-                // `KeyPressed` routing above can find it on the very next
-                // keystroke.
-                let mut focus_reaction = Reaction::Continue;
-                if backend.set_focus(Some(id)) {
-                    focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(id)), None);
-                    if matches!(focus_reaction, Reaction::Exit) {
-                        return focus_reaction;
-                    }
-                }
-                let reaction = self
-                    .dispatch_tree_table_outcome(id, outcome, sink)
-                    .unwrap_or(Reaction::Redraw);
-                return focus_reaction.merge(reaction);
-            }
-        }
-
-        // A move with the left button held continues whichever `"form"`
-        // extra's own scrollbar-thumb drag (if any) the `MouseDown` claim
-        // above armed — `FormController::handle_event`'s `MouseMoved` arm
-        // no-ops (`Ignored`) for every controller with no `scroll_drag` of
-        // its own, so trying all of them here is safe regardless of which
-        // one (if any) is actually dragging. Unlike the generic
-        // divider/scrollbar drags above, `FormController`'s own
-        // `scroll_offset` is internal state the host never needs to
-        // mirror (same contract as its text cursor), so this never swaps
-        // `event` into a semantic substitute — it just needs to run so the
-        // redraw after a `Consumed` result shows the new offset.
-        if matches!(
-            event,
-            UiEvent::MouseMoved {
-                buttons: quadraui::ButtonMask { left: true, .. },
-                ..
-            }
-        ) {
-            let mut consumed = false;
-            for id in self.form_order.borrow().iter() {
-                let rect = self.form_rects.borrow().get(id).copied();
-                if let Some(rect) = rect {
-                    if let Some(controller) = self.form_controllers.borrow_mut().get_mut(id) {
-                        if matches!(
-                            controller.handle_event(&event, backend, rect),
-                            Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
-                        ) {
-                            consumed = true;
-                        }
-                    }
-                }
-            }
-            if consumed {
-                return Reaction::Redraw;
-            }
-        }
-
-        // A move with the left button held continues whichever
-        // `"tree_table_controller"` extra's own scrollbar-thumb drag (if
-        // any) the `MouseDown` claim above armed — mirrors the `"form"`
-        // block just above; [`TreeTableController::handle`]'s own
-        // `MouseMoved` arm no-ops (`Ignored`) for every controller with no
-        // active drag.
-        if matches!(
-            event,
-            UiEvent::MouseMoved {
-                buttons: quadraui::ButtonMask { left: true, .. },
-                ..
-            }
-        ) {
-            let mut consumed = false;
-            for id in self.tree_table_order.borrow().iter() {
-                let ctx = self.tree_table_rects.borrow().get(id).cloned();
-                if let Some((rect, columns)) = ctx {
-                    if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(id) {
-                        if matches!(
-                            controller.handle(&event, backend, rect, columns),
-                            TreeTableControllerEvent::Consumed
-                        ) {
-                            consumed = true;
-                        }
-                    }
-                }
-            }
-            if consumed {
-                return Reaction::Redraw;
-            }
-        }
-
-        // A wheel `Scroll` landing inside a `"form"` extra's own rect
-        // scrolls it directly through the cached `FormController` — unlike
-        // the tree/text-display wheel-scroll translation below, this never
-        // swaps `event` into a semantic substitute (the host never needs
-        // to mirror `FormController`'s internal `scroll_offset`, same as
-        // the drag-continuation case just above), so a hit is consumed
-        // outright here rather than falling through to the generic
-        // hit-test/semantic pipeline.
-        if let UiEvent::Scroll { position, .. } = &event {
-            let claim = self
-                .form_order
-                .borrow()
-                .iter()
-                .filter_map(|id| self.form_rects.borrow().get(id).map(|rect| (*id, *rect)))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find(|(_, rect)| rect.contains(*position));
-            if let Some((id, rect)) = claim {
-                if let Some(controller) = self.form_controllers.borrow_mut().get_mut(&id) {
-                    if matches!(
-                        controller.handle_event(&event, backend, rect),
-                        Handled::Consumed | Handled::Event(FormControllerAction::ScrollChanged)
-                    ) {
-                        return Reaction::Redraw;
-                    }
-                }
-            }
-        }
-
-        // A wheel `Scroll` landing inside a `"tree_table_controller"`
-        // extra's own rect scrolls it directly through the cached
-        // `TreeTableController` — mirrors the `"form"` block just above.
-        if let UiEvent::Scroll { position, .. } = &event {
-            let claim = self
-                .tree_table_order
-                .borrow()
-                .iter()
-                .filter_map(|id| {
-                    self.tree_table_rects
-                        .borrow()
-                        .get(id)
-                        .cloned()
-                        .map(|ctx| (*id, ctx))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .find(|(_, (rect, _))| rect.contains(*position));
-            if let Some((id, (rect, columns))) = claim {
-                if let Some(controller) = self.tree_table_controllers.borrow_mut().get_mut(&id) {
-                    if matches!(
-                        controller.handle(&event, backend, rect, columns),
-                        TreeTableControllerEvent::Consumed
-                    ) {
-                        return Reaction::Redraw;
-                    }
-                }
-            }
-        }
-
-        // A wheel `Scroll` over a [`crate::extra_paint::WIDGET_KINDS`]
+        // A wheel `Scroll` over a [`crate::widget_kinds::WIDGET_KINDS`]
         // leaf goes to the topmost painted widget under the pointer as a
         // [`RoutedEvent::Wheel`], the same hit-under-cursor rule the Rust
         // runtime's widget wheel routing follows. A widget that ignores
@@ -4588,11 +3589,10 @@ impl InteractionEngine {
         // a no-op.
         //
         // A move with the left button held continues whichever
-        // [`crate::extra_paint::WIDGET_KINDS`] leaf's own in-progress
+        // [`crate::widget_kinds::WIDGET_KINDS`] leaf's own in-progress
         // drag (if any) a prior `MouseDown` armed via
         // [`EventHost::capture_pointer`] — the generic counterpart of the
-        // `"form"`/`"tree_table_controller"` scrollbar-drag-continuation
-        // blocks above, routed through [`Self::dispatch_dyn_widget_captured_move`]
+        // scrollbar-drag-continuation block above, routed through [`Self::dispatch_dyn_widget_captured_move`]
         // rather than a bare `Consumed` check since a widget like
         // [`CellGrid`] can report a real `Navigated` (selection-extending)
         // event as the dragged range grows.
@@ -4642,21 +3642,6 @@ impl InteractionEngine {
                                 &UiEvent::MouseLeft { widget: old_id },
                                 Some(&old_detail),
                             ));
-                        // A script-defined widget's region just stopped
-                        // being hovered — dispatched alongside (never instead of) the
-                        // generic `MouseLeft` just above, mirroring
-                        // `CanvasEvent::RegionHovered`'s own "`None` means
-                        // no region, including having left the canvas
-                        // entirely" doc.
-                        if matches!(old_detail, HitDetail::CanvasRegion { .. }) {
-                            hover_reaction = hover_reaction.merge(sink.dispatch(
-                                &UiEvent::Canvas(
-                                    old_id,
-                                    CanvasEvent::RegionHovered { region: None },
-                                ),
-                                None,
-                            ));
-                        }
                     }
                     if matches!(hover_reaction, Reaction::Exit) {
                         return hover_reaction;
@@ -4666,19 +3651,6 @@ impl InteractionEngine {
                             &UiEvent::MouseEntered { widget: *new_id },
                             Some(new_detail),
                         ));
-                        // The counterpart entering arm: a script-defined
-                        // widget's region just started being hovered.
-                        if let HitDetail::CanvasRegion { region } = new_detail {
-                            hover_reaction = hover_reaction.merge(sink.dispatch(
-                                &UiEvent::Canvas(
-                                    *new_id,
-                                    CanvasEvent::RegionHovered {
-                                        region: Some(region.as_str().to_string()),
-                                    },
-                                ),
-                                None,
-                            ));
-                        }
                     }
                     *self.hover.borrow_mut() = hit_now;
                     if matches!(hover_reaction, Reaction::Exit) {
@@ -4905,25 +3877,7 @@ impl InteractionEngine {
                 } else {
                     false
                 };
-                // Generic counterpart of the per-kind arms
-                // `focus_scoped_key_event` below has for `Checkbox`/
-                // `TextInput`/... — forwards straight to the focused
-                // leaf's own `ScriptedExtra::scripted_key_pressed` when it
-                // has one, since that function's `UiEvent`-only return has
-                // no room for the `bool` a script's own `on_event` answers
-                // with. A no-op (`false`) for every other focused leaf.
-                // Computed before `event` is reassigned below, since `key`
-                // still borrows it here.
-                if scripted_key_press(&self.hit_map.borrow(), focused, key) {
-                    scripted_reaction = Reaction::Redraw;
-                }
-                event = focus_scoped_key_event(
-                    focused,
-                    key,
-                    *modifiers,
-                    &self.hit_map.borrow(),
-                    &self.text_editors,
-                );
+                event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
                 if nav_applied {
                     // A windowed leaf's cursor move can scroll past the
                     // slice its app has loaded — ask for the rows that
@@ -4931,35 +3885,6 @@ impl InteractionEngine {
                     // reaches the app.
                     let dispatched = Reaction::Redraw.merge(sink.dispatch(&event, None));
                     return dispatched.merge(self.dispatch_rows_requested_after_nav(focused, sink));
-                }
-            }
-        }
-
-        // IME/compose and clipboard-paste text has no `KeyPressed` of its
-        // own to route through `focus_scoped_key_event` above — resolve it
-        // the same way, directly against whichever `TextInput` extra
-        // currently holds focus.
-        if let UiEvent::CharTyped(ch) = &event {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertChar(*ch),
-                    &self.text_editors,
-                ) {
-                    event = form_event;
-                }
-            }
-        }
-        if let UiEvent::ClipboardPaste(text) = &event {
-            if let Some(focused) = backend.focus_tree().focused_id().copied() {
-                if let Some(form_event) = text_input_insert_event(
-                    focused,
-                    &self.hit_map.borrow(),
-                    EditOp::InsertText(text.clone()),
-                    &self.text_editors,
-                ) {
-                    event = form_event;
                 }
             }
         }
@@ -5157,35 +4082,7 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
-                // A non-double click on any extra's body places a text
-                // caret first (a side effect on `text_editors` only, with
-                // no event to swap in; see `text_input_click_event`), then
-                // resolves through `semantic_event_for_hit`'s `ExtraBody`
-                // arm. Keeping every `ExtraBody` outcome in this one arm
-                // means two of them can never fire for the same click.
-                if !double_click && matches!(detail, HitDetail::ExtraBody) {
-                    if let Some(position) = event_position(&event) {
-                        text_input_click_event(
-                            &self.hit_map.borrow(),
-                            *id,
-                            position,
-                            quadraui::TextInputMeasure::from_metrics(&backend.measure()),
-                            &self.text_editors,
-                        );
-                        if let Some(semantic) = semantic_event_for_hit(
-                            *id,
-                            detail,
-                            button,
-                            modifiers,
-                            double_click,
-                            &self.hit_map.borrow(),
-                            position,
-                        ) {
-                            event = semantic;
-                            attach_hit = false;
-                        }
-                    }
-                } else if matches!(detail, HitDetail::WidgetBody) {
+                if matches!(detail, HitDetail::WidgetBody) {
                     if let Some(position) = event_position(&event) {
                         let outcome = self.dispatch_dyn_widget_click(
                             *id,
@@ -5365,91 +4262,17 @@ impl InteractionEngine {
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
-                    button,
                     modifiers,
                     double_click,
                     &self.hit_map.borrow(),
-                    event_position(&event).unwrap_or_default(),
                 ) {
-                    // Generic counterpart of the `SplitDivider`/`SplitTreeDivider`/...
-                    // arms above: a `CanvasRegion` hit also reaches the
-                    // matched leaf's own `ScriptedExtra::scripted_click_region`,
-                    // when it has one, since `semantic_event_for_hit`'s own
-                    // `CanvasRegion` arm only builds the `UiEvent::Canvas`
-                    // an app's own handler sees -- a plain `Canvas`
-                    // descriptor has no `on_event` of its own for anything
-                    // to call, so this is a no-op (`false`) for one of
-                    // those, same as for every other hit kind.
-                    if let HitDetail::CanvasRegion { region } = detail {
-                        if scripted_region_click(
-                            &self.hit_map.borrow(),
-                            *id,
-                            *region,
-                            button,
-                            modifiers,
-                            double_click,
-                            event_position(&event).unwrap_or_default(),
-                        ) {
-                            scripted_reaction = Reaction::Redraw;
-                        }
-                    }
                     event = semantic;
                     attach_hit = false;
                 }
             }
         }
 
-        // Persists the handful of events `Self::widget_state` tracks
-        // uncontrolled-by-default, regardless of what `sink` goes on to do
-        // with them: a divider drag's resolved ratio
-        // ([`crate::host::resolve_split_ratio`]'s own counterpart), a
-        // clicked tab becoming active or a closed tab shifting whichever
-        // index was active ([`crate::host::resolve_tab_bar_active`]'s), or
-        // a toggled tree row's expand state
-        // ([`crate::host::resolve_tree_expansion`]'s). Never changes
-        // `event` itself — a controlled app's own handling of the same
-        // event is unaffected. `persisted_state` mirrors the Tree-cursor
-        // hook above (`nav_applied`'s own `Reaction::Redraw.merge`): a
-        // binding with no render callback of its own (so
-        // `host::callback_reaction_for_render`'s render-triggered redraw
-        // never kicks in) still needs the frame that paints the persisted
-        // change forced here, even when `sink.dispatch` below leaves the
-        // event itself unhandled.
-        let mut persisted_state = Reaction::Continue;
-        match &event {
-            UiEvent::SplitDividerDragged {
-                tree,
-                split_index,
-                new_ratio,
-            } => {
-                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
-                apply_tab_activated(&self.widget_state, *id, *index);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
-                apply_tab_closed(&self.widget_state, *id, *index);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
-                apply_tree_toggle_expand(&self.widget_state, *id, path);
-                persisted_state = Reaction::Redraw;
-            }
-            // Engine-owned focus move inside an uncontrolled form —
-            // Tab/Shift-Tab (`Self::handle_form_tab`'s `Moved` outcome) or
-            // Up/Down (`Self::maybe_move_form_focus_vertically`) both
-            // rewrite `event` to this same shape. Unlike the click path a
-            // few hundred lines up (which already merges its own
-            // `Reaction::Redraw` before returning), neither of those two
-            // keyboard paths returns early, so without this the focus
-            // ring would only repaint once something else forces a frame.
-            UiEvent::Form(_, FormEvent::FocusChanged { .. }) => {
-                persisted_state = Reaction::Redraw;
-            }
-            _ => {}
-        }
+        let persisted_state = self.persist_widget_state(&event);
 
         let hit_detail = if attach_hit {
             hit.as_ref().map(|(_, detail)| detail)
@@ -5470,14 +4293,14 @@ impl InteractionEngine {
         tooltip_reaction
             .merge(rows_requested_reaction)
             .merge(scroll_into_view_reaction)
-            .merge(menu_reaction)
             .merge(hover_reaction)
             .merge(focus_reaction)
             .merge(widget_click_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
-            .merge(scripted_reaction)
+            .merge(widget_key_reaction)
             .merge(gesture_reaction)
+            .merge(popup_reaction)
             .merge(drag_started_reaction)
             .merge(drag_over_reaction)
     }
@@ -5578,19 +4401,14 @@ mod tests {
     use quadraui::primitive::DynWidget;
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, Column, ColumnAlign, ColumnWidth,
-        DataTable, Key, ListView, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect,
-        ScrollAxis, ScrollDelta, Split, StyledSpan, StyledText, TabBar, TabBarEvent, TabBarHit,
-        TextDisplay, TextDisplayLine, TextInput, ToolbarEvent, TreeEvent, TreeView, UiEvent,
-        WidgetId,
+        AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, DataTable, Key, ListView,
+        Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split,
+        StyledSpan, StyledText, TabBar, TabBarEvent, TextDisplay, TextDisplayLine, TextInput,
+        ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
     };
 
-    use super::{
-        style_token, theme_token, viewport_rect, EventSink, InteractionEngine,
-        TreeTableControllerWireEvent,
-    };
+    use super::{style_token, theme_token, viewport_rect, EventSink, InteractionEngine};
     use crate::drag::find_split_tree_layout;
-    use crate::extra_paint::{TreeTableControllerDescriptor, TreeTableControllerNode};
     use crate::hit::{HitDetail, PaintedHit};
     use crate::host::{
         render_overlays, resolve_data_table_cursor, resolve_layout_node,
@@ -5614,29 +4432,15 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         dispatched: Vec<(UiEvent, Option<HitDetail>)>,
-        /// Every [`EventSink::dispatch_tree_table_controller`] call, in
-        /// order — mirrors [`Self::dispatched`] for the one `EventSink`
-        /// method whose payload isn't a [`UiEvent`] (see that trait
-        /// method's own doc for why).
-        tree_table_dispatched: Vec<(WidgetId, TreeTableControllerWireEvent)>,
         /// Every [`EventSink::dispatch_drag_gesture`] call, in order —
-        /// mirrors [`Self::tree_table_dispatched`] for the drag-gesture
-        /// counterpart.
+        /// mirrors [`Self::dispatched`] for an `EventSink` method whose
+        /// payload isn't a [`UiEvent`].
         drag_gesture_dispatched: Vec<DragGestureWireEvent>,
     }
 
     impl EventSink for RecordingSink {
         fn dispatch(&mut self, event: &UiEvent, hit_detail: Option<&HitDetail>) -> Reaction {
             self.dispatched.push((event.clone(), hit_detail.cloned()));
-            Reaction::Continue
-        }
-
-        fn dispatch_tree_table_controller(
-            &mut self,
-            id: WidgetId,
-            event: TreeTableControllerWireEvent,
-        ) -> Reaction {
-            self.tree_table_dispatched.push((id, event));
             Reaction::Continue
         }
 
@@ -5661,7 +4465,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("button".to_string(), Rc::new(self.button.clone()));
             draw_bands(
@@ -5672,7 +4475,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -5694,10 +4496,9 @@ mod tests {
         }
     }
 
-    /// Mirrors [`MinimalLogic`], but paints one `"form"` extra through
-    /// [`InteractionEngine::sync_forms`] instead of a plain `Button`, so a
-    /// test can drive `"form"`-specific routing (scroll, drag, click)
-    /// without any host-language FFI type in scope.
+    /// Mirrors [`MinimalLogic`], but paints one `"form"` generic leaf
+    /// instead of a plain `Button`, so a test can drive form routing
+    /// (scroll, drag, click) without any host-language FFI type in scope.
     struct FormLogic {
         form: quadraui::Form,
         engine: InteractionEngine,
@@ -5709,13 +4510,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
-                HashMap::new();
-            extra.insert(
-                "form".to_string(),
-                std::rc::Rc::new(self.form.clone())
-                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
-            );
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("form".to_string(), Rc::new(self.form.clone()));
             draw_bands(
                 backend,
                 RenderRefs {
@@ -5724,16 +4520,14 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
-                    widgets: crate::render::no_widgets(),
+                    widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
                 },
                 &mut hits,
             );
-            self.engine.sync_forms(backend, &hits);
-            self.engine.set_hits(hits);
+            crate::host::render_overlays(&self.engine, backend, hits);
         }
 
         fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -5763,14 +4557,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let mut extra: HashMap<String, std::rc::Rc<dyn crate::extra_paint::ExtraPaint>> =
-                HashMap::new();
-            extra.insert(
-                "form".to_string(),
-                std::rc::Rc::new(self.form.clone())
-                    as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
-            );
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("form".to_string(), Rc::new(self.form.clone()));
             widgets.insert("button".to_string(), Rc::new(self.button.clone()));
             draw_bands(
                 backend,
@@ -5780,7 +4568,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -5788,8 +4575,7 @@ mod tests {
                 },
                 &mut hits,
             );
-            self.engine.sync_forms(backend, &hits);
-            self.engine.set_hits(hits);
+            crate::host::render_overlays(&self.engine, backend, hits);
         }
 
         fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -5805,14 +4591,14 @@ mod tests {
     /// A main-tree `"form"` extra sandwiched between two sibling `Button`
     /// stops — `before` and `after` — rather than `FormAndButtonLogic`'s
     /// single sibling. With only one sibling, "the generic app-level Tab
-    /// cycle lands focus on `stops[0]`" and "`InteractionEngine::handle_form_tab`
-    /// actually ran and moved focus to the next stop after the form" are
+    /// cycle lands focus on `stops[0]`" and "Tab past the form's last
+    /// field moved focus to the next stop after the form" are
     /// indistinguishable from the outside, since both land on the same
     /// single button. Two distinct siblings tell them apart: the generic
     /// cycle run after an incorrect `sync_tab_order` always lands on
     /// `before` (`stops[0]`) regardless of which direction Tab came from,
-    /// while the correct `handle_form_tab` routing leaves for whichever
-    /// sibling actually sits next to the form in paint order.
+    /// while the correct hand-off past the form's last field leaves for
+    /// whichever sibling actually sits next to the form in paint order.
     struct FormBetweenTwoButtonsLogic {
         form: quadraui::Form,
         engine: InteractionEngine,
@@ -5837,7 +4623,10 @@ mod tests {
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "settings".to_string(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(self.form.clone())),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "form",
+                            widget: Rc::new(self.form.clone()),
+                        },
                         scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
@@ -5853,8 +4642,7 @@ mod tests {
             ));
             let mut hits = Vec::new();
             paint_layout(backend, area, &content, &mut hits);
-            self.engine.sync_forms(backend, &hits);
-            self.engine.set_hits(hits);
+            crate::host::render_overlays(&self.engine, backend, hits);
         }
 
         fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
@@ -5867,30 +4655,59 @@ mod tests {
         }
     }
 
-    /// A single `"tree_table_controller"` extra, filling the whole
-    /// viewport via a bare [`LayoutNode::Leaf`] (same embedding
-    /// [`FormBetweenTwoButtonsLogic`] uses, minus the sibling buttons) —
-    /// this per-widget-id controller cache's own end-to-end acceptance
-    /// coverage: click/key routing through [`InteractionEngine::handle`],
-    /// expand → `ChildrenRequested` →
-    /// [`InteractionEngine::set_tree_table_children`] → header-click sort
-    /// → selection survives the sort by node id, all through the real
-    /// `event -> hit -> semantic` path, with no host-language FFI type in
-    /// scope.
-    struct TreeTableControllerLogic {
-        descriptor: TreeTableControllerDescriptor,
+    /// A single `"tree_table_controller"` leaf filling the whole viewport,
+    /// decoded through the generic widget leaf. The host keeps the node
+    /// tree as content and answers `ChildrenRequested` by putting the
+    /// children into it, the way a binding's app does.
+    struct TreeTableModelLogic {
+        model: RefCell<quadraui::TreeTableModel>,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
 
-    impl AppLogic for TreeTableControllerLogic {
+    impl TreeTableModelLogic {
+        fn new() -> Self {
+            let model = serde_json::from_value(serde_json::json!({
+                "id": "tt",
+                "columns": [{"title": "Name", "width": {"Flex": 1.0}}],
+                "nodes": [{"id": "dir", "cells": [{"spans": [{"text": "dir"}]}],
+                           "has_children": true}],
+                "selected_id": "dir",
+            }))
+            .expect("the model decodes");
+            Self {
+                model: RefCell::new(model),
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+
+        fn model_events(&self) -> Vec<quadraui::TreeTableModelEvent> {
+            self.sink
+                .borrow()
+                .dispatched
+                .iter()
+                .filter_map(|(ev, _)| match ev {
+                    UiEvent::TreeTableModel(id, ev) if *id == WidgetId::new("tt") => {
+                        Some(ev.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl AppLogic for TreeTableModelLogic {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let area = viewport_rect(backend);
             let content = LayoutNode::Leaf(LayoutLeaf {
-                id: self.descriptor.id.as_str().to_string(),
-                descriptor: LeafDescriptor::Extra(Rc::new(self.descriptor.clone())),
+                id: "tt".to_string(),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "tree_table_controller",
+                    widget: Rc::new(self.model.borrow().clone()),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -5908,202 +4725,144 @@ mod tests {
         }
     }
 
-    /// A single lazy-branch root `"dir"` — matches
-    /// [`quadraui::TreeTableNodeData::lazy_branch`]'s own "has_children,
-    /// no loaded children yet" shape, seeding a fresh
-    /// [`TreeTableControllerLogic`].
-    fn lazy_root_descriptor() -> TreeTableControllerDescriptor {
-        TreeTableControllerDescriptor {
-            id: WidgetId::new("tt"),
-            columns: vec![Column {
-                title: "Name".into(),
-                width: ColumnWidth::Flex(1.0),
-                align: ColumnAlign::Left,
-            }],
-            nodes: vec![TreeTableControllerNode {
-                id: "dir".to_string(),
-                cells: vec![StyledText::plain("dir")],
-                icon: None,
-                has_children: true,
-                children: None,
-            }],
-            selected_id: Some("dir".to_string()),
-            has_focus: true,
-            show_scrollbar: true,
-            bordered: false,
-            folders_first: false,
-        }
-    }
-
-    /// End-to-end acceptance coverage for the `TreeTableController`
-    /// per-widget-id seam: expand a lazy branch → exactly one
-    /// `ChildrenRequested` → [`InteractionEngine::set_tree_table_children`]
-    /// fills the level → a header click sorts children under their
-    /// parent, not into one flat list → selection survives the sort by
-    /// node id, not by its (now-changed) position.
+    /// Expand a lazy branch → exactly one `ChildrenRequested` → the host
+    /// sends the children as content → a header click sorts them under
+    /// their parent → the selection survives the sort by node id.
     #[test]
-    fn tree_table_controller_expand_fetch_sort_and_selection_round_trip() {
-        let logic = TreeTableControllerLogic {
-            descriptor: lazy_root_descriptor(),
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 10);
+    fn tree_table_model_expand_fetch_sort_and_selection_round_trip() {
+        let mut driver = TuiDriver::new(TreeTableModelLogic::new(), 20, 10);
         // The row click and the later header click land close enough in
-        // time and position that `DoubleClickDetector`'s default folding
-        // would otherwise merge them into a `UiEvent::DoubleClick` --
-        // irrelevant to this test, which only drives plain clicks.
+        // time and position that double-click folding would merge them.
         driver.set_double_click_folding(false);
         driver.render();
 
-        // Click the "dir" row (the only row painted so far) to
-        // click-focus the extra -- a keyboard Space needs engine focus on
-        // it first, same as any other focusable primitive.
         driver.click(10.0, 1.5);
         driver.render();
         assert_eq!(
             driver.backend().focus_tree().focused_id(),
             Some(&WidgetId::new("tt")),
-            "clicking the row should click-focus the tree-table-controller extra"
+            "clicking the row click-focuses the tree table"
         );
 
-        // Space on the selected lazy branch expands it -- no loaded
-        // children yet, so this requests them exactly once.
         driver.type_char(' ');
         driver.render();
-        {
-            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
-            let requests = dispatched
-                .iter()
-                .filter(|(_, ev)| {
-                    matches!(
-                        ev,
-                        TreeTableControllerWireEvent::ChildrenRequested { id } if id == "dir"
-                    )
-                })
-                .count();
-            assert_eq!(
-                requests, 1,
-                "expanding a lazy branch should request its children exactly once: {:?}",
-                dispatched
-            );
-        }
-
-        // Answer the request: fills "dir"'s level with two children, in
-        // an intentionally unsorted order -- through the same wire-node
-        // decode a `"tree_table_controller"` extra's own `nodes` use.
-        let children = crate::host::tree_table_controller_nodes_from_wire(vec![
-            TreeTableControllerNode {
-                id: "zebra".to_string(),
-                cells: vec![StyledText::plain("zebra")],
-                icon: None,
-                has_children: false,
-                children: None,
-            },
-            TreeTableControllerNode {
-                id: "apple".to_string(),
-                cells: vec![StyledText::plain("apple")],
-                icon: None,
-                has_children: false,
-                children: None,
-            },
-        ]);
-        driver
+        let requests = driver
             .app()
-            .engine
-            .set_tree_table_children(WidgetId::new("tt"), "dir", children);
-        driver.render();
+            .model_events()
+            .into_iter()
+            .filter(|ev| {
+                matches!(ev, quadraui::TreeTableModelEvent::ChildrenRequested { id } if id == "dir")
+            })
+            .count();
+        assert_eq!(requests, 1, "{:?}", driver.app().model_events());
+        assert!(driver.screen_contains("…"), "{}", driver.screen());
 
-        // Down from "dir" selects its first (still unsorted) child,
-        // "zebra" -- picked deliberately so the later "selection survives
-        // the sort" assertion is a genuine id-keyed survival, not a lucky
-        // positional coincidence.
+        // The host answers with the children, deliberately unsorted.
+        driver.app().model.borrow_mut().nodes = serde_json::from_value(serde_json::json!([
+            {"id": "dir", "cells": [{"spans": [{"text": "dir"}]}], "has_children": true,
+             "children": [
+                {"id": "zebra", "cells": [{"spans": [{"text": "zebra"}]}]},
+                {"id": "apple", "cells": [{"spans": [{"text": "apple"}]}]},
+             ]},
+        ]))
+        .expect("nodes decode");
+        driver.render();
+        assert!(driver.screen_contains("zebra"), "{}", driver.screen());
+
         driver.press_named(NamedKey::Down);
         driver.render();
-        {
-            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
-            assert!(
-                dispatched.iter().any(|(_, ev)| matches!(
-                    ev,
-                    TreeTableControllerWireEvent::RowSelected { id } if id == "zebra"
-                )),
-                "Down from \"dir\" should select its first (unsorted) child \"zebra\": {:?}",
-                dispatched
-            );
-        }
-        driver.app().sink.borrow_mut().tree_table_dispatched.clear();
+        assert!(
+            driver.app().model_events().iter().any(|ev| matches!(
+                ev,
+                quadraui::TreeTableModelEvent::RowSelected { id } if id == "zebra"
+            )),
+            "{:?}",
+            driver.app().model_events()
+        );
 
-        // A header click sorts every loaded level's children ascending --
-        // "zebra" moves from index 0 to index 1 among "dir"'s children,
-        // but must stay selected by id, not by its old position.
         driver.click(10.0, 0.5);
         driver.render();
-        {
-            let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
-            assert!(
-                dispatched.iter().any(|(_, ev)| matches!(
-                    ev,
-                    TreeTableControllerWireEvent::SortChanged {
-                        col: 0,
-                        ascending: true
-                    }
-                )),
-                "a header click should sort ascending by column 0: {:?}",
-                dispatched
-            );
-        }
+        assert!(
+            driver
+                .app()
+                .model_events()
+                .contains(&quadraui::TreeTableModelEvent::SortChanged {
+                    col: 0,
+                    ascending: true
+                }),
+            "{:?}",
+            driver.app().model_events()
+        );
+        let row = |label: &str| driver.find(label).map(|(_, y)| y);
+        assert!(
+            row("dir") < row("apple") && row("apple") < row("zebra"),
+            "{}",
+            driver.screen()
+        );
 
-        let controllers = driver.app().engine.tree_table_controllers.borrow();
-        let controller = controllers.get(&WidgetId::new("tt")).unwrap();
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver.press_named(NamedKey::Enter);
+        driver.render();
         assert_eq!(
-            controller.selected_id(),
-            Some(&"zebra".to_string()),
-            "selection should survive the sort by node id"
-        );
-        let table = controller.flatten(vec![Column {
-            title: "Name".into(),
-            width: ColumnWidth::Flex(1.0),
-            align: ColumnAlign::Left,
-        }]);
-        assert_eq!(
-            table
-                .table
-                .rows
-                .iter()
-                .map(|r| r.cells[0].spans[0].text.clone())
-                .collect::<Vec<_>>(),
-            vec!["dir".to_string(), "apple".to_string(), "zebra".to_string()],
-            "children should sort ascending under their parent, not flatten into one list"
-        );
-        assert_eq!(
-            table.table.selected_idx,
-            Some(2),
-            "\"zebra\" is now at flattened index 2 after the sort"
+            driver.app().model_events(),
+            vec![quadraui::TreeTableModelEvent::RowActivated {
+                id: "zebra".to_string()
+            }],
+            "the selection survives the sort by node id"
         );
     }
 
-    /// A letter key is the app's shortcut while a tree-table controller
-    /// has focus: the controller claims only its navigation keys, so the
-    /// key falls through to the app's own key dispatch.
+    /// Two engines on one thread keep their widget states apart: a second
+    /// app painting a widget under the same id starts it from its default
+    /// state, and the first app's state is back when it next routes an
+    /// event.
     #[test]
-    fn tree_table_controller_leaves_letter_keys_to_the_app() {
-        let logic = TreeTableControllerLogic {
-            descriptor: lazy_root_descriptor(),
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 10);
+    fn engines_on_one_thread_keep_their_widget_states_apart() {
+        let mut first = TuiDriver::new(TreeTableModelLogic::new(), 20, 10);
+        first.render();
+        first.click(10.0, 1.5);
+        first.type_char(' ');
+        first.render();
+        assert!(first.screen_contains("…"), "{}", first.screen());
+
+        let mut second = TuiDriver::new(TreeTableModelLogic::new(), 20, 10);
+        second.render();
+        assert!(!second.screen_contains("…"), "{}", second.screen());
+        second.click(10.0, 1.5);
+        second.type_char(' ');
+        assert!(
+            second.app().model_events().contains(
+                &quadraui::TreeTableModelEvent::ChildrenRequested {
+                    id: "dir".to_string()
+                }
+            ),
+            "the second app's branch was collapsed and never asked about: {:?}",
+            second.app().model_events()
+        );
+        drop(second);
+
+        first.app().sink.borrow_mut().dispatched.clear();
+        first.press_named(NamedKey::Left);
+        assert_eq!(
+            first.app().model_events(),
+            vec![quadraui::TreeTableModelEvent::ToggleExpand {
+                id: "dir".to_string(),
+                expand: false
+            }],
+            "the first app's branch is still expanded"
+        );
+    }
+
+    /// A letter key is the app's shortcut while the tree table has focus:
+    /// the widget claims only its navigation keys.
+    #[test]
+    fn tree_table_model_leaves_letter_keys_to_the_app() {
+        let mut driver = TuiDriver::new(TreeTableModelLogic::new(), 20, 10);
         driver.render();
         driver.click(10.0, 1.5);
         driver.render();
-        assert_eq!(
-            driver.backend().focus_tree().focused_id(),
-            Some(&WidgetId::new("tt"))
-        );
         driver.app().sink.borrow_mut().dispatched.clear();
-        driver.app().sink.borrow_mut().tree_table_dispatched.clear();
 
-        // "d" would type-ahead to the "dir" row.
         driver.type_char('d');
         driver.render();
         let sink = driver.app().sink.borrow();
@@ -6115,32 +4874,17 @@ mod tests {
                     ..
                 }
             )),
-            "the letter should reach the app's key dispatch: {:?}",
+            "{:?}",
             sink.dispatched
         );
-        assert!(
-            sink.tree_table_dispatched.is_empty(),
-            "the controller should not claim the letter: {:?}",
-            sink.tree_table_dispatched
-        );
+        assert!(driver.app().model_events().is_empty());
     }
 
-    /// `UiEvent::DoubleClick` — the event `DoubleClickDetector` folds a
-    /// real second close-together `MouseDown` into, with default folding
-    /// left on (`driver.double_click` delivers the folded shape directly,
-    /// deterministically) — must reach the cached `TreeTableController`
-    /// the same way a plain `MouseDown` does, not fall through unclaimed.
-    /// A dropped `DoubleClick` here would mean `RowActivated`'s mouse half
-    /// never fires and a rapid second click near the first is silently
-    /// lost.
+    /// A folded `UiEvent::DoubleClick` on a row reaches the widget the way
+    /// a plain press does, focusing it and activating the row.
     #[test]
-    fn tree_table_controller_double_click_activates_row() {
-        let logic = TreeTableControllerLogic {
-            descriptor: lazy_root_descriptor(),
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 10);
+    fn tree_table_model_double_click_activates_row() {
+        let mut driver = TuiDriver::new(TreeTableModelLogic::new(), 20, 10);
         driver.render();
 
         driver.double_click(10.0, 1.5);
@@ -6148,24 +4892,21 @@ mod tests {
 
         assert_eq!(
             driver.backend().focus_tree().focused_id(),
-            Some(&WidgetId::new("tt")),
-            "a DoubleClick claimed by the tree-table-controller should also click-focus it"
+            Some(&WidgetId::new("tt"))
         );
-        let dispatched = &driver.app().sink.borrow().tree_table_dispatched;
         assert!(
-            dispatched.iter().any(|(_, ev)| matches!(
+            driver.app().model_events().iter().any(|ev| matches!(
                 ev,
-                TreeTableControllerWireEvent::RowActivated { id } if id == "dir"
+                quadraui::TreeTableModelEvent::RowActivated { id } if id == "dir"
             )),
-            "a DoubleClick on the row should activate it: {:?}",
-            dispatched
+            "{:?}",
+            driver.app().model_events()
         );
     }
 
-    /// Mirrors [`TreeTableControllerLogic`], for the generic
-    /// [`crate::extra_paint::WIDGET_KINDS`] seam's `"cell_grid"` member
-    /// instead: unlike that cached-controller logic, there is no engine-
-    /// owned state to seed once and forget — `self.grid` is the single
+    /// Mirrors [`TreeTableModelLogic`], for the generic
+    /// [`crate::widget_kinds::WIDGET_KINDS`] seam's `"cell_grid"` member
+    /// instead: `self.grid` is the single
     /// source of truth a real host would keep, and [`Self::apply`]
     /// round-trips every dispatched [`CellGridEvent`] back onto it after
     /// each `handle` call, the same "host owns the state, the widget only
@@ -6283,8 +5024,8 @@ mod tests {
     /// A click inside the `"cell_grid"` leaf both click-focuses it (so the
     /// next keystroke reaches it) and reports a `Navigated` event through
     /// the generic [`EventSink::dispatch`] — the same "claim -> focus ->
-    /// dispatch" shape the tree-table-controller claim loop exercises in
-    /// [`tree_table_controller_double_click_activates_row`].
+    /// dispatch" shape [`tree_table_model_double_click_activates_row`]
+    /// exercises.
     #[test]
     fn cell_grid_click_moves_cursor_and_focuses() {
         let logic = CellGridLogic {
@@ -6677,6 +5418,50 @@ mod tests {
         }
     }
 
+    /// A form's `Slider` field answers the arrow keys while focused: Right
+    /// steps it up by `step` and reports the new value.
+    #[test]
+    fn a_focused_form_slider_steps_on_an_arrow_key() {
+        let mut slider = toggle_field("volume");
+        slider.kind = quadraui::FieldKind::Slider {
+            value: 5.0,
+            min: 0.0,
+            max: 10.0,
+            step: 1.0,
+        };
+        let mut form = uncontrolled_text_form("settings", &[]);
+        form.fields.push(slider);
+        form.focused_field = Some(WidgetId::new("volume"));
+        let logic = FormLogic {
+            form,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("settings")));
+        }
+        driver.render();
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Right),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+
+        let app = driver.app();
+        assert!(
+            app.sink.borrow().dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::Form(_, quadraui::FormEvent::SliderChanged { id, value })
+                    if *id == WidgetId::new("volume") && *value == 6.0
+            )),
+            "Right on the focused slider should step it to 6: {:?}",
+            app.sink.borrow().dispatched
+        );
+    }
+
     /// Acceptance coverage for the "engine-owned by default" contract: an
     /// app that never sets `focused_field` at all (always `None`) still
     /// gets Tab-driven field focus, and typing afterward lands on the
@@ -6705,8 +5490,8 @@ mod tests {
         driver.render();
 
         // Second Tab: `Self::tab_stops` now excludes the form (it holds
-        // engine focus), so this one reaches `Self::handle_form_tab`
-        // instead of the generic cycle -- moving onto the first field.
+        // engine focus), so this one reaches the form itself instead of
+        // the generic cycle -- moving onto the first field.
         driver.dispatch(UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Tab),
             modifiers: Modifiers::default(),
@@ -6747,13 +5532,8 @@ mod tests {
     /// button, not wrap back to the first field.
     #[test]
     fn tab_at_the_last_field_leaves_the_main_tree_form_for_the_next_app_level_stop() {
-        let mut form = uncontrolled_text_form("settings", &["a", "b"]);
-        // Simulates the form already being mid-navigation: "b" (the last
-        // field) already has focus, same as if two Tabs had already
-        // landed engine focus on the form and moved into its last field.
-        form.focused_field = Some(WidgetId::new("b"));
         let logic = FormAndButtonLogic {
-            form,
+            form: uncontrolled_text_form("settings", &["a", "b"]),
             button: Button::new(WidgetId::new("go"), "Go"),
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
@@ -6766,11 +5546,15 @@ mod tests {
         }
         driver.render();
 
-        driver.dispatch(UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Tab),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
+        // Two Tabs walk into the last field, "b"; the third leaves.
+        for _ in 0..3 {
+            driver.dispatch(UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            });
+            driver.render();
+        }
 
         let (backend, app) = driver.parts_mut();
         assert_eq!(
@@ -6896,11 +5680,10 @@ mod tests {
 
     /// Shift-Tab is the mirror of the previous test: leaving the form at
     /// its *first* field moves engine focus to the "before" sibling, not
-    /// "after". Also exercises `form_focus_at_boundary`'s own `None` case
-    /// for Shift-Tab: entering with no field focused at all lands on the
-    /// *last* field, "b", the same way plain Tab lands on the first --
-    /// `FormController::move_focus` already resolves `None` this way for
-    /// both directions, so neither end should be treated as a boundary.
+    /// "after". Also exercises the form's own boundary rule for Shift-Tab
+    /// with no field focused: entering with no field focused at all lands
+    /// on the *last* field, "b", the same way plain Tab lands on the
+    /// first, so neither end is a boundary then.
     #[test]
     fn shift_tab_cycles_fields_backward_then_leaves_for_the_correct_sibling() {
         use quadraui::FormEvent;
@@ -6983,18 +5766,10 @@ mod tests {
         );
     }
 
-    /// Regression coverage for the `RefCell` double-borrow
-    /// `InteractionEngine::handle`'s own form-key routing used to panic
-    /// on: a `KeyPressed` landing on a focused `"form"` extra whose field
-    /// has no text value borrows `Self::form_controllers` mutably to call
-    /// `FormController::handle_event`, and — before the mutable borrow
-    /// from that `if let` was scoped to end before this call —
-    /// `Self::maybe_move_form_focus_vertically`'s own `Handled::Ignored`
-    /// fallback borrowed the same `RefCell` immutably while the first
-    /// borrow was still alive, an instant `BorrowError` panic. `Toggle`
-    /// is one of several field kinds with no text value at all
-    /// (`Button`/`Slider`/`ColorPicker` share the same shape); Down must
-    /// move engine focus to the next field instead of panicking.
+    /// Down on a focused field that has no use for it — a `Toggle`, one of
+    /// several field kinds with no text value at all
+    /// (`Button`/`Slider`/`ColorPicker` share the same shape) — moves
+    /// field focus to the next field.
     #[test]
     fn down_on_a_focused_non_text_field_moves_to_the_next_field_without_panicking() {
         use quadraui::FormEvent;
@@ -7032,13 +5807,8 @@ mod tests {
         );
     }
 
-    /// Mirrors the previous test for the other half of the panic
-    /// condition the reviewer called out: `focused_field: None` reaches
-    /// the exact same `Handled::Ignored` fallback (`handle_text_op`
-    /// bails out on `form.focused_field` being `None` before it ever
-    /// looks at a field kind), so Down on a focused, uncontrolled form
-    /// with nothing focused yet must not panic either — it focuses the
-    /// first field, same as Tab does.
+    /// Down on a focused, uncontrolled form with nothing focused yet
+    /// focuses the first field, same as Tab does.
     #[test]
     fn down_on_a_focused_form_with_no_field_focused_yet_does_not_panic() {
         use quadraui::FormEvent;
@@ -7073,22 +5843,11 @@ mod tests {
         );
     }
 
-    /// Regression coverage for the generic engine-focus ring's "one frame
-    /// stale" window a `"form"` extra used to fall into: `tui::run::paint_frame`
-    /// used to resolve `InteractionEngine::tab_stops`'s focus-ring rect
-    /// *before* `app.render` ran, but `tab_stops` only excludes a `"form"`'s
-    /// own stop (handing the ring off to `FormController`'s own per-field
-    /// focus visuals instead) once `InteractionEngine::sync_forms` — called
-    /// from `app.render` — has recorded that engine focus landed on it.
-    /// The very first frame after `backend.set_focus` names the form, that
-    /// record is still last frame's (not yet including this one), so the
-    /// generic single-box ring painted the whole multi-row form rect,
-    /// overwriting its first and last visible field rows with border
-    /// glyphs. With more fields than fit the viewport, that made the first
-    /// field ("name") disappear under the top border line, leaving the
-    /// second field as the first thing actually visible — exactly the
-    /// shape a scrolled-down viewport would show, with no scroll ever
-    /// having happened.
+    /// A form holding engine focus shows it through its own focused-row
+    /// highlight, never the runner's generic single-box ring: that ring
+    /// over the whole multi-row form rect would overwrite its first and
+    /// last visible field rows with border glyphs, hiding the first field
+    /// ("name") under the top border line.
     #[test]
     fn form_gaining_engine_focus_does_not_paint_a_whole_form_focus_ring_over_its_first_field() {
         let form = uncontrolled_text_form("settings", &["name", "b", "c", "d", "e", "f"]);
@@ -7121,7 +5880,7 @@ mod tests {
             !driver.screen().contains('╭'),
             "a \"form\" extra with engine focus must never paint the \
              generic single-box focus ring over its own multi-row content; \
-             `FormController`'s own per-field focus visuals own that job:\n{}",
+             its own focused-row highlight owns that job:\n{}",
             driver.screen()
         );
     }
@@ -7151,27 +5910,25 @@ mod tests {
             modifiers: Modifiers::default(),
         });
         driver.render();
+        driver.app().sink.borrow_mut().dispatched.clear();
 
-        let resolved = driver
-            .app()
-            .engine
-            .form_controllers
-            .borrow()
-            .get(&WidgetId::new("settings"))
-            .and_then(|c| c.form().and_then(|f| f.focused_field));
-        assert_eq!(
-            resolved,
-            Some(WidgetId::new("a")),
+        // Typing then still edits "a": the descriptor pins it every frame.
+        driver.dispatch(UiEvent::CharTyped('x'));
+        let app = driver.app();
+        assert!(
+            app.sink.borrow().dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::Form(_, quadraui::FormEvent::TextInputChanged { id, .. }) if *id == WidgetId::new("a")
+            )),
             "a controlled Form.focused_field must keep winning every frame, \
-             regardless of a click the app's own descriptor never reacted to"
+             regardless of a click the app's own descriptor never reacted to: {:?}",
+            app.sink.borrow().dispatched
         );
     }
 
-    /// A wheel `Scroll` landing inside a `"form"` extra's own rect must
-    /// advance its cached [`quadraui::compose::FormController`]'s own
-    /// `scroll_offset` — regression coverage for the `MouseUp`/`MouseMoved`/
-    /// `Scroll` routing [`InteractionEngine::handle`] added alongside the
-    /// `MouseDown` claim loop above it.
+    /// A wheel `Scroll` landing inside a `"form"` leaf scrolls it: the
+    /// offset lives in the form's own stored state, so the next frame
+    /// paints from it with no event for the app to echo.
     #[test]
     fn wheel_scroll_over_a_form_advances_its_scroll_offset() {
         use quadraui::{FieldKind, FormField, ScrollDelta, StyledText};
@@ -7214,20 +5971,20 @@ mod tests {
         };
         let mut driver = TuiDriver::new(logic, 40, 20);
 
+        driver.render();
+        assert!(driver.screen_contains("Field0"), "{}", driver.screen());
         driver.dispatch(UiEvent::Scroll {
             widget: None,
             delta: ScrollDelta { x: 0.0, y: -1.0 },
             position: Point::new(1.0, 1.0),
         });
+        driver.render();
 
-        let (_backend, app) = driver.parts_mut();
-        let offset = app
-            .engine
-            .form_controllers
-            .borrow()
-            .get(&WidgetId::new("settings"))
-            .map(|fc| fc.scroll_offset());
-        assert_eq!(offset, Some(1), "wheel scroll should advance scroll_offset");
+        assert!(
+            !driver.screen_contains("Field0") && driver.screen_contains("Field1"),
+            "wheel scroll should move the form down one row:\n{}",
+            driver.screen()
+        );
     }
 
     /// A `MouseDown` on the button must round-trip through
@@ -7306,7 +6063,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("command_center".to_string(), Rc::new(self.cc.clone()));
             draw_bands(
@@ -7317,7 +6073,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -8069,7 +6824,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("terminal".to_string(), Rc::new(self.term.clone()));
             draw_bands(
@@ -8080,7 +6834,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -8225,7 +6978,7 @@ mod tests {
     }
 
     /// Mirrors [`CommandCenterLogic`], painting one generic-widget leaf
-    /// of any [`crate::extra_paint::WIDGET_KINDS`] kind.
+    /// of any [`crate::widget_kinds::WIDGET_KINDS`] kind.
     struct WidgetLeafLogic {
         kind: &'static str,
         widget: Rc<dyn DynWidget>,
@@ -8249,7 +7002,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert(self.kind.to_string(), self.widget.clone());
             draw_bands(
@@ -8260,7 +7012,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -8673,9 +7424,7 @@ mod tests {
     /// own doc for why trapping Tab needs this method's cooperation, not
     /// just [`FormDialog`]'s internal handling. A `switch`
     /// (`FieldKind::Toggle`) field's own normal-event path is covered by
-    /// the popover test below instead — computing a click position for
-    /// it needs `FormController::field_rect`, a method this test's own
-    /// `FormDialog` has no equivalent public accessor for.
+    /// the layout-popover test below instead.
     #[test]
     fn open_form_dialog_with_text_input_and_toggle_traps_tab_and_emits_normal_form_events() {
         use quadraui::compose::FormDialog;
@@ -8825,189 +7574,9 @@ mod tests {
         );
     }
 
-    /// Acceptance coverage for a content-bearing popover: a
-    /// [`Self::show_popover`] opened anchored to a button's own painted
-    /// rect emits the normal `UiEvent::Form` event for typing in a
-    /// `text_input` field and for clicking a `switch` (`FieldKind::Toggle`)
-    /// field, and is dismissed by a `MouseDown` landing outside its
-    /// bounds -- popping its [`quadraui::ModalStack`] entry the same way
-    /// [`Self::close_message_dialog`]'s own test already proves for a
-    /// message dialog. The toggle field's click position is computed via
-    /// a scratch [`FormController`] (same `form`, same
-    /// [`FormController::field_rect`] the real popover's own embedded
-    /// controller resolves a click against) rather than a hardcoded
-    /// coordinate.
-    #[test]
-    fn show_popover_with_a_text_input_and_toggle_emits_normal_form_events_and_is_dismissed_by_an_outside_click(
-    ) {
-        use quadraui::compose::FormController;
-        use quadraui::{Anchor, FieldKind, Float, FloatMeasure, Form, FormEvent, FormField, Side};
-
-        fn field(id: &str, kind: FieldKind) -> FormField {
-            FormField {
-                id: WidgetId::new(id),
-                label: quadraui::StyledText::plain(id),
-                kind,
-                hint: quadraui::StyledText::default(),
-                disabled: false,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }
-        }
-
-        let form = Form {
-            id: WidgetId::new("form:popover"),
-            fields: vec![
-                field(
-                    "note",
-                    FieldKind::TextInput {
-                        value: String::new(),
-                        placeholder: String::new(),
-                        cursor: Some(0),
-                        selection_anchor: None,
-                    },
-                ),
-                field("flag", FieldKind::Toggle { value: false }),
-            ],
-            focused_field: Some(WidgetId::new("note")),
-            scroll_offset: 0,
-            has_focus: true,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
-        };
-
-        let logic = MinimalLogic {
-            button: Button::new(WidgetId::new("go"), "Go"),
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink::default()),
-        };
-        let mut driver = TuiDriver::new(logic, 60, 24);
-        driver.render();
-        let button_rect = {
-            let hit_map = driver.app().engine.hit_map();
-            hit_map
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("go") => {
-                        Some(*area)
-                    }
-                    _ => None,
-                })
-                .expect("the background button should have painted a hit")
-        };
-
-        let float = Float::new(
-            WidgetId::new("popover:note"),
-            Anchor::new(button_rect, Side::Bottom),
-        );
-        let measure = FloatMeasure::new(24.0, 6.0);
-        let content_bounds = {
-            let (backend, app) = driver.parts_mut();
-            app.engine
-                .show_popover(float.clone(), measure, form.clone(), backend);
-            app.engine
-                .float_layout(backend, &float, measure)
-                .content_bounds
-        };
-        driver.render();
-        assert!(
-            driver.app().engine.tab_stops().is_empty(),
-            "tab_stops must report no main-tree stops while the popover is open"
-        );
-
-        // Typing lands in the already-focused "note" field.
-        driver.dispatch(UiEvent::CharTyped('x'));
-        {
-            let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                dispatched.iter().any(|(ev, _)| matches!(
-                    ev,
-                    UiEvent::Form(_, FormEvent::TextInputChanged { id, value })
-                        if *id == WidgetId::new("note") && value == "x"
-                )),
-                "typing should emit a normal Form(TextInputChanged) event: {:?}",
-                dispatched
-            );
-        }
-        driver.app().sink.borrow_mut().dispatched.clear();
-
-        // Click the "flag" toggle, at the position a scratch
-        // `FormController` (built from the same `form`) resolves it to.
-        let flag_rect = {
-            let mut scratch = FormController::new("scratch".to_string());
-            scratch.set_form(form);
-            let (backend, _) = driver.parts_mut();
-            scratch
-                .field_rect(WidgetId::new("flag"), backend, content_bounds)
-                .expect("the toggle field should have a resolved rect")
-        };
-        driver.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Left,
-            position: Point::new(
-                flag_rect.x + flag_rect.width * 0.5,
-                flag_rect.y + flag_rect.height * 0.5,
-            ),
-            modifiers: Modifiers::default(),
-        });
-        {
-            let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                dispatched.iter().any(|(ev, _)| matches!(
-                    ev,
-                    UiEvent::Form(_, FormEvent::ToggleChanged { id, value: true })
-                        if *id == WidgetId::new("flag")
-                )),
-                "clicking the toggle should emit a normal Form(ToggleChanged) \
-                 event: {:?}",
-                dispatched
-            );
-        }
-
-        // Well outside the popover's own box (and the background button):
-        // the viewport's own bottom-right corner, derived from the real
-        // backend rather than a bare literal that `float`'s own anchoring
-        // (or the driver's own size above) could silently stop covering.
-        let outside = {
-            let (backend, _) = driver.parts_mut();
-            let viewport = viewport_rect(backend);
-            Point::new(viewport.width - 1.0, viewport.height - 1.0)
-        };
-        driver.dispatch(UiEvent::MouseDown {
-            widget: None,
-            button: MouseButton::Left,
-            position: outside,
-            modifiers: Modifiers::default(),
-        });
-
-        let (backend, app) = driver.parts_mut();
-        assert!(
-            backend.modal_stack_handle().borrow().top().is_none(),
-            "an outside click must dismiss the popover, popping its \
-             ModalStack entry"
-        );
-        assert!(
-            !app.engine.tab_stops().is_empty(),
-            "once the popover is gone, `tab_stops` should report the main \
-             tree's own stops again"
-        );
-    }
-
     /// Acceptance coverage for [`InteractionEngine::show_popover_layout`]:
     /// an arbitrary `LayoutNode` subtree — a `Column` holding a `"form"`
-    /// leaf *and* a `Button` leaf, not just a single bare `Form` the way
-    /// [`InteractionEngine::show_popover`]'s own test above exercises —
-    /// painted into a popover via [`crate::render::paint_layout`], whose
+    /// leaf *and* a `Button` leaf — painted into a popover via [`crate::render::paint_layout`], whose
     /// nested leaves both receive focus/click/keyboard routing the same
     /// shape the main tree's own `"form"`/`Button` leaves would produce.
     #[test]
@@ -9061,7 +7630,10 @@ mod tests {
             vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "note-form".to_string(),
-                    descriptor: LeafDescriptor::Extra(Rc::new(form)),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "form",
+                        widget: Rc::new(form),
+                    },
                     scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
@@ -9392,7 +7964,6 @@ mod tests {
     /// up.
     #[test]
     fn open_layout_dialog_with_nested_form_content_traps_tab_and_emits_normal_events() {
-        use quadraui::compose::FormController;
         use quadraui::{
             DialogButton, FieldKind, Form, FormEvent, FormField, Key, NamedKey, StyledText,
         };
@@ -9446,7 +8017,10 @@ mod tests {
             vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "prefs-form".to_string(),
-                    descriptor: LeafDescriptor::Extra(Rc::new(form.clone())),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "form",
+                        widget: Rc::new(form.clone()),
+                    },
                     scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
@@ -9539,19 +8113,25 @@ mod tests {
         }
         driver.app().sink.borrow_mut().dispatched.clear();
 
-        // Toggling the "flag" switch, at the position a scratch
-        // `FormController` resolves it to inside the form leaf's own rect.
+        // Toggling the "flag" switch, at the row the form's own layout
+        // resolves it to inside the form leaf's own rect.
         let form_rect = stops
             .iter()
             .find_map(|(id, rect)| (*id == WidgetId::new("prefs-form")).then_some(*rect))
             .expect("the form leaf should be a tab stop");
         let flag_rect = {
-            let mut scratch = FormController::new("scratch".to_string());
-            scratch.set_form(form);
             let (backend, _) = driver.parts_mut();
-            scratch
-                .field_rect(WidgetId::new("flag"), backend, form_rect)
-                .expect("the toggle field should have a resolved rect")
+            let layout = quadraui::DrawsPrimitives::layout_primitive(backend, form_rect, &form);
+            let row = layout
+                .visible_field(&WidgetId::new("flag"))
+                .expect("the toggle field should have a resolved row")
+                .bounds;
+            Rect::new(
+                form_rect.x + row.x,
+                form_rect.y + row.y,
+                row.width,
+                row.height,
+            )
         };
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -9720,7 +8300,7 @@ mod tests {
 
     /// Opening a message dialog while a context-menu popup is already
     /// open closes the popup: paint order puts the dialog on top
-    /// ([`Overlay::Dialog`]'s own [`Overlay::rank`] is higher than
+    /// (a dialog's [`Overlay::rank`] is higher than
     /// [`Overlay::ContextMenu`]'s), and [`InteractionEngine::handle`]
     /// checks the dialog first, so a popup left open underneath would be
     /// unreachable input it still held precedence over.
@@ -10072,6 +8652,105 @@ mod tests {
         );
     }
 
+    fn short_rich_text_popup() -> quadraui::RichTextPopup {
+        quadraui::RichTextPopup {
+            id: WidgetId::new("popup"),
+            line_text: vec!["short note".to_string()],
+            lines: vec![serde_json::from_value(serde_json::json!({
+                "spans": [{"text": "short note", "fg": null, "bg": null}]
+            }))
+            .expect("line decodes")],
+            line_scales: vec![],
+            scroll_top: 0,
+            max_visible_rows: 3,
+            has_focus: false,
+            selection: None,
+            links: vec![],
+            focused_link: None,
+            placement: Default::default(),
+            padding: 1.0,
+            fg: None,
+            bg: None,
+            font_role: Default::default(),
+        }
+    }
+
+    /// A double-click or a wheel notch on a rich-text popup's body — which
+    /// the popup itself ignores — is still swallowed by the popup, never
+    /// reaching the app or whatever is painted beneath it.
+    #[test]
+    fn input_the_rich_text_popup_ignores_still_never_clicks_through_it() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_rich_text_popup(short_rich_text_popup(), Point::new(2.0, 2.0));
+        driver.render();
+        let (x, y) = driver.find("short note").expect("the popup body paints");
+
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        });
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+
+        assert_eq!(overlay_events(&driver), Vec::<UiEvent>::new());
+        assert!(
+            driver.app().engine.find_rich_text_popup().is_some(),
+            "a press on the popup itself keeps it open"
+        );
+    }
+
+    /// The same for a completions list: a wheel notch over a list too
+    /// short to scroll is swallowed rather than scrolling the content
+    /// behind it.
+    #[test]
+    fn a_wheel_notch_on_a_completions_list_never_scrolls_what_is_beneath_it() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_completions(two_completions(), Point::new(2.0, 2.0));
+        driver.render();
+        let (x, y) = driver.find("filter").expect("the second item paints");
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+
+        assert!(
+            !overlay_events(&driver)
+                .iter()
+                .any(|e| matches!(e, UiEvent::Scroll { .. })),
+            "{:?}",
+            overlay_events(&driver)
+        );
+        assert!(driver.app().engine.find_completions().is_some());
+    }
+
+    /// A generic widget leaf's interaction state lives in the engine's own
+    /// widget-state store, which a third binding reads through
+    /// [`InteractionEngine::with_widget_states`]; the host-resolved
+    /// container values stay in [`InteractionEngine::widget_state`].
+    #[test]
+    fn generic_widget_state_lives_in_the_engines_widget_state_store() {
+        let mut driver = overlay_driver();
+        driver.render();
+        let (x, y) = driver.find("Go").expect("the button paints");
+        driver.click(x, y);
+        let engine = &driver.app().engine;
+        let id = WidgetId::new("go");
+        assert!(
+            engine.with_widget_states(|states| states.contains(&id)),
+            "the clicked button's own state is in the engine's store"
+        );
+        assert!(!engine.widget_state().borrow().contains(&id));
+    }
+
     /// Dismissing one overlay by id, through the shared stack, leaves
     /// every other entry untouched — another toast with a different id,
     /// and a different overlay kind (`Dialog`) entirely.
@@ -10246,7 +8925,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -10255,7 +8933,6 @@ mod tests {
                     tree: None,
                     data_table: Some(&self.data_table),
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -10705,7 +9382,6 @@ mod tests {
                 resolve_tree_cursor(self.engine.widget_state(), &self.tree, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -10714,7 +9390,6 @@ mod tests {
                     tree: Some(&resolved),
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -10899,7 +9574,6 @@ mod tests {
                 resolve_list_cursor(self.engine.widget_state(), &self.list, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -10908,7 +9582,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -11135,7 +9808,6 @@ mod tests {
                 resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -11144,7 +9816,6 @@ mod tests {
                     tree: None,
                     data_table: Some(&resolved),
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -11314,7 +9985,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -11323,7 +9993,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -11580,7 +10249,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -11589,7 +10257,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -12177,29 +10844,8 @@ mod tests {
             )));
         }
 
-        let (strip_area, strip_layout) = {
-            let hits = driver.app().engine.hit_map();
-            hits.iter()
-                .find_map(|hit| match hit {
-                    crate::hit::PaintedHit::TabBar { area, layout, .. } => {
-                        Some((*area, layout.clone()))
-                    }
-                    _ => None,
-                })
-                .expect("the tab strip should have painted")
-        };
-        let tab1_rect = strip_layout
-            .hit_regions
-            .iter()
-            .find_map(|(rect, hit)| match hit {
-                TabBarHit::Tab(1) => Some(*rect),
-                _ => None,
-            })
-            .expect("tab 1 should have its own hit region");
-        let click_point = Point::new(
-            strip_area.x + tab1_rect.x + tab1_rect.width / 2.0,
-            strip_area.y + tab1_rect.y + tab1_rect.height / 2.0,
-        );
+        let (x, y) = driver.find("Tab 1").expect("tab 1 paints its label");
+        let click_point = Point::new(x, y);
 
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -12232,12 +10878,50 @@ mod tests {
             )),
             "tab 0's own content must stop painting once tab 1 is active"
         );
+    }
+
+    /// A `LayoutTabs` strip keeps its keyboard focus in the tab bar's own
+    /// widget state: each Right press moves on from the tab the last one
+    /// reached, with nothing echoed back by the app, and Enter activates
+    /// that tab and switches the content pane to it.
+    #[test]
+    fn a_layout_tabs_strip_walks_its_keyboard_focus_and_activates_with_enter() {
+        let logic = TabsLogic {
+            tab_count: 3,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+        let (x, y) = driver.find("Tab 0").expect("tab 0 paints its label");
+        driver.click(x, y);
+        driver.render();
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Right);
+        let moved: Vec<usize> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .filter_map(|(event, _)| match event {
+                UiEvent::TabBar(_, TabBarEvent::FocusMoved { index }) => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(moved, vec![1, 2]);
+
+        driver.press_named(NamedKey::Enter);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
         assert!(
-            strip_layout
-                .hit_regions
-                .iter()
-                .any(|(_, hit)| matches!(hit, TabBarHit::Tab(1))),
-            "sanity: tab 1 must have been clickable in the first place"
+            hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Widget { id, .. } if *id == WidgetId::new("content-2-btn")
+            )),
+            "Enter activates the focused tab and its content paints"
         );
     }
 
@@ -12423,7 +11107,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: crate::render::no_extras(),
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -12570,6 +11253,212 @@ mod tests {
                     is_active: true,
                 },
             )]
+        );
+    }
+
+    /// One `"menu_bar"` leaf decoded from its wire dict. With `echo`, the
+    /// app applies every `AppMenuEvent::Changed` view back onto the
+    /// descriptor (a controlled menu); without, it never touches the view
+    /// (an uncontrolled one).
+    struct AppMenuLogic {
+        menu: RefCell<quadraui::AppMenu>,
+        echo: bool,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppMenuLogic {
+        fn new() -> Self {
+            Self::with_echo(true)
+        }
+
+        fn with_echo(echo: bool) -> Self {
+            let widget = quadraui::decode_widget(
+                "menu_bar",
+                serde_json::json!({
+                    "id": "menubar:main",
+                    "items": [
+                        {"id": "menu:file", "label": "&File", "submenu": [
+                            {"id": "menu:file:save", "label": {"spans": [{"text": "Save", "fg": null, "bg": null}]}},
+                        ]},
+                        {"id": "menu:edit", "label": "&Edit", "submenu": [
+                            {"id": "menu:edit:undo", "label": {"spans": [{"text": "Undo", "fg": null, "bg": null}]}},
+                        ]},
+                    ],
+                }),
+            )
+            .expect("menu_bar decodes");
+            let menu = widget
+                .as_any()
+                .downcast_ref::<quadraui::AppMenu>()
+                .expect("menu_bar decodes to the application menu")
+                .clone();
+            Self {
+                menu: RefCell::new(menu),
+                echo,
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+    }
+
+    impl AppLogic for AppMenuLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("menu_bar".to_string(), Rc::new(self.menu.borrow().clone()));
+            draw_bands(
+                backend,
+                RenderRefs {
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    widgets: &widgets,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+            );
+            crate::host::render_overlays(&self.engine, backend, hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            let seen = self.sink.borrow().dispatched.len();
+            let reaction = self
+                .engine
+                .handle(event, backend, &mut *self.sink.borrow_mut());
+            for (event, _) in self.sink.borrow().dispatched[seen..].iter() {
+                match event {
+                    UiEvent::AppMenu(_, change) if self.echo => {
+                        self.menu.borrow_mut().apply(change)
+                    }
+                    _ => {}
+                }
+            }
+            reaction.merge(Reaction::Redraw)
+        }
+    }
+
+    /// The binding-host leg of the application menu's event parity: a
+    /// click on "File" opens its dropdown, as the `AppMenu` view change
+    /// the app echoes, and a click on "Save" in the dropdown — a popup
+    /// the binding host routes to its owner — activates it and closes the
+    /// menu. The TuiDriver leg
+    /// (`quadraui/tests/widget_contract_menus_event_parity.rs`) drives the
+    /// same menu through the widget-contract runtime and asserts the same
+    /// events.
+    #[test]
+    fn menu_bar_click_open_then_activate_matches_the_widget_contract_parity_events() {
+        use quadraui::{AppMenuEvent, AppMenuView};
+
+        let mut driver = TuiDriver::new(AppMenuLogic::new(), 40, 12);
+        driver.render();
+        let (x, y) = driver.find("File").expect("the bar paints its items");
+        driver.click(x, y);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .unwrap_or_else(|| panic!("the open dropdown paints its rows:\n{}", driver.screen()));
+        driver.click(x, y);
+
+        let dispatched: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .filter(|event| matches!(event, UiEvent::AppMenu(..) | UiEvent::MenuActivated(_)))
+            .collect();
+        let bar = WidgetId::new("menubar:main");
+        assert_eq!(
+            dispatched,
+            vec![
+                UiEvent::AppMenu(
+                    bar,
+                    AppMenuEvent::Changed(AppMenuView {
+                        open_item: Some(0),
+                        focused_item: Some(0),
+                        ..Default::default()
+                    }),
+                ),
+                UiEvent::AppMenu(bar, AppMenuEvent::Changed(AppMenuView::default())),
+                UiEvent::MenuActivated(WidgetId::new("menu:file:save")),
+            ]
+        );
+    }
+
+    /// An app that never echoes the menu's view still gets a working menu:
+    /// a click opens the dropdown, a click on a row activates it and the
+    /// menu closes, all from the view the menu keeps itself.
+    #[test]
+    fn an_uncontrolled_menu_bar_opens_activates_and_closes_without_an_echo() {
+        let mut driver = TuiDriver::new(AppMenuLogic::with_echo(false), 40, 12);
+        driver.render();
+        let (x, y) = driver.find("File").expect("the bar paints its items");
+        driver.click(x, y);
+        driver.render();
+        let (x, y) = driver
+            .find("Save")
+            .unwrap_or_else(|| panic!("the dropdown opens with no echo:\n{}", driver.screen()));
+        driver.click(x, y);
+        driver.render();
+        assert!(
+            driver.find("Save").is_none(),
+            "the activation closes the dropdown:\n{}",
+            driver.screen()
+        );
+        assert!(driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .any(|(event, _)| *event == UiEvent::MenuActivated(WidgetId::new("menu:file:save"))));
+        assert!(
+            !driver.app().menu.borrow().is_open(),
+            "the app's own view is untouched"
+        );
+    }
+
+    /// With the dropdown open, Escape is the popup's to answer: it closes
+    /// the menu instead of reaching the focused widget, and a press outside
+    /// both the bar and the dropdown closes it too.
+    #[test]
+    fn an_open_menu_bar_dropdown_closes_on_escape_and_on_an_outside_press() {
+        let mut driver = TuiDriver::new(AppMenuLogic::new(), 40, 12);
+        driver.render();
+        let (x, y) = driver.find("File").expect("the bar paints its items");
+        let edit = driver.find("Edit").expect("the bar paints its items");
+        driver.click(x, y);
+        driver.render();
+        assert!(driver.app().menu.borrow().is_open());
+
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        driver.render();
+        assert!(!driver.app().menu.borrow().is_open(), "Escape closes it");
+
+        driver.click(edit.0, edit.1);
+        driver.render();
+        assert!(driver.app().menu.borrow().is_open());
+        driver.click(30.0, 10.0);
+        driver.render();
+        assert!(
+            !driver.app().menu.borrow().is_open(),
+            "a press outside the bar and the dropdown closes it"
         );
     }
 
@@ -12909,7 +11798,10 @@ mod tests {
         leaf_then_buttons_column(
             LayoutNode::Leaf(LayoutLeaf {
                 id: "input".to_string(),
-                descriptor: LeafDescriptor::Extra(Rc::new(text_input)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "text_input",
+                    widget: Rc::new(text_input),
+                },
                 scroll_px: None,
             }),
             14,
@@ -13347,16 +12239,11 @@ mod tests {
 
     /// `End` on a focused `TextInput` that is a direct child of a `Scroll`
     /// with room to page (`max_offset > 0`) must move the caret, never
-    /// page the enclosing container — `focused_leaf_claims_page_keys`'s
-    /// whole reason to exist. The `TextInput` starts with its cursor at
-    /// column 0 of a non-empty line, so `End` is a real cursor move (not a
-    /// no-op the old, ungated routing could coincidentally get right), and
-    /// moving it changes no text (`EditOp::MoveLineEnd` never touches
-    /// `lines`), so [`crate::text_input::apply_text_input_edit`] returns
-    /// `None` and [`crate::semantic::focus_scoped_key_event`] falls back
-    /// to the raw `KeyPressed` — the signal this test checks for, rather
-    /// than a `ScrollOffsetChanged` the old routing would have emitted
-    /// instead (and returned early on, never reaching this fallback).
+    /// page the enclosing container: the widget's own `Interactive::handle`
+    /// claims the key before the container's page-key routing runs. The
+    /// `TextInput` starts with its cursor at column 0 of a non-empty line,
+    /// so `End` is a real cursor move, and a character typed next lands
+    /// after the last one.
     #[test]
     fn end_on_a_focused_text_input_inside_a_scroll_moves_the_caret_not_the_scroll() {
         let mut driver = scroll_with_leaf_driver(text_input_then_buttons_column);
@@ -13381,16 +12268,16 @@ mod tests {
             "End on a focused TextInput inside a Scroll must never page the container: {:?}",
             sink.dispatched
         );
+        drop(sink);
+        driver.dispatch(UiEvent::CharTyped('!'));
+        let sink = driver.app().sink.borrow();
         assert!(
             sink.dispatched.iter().any(|(event, _)| matches!(
                 event,
-                UiEvent::KeyPressed {
-                    key: Key::Named(NamedKey::End),
-                    ..
-                }
+                UiEvent::Form(_, quadraui::FormEvent::TextInputChanged { value, .. })
+                    if value == "hello!"
             )),
-            "the raw KeyPressed must still reach the binding once the TextInput's own \
-             cursor-only move leaves `focus_scoped_key_event` with nothing to substitute: {:?}",
+            "End must have moved the caret to the end of the line: {:?}",
             sink.dispatched
         );
     }
@@ -13441,15 +12328,13 @@ mod tests {
     /// well-behaved real binding — deliberately never echoes
     /// `TextInput::has_focus` back as `true` once the engine focuses it.
     /// Regression fixture for the "engine focus is authoritative,
-    /// `has_focus` is cosmetic" contract
-    /// [`crate::text_input`]'s own module doc states: key routing for a
-    /// focused `"text_input"`/`"password"`/`"textarea"` extra is keyed
-    /// entirely by `backend.focus_tree().focused_id()`
-    /// ([`focus_scoped_key_event`]/`text_input_insert_event`'s own
-    /// `focused` parameter), never by the descriptor's own `has_focus`
-    /// field, so a host that never echoes it still keeps every keystroke
-    /// reaching the cached [`quadraui::TextEditor`] and being applied to
-    /// `value` via `FormEvent::TextInputChanged`.
+    /// `has_focus` is cosmetic" contract: key routing for a focused
+    /// `"text_input"`/`"password"`/`"textarea"` leaf is keyed entirely by
+    /// `backend.focus_tree().focused_id()`
+    /// ([`InteractionEngine::dispatch_dyn_widget_key`]), never by the
+    /// descriptor's own `has_focus` field, so a host that never echoes it
+    /// still keeps every keystroke reaching the widget's own state and
+    /// being applied to `value` via `FormEvent::TextInputChanged`.
     struct NeverEchoesFocusTextInputLogic {
         value: RefCell<String>,
         engine: InteractionEngine,
@@ -13467,7 +12352,10 @@ mod tests {
                 .with_cursor_col(self.value.borrow().chars().count());
             let node = LayoutNode::Leaf(LayoutLeaf {
                 id: "input".to_string(),
-                descriptor: LeafDescriptor::Extra(std::rc::Rc::new(text_input)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "text_input",
+                    widget: std::rc::Rc::new(text_input),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -13493,7 +12381,7 @@ mod tests {
         }
     }
 
-    /// Three keystrokes into a `"text_input"` extra the engine already
+    /// Three keystrokes into a `"text_input"` leaf the engine already
     /// focuses (via a direct `backend.set_focus`, mirroring a host's own
     /// click-to-focus or Tab-cycling outcome) must all land, in order,
     /// even though [`NeverEchoesFocusTextInputLogic::render`] never once
@@ -13576,15 +12464,14 @@ mod tests {
         );
     }
 
-    // ─── Scripted-widget generic region-click/focused-key forwarding ───
+    // ─── Scripted widgets on the generic widget routing ───
     //
-    // Exercises the seam `crate::scripted::ScriptedExtra` adds: a
-    // `ScriptWidget` built directly in Rust test code (mirroring
+    // A `ScriptWidget` built directly in Rust test code (mirroring
     // `crate::scripted`'s own `Swatch` test widget — no real binding
-    // callback object anywhere in scope), spliced into a decoded leaf and
-    // driven through a real `InteractionEngine::handle`, proving a
-    // resolved region click and a focused key press both reach the
-    // script's own `on_event` generically, with no `W`-specific code in
+    // callback object anywhere in scope), placed in a generic widget leaf
+    // and driven through a real `InteractionEngine::handle`, proving a
+    // region click and a focused key press both reach the script's own
+    // `on_event` through `DynWidget::handle`, with no `W`-specific code in
     // `hit.rs`/`semantic.rs`/`engine.rs`.
 
     /// Records every call [`ScriptWidget::on_event`] receives into `log`,
@@ -13648,11 +12535,10 @@ mod tests {
 
     /// An [`AppLogic`] hosting exactly one `"widget"` leaf wrapping a
     /// [`crate::scripted::ScriptedPrimitive<RecordingScriptWidget>`] —
-    /// built directly (never through `crate::scripted::register_scripted_widget`'s
-    /// own wire-decode seam), the same way a binding's own render pass
-    /// would splice one in after a `"scripted_widget"` leaf decode.
+    /// built directly rather than decoded, the same way a binding's own
+    /// render pass splices one in.
     struct ScriptedWidgetLogic {
-        primitive: Rc<crate::scripted::ScriptedPrimitive<RecordingScriptWidget>>,
+        primitive: crate::scripted::ScriptedPrimitive<RecordingScriptWidget>,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
@@ -13665,9 +12551,10 @@ mod tests {
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let node = LayoutNode::Leaf(LayoutLeaf {
                 id: "widget".to_string(),
-                descriptor: LeafDescriptor::Extra(
-                    self.primitive.clone() as Rc<dyn crate::extra_paint::ExtraPaint>
-                ),
+                descriptor: LeafDescriptor::Widget {
+                    kind: crate::scripted::SCRIPTED_WIDGET_KIND,
+                    widget: Rc::new(self.primitive.clone()),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -13686,22 +12573,19 @@ mod tests {
     }
 
     /// A `MouseDown` landing on the scripted widget's declared region
-    /// resolves (through `hit.rs`'s now-generic `CanvasHit::Region`
-    /// handling) to `HitDetail::CanvasRegion`, and
-    /// `crate::semantic::scripted_region_click`'s forwarding (called from
-    /// `InteractionEngine::handle` itself) reaches the widget's own
-    /// `on_event` — proving the whole `hit.rs` → `semantic.rs` →
-    /// `engine.rs` chain, not just one link of it in isolation. A focused
-    /// `KeyPressed` afterward proves the same for
-    /// `crate::semantic::scripted_key_press`.
+    /// reaches the script's own `on_event` through the generic widget
+    /// routing, and the app receives the same `UiEvent::Canvas` region
+    /// click a `Canvas` leaf reports. A focused `KeyPressed` afterward
+    /// reaches the script too, and — since the script lets keys travel on —
+    /// the app still receives the key press, with a repaint requested.
     #[test]
     fn scripted_widget_region_click_and_focused_key_both_forward_to_its_own_on_event() {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             WidgetId::new("widget"),
             RecordingScriptWidget { log: log.clone() },
             true,
-        ));
+        );
         let logic = ScriptedWidgetLogic {
             primitive,
             engine: InteractionEngine::new(),
@@ -13723,12 +12607,32 @@ mod tests {
             ["clicked"],
             "a region click must reach the script's own on_event exactly once"
         );
+        assert!(
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .iter()
+                .any(|(event, _)| *event
+                    == UiEvent::Canvas(
+                        WidgetId::new("widget"),
+                        quadraui::CanvasEvent::RegionClicked {
+                            region: WidgetId::new("widget:region"),
+                            button: MouseButton::Left,
+                            modifiers: Modifiers::default(),
+                            x: 8.0,
+                            y: 2.0,
+                        },
+                    )),
+            "{:?}",
+            driver.app().sink.borrow().dispatched
+        );
 
-        // The `MouseDown` above already click-to-focused the widget
-        // (`InteractionEngine::handle`'s own `is_focusable` check, since
-        // `ScriptedPrimitive::tab_stop` reports the `focusable: true` it
-        // was built with) — so this `KeyPressed` reaches it with no
-        // further focus bookkeeping needed.
+        // The `MouseDown` above already click-to-focused the widget (its
+        // `FocusSpec::Stop`, since it was built `focusable: true`) — so
+        // this `KeyPressed` reaches it with no further focus bookkeeping
+        // needed.
         {
             let (backend, _app) = driver.parts_mut();
             assert_eq!(
@@ -13737,32 +12641,42 @@ mod tests {
                 "the click above must have already focused the widget"
             );
         }
-        driver.dispatch(UiEvent::KeyPressed {
+        let key = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers::default(),
             repeat: false,
-        });
+        };
+        let reaction = driver.dispatch(key.clone());
         assert_eq!(
             log.borrow().as_slice(),
             ["clicked", "key"],
             "a key press while focused must also reach the script's own on_event"
         );
+        assert_eq!(
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .last()
+                .map(|(event, _)| event),
+            Some(&key)
+        );
+        assert_eq!(reaction, Reaction::Redraw);
     }
 
     /// A `MouseDown` landing OUTSIDE the scripted widget's declared
-    /// region (but still inside its own body) resolves to
-    /// `HitDetail::ExtraBody`, never `CanvasRegion` — so
-    /// `scripted_region_click` is never called at all, and the script's
-    /// `on_event` sees nothing, mirroring a real `Canvas` leaf's own
-    /// "outside every declared region" posture.
+    /// region (but still inside its own body) never reaches the script's
+    /// `on_event`, mirroring a real `Canvas` leaf's own "outside every
+    /// declared region" posture.
     #[test]
     fn a_click_outside_every_declared_region_never_reaches_on_event() {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             WidgetId::new("widget"),
             RecordingScriptWidget { log: log.clone() },
             true,
-        ));
+        );
         let logic = ScriptedWidgetLogic {
             primitive,
             engine: InteractionEngine::new(),
@@ -14138,7 +13052,8 @@ mod tests {
 
     /// A leaf that requested focus for one of its own sub-parts sees that
     /// sub-part, and not the leaf as a whole, reported focused on its
-    /// next event. The second press lands inside the double-click window,
+    /// next event; before that, its first press focused it as a whole,
+    /// as a press on any focusable leaf does. The second press lands inside the double-click window,
     /// so it arrives as a `DoubleClick`.
     #[test]
     fn dyn_widget_host_reports_sub_target_focus() {
@@ -14158,9 +13073,10 @@ mod tests {
 
         assert_eq!(
             *log.borrow(),
-            vec![(false, false), (true, false)],
-            "nothing is focused before the request; after requesting \
-             sub-part 1 that sub-part, not the leaf as a whole, is focused"
+            vec![(false, true), (true, false)],
+            "the first press focuses the leaf as a whole (click-to-focus); \
+             after requesting sub-part 1 that sub-part, not the leaf as a \
+             whole, is focused"
         );
     }
 }

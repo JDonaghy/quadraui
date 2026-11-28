@@ -6,8 +6,7 @@
 //!
 //! The kind list is read from the tables the decoder itself dispatches
 //! through: the fixed leaf slots ([`crate::layout::LEAF_KIND_KEYS`]), the
-//! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] table, the
-//! [`crate::extra_paint::WIDGET_KINDS`] kinds that `quadraui`'s
+//! [`crate::widget_kinds::WIDGET_KINDS`] kinds that `quadraui`'s
 //! `widget_kinds!` table decodes, and every kind registered at runtime
 //! through [`quadraui::register_widget_kind`]. Nothing here is specific to
 //! one host language: any binding (Python, Node, Lua, ...) can call
@@ -17,8 +16,8 @@ use schemars::generate::SchemaSettings;
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde_json::{Map, Value};
 
-use crate::extra_paint::{visit_extra_primitive_kinds, WIDGET_KINDS};
 use crate::layout::LEAF_KIND_KEYS;
+use crate::widget_kinds::WIDGET_KINDS;
 use crate::wire::layout::schema::LayoutNode;
 use crate::wire::overlay::DialogChromeWire;
 
@@ -146,7 +145,7 @@ impl JsonSchema for RenderFrameDict {
             json_schema!({"type": "integer", "minimum": 0}).to_value(),
         );
         for (kind, schema) in leaf_kind_schemas(generator) {
-            if kind == "scripted_widget" {
+            if kind == crate::scripted::SCRIPTED_WIDGET_KIND {
                 continue;
             }
             props.insert(
@@ -191,13 +190,13 @@ fn leaf_body_with_extras<T: JsonSchema>(
 
 struct KindCollector<'g, 'k> {
     generator: &'g mut SchemaGenerator,
-    only: Option<&'k [&'k str]>,
+    only: &'k [&'k str],
     out: Vec<(&'static str, Schema)>,
 }
 
 impl quadraui::KindVisitor for KindCollector<'_, '_> {
     fn visit<T: quadraui::KindSchema>(&mut self, kind: &'static str) {
-        if self.only.is_some_and(|only| !only.contains(&kind)) {
+        if !self.only.contains(&kind) {
             return;
         }
         self.out.push((kind, T::kind_schema(self.generator)));
@@ -205,9 +204,8 @@ impl quadraui::KindVisitor for KindCollector<'_, '_> {
 }
 
 /// Every leaf widget kind the layout-tree decoder accepts, each paired with
-/// the schema of its descriptor body: the fixed slots, the additive
-/// primitives, the generic widget kinds and the runtime-registered kinds,
-/// in that order.
+/// the schema of its descriptor body: the fixed slots, the generic widget
+/// kinds and the runtime-registered kinds, in that order.
 pub fn leaf_kind_schemas(generator: &mut SchemaGenerator) -> Vec<(&'static str, Schema)> {
     let mut out: Vec<(&'static str, Schema)> = Vec::new();
     for kind in LEAF_KIND_KEYS {
@@ -221,23 +219,13 @@ pub fn leaf_kind_schemas(generator: &mut SchemaGenerator) -> Vec<(&'static str, 
                 leaf_body_with_extras::<quadraui::DataTable>(generator, "DataTableLeaf", true)
             }
             "tab_bar" => generator.subschema_for::<quadraui::TabBar>(),
-            "scripted_widget" => {
-                generator.subschema_for::<crate::scripted::ScriptedWidgetDescriptor>()
-            }
             other => unreachable!("LEAF_KIND_KEYS entry {other:?} has no schema arm"),
         };
         out.push((kind, schema));
     }
-    let mut extras = KindCollector {
-        generator,
-        only: None,
-        out: Vec::new(),
-    };
-    visit_extra_primitive_kinds(&mut extras);
-    out.extend(extras.out);
     let mut widgets = KindCollector {
         generator,
-        only: Some(&WIDGET_KINDS),
+        only: &WIDGET_KINDS,
         out: Vec::new(),
     };
     quadraui::visit_widget_kinds(&mut widgets);
@@ -259,6 +247,7 @@ fn root<T: JsonSchema>(generator: &mut SchemaGenerator, roots: &mut Map<String, 
 /// Builds the whole wire schema document. Deterministic: two calls in one
 /// process with the same runtime registrations return equal values.
 pub fn wire_schema() -> Value {
+    crate::scripted::ensure_scripted_widget_kind();
     let mut generator = SchemaSettings::draft2020_12().into_generator();
     let mut kinds = Map::new();
     for (kind, schema) in leaf_kind_schemas(&mut generator) {
@@ -275,7 +264,7 @@ pub fn wire_schema() -> Value {
     root::<ShellConfigDescriptor>(&mut generator, &mut roots);
     root::<crate::hit::HitDetail>(&mut generator, &mut roots);
     root::<crate::semantic::DragGestureWireEvent>(&mut generator, &mut roots);
-    root::<crate::engine::TreeTableControllerWireEvent>(&mut generator, &mut roots);
+    root::<quadraui::TreeTableModelEvent>(&mut generator, &mut roots);
     root::<crate::host::WidgetStateSnapshot>(&mut generator, &mut roots);
     root::<crate::services::UpdateInfoWire>(&mut generator, &mut roots);
     root::<crate::render::RowsRequestedEvent>(&mut generator, &mut roots);
@@ -417,6 +406,16 @@ mod tests {
         assert!(errors.is_empty(), "{instance}: {errors:#?}");
     }
 
+    /// Every widget leaf reports a hit as `"widget_body"`: the schema's
+    /// hit-detail union names no per-primitive `"extra_body"` kind.
+    #[test]
+    fn hit_details_have_no_extra_body_kind() {
+        let doc = doc();
+        let text = serde_json::to_string(&doc["$defs"]["HitDetail"]).expect("serializes");
+        assert!(text.contains("widget_body"), "{text}");
+        assert!(!text.contains("extra_body"), "{text}");
+    }
+
     #[test]
     fn the_document_names_its_version_and_every_kind() {
         let doc = doc();
@@ -427,11 +426,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        for kind in LEAF_KIND_KEYS
-            .iter()
-            .chain(crate::extra_paint::EXTRA_PRIMITIVE_KINDS.iter())
-            .chain(WIDGET_KINDS.iter())
-        {
+        for kind in LEAF_KIND_KEYS.iter().chain(WIDGET_KINDS.iter()) {
             assert!(
                 kinds.contains(kind),
                 "kind {kind:?} missing from the schema"

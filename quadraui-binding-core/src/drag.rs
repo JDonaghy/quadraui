@@ -1,6 +1,6 @@
 //! Divider and tree-scrollbar drag state, plus the small hit-map lookups
 //! ([`find_split_layout`], [`find_data_table_layout`], [`tree_row_path`],
-//! [`tree_scroll_state`], [`tab_bar_for_right_segment`]) that arm and drive
+//! [`tree_scroll_state`]) that arm and drive
 //! them. A binding arms [`ActiveDrag`]/[`ScrollbarDrag`]/
 //! [`DataTableColumnDrag`]/[`ScrollDrag`] on the matching `MouseDown` and
 //! clears it on the matching `MouseUp`; while armed, every `MouseMoved`
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
     DataTableLayout, Point, Rect, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout,
-    SplitTreeLayout, TabBarHit, TreePath, WidgetId,
+    SplitTreeLayout, TreePath, WidgetId,
 };
 
 use crate::hit::{hit_test_painted, loaded_row_path, HitDetail, PaintedHit};
@@ -342,24 +342,6 @@ pub fn enclosing_scroll_child(
             .iter()
             .find(|c| c.id == child)
             .map(|c| (*id, c.start, c.len)),
-        _ => None,
-    })
-}
-
-/// The tab bar's own id for a `TabBarRightSegment` hit, given the `id` of
-/// the clicked button — `hit_test_painted` returns the button's id (the one
-/// [`TabBarHit::RightSegment`] carries), not the enclosing bar's, so this
-/// walks the hit map's painted tab bars to find the one whose
-/// `hit_regions` contains that button id.
-pub fn tab_bar_for_right_segment(hit_map: &[PaintedHit], button_id: WidgetId) -> Option<WidgetId> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::TabBar { id, layout, .. }
-            if layout.hit_regions.iter().any(
-                |(_, hit)| matches!(hit, TabBarHit::RightSegment(rid) if *rid == button_id),
-            ) =>
-        {
-            Some(*id)
-        }
         _ => None,
     })
 }

@@ -50,10 +50,10 @@ use crate::render::{
     scroll_content_slots, scroll_viewport_and_track, tree_viewport_rows, ItemsWindow, RenderFrame,
     RenderRefs, ScrollMetrics, ScrollSlots,
 };
-use crate::widget_state::WidgetState;
 use quadraui::layout::stack::{
     apply_split_gap, quantise_horizontal, quantise_vertical, shrink_main_axis,
 };
+use quadraui::WidgetStateStore;
 
 /// Slot id of the host's `Button` descriptor.
 pub const SLOT_BUTTON: i64 = 0;
@@ -80,7 +80,7 @@ pub struct BindingHost {
     /// [`quadraui::primitive::DynWidget`] entry (keyed `"button"`) rather
     /// than its own typed field — [`SLOT_BUTTON`] reads/writes this
     /// entry specifically, the same single-slot shape a `Button` had as a
-    /// dedicated field before it joined [`crate::extra_paint::WIDGET_KINDS`].
+    /// dedicated field before it joined [`crate::widget_kinds::WIDGET_KINDS`].
     pub widgets: HashMap<String, std::rc::Rc<dyn quadraui::primitive::DynWidget>>,
     pub text_display: Option<TextDisplay>,
     pub list: Option<ListView>,
@@ -265,11 +265,7 @@ impl BindingHost {
 
     /// Borrows this host's five fixed slots (plus its own `"button"`
     /// [`Self::widgets`] entry) as the [`RenderRefs`] shape
-    /// [`crate::render::draw_bands`] paints from. A host carries no
-    /// additive primitives of its own, so [`RenderRefs::extra`] borrows an
-    /// empty map and nothing paints after the fixed bands; an additive
-    /// primitive reaches a backend as a layout-tree leaf or through a
-    /// decoded [`crate::render::RenderFrame`] instead.
+    /// [`crate::render::draw_bands`] paints from.
     pub fn render_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
             text_display: self.text_display.as_ref(),
@@ -277,7 +273,6 @@ impl BindingHost {
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
-            extra: crate::render::no_extras(),
             widgets: &self.widgets,
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
@@ -530,7 +525,7 @@ impl BindingHost {
 // source of truth whenever an app sets them (controlled mode, unchanged
 // from before this module existed). When it leaves them at their defaults
 // (`None` / `0`) the app gets working keyboard navigation for free: the
-// cursor and its scroll position live in `WidgetState`, keyed by the
+// cursor and its scroll position live in `WidgetStateStore`, keyed by the
 // tree's own id, moved and scrolled into view through
 // `quadraui::behaviour::nav::TreeNavCore`, the navigation core
 // `TreeView`'s own `Interactive` uses, rather than re-deriving that
@@ -598,7 +593,7 @@ fn page_delta(viewport_rows: usize) -> isize {
     (viewport_rows.max(1) - 1).max(1) as isize
 }
 
-/// A `Tree`'s cursor + scroll, persisted in [`WidgetState`] keyed by the
+/// A `Tree`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by the
 /// tree's own id. [`apply_tree_nav_key`] writes it on a recognized
 /// navigation key; [`resolve_tree_cursor`] reads it back — merged with
 /// whatever the descriptor itself pins — at render time.
@@ -634,7 +629,7 @@ fn placeholder_tree_row(path: TreePath) -> TreeRow {
 }
 
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `Tree`, resolved against [`WidgetState`] rather than the app: moves the
+/// `Tree`, resolved against [`quadraui::WidgetStateStore`] rather than the app: moves the
 /// stored cursor for `id` by one row (or to an edge, or by a page) and
 /// scrolls it into view, via [`TreeNavCore`]'s own navigation
 /// (never re-derived here) seeded from whichever
@@ -647,7 +642,7 @@ fn placeholder_tree_row(path: TreePath) -> TreeRow {
 /// from under the edit in progress (`tree_rows_and_viewport` already
 /// returns `None` for that case).
 ///
-/// Returns `true` (and leaves [`WidgetState`] updated) for a recognized
+/// Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) for a recognized
 /// navigation key that actually moved the cursor, so the caller knows to
 /// redraw; `false` for any other key, or for a recognized key that moved
 /// nothing (an empty tree, or already at the edge an arrow key pushes
@@ -658,9 +653,9 @@ fn placeholder_tree_row(path: TreePath) -> TreeRow {
 /// has its stored cursor moved here — harmless, since [`resolve_tree_cursor`]
 /// discards it again in favor of the descriptor's own value on the very
 /// next render, the same "controlled wins and is written back" rule
-/// [`WidgetState::resolve`]'s own doc already describes.
+/// [`quadraui::WidgetStateStore::resolve`]'s own doc already describes.
 pub fn apply_tree_nav_key(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
     row_paths: &[TreePath],
     viewport_rows: usize,
@@ -672,7 +667,10 @@ pub fn apply_tree_nav_key(
     if row_paths.is_empty() {
         return false;
     }
-    let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
+    let stored = widget_state
+        .borrow()
+        .value::<TreeCursorState>(&id)
+        .unwrap_or_default();
     let rows: Vec<TreeRow> = row_paths
         .iter()
         .cloned()
@@ -693,7 +691,7 @@ pub fn apply_tree_nav_key(
             nav_core.move_selection_by(&rows, page_delta(viewport_rows), viewport_rows)
         }
     };
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         TreeCursorState {
             selected_path: nav_core.selected_path().cloned(),
@@ -705,7 +703,7 @@ pub fn apply_tree_nav_key(
 }
 
 /// Resolves `tree`'s cursor + scroll for painting, through the
-/// controlled/uncontrolled policy [`WidgetState`]'s own module doc
+/// controlled/uncontrolled policy [`quadraui::WidgetStateStore`]'s own module doc
 /// describes: `tree.selected_path` wins outright when `Some`; otherwise
 /// the id's stored cursor wins (`None`, no selection, the first time it's
 /// seen).
@@ -740,12 +738,15 @@ pub fn apply_tree_nav_key(
 /// is what a binding's render should hand to [`crate::render::draw_bands`]/
 /// [`crate::render::paint_layout`], not `tree` itself.
 pub fn resolve_tree_cursor(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     tree: &TreeView,
     viewport_rows: usize,
 ) -> TreeView {
     let id = tree.id;
-    let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
+    let stored = widget_state
+        .borrow()
+        .value::<TreeCursorState>(&id)
+        .unwrap_or_default();
 
     let selected_path = tree.selected_path.clone().or(stored.selected_path);
     let scroll_controlled = stored.scroll_controlled || tree.scroll_offset != 0;
@@ -766,7 +767,7 @@ pub fn resolve_tree_cursor(
         }
     }
 
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         TreeCursorState {
             selected_path: selected_path.clone(),
@@ -795,7 +796,7 @@ pub fn resolve_tree_cursor(
 // `scroll_into_view` below are the exact same functions, over `window.total`
 // rather than a bare row count).
 
-/// A windowed `Tree`'s cursor + scroll, persisted in [`WidgetState`] keyed
+/// A windowed `Tree`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed
 /// by [`windowed_tree_cursor_id`] (NOT the tree's own id directly) — the
 /// windowed counterpart of [`TreeCursorState`]. `selected_index` is `None`
 /// only when nothing has been selected yet (`DataTableCursorState`'s own
@@ -808,11 +809,11 @@ struct TreeCursorStateWindowed {
     scroll_controlled: bool,
 }
 
-/// The [`WidgetState`] key [`apply_tree_nav_key_windowed`]/
+/// The [`quadraui::WidgetStateStore`] key [`apply_tree_nav_key_windowed`]/
 /// [`resolve_tree_cursor_windowed`] store [`TreeCursorStateWindowed`]
 /// under — derived from, but distinct from, `id` itself.
 ///
-/// [`WidgetState`] holds exactly one type-erased entry per [`WidgetId`]
+/// [`quadraui::WidgetStateStore`] holds exactly one type-erased entry per [`WidgetId`]
 /// (see its own module doc), and [`InteractionEngine::handle`]'s generic
 /// focused-`Tree` key dispatch already writes a plain [`TreeCursorState`]
 /// under a tree's own id unconditionally — it has no way to know a given
@@ -830,17 +831,17 @@ fn windowed_tree_cursor_id(id: WidgetId) -> WidgetId {
 }
 
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// windowed `Tree`, resolved against [`WidgetState`] by absolute index —
+/// windowed `Tree`, resolved against [`quadraui::WidgetStateStore`] by absolute index —
 /// the windowed counterpart of [`apply_tree_nav_key`], for a tree whose
 /// `id` has an [`ItemsWindow`] in play. `total_rows`/`viewport_rows`
 /// should come from `crate::hit::tree_total_rows_and_viewport` against the
 /// most recent render's hit map (its `total_rows` is the collection's real
 /// extent — `ItemsWindow::total` — not the loaded slice's own length).
-/// Returns `true` (and leaves [`WidgetState`] updated) only when a
+/// Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) only when a
 /// recognized navigation key actually moved the cursor; `false` otherwise,
 /// mirroring [`apply_list_nav_key`]'s own contract exactly.
 pub fn apply_tree_nav_key_windowed(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
     total_rows: usize,
     viewport_rows: usize,
@@ -851,7 +852,8 @@ pub fn apply_tree_nav_key_windowed(
     };
     let state_id = windowed_tree_cursor_id(id);
     let stored = widget_state
-        .get::<TreeCursorStateWindowed>(state_id)
+        .borrow()
+        .value::<TreeCursorStateWindowed>(&state_id)
         .unwrap_or_default();
     let new_idx = match nav {
         CursorNav::Up => move_flat_index(stored.selected_index, -1, total_rows),
@@ -872,7 +874,7 @@ pub fn apply_tree_nav_key_windowed(
         Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
         _ => stored.scroll_offset,
     };
-    widget_state.set(
+    widget_state.borrow_mut().set(
         state_id,
         TreeCursorStateWindowed {
             selected_index: new_idx,
@@ -883,11 +885,11 @@ pub fn apply_tree_nav_key_windowed(
     moved
 }
 
-/// The absolute scroll offset [`WidgetState`] currently holds for `id`'s
+/// The absolute scroll offset [`quadraui::WidgetStateStore`] currently holds for `id`'s
 /// uncontrolled `Tree`/`List`/`DataTable` cursor, or `None` when nothing
 /// has stored one yet.
 ///
-/// [`WidgetState`] keeps exactly one type-erased entry per [`WidgetId`]
+/// [`quadraui::WidgetStateStore`] keeps exactly one type-erased entry per [`WidgetId`]
 /// (see its own module doc), so which cursor-state type a given id holds is
 /// decided by whichever `apply_*_nav_key` last wrote it — this tries each
 /// in turn rather than requiring the caller to know the leaf's kind. The
@@ -899,17 +901,23 @@ pub fn apply_tree_nav_key_windowed(
 /// Read by [`crate::InteractionEngine::handle`] right after a navigation
 /// key moved a cursor, to ask a windowed leaf's app for the rows that move
 /// scrolled into view.
-pub fn stored_cursor_scroll_offset(widget_state: &WidgetState, id: WidgetId) -> Option<usize> {
-    if let Some(stored) = widget_state.get::<TreeCursorStateWindowed>(windowed_tree_cursor_id(id)) {
+pub fn stored_cursor_scroll_offset(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+) -> Option<usize> {
+    if let Some(stored) = widget_state
+        .borrow()
+        .value::<TreeCursorStateWindowed>(&windowed_tree_cursor_id(id))
+    {
         return Some(stored.scroll_offset);
     }
-    if let Some(stored) = widget_state.get::<TreeCursorState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<TreeCursorState>(&id) {
         return Some(stored.scroll_offset);
     }
-    if let Some(stored) = widget_state.get::<ListCursorState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<ListCursorState>(&id) {
         return Some(stored.scroll_offset);
     }
-    if let Some(stored) = widget_state.get::<DataTableCursorState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<DataTableCursorState>(&id) {
         return Some(stored.scroll_offset);
     }
     None
@@ -931,14 +939,15 @@ pub fn stored_cursor_scroll_offset(widget_state: &WidgetState, id: WidgetId) -> 
 /// [`resolve_tree_cursor`] for a leaf `window` already has an
 /// [`ItemsWindow`] for.
 pub fn resolve_tree_cursor_windowed(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     tree: &TreeView,
     window: ItemsWindow,
     viewport_rows: usize,
 ) -> TreeView {
     let state_id = windowed_tree_cursor_id(tree.id);
     let stored = widget_state
-        .get::<TreeCursorStateWindowed>(state_id)
+        .borrow()
+        .value::<TreeCursorStateWindowed>(&state_id)
         .unwrap_or_default();
 
     let descriptor_index = tree.selected_path.as_ref().and_then(|path| {
@@ -962,7 +971,7 @@ pub fn resolve_tree_cursor_windowed(
         }
     }
 
-    widget_state.set(
+    widget_state.borrow_mut().set(
         state_id,
         TreeCursorStateWindowed {
             selected_index,
@@ -999,7 +1008,7 @@ pub fn resolve_tree_cursor_windowed(
 // kept as free functions here rather than duplicated per widget since
 // `List`/`DataTable` share the identical flat-cursor shape.
 
-/// A `List`'s cursor + scroll, persisted in [`WidgetState`] keyed by the
+/// A `List`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by the
 /// list's own id. `selected_idx`/`selected_controlled` mirror
 /// [`TreeCursorState::scroll_controlled`]'s latch, because
 /// `ListView::selected_idx` (a bare `usize`, always a valid index into a
@@ -1065,10 +1074,10 @@ fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> u
 }
 
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `List`, resolved against [`WidgetState`] — the `List` counterpart of
+/// `List`, resolved against [`quadraui::WidgetStateStore`] — the `List` counterpart of
 /// [`apply_tree_nav_key`]. `total_items`/`viewport_rows` should come from
 /// `crate::hit::list_rows_and_viewport` against the most recent render's
-/// hit map. Returns `true` (and leaves [`WidgetState`] updated) only when
+/// hit map. Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) only when
 /// a recognized navigation key actually moved the cursor; `false`
 /// otherwise. Either way the event the caller goes on to dispatch is
 /// unchanged — `crate::semantic::list_key_event`'s Enter translation, or
@@ -1076,7 +1085,7 @@ fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> u
 /// navigation keys included, so an app that tracks its own
 /// `ListView::selected_idx` still sees them.
 pub fn apply_list_nav_key(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
     total_items: usize,
     viewport_rows: usize,
@@ -1085,7 +1094,10 @@ pub fn apply_list_nav_key(
     let Some(nav) = cursor_nav_for_key(key) else {
         return false;
     };
-    let stored = widget_state.get::<ListCursorState>(id).unwrap_or_default();
+    let stored = widget_state
+        .borrow()
+        .value::<ListCursorState>(&id)
+        .unwrap_or_default();
     let new_idx = match nav {
         CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_items),
         CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_items),
@@ -1103,7 +1115,7 @@ pub fn apply_list_nav_key(
         Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
         _ => stored.scroll_offset,
     };
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         ListCursorState {
             selected_idx: new_idx,
@@ -1128,12 +1140,15 @@ pub fn apply_list_nav_key(
 ///
 /// Call once per frame, before painting `list`.
 pub fn resolve_list_cursor(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     list: &ListView,
     viewport_rows: usize,
 ) -> ListView {
     let id = list.id;
-    let stored = widget_state.get::<ListCursorState>(id).unwrap_or_default();
+    let stored = widget_state
+        .borrow()
+        .value::<ListCursorState>(&id)
+        .unwrap_or_default();
 
     let selected_controlled = stored.selected_controlled || list.selected_idx != 0;
     let selected_idx = if selected_controlled {
@@ -1154,7 +1169,7 @@ pub fn resolve_list_cursor(
         scroll_offset = scroll_into_view(scroll_offset, resolved_selected_idx, viewport_rows);
     }
 
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         ListCursorState {
             selected_idx,
@@ -1179,7 +1194,7 @@ pub fn resolve_list_cursor(
 // unambiguously means "no selection, uncontrolled" the same way
 // `TreeView::selected_path` does.
 
-/// A `DataTable`'s cursor + scroll, persisted in [`WidgetState`] keyed by
+/// A `DataTable`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by
 /// the table's own id.
 #[derive(Debug, Clone, Default)]
 struct DataTableCursorState {
@@ -1189,17 +1204,17 @@ struct DataTableCursorState {
 }
 
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `DataTable`, resolved against [`WidgetState`] — the `DataTable`
+/// `DataTable`, resolved against [`quadraui::WidgetStateStore`] — the `DataTable`
 /// counterpart of [`apply_tree_nav_key`]/[`apply_list_nav_key`].
 /// `total_rows`/`viewport_rows` should come from
 /// `crate::hit::data_table_rows_and_viewport` against the most recent
-/// render's hit map. Returns `true` (and leaves [`WidgetState`] updated)
+/// render's hit map. Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated)
 /// only when a recognized navigation key actually moved the cursor;
 /// `false` otherwise, so the caller falls through unchanged — today's
 /// `crate::semantic::data_table_key_event` Enter/Up/Down event
 /// translation.
 pub fn apply_data_table_nav_key(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
     total_rows: usize,
     viewport_rows: usize,
@@ -1209,7 +1224,8 @@ pub fn apply_data_table_nav_key(
         return false;
     };
     let stored = widget_state
-        .get::<DataTableCursorState>(id)
+        .borrow()
+        .value::<DataTableCursorState>(&id)
         .unwrap_or_default();
     let new_idx = match nav {
         CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_rows),
@@ -1228,7 +1244,7 @@ pub fn apply_data_table_nav_key(
         Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
         _ => stored.scroll_offset,
     };
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         DataTableCursorState {
             selected_idx: new_idx,
@@ -1249,13 +1265,14 @@ pub fn apply_data_table_nav_key(
 ///
 /// Call once per frame, before painting `table`.
 pub fn resolve_data_table_cursor(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     table: &DataTable,
     viewport_rows: usize,
 ) -> DataTable {
     let id = table.id;
     let stored = widget_state
-        .get::<DataTableCursorState>(id)
+        .borrow()
+        .value::<DataTableCursorState>(&id)
         .unwrap_or_default();
 
     let selected_idx = table.selected_idx.or(stored.selected_idx);
@@ -1273,7 +1290,7 @@ pub fn resolve_data_table_cursor(
         }
     }
 
-    widget_state.set(
+    widget_state.borrow_mut().set(
         id,
         DataTableCursorState {
             selected_idx,
@@ -1291,7 +1308,7 @@ pub fn resolve_data_table_cursor(
 
 // ─── Split divider ratio, uncontrolled by default ──────────────────────────
 //
-// A two-pane `Split`'s divider resolves against `WidgetState` the same
+// A two-pane `Split`'s divider resolves against `WidgetStateStore` the same
 // "controlled value wins and is written back" way `resolve_tree_cursor`'s
 // own module doc describes, but `Split::ratio` (a bare `f32`, never
 // `Option`) has no structural "unset" sentinel at all — unlike
@@ -1343,7 +1360,7 @@ fn split_ratio_state_id(tree: WidgetId, split_index: usize) -> WidgetId {
 /// [`quadraui::UiEvent::SplitDividerDragged`] fires, for a two-pane [`Split`]
 /// (`split_index` always `0`) or one divider of a multi-divider `SplitTree`
 /// alike; see [`split_ratio_state_id`] for how the two share
-/// [`WidgetState`] without colliding. Leaves `baseline` untouched: it
+/// [`quadraui::WidgetStateStore`] without colliding. Leaves `baseline` untouched: it
 /// tracks what the descriptor last sent, which a drag never changes by
 /// itself — only [`resolve_split_ratio`]'s own next call, once the
 /// caller's descriptor catches up (or doesn't), decides whether this
@@ -1352,20 +1369,21 @@ fn split_ratio_state_id(tree: WidgetId, split_index: usize) -> WidgetId {
 /// `resolve_split_ratio` yet), so persisting one only prevents the
 /// cross-divider corruption described above until that counterpart exists.
 pub fn apply_split_divider_drag(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     tree: WidgetId,
     split_index: usize,
     new_ratio: f32,
 ) {
     let id = split_ratio_state_id(tree, split_index);
     let mut state = widget_state
-        .get::<SplitRatioState>(id)
+        .borrow()
+        .value::<SplitRatioState>(&id)
         .unwrap_or(SplitRatioState {
             baseline: new_ratio,
             resolved: new_ratio,
         });
     state.resolved = new_ratio;
-    widget_state.set(id, state);
+    widget_state.borrow_mut().set(id, state);
 }
 
 /// Resolves `split`'s ratio for painting — see this section's own doc for
@@ -1379,15 +1397,17 @@ pub fn apply_split_divider_drag(
 /// indefinitely. Call once per frame, before painting `split`; the
 /// returned [`Split`] is what a binding's render should hand to
 /// `draw_primitive`, not `split` itself.
-pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
+pub fn resolve_split_ratio(widget_state: &RefCell<WidgetStateStore>, split: &Split) -> Split {
     let id = split_ratio_state_id(split.id, 0);
-    let previous = widget_state.get::<SplitRatioState>(id);
+    let previous = widget_state.borrow().value::<SplitRatioState>(&id);
     let (baseline, resolved) = match previous {
         None => (split.ratio, split.ratio),
         Some(state) if split.ratio != state.baseline => (split.ratio, split.ratio),
         Some(state) => (state.baseline, state.resolved),
     };
-    widget_state.set(id, SplitRatioState { baseline, resolved });
+    widget_state
+        .borrow_mut()
+        .set(id, SplitRatioState { baseline, resolved });
     Split {
         ratio: resolved,
         ..split.clone()
@@ -1398,7 +1418,7 @@ pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
 //
 // Unlike `Split::ratio` above (a bare `f32` with no "unset" sentinel),
 // `LayoutScroll::offset` is already `Option<f32>` -- see that field's own
-// doc for why -- so [`WidgetState::resolve`]'s own controlled/uncontrolled
+// doc for why -- so [`quadraui::WidgetStateStore::resolve`]'s own controlled/uncontrolled
 // policy (its module doc's "Controlled / uncontrolled resolution" section)
 // applies directly here, with no baseline-latch struct of this module's
 // own to maintain.
@@ -1406,19 +1426,19 @@ pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
 /// Resolves a [`crate::layout::LayoutNode::Scroll`]'s offset for painting
 /// — the `ScrollView` counterpart of [`resolve_split_ratio`]. `offset` is
 /// `scroll_node.offset` as decoded this frame (`Some` pins the controlled
-/// position, `None` leaves it to whatever this id's own [`WidgetState`]
+/// position, `None` leaves it to whatever this id's own [`quadraui::WidgetStateStore`]
 /// entry already holds, seeded at `0.0` the first time `id` is seen).
 /// The resolved value is clamped into `[0, max_offset]` on every call
 /// (not persisted pre-clamped) so a later frame whose content grows back
 /// out doesn't stay stuck at a smaller clamp than the one in effect when
 /// a previous, shorter-content frame stored it.
 pub fn resolve_scroll_offset(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
     offset: Option<f32>,
     max_offset: f32,
 ) -> f32 {
-    let raw = widget_state.resolve(id, offset, || 0.0_f32);
+    let raw = widget_state.borrow_mut().resolve(id, offset, || 0.0_f32);
     raw.clamp(0.0, max_offset.max(0.0))
 }
 
@@ -1427,12 +1447,16 @@ pub fn resolve_scroll_offset(
 /// container to a new position. Always writes, mirroring
 /// [`apply_split_divider_drag`]'s own "the next frame's resolve decides
 /// whether this sticks" shape: [`resolve_scroll_offset`]'s own
-/// [`WidgetState::resolve`] call overwrites whatever this stores the
+/// [`quadraui::WidgetStateStore::resolve`] call overwrites whatever this stores the
 /// moment the matching `LayoutScroll::offset` is `Some` again, so a
 /// controlled `Scroll` moving here never actually changes what's
 /// painted — only an uncontrolled one does.
-pub fn apply_scroll_offset(widget_state: &WidgetState, id: WidgetId, new_offset: f32) {
-    widget_state.set(id, new_offset);
+pub fn apply_scroll_offset(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    new_offset: f32,
+) {
+    widget_state.borrow_mut().set(id, new_offset);
 }
 
 // ─── TabBar active tab, uncontrolled by default ────────────────────────────
@@ -1456,10 +1480,13 @@ struct TabActiveState {
 /// untouched, for the same reason [`apply_split_divider_drag`] leaves
 /// [`SplitRatioState::baseline`] untouched: it tracks the descriptor's own
 /// last value, which a click never changes by itself.
-pub fn apply_tab_activated(widget_state: &WidgetState, id: WidgetId, index: usize) {
-    let mut state = widget_state.get::<TabActiveState>(id).unwrap_or_default();
+pub fn apply_tab_activated(widget_state: &RefCell<WidgetStateStore>, id: WidgetId, index: usize) {
+    let mut state = widget_state
+        .borrow()
+        .value::<TabActiveState>(&id)
+        .unwrap_or_default();
     state.resolved = Some(index);
-    widget_state.set(id, state);
+    widget_state.borrow_mut().set(id, state);
 }
 
 /// Shifts `id`'s persisted active tab when a
@@ -1477,8 +1504,12 @@ pub fn apply_tab_activated(widget_state: &WidgetState, id: WidgetId, index: usiz
 /// shifts the identical way, so the very next [`resolve_tab_bar_active`]
 /// call keeps comparing against a baseline addressed the same way the
 /// descriptor's own next, already-renumbered `tabs` will be.
-pub fn apply_tab_closed(widget_state: &WidgetState, id: WidgetId, closed_index: usize) {
-    let Some(mut state) = widget_state.get::<TabActiveState>(id) else {
+pub fn apply_tab_closed(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    closed_index: usize,
+) {
+    let Some(mut state) = widget_state.borrow().value::<TabActiveState>(&id) else {
         return;
     };
     let shift = |idx: Option<usize>| match idx {
@@ -1488,20 +1519,23 @@ pub fn apply_tab_closed(widget_state: &WidgetState, id: WidgetId, closed_index: 
     };
     state.baseline = shift(state.baseline);
     state.resolved = shift(state.resolved);
-    widget_state.set(id, state);
+    widget_state.borrow_mut().set(id, state);
 }
 
 /// Shared resolution step behind [`resolve_tab_bar_active`] and
 /// [`resolve_layout_tabs_active`]: stores the controlled/uncontrolled
-/// decision in [`WidgetState`] under `tab_bar.id` and returns the resolved
+/// decision in [`quadraui::WidgetStateStore`] under `tab_bar.id` and returns the resolved
 /// active index, so both callers — one rebuilding a bare [`TabBar`], the
 /// other also steering a [`LayoutTabs`] tab group's content pane — apply
 /// the identical rule rather than one of them drifting out of sync with
 /// the other. See [`resolve_tab_bar_active`]'s own doc for the rule itself.
-fn resolved_tab_active_index(widget_state: &WidgetState, tab_bar: &TabBar) -> Option<usize> {
+fn resolved_tab_active_index(
+    widget_state: &RefCell<WidgetStateStore>,
+    tab_bar: &TabBar,
+) -> Option<usize> {
     let id = tab_bar.id;
     let descriptor_active = tab_bar.tabs.iter().position(|tab| tab.is_active);
-    let previous = widget_state.get::<TabActiveState>(id);
+    let previous = widget_state.borrow().value::<TabActiveState>(&id);
     let (baseline, resolved) = match previous {
         None => (descriptor_active, descriptor_active),
         Some(state) if descriptor_active != state.baseline => {
@@ -1509,7 +1543,9 @@ fn resolved_tab_active_index(widget_state: &WidgetState, tab_bar: &TabBar) -> Op
         }
         Some(state) => (state.baseline, state.resolved),
     };
-    widget_state.set(id, TabActiveState { baseline, resolved });
+    widget_state
+        .borrow_mut()
+        .set(id, TabActiveState { baseline, resolved });
     resolved
 }
 
@@ -1532,7 +1568,10 @@ fn resolved_tab_active_index(widget_state: &WidgetState, tab_bar: &TabBar) -> Op
 /// `crate::render::paint_layout` paints stays on the old tab while the
 /// strip highlights the new one; see [`resolve_layout_tabs_active`] for
 /// that case.
-pub fn resolve_tab_bar_active(widget_state: &WidgetState, tab_bar: &TabBar) -> TabBar {
+pub fn resolve_tab_bar_active(
+    widget_state: &RefCell<WidgetStateStore>,
+    tab_bar: &TabBar,
+) -> TabBar {
     let resolved = resolved_tab_active_index(widget_state, tab_bar);
     match resolved {
         Some(idx) if idx < tab_bar.tabs.len() => {
@@ -1563,12 +1602,10 @@ pub fn resolve_tab_bar_active(widget_state: &WidgetState, tab_bar: &TabBar) -> T
 /// a decoded `TreeView` needs [`resolve_tree_cursor`] called on it first.
 ///
 /// Mutates `tabs` in place rather than returning a new one:
-/// [`crate::layout::LayoutNode`] holds content that isn't [`Clone`] (an
-/// `Rc<dyn crate::extra_paint::ExtraPaint>` extra primitive, an arbitrarily
-/// nested subtree), so rebuilding `LayoutTabs::entries` wholesale the way
+/// [`crate::layout::LayoutNode`] holds an arbitrarily nested subtree, so rebuilding `LayoutTabs::entries` wholesale the way
 /// [`resolve_tab_bar_active`] rebuilds a bare [`TabBar`] isn't an option
 /// here.
-pub fn resolve_layout_tabs_active(widget_state: &WidgetState, tabs: &mut LayoutTabs) {
+pub fn resolve_layout_tabs_active(widget_state: &RefCell<WidgetStateStore>, tabs: &mut LayoutTabs) {
     let resolved = resolved_tab_active_index(widget_state, &tabs.tab_bar);
     let Some(idx) = resolved else {
         return;
@@ -1608,7 +1645,7 @@ struct TreeExpandedState {
 }
 
 /// The id [`TreeExpandedState`] is actually stored under — a synthetic id
-/// derived from `id`, NOT `id` itself. `WidgetState` holds exactly one
+/// derived from `id`, NOT `id` itself. `WidgetStateStore` holds exactly one
 /// typed value per id (see its own module doc on a reused id "discarded
 /// and reseeded" when the stored type changes), and a focused tree's
 /// cursor/scroll ([`apply_tree_nav_key`]/[`resolve_tree_cursor`]'s own
@@ -1629,17 +1666,22 @@ fn expanded_state_id(id: WidgetId) -> WidgetId {
 /// seeds from `false` when [`resolve_tree_expansion`] hasn't run yet this
 /// session (a click can't land on a row that was never painted), so the
 /// guess is immediately corrected on the next render regardless.
-pub fn apply_tree_toggle_expand(widget_state: &WidgetState, id: WidgetId, path: &TreePath) {
+pub fn apply_tree_toggle_expand(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    path: &TreePath,
+) {
     let state_id = expanded_state_id(id);
     let mut state = widget_state
-        .get::<TreeExpandedState>(state_id)
+        .borrow()
+        .value::<TreeExpandedState>(&state_id)
         .unwrap_or_default();
     let entry = state.entries.entry(path.clone()).or_insert(ExpandedEntry {
         baseline: false,
         resolved: false,
     });
     entry.resolved = !entry.resolved;
-    widget_state.set(state_id, state);
+    widget_state.borrow_mut().set(state_id, state);
 }
 
 /// Resolves `tree`'s per-row expand/collapse state for painting — the
@@ -1654,7 +1696,7 @@ pub fn apply_tree_toggle_expand(widget_state: &WidgetState, id: WidgetId, path: 
 /// list the caller's descriptor already sent. Prunes any stored path no
 /// longer present in `tree.rows` (before that drop — a row hidden by its
 /// own collapsed ancestor keeps its override, in case the ancestor
-/// re-expands later), mirroring [`WidgetState::gc`]'s own per-frame
+/// re-expands later), mirroring [`quadraui::WidgetStateStore::gc`]'s own per-frame
 /// cleanup at the whole-id level: a row removed from the tree outright
 /// drops its entry rather than resurrecting a stale override if the same
 /// path is ever reused. As with [`resolve_split_ratio`]/
@@ -1665,9 +1707,12 @@ pub fn apply_tree_toggle_expand(widget_state: &WidgetState, id: WidgetId, path: 
 /// one that rejects a toggle outright, still reads back as uncontrolled
 /// and keeps whatever [`apply_tree_toggle_expand`] resolved. Call once
 /// per frame, before painting `tree`.
-pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> TreeView {
+pub fn resolve_tree_expansion(
+    widget_state: &RefCell<WidgetStateStore>,
+    tree: &TreeView,
+) -> TreeView {
     let state_id = expanded_state_id(tree.id);
-    let previous = widget_state.get::<TreeExpandedState>(state_id);
+    let previous = widget_state.borrow().value::<TreeExpandedState>(&state_id);
     let had_stored_state = previous.is_some();
     let mut state = previous.unwrap_or_default();
     let mut rows = tree.rows.clone();
@@ -1702,7 +1747,7 @@ pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> Tr
     // entry set still writes it back — that pruning is itself the
     // observable effect this call needs to persist, not a no-op to skip.
     if !state.entries.is_empty() || had_stored_state {
-        widget_state.set(state_id, state);
+        widget_state.borrow_mut().set(state_id, state);
     }
 
     let collapsed_ancestors: Vec<TreePath> = rows
@@ -1722,27 +1767,6 @@ pub fn resolve_tree_expansion(widget_state: &WidgetState, tree: &TreeView) -> Tr
     }
 }
 
-// ─── `TreeTableController` node decode — shared by paint-time seeding and ──
-// a host's own `set_children`/sort-override call
-
-/// Converts a host's wire-shaped node list into the
-/// [`quadraui::TreeTableNodeData`] list [`quadraui::TreeTableController::set_children`]/
-/// [`quadraui::TreeTableController::set_nodes`] expect — the same decode
-/// [`crate::extra_paint::TreeTableControllerDescriptor::seed_controller`]
-/// applies to a `"tree_table_controller"` extra's own `nodes` at paint
-/// time, exposed here so a binding's own `set_children`/sort-override call
-/// (answering a `ChildrenRequested`/`SortChanged` the engine already
-/// emitted) can reuse the identical conversion without decoding through a
-/// whole extra descriptor.
-pub fn tree_table_controller_nodes_from_wire(
-    nodes: Vec<crate::extra_paint::TreeTableControllerNode>,
-) -> Vec<quadraui::TreeTableNodeData> {
-    nodes
-        .into_iter()
-        .map(crate::extra_paint::TreeTableControllerNode::into_node_data)
-        .collect()
-}
-
 // ─── Resolving the five fixed slots as a unit, and reading the store back ───
 //
 // Every `resolve_*` function above takes one descriptor and returns the
@@ -1759,15 +1783,15 @@ pub fn tree_table_controller_nodes_from_wire(
 /// Resolves whichever of `refs`'s `list`/`tree`/`data_table`/`tab_bar`
 /// slots are present against `widget_state` — `text_display`
 /// carries no widget-state of its own and passes through unresolved, as do
-/// any `extra`/`widgets` slots. Walks [`crate::render::next_band`] in the exact same
+/// any `widgets` slots. Walks [`crate::render::next_band`] in the exact same
 /// top-to-bottom order and fixed line counts [`crate::render::draw_bands`]
 /// itself paints into, so an occupied slot gets the same `viewport_rows`
 /// its own `resolve_tree_cursor`/`resolve_list_cursor`/
 /// `resolve_data_table_cursor` would see once actually painted, including
 /// the "ran out of vertical room, painted nothing" case — that slot's
 /// descriptor passes through unresolved, which costs more than just this
-/// frame's resolution: nothing touches its stored [`WidgetState`] entry
-/// either, so [`WidgetState::gc`] drops it at the end of this same frame.
+/// frame's resolution: nothing touches its stored [`quadraui::WidgetStateStore`] entry
+/// either, so [`quadraui::WidgetStateStore::gc`] drops it at the end of this same frame.
 /// A transient tiny viewport (or a resize that comes back) silently
 /// resets that slot's cursor/scroll rather than preserving it. A tree's
 /// per-row expand/collapse is resolved before its cursor, via
@@ -1789,7 +1813,7 @@ pub fn tree_table_controller_nodes_from_wire(
 /// [`crate::render::RenderFrame`] is what should be painted, not `refs`
 /// itself.
 pub fn resolve_render_refs(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     backend: &mut dyn Backend,
     refs: RenderRefs<'_>,
 ) -> RenderFrame {
@@ -1839,7 +1863,6 @@ pub fn resolve_render_refs(
         tree,
         data_table,
         tab_bar,
-        extra: refs.extra.clone(),
         widgets: refs.widgets.clone(),
         list_scroll_px: refs.list_scroll_px,
         tree_scroll_px: refs.tree_scroll_px,
@@ -1889,7 +1912,7 @@ pub fn resolve_render_refs(
 /// whose decode recorded no `"items_window"` for any leaf resolves exactly
 /// as this always has.
 pub fn resolve_layout_node(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     backend: &mut dyn Backend,
     area: Rect,
     node: &mut LayoutNode,
@@ -1906,7 +1929,7 @@ pub fn resolve_layout_node(
 /// cursor/scroll a frame resolves always agrees with the band that frame
 /// paints.
 pub fn resolve_layout_node_windowed(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     backend: &mut dyn Backend,
     area: Rect,
     node: &mut LayoutNode,
@@ -1999,9 +2022,7 @@ pub fn resolve_layout_node_windowed(
                     tab_bar.id = widget_id;
                     *tab_bar = resolve_tab_bar_active(widget_state, tab_bar);
                 }
-                LeafDescriptor::TextDisplay(_)
-                | LeafDescriptor::Extra(_)
-                | LeafDescriptor::Widget { .. } => {}
+                LeafDescriptor::TextDisplay(_) | LeafDescriptor::Widget { .. } => {}
             }
         }
         LayoutNode::Split(split) => {
@@ -2175,21 +2196,23 @@ pub fn resolve_layout_node_windowed(
     }
 }
 
-/// Keeps every [`WidgetState`] entry owned by `node`'s subtree alive through
-/// this frame's [`WidgetState::gc`] without resolving it. A subtree with no
+/// Keeps every [`quadraui::WidgetStateStore`] entry owned by `node`'s subtree alive through
+/// this frame's [`quadraui::WidgetStateStore::gc`] without resolving it. A subtree with no
 /// geometry this frame (an unselected tab entry, a scroll child outside the
 /// viewport) still owns its cursor, scroll offset, split ratio, expansion
 /// and active tab; they come back unchanged when it is shown again.
-fn keep_subtree_state_alive(widget_state: &WidgetState, node: &LayoutNode) {
+fn keep_subtree_state_alive(widget_state: &RefCell<WidgetStateStore>, node: &LayoutNode) {
     let mut owners = HashSet::new();
     collect_state_owner_ids(node, &mut owners);
     if owners.is_empty() {
         return;
     }
-    widget_state.keep_alive(|key| owners.contains(state_owner_id(key)));
+    widget_state
+        .borrow_mut()
+        .keep_alive(|key| owners.contains(state_owner_id(key)));
 }
 
-/// Every id under `node` that [`WidgetState`] keys state on, directly or
+/// Every id under `node` that [`quadraui::WidgetStateStore`] keys state on, directly or
 /// through a derived key [`state_owner_id`] maps back to it.
 fn collect_state_owner_ids(node: &LayoutNode, owners: &mut HashSet<String>) {
     match node {
@@ -2234,7 +2257,7 @@ fn collect_state_owner_ids(node: &LayoutNode, owners: &mut HashSet<String>) {
     }
 }
 
-/// The owning widget id of a [`WidgetState`] key: the key itself, or the
+/// The owning widget id of a [`quadraui::WidgetStateStore`] key: the key itself, or the
 /// id a derived key ([`split_ratio_state_id`], [`expanded_state_id`],
 /// [`windowed_tree_cursor_id`]) was built from.
 fn state_owner_id(key: &str) -> &str {
@@ -2247,7 +2270,7 @@ fn state_owner_id(key: &str) -> &str {
     key.strip_suffix(WINDOWED_CURSOR_KEY_SUFFIX).unwrap_or(key)
 }
 
-/// A read-only merge of whatever [`WidgetState`] currently holds for one
+/// A read-only merge of whatever [`quadraui::WidgetStateStore`] currently holds for one
 /// id, across every shape this module tracks — [`resolve_tree_cursor`]/
 /// [`resolve_list_cursor`]/[`resolve_data_table_cursor`]'s cursor +
 /// scroll, [`resolve_split_ratio`]'s ratio, [`resolve_tab_bar_active`]/
@@ -2296,43 +2319,46 @@ pub struct WidgetStateSnapshot {
     pub expanded: Option<Vec<TreePath>>,
 }
 
-/// Reads [`WidgetStateSnapshot`]'s fields back out of [`WidgetState`] for
+/// Reads [`WidgetStateSnapshot`]'s fields back out of [`quadraui::WidgetStateStore`] for
 /// `id`, or `None` if none of the shapes it tracks have anything stored
 /// for `id` (or its derived expansion key) at all. Never mutates the
 /// store and never marks `id` seen — a snapshot is a side-effect-free
 /// read, unlike every `resolve_*` function above.
 pub fn widget_state_snapshot(
-    widget_state: &WidgetState,
+    widget_state: &RefCell<WidgetStateStore>,
     id: WidgetId,
 ) -> Option<WidgetStateSnapshot> {
     let mut snapshot = WidgetStateSnapshot::default();
     let mut found = false;
 
-    if let Some(stored) = widget_state.get::<TreeCursorState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<TreeCursorState>(&id) {
         snapshot.selected_path = stored.selected_path;
         snapshot.scroll_offset = Some(stored.scroll_offset);
         found = true;
-    } else if let Some(stored) = widget_state.get::<ListCursorState>(id) {
+    } else if let Some(stored) = widget_state.borrow().value::<ListCursorState>(&id) {
         snapshot.selected_idx = stored.selected_idx;
         snapshot.scroll_offset = Some(stored.scroll_offset);
         found = true;
-    } else if let Some(stored) = widget_state.get::<DataTableCursorState>(id) {
+    } else if let Some(stored) = widget_state.borrow().value::<DataTableCursorState>(&id) {
         snapshot.selected_idx = stored.selected_idx;
         snapshot.scroll_offset = Some(stored.scroll_offset);
         found = true;
     }
 
-    if let Some(stored) = widget_state.get::<SplitRatioState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<SplitRatioState>(&id) {
         snapshot.ratio = Some(stored.resolved);
         found = true;
     }
 
-    if let Some(stored) = widget_state.get::<TabActiveState>(id) {
+    if let Some(stored) = widget_state.borrow().value::<TabActiveState>(&id) {
         snapshot.active_tab = stored.resolved;
         found = true;
     }
 
-    if let Some(stored) = widget_state.get::<TreeExpandedState>(expanded_state_id(id)) {
+    if let Some(stored) = widget_state
+        .borrow()
+        .value::<TreeExpandedState>(&expanded_state_id(id))
+    {
         let mut paths: Vec<TreePath> = stored
             .entries
             .iter()
@@ -2349,26 +2375,19 @@ pub fn widget_state_snapshot(
 
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
-/// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
-/// menu bar/forms/tree tables/text-input carets against `hits`,
-/// then makes the one [`InteractionEngine::render_overlays`] call that
+/// or [`crate::render::paint_layout`]) and collecting `hits`: makes the one [`InteractionEngine::render_overlays`] call that
 /// paints every open overlay in z-order (dialog on top of everything but
 /// tooltip/toast, then float/rich-text-popup/completions below it, toast
 /// topmost of all) — a correctness contract worth writing down in exactly
 /// one place rather than copy-pasted at each of a binding's render paths
 /// (the static-slots path and the render-callback path both reach this).
 /// Takes `hits` by value and hands it to [`InteractionEngine::set_hits`] at
-/// the end, after every `sync_*`/`render_overlays` call above has had a
-/// chance to read it by reference.
+/// the end, after `render_overlays` has painted.
 pub fn render_overlays(
     engine: &InteractionEngine,
     backend: &mut dyn Backend,
     hits: Vec<PaintedHit>,
 ) {
-    engine.sync_menu_bar(backend, &hits);
-    engine.sync_forms(backend, &hits);
-    engine.sync_tree_tables(backend, &hits);
-    engine.sync_text_input_carets(backend, &hits);
     engine.render_overlays(backend);
     engine.set_hits(hits);
 }
@@ -3148,7 +3167,7 @@ mod tests {
     /// A [`BindingHost::widgets`] map holding just `button` under its
     /// `"button"` key — the test fixtures' own shorthand for the single
     /// slot [`BindingHost`] carries today, now that `Button` is a generic
-    /// [`crate::extra_paint::WIDGET_KINDS`] entry rather than its own
+    /// [`crate::widget_kinds::WIDGET_KINDS`] entry rather than its own
     /// typed field.
     fn button_widgets(button: Button) -> HashMap<String, Rc<dyn quadraui::primitive::DynWidget>> {
         let mut widgets = HashMap::new();
@@ -3518,7 +3537,7 @@ mod tests {
     /// original one.
     #[test]
     fn widget_state_snapshot_reports_a_split_ratio_persisted_after_a_drag() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("split:main");
         let split = Split {
             id,
@@ -3547,7 +3566,7 @@ mod tests {
     /// [`apply_tab_activated`] has persisted a click.
     #[test]
     fn widget_state_snapshot_reports_a_tab_bars_active_tab_after_a_click() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("tabs:main");
         apply_tab_activated(&widget_state, id, 2);
         let snapshot =
@@ -3561,7 +3580,7 @@ mod tests {
     /// so this must resolve transparently from the plain `id` callers use.
     #[test]
     fn widget_state_snapshot_reports_a_trees_expanded_paths_after_a_toggle() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("tree:main");
         apply_tree_toggle_expand(&widget_state, id, &vec![0]);
         let snapshot =
@@ -3575,7 +3594,7 @@ mod tests {
     /// fields an app could mistake for "resolved, but empty".
     #[test]
     fn widget_state_snapshot_is_none_for_an_id_never_resolved() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         assert!(widget_state_snapshot(&widget_state, WidgetId::new("never-rendered")).is_none());
     }
 
@@ -3776,7 +3795,7 @@ mod tests {
     /// id — so [`resolve_layout_node`] must resolve and persist under the
     /// outer id too, or navigation would silently do nothing on screen
     /// and the hit id's freshly-written state would be swept by
-    /// [`WidgetState::gc`] the very next frame.
+    /// [`quadraui::WidgetStateStore::gc`] the very next frame.
     #[test]
     fn resolve_layout_node_keys_a_leaf_whose_descriptor_id_differs_from_its_own_on_the_outer_leaf_id(
     ) {
@@ -3873,7 +3892,7 @@ mod tests {
         );
 
         // A further render — nothing new dispatched — must not have the
-        // leaf id's entry swept by `WidgetState::gc()`: `resolve_layout_node`
+        // leaf id's entry swept by `WidgetStateStore::gc()`: `resolve_layout_node`
         // itself has to touch it every frame, not just the nav hook.
         driver.render();
         assert!(
@@ -3970,7 +3989,7 @@ mod tests {
     /// and — unlike a bare [`crate::render::paint_layout`] call with no
     /// `resolve_layout_node` pass first — persists across a further
     /// uncontrolled render rather than being swept by
-    /// [`crate::widget_state::WidgetState::gc`], mirroring
+    /// [`quadraui::WidgetStateStore::gc`], mirroring
     /// [`resolve_layout_node_keys_a_leaf_whose_descriptor_id_differs_from_its_own_on_the_outer_leaf_id`]'s
     /// own "survives a further render" assertion for a `Tree` leaf.
     #[test]
@@ -4149,9 +4168,8 @@ mod tests {
 
     /// An [`AppLogic`] whose `render` paints a focused, bordered
     /// [`TextInput`] across the whole viewport directly (not through a
-    /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
-    /// extra, and this test only needs its border painted, not its full
-    /// extra-slot wiring) before calling [`render_overlays`], so a toast
+    /// [`BindingHost`] slot — this test only needs its border painted,
+    /// not its full leaf wiring) before calling [`render_overlays`], so a toast
     /// opened on top of it has to paint over real bordered chrome, not
     /// just empty space.
     struct BorderedEditorLogic {
@@ -5191,7 +5209,7 @@ mod tests {
     /// tests.
     #[test]
     fn apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let row_paths: Vec<TreePath> = (0..500).map(|i| vec![i as u16]).collect();
 
@@ -5221,7 +5239,7 @@ mod tests {
     #[test]
     fn apply_tree_nav_key_home_and_end_jump_to_the_edges_and_further_movement_past_the_end_is_a_no_op(
     ) {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
 
@@ -5256,7 +5274,7 @@ mod tests {
     /// Vim `j`/`k` are recognized aliases for `Down`/`Up`.
     #[test]
     fn apply_tree_nav_key_recognizes_vim_j_and_k_aliases() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
 
@@ -5293,7 +5311,7 @@ mod tests {
     /// [`resolve_tree_cursor`]'s own doc describes.
     #[test]
     fn resolve_tree_cursor_controlled_selected_path_wins_and_rescrolls_on_viewport_resize() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let tree = test_tree(50, Some(vec![30]), 0);
 
         let resolved = resolve_tree_cursor(&widget_state, &tree, 8);
@@ -5320,7 +5338,7 @@ mod tests {
     /// to the top.
     #[test]
     fn resolve_tree_cursor_can_scroll_back_to_zero_after_being_pinned_nonzero() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
 
         let pinned = test_tree(50, None, 20);
         let resolved = resolve_tree_cursor(&widget_state, &pinned, 8);
@@ -5342,7 +5360,7 @@ mod tests {
     /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
     #[test]
     fn apply_list_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:list");
 
         for _ in 0..40 {
@@ -5361,7 +5379,7 @@ mod tests {
     /// `engine::tests::controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`.
     #[test]
     fn resolve_list_cursor_controlled_scroll_offset_is_pinned() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:list");
 
         for _ in 0..10 {
@@ -5379,7 +5397,7 @@ mod tests {
     /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
     #[test]
     fn apply_data_table_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:table");
 
         for _ in 0..40 {
@@ -5403,7 +5421,7 @@ mod tests {
     /// selection, the same as [`resolve_list_cursor_controlled_scroll_offset_is_pinned`].
     #[test]
     fn resolve_data_table_cursor_controlled_scroll_offset_is_pinned() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:table");
 
         for _ in 0..10 {
@@ -5432,7 +5450,7 @@ mod tests {
     /// split-ratio half of the widget-state store.
     #[test]
     fn apply_split_divider_drag_persists_across_an_uncontrolled_render() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:split");
         let split = test_split(0.5);
 
@@ -5459,7 +5477,7 @@ mod tests {
     /// whatever a previous drag persisted.
     #[test]
     fn resolve_split_ratio_controlled_change_overrides_a_stored_drag() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:split");
 
         resolve_split_ratio(&widget_state, &test_split(0.5));
@@ -5478,7 +5496,7 @@ mod tests {
     /// uncontrolled-by-default field in this module follows.
     #[test]
     fn resolve_scroll_offset_defaults_to_zero_when_never_set() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:scroll");
         assert_eq!(resolve_scroll_offset(&widget_state, id, None, 100.0), 0.0);
     }
@@ -5490,7 +5508,7 @@ mod tests {
     /// own contract for `Split::ratio`.
     #[test]
     fn resolve_scroll_offset_controlled_value_is_written_back() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:scroll");
         assert_eq!(
             resolve_scroll_offset(&widget_state, id, Some(20.0), 100.0),
@@ -5509,7 +5527,7 @@ mod tests {
     /// rather than trusting a stale stored clamp.
     #[test]
     fn resolve_scroll_offset_clamps_a_stored_value_whose_max_offset_shrank() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:scroll");
         resolve_scroll_offset(&widget_state, id, Some(90.0), 100.0);
         assert_eq!(resolve_scroll_offset(&widget_state, id, None, 30.0), 30.0);
@@ -5541,7 +5559,7 @@ mod tests {
     /// active it always has — leaves the clicked tab active instead.
     #[test]
     fn apply_tab_activated_persists_across_an_uncontrolled_render() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
         let tab_bar = test_tab_bar(vec![true, false, false, false]);
 
@@ -5564,7 +5582,7 @@ mod tests {
     /// a previous click persisted.
     #[test]
     fn resolve_tab_bar_active_controlled_change_overrides_a_stored_click() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
 
         resolve_tab_bar_active(
@@ -5587,7 +5605,7 @@ mod tests {
     /// `TabBar` that hasn't loaded its tabs yet would be in.
     #[test]
     fn resolve_tab_bar_active_with_nothing_active_and_nothing_clicked_stays_inactive() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let tab_bar = test_tab_bar(vec![false, false, false]);
         let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
         assert!(resolved.tabs.iter().all(|tab| !tab.is_active));
@@ -5624,7 +5642,7 @@ mod tests {
     /// the frames its tab is hidden: switching away and back restores it.
     #[test]
     fn resolve_layout_node_keeps_a_hidden_tab_entrys_tree_cursor_alive() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let mut backend = TuiBackend::new();
         let area = Rect::new(0.0, 0.0, 40.0, 20.0);
         let tree_id = WidgetId::new("files-tree");
@@ -5641,7 +5659,7 @@ mod tests {
 
         let mut node = layout(0);
         resolve_layout_node(&widget_state, &mut backend, area, &mut node);
-        widget_state.gc();
+        widget_state.borrow_mut().gc();
         let paths: Vec<TreePath> = (0..30u16).map(|i| vec![i]).collect();
         for _ in 0..5 {
             assert!(apply_tree_nav_key(
@@ -5659,7 +5677,7 @@ mod tests {
         for selected in [1, 1, 0] {
             let mut node = layout(selected);
             resolve_layout_node(&widget_state, &mut backend, area, &mut node);
-            widget_state.gc();
+            widget_state.borrow_mut().gc();
         }
 
         assert_eq!(
@@ -5680,7 +5698,7 @@ mod tests {
     /// the new one.
     #[test]
     fn resolve_layout_tabs_active_moves_both_the_strip_and_the_content_pane() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
         let mut tabs = test_layout_tabs(vec![true, false, false, false]);
 
@@ -5710,7 +5728,7 @@ mod tests {
     /// counterpart of `resolve_tab_bar_active_controlled_change_overrides_a_stored_click`.
     #[test]
     fn resolve_layout_tabs_active_controlled_change_overrides_a_stored_click() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
 
         let mut seed = test_layout_tabs(vec![true, false, false, false]);
@@ -5737,7 +5755,7 @@ mod tests {
     /// the click/close pair under test, not a descriptor change.
     #[test]
     fn apply_tab_closed_shifts_a_stored_active_index_past_the_closed_tab() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
 
         resolve_tab_bar_active(
@@ -5759,7 +5777,7 @@ mod tests {
     /// it pointing at whichever tab now occupies that slot.
     #[test]
     fn apply_tab_closed_clears_a_stored_active_index_at_the_closed_tab() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
 
         resolve_tab_bar_active(
@@ -5780,7 +5798,7 @@ mod tests {
     /// Closing a tab after the stored active index leaves it untouched.
     #[test]
     fn apply_tab_closed_leaves_an_index_before_the_closed_tab_untouched() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
 
         resolve_tab_bar_active(
@@ -5808,7 +5826,7 @@ mod tests {
     /// instead.
     #[test]
     fn apply_tree_toggle_expand_persists_across_an_uncontrolled_render() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let path = vec![0_u16];
         let tree = TreeView {
@@ -5836,7 +5854,7 @@ mod tests {
     /// persisted — even collapsing a row a toggle just expanded.
     #[test]
     fn resolve_tree_expansion_controlled_change_overrides_a_stored_toggle() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let path = vec![0_u16];
         let collapsed = TreeView {
@@ -5878,7 +5896,7 @@ mod tests {
     /// A leaf row (`is_expanded: None`) is never touched.
     #[test]
     fn resolve_tree_expansion_leaves_leaf_rows_untouched() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let tree = test_tree(3, None, 0);
         let resolved = resolve_tree_expansion(&widget_state, &tree);
         assert!(resolved.rows.iter().all(|row| row.is_expanded.is_none()));
@@ -5892,7 +5910,7 @@ mod tests {
     /// controls which rows paint.
     #[test]
     fn resolve_tree_expansion_hides_rows_under_a_resolved_collapsed_ancestor() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let parent = vec![0_u16];
         let child = vec![0_u16, 0_u16];
@@ -5934,7 +5952,7 @@ mod tests {
     /// value, not from whatever a now-stale entry remembered.
     #[test]
     fn resolve_tree_expansion_reseeds_a_pruned_then_reappearing_path_from_the_descriptor() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let path = vec![0_u16];
         let tree = TreeView {
@@ -5967,14 +5985,14 @@ mod tests {
     }
 
     /// `resolve_tree_expansion` and `resolve_tree_cursor`/`apply_tree_nav_key`
-    /// both persist state for the same tree `id` in the one `WidgetState`
+    /// both persist state for the same tree `id` in the one `WidgetStateStore`
     /// store, which holds exactly one typed value per id — this asserts
     /// they don't clobber each other's entry when both are used for the
     /// same tree in the same frame, the regression `expanded_state_id`'s
     /// own doc exists to prevent.
     #[test]
     fn tree_expansion_and_tree_cursor_state_coexist_for_the_same_tree_id() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let path = vec![0_u16];
         let tree = TreeView {
@@ -6010,7 +6028,7 @@ mod tests {
     /// resolved/applied this process — snapshots to `None`.
     #[test]
     fn widget_state_snapshot_is_none_for_an_untouched_id() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         assert_eq!(
             widget_state_snapshot(&widget_state, WidgetId::new("host-test:untouched")),
             None
@@ -6021,7 +6039,7 @@ mod tests {
     /// left them stored.
     #[test]
     fn widget_state_snapshot_reads_back_a_tree_cursor() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let tree = test_tree(10, Some(vec![3_u16]), 0);
         resolve_tree_cursor(&widget_state, &tree, 4);
@@ -6039,7 +6057,7 @@ mod tests {
     /// left them stored.
     #[test]
     fn widget_state_snapshot_reads_back_a_list_cursor() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:list");
         let list = test_list(10, 2, 0);
         resolve_list_cursor(&widget_state, &list, 4);
@@ -6054,7 +6072,7 @@ mod tests {
     /// stored, once a drag has moved it off the descriptor's own literal.
     #[test]
     fn widget_state_snapshot_reads_back_a_split_ratio() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:split");
         resolve_split_ratio(&widget_state, &test_split(0.5));
         apply_split_divider_drag(&widget_state, id, 0, 0.7);
@@ -6068,7 +6086,7 @@ mod tests {
     /// left it stored.
     #[test]
     fn widget_state_snapshot_reads_back_an_active_tab() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tab-bar");
         resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![true, false]));
         apply_tab_activated(&widget_state, id, 1);
@@ -6083,7 +6101,7 @@ mod tests {
     /// coexist in one snapshot since both can be live for the same tree.
     #[test]
     fn widget_state_snapshot_reads_back_an_expanded_set_alongside_the_cursor() {
-        let widget_state = WidgetState::new();
+        let widget_state = RefCell::new(WidgetStateStore::new());
         let id = WidgetId::new("host-test:tree");
         let path = vec![0_u16];
         let tree = TreeView {

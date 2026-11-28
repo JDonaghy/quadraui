@@ -1,9 +1,8 @@
 """Black-box coverage for mouse text selection + Ctrl-C copy against a
 `message_list` descriptor.
 
-Mirrors `test_text_selection.py`'s `text_display` coverage: `ExtraPaint for
-MessageList`'s `paint` (`quadraui-binding-core/src/extra_paint.rs`) registers
-a `TextRegion` for the painted transcript, so a drag across it begins a
+Mirrors `test_text_selection.py`'s `text_display` coverage: `MessageList`'s
+paint registers a `TextRegion` for the painted transcript, so a drag across it begins a
 `DragTarget::TextSelection` and a following `MouseMoved` emits
 `TextSelectionChanged`; `Ctrl-C` with an active selection emits `TextCopied`.
 """

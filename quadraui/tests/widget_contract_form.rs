@@ -337,3 +337,20 @@ fn ctrl_z_on_a_focused_text_field_does_not_type_a_z() {
     assert!(driver.screen_contains("Mono"), "{}", driver.screen());
     assert!(!driver.screen_contains("Monoz"), "{}", driver.screen());
 }
+
+#[test]
+fn ctrl_z_on_a_focused_text_field_undoes_the_last_keystroke() {
+    let mut driver = driver();
+    click_row(&mut driver, "Font");
+    driver.type_char('X');
+    driver.type_char('Y');
+    assert!(driver.screen_contains("MonoXY"), "{}", driver.screen());
+
+    chord(&mut driver, 'z');
+    assert!(driver.screen_contains("MonoX"), "{}", driver.screen());
+    assert!(!driver.screen_contains("MonoXY"), "{}", driver.screen());
+
+    chord(&mut driver, 'z');
+    assert!(!driver.screen_contains("MonoX"), "{}", driver.screen());
+    assert!(driver.screen_contains("Mono"), "{}", driver.screen());
+}

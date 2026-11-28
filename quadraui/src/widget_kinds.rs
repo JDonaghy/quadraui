@@ -425,9 +425,9 @@ widget_kinds! {
     "list" => crate::ListView,
     // Gated the same as `impl Primitive for TreeView`/`TreeTable`, so
     // these entries exist exactly on the feature sets where each is a
-    // `DynWidget`. `"tree_table_controller"` is the wire name the py/node
-    // hierarchical-model kind publishes; it decodes to the same flattened
-    // `TreeTable` descriptor as `"tree_table"`.
+    // `DynWidget`. `"tree_table_controller"` is the hierarchical-model
+    // kind: a node tree the widget flattens itself, keeping the expand,
+    // selection, scroll and sort state in its own `Interactive::State`.
     #[cfg(any(
         feature = "gtk",
         feature = "tui",
@@ -448,7 +448,7 @@ widget_kinds! {
         feature = "win",
         all(feature = "macos", target_os = "macos")
     ))]
-    "tree_table_controller" => crate::TreeTable,
+    "tree_table_controller" => crate::TreeTableModel,
     // Ungated, like `impl Primitive for TabBar`/`impl Interactive for
     // TabBar` — `TabBar` is a `DynWidget` on every feature set.
     "tab_bar" => crate::TabBar,
@@ -485,7 +485,10 @@ widget_kinds! {
     // impls carry no feature gate. The kind strings are the ones the wire
     // schema already publishes for them.
     "toolbar" => crate::Toolbar,
-    "menu_bar" => crate::MenuBar,
+    // The wire's `menu_bar` is the whole application menu — the bar and
+    // its dropdown cascade — not the bare strip, so a host routing it
+    // through the widget contract gets the dropdowns as popups.
+    "menu_bar" => crate::AppMenu,
     "context_menu" => crate::ContextMenu,
     // Ungated: `Palette`'s and `Form`'s `Primitive`/`Interactive` impls
     // carry no feature gate. The kind strings are the ones the wire
@@ -515,6 +518,8 @@ widget_kinds! {
     "message_list" => crate::MessageList,
     "password" => crate::PasswordInput,
     "textarea" => crate::TextArea,
+    "text_input" => crate::TextInput,
+    "text_field" => crate::TextField,
     // Ungated like `MessageList`: `FindReplacePanel`'s
     // `Primitive`/`Interactive` impls carry no feature gate.
     "find_replace" => crate::FindReplacePanel,
@@ -791,6 +796,18 @@ mod tests {
                     .expect("textarea serializes"),
                 "notes",
             ),
+            (
+                "text_input",
+                serde_json::to_value(crate::TextInput::new("ti".into()))
+                    .expect("text_input serializes"),
+                "ti",
+            ),
+            (
+                "text_field",
+                serde_json::to_value(crate::TextField::new("tf".into()))
+                    .expect("text_field serializes"),
+                "tf",
+            ),
         ];
         for (kind, payload, id) in cases {
             let widget = decode_widget(kind, payload).unwrap_or_else(|e| panic!("{kind}: {e}"));
@@ -866,6 +883,10 @@ mod tests {
         )
         .expect("menu_bar decodes");
         assert_eq!(menu_bar.id().map(|id| id.as_str()), Some("menus"));
+        assert!(
+            menu_bar.as_any().is::<crate::AppMenu>(),
+            "menu_bar decodes to the whole application menu, dropdowns included"
+        );
 
         let context_menu = decode_widget(
             "context_menu",
@@ -1254,13 +1275,35 @@ mod tests {
         }
 
         #[test]
-        fn decodes_a_tree_table_under_both_kind_names() {
-            for kind in ["tree_table", "tree_table_controller"] {
-                let payload = serde_json::to_value(sample_tree_table()).expect("table serializes");
-                let widget = decode_widget(kind, payload)
-                    .unwrap_or_else(|err| panic!("{kind} decodes: {err}"));
-                assert_eq!(widget.id().map(|id| id.as_str()), Some("files"), "{kind}");
-            }
+        fn decodes_a_flat_tree_table() {
+            let payload = serde_json::to_value(sample_tree_table()).expect("table serializes");
+            let widget = decode_widget("tree_table", payload).expect("tree_table decodes");
+            assert!(widget.as_any().is::<TreeTable>());
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("files"));
+        }
+
+        #[test]
+        fn decodes_a_node_tree_as_a_tree_table_model() {
+            let payload = serde_json::json!({
+                "id": "files",
+                "columns": [{"title": "Name", "width": {"Flex": 1.0}}],
+                "nodes": [{
+                    "id": "src",
+                    "cells": [{"spans": [{"text": "src"}]}],
+                    "has_children": true,
+                    "children": [{"id": "src/lib.rs", "cells": []}],
+                }],
+                "sort_override": true,
+            });
+            let widget =
+                decode_widget("tree_table_controller", payload).expect("node tree decodes");
+            let model = widget
+                .as_any()
+                .downcast_ref::<crate::TreeTableModel>()
+                .expect("a TreeTableModel");
+            assert_eq!(model.nodes.len(), 1);
+            assert_eq!(model.nodes[0].children().map(<[_]>::len), Some(1));
+            assert!(model.sort_override && model.has_focus);
         }
     }
 }

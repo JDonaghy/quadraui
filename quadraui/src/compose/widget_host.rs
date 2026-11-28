@@ -312,8 +312,10 @@ pub(crate) fn child_event(
 ///
 /// Pointer positions are made relative to `area`'s origin, and `sub` is
 /// the first of the widget's sub-regions that contains the pointer —
-/// the same resolution the runtime's routing engine performs.
-pub(crate) fn routed_event(
+/// the same resolution the runtime's routing engine performs. A binding
+/// host that routes raw events into a widget it paints itself (an
+/// imperative overlay) translates them through this too.
+pub fn routed_event(
     event: &UiEvent,
     area: Rect,
     sub_regions: &[(Rect, SubTarget)],

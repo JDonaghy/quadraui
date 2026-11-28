@@ -852,7 +852,7 @@ pub use primitives::tree::{
     TreeRowMeasure, TreeView, TreeViewHit, TreeViewLayout, VisibleTreeRow,
 };
 pub use primitives::tree_table::{
-    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
+    TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableModelEvent, TreeTableNode,
 };
 pub use style::{CellOverflow, Style};
 pub use text_util::{
@@ -937,7 +937,9 @@ pub use interactive::{
 // The widget-contract routing engine's two public types — see
 // `frame_tree`/`widget_state`'s own module docs.
 pub use frame_tree::{FrameHit, FrameTree, FrameTreeNode};
-pub use widget_state::{with_widget_states, WidgetRoutingState, WidgetStateStore};
+pub use widget_state::{
+    lend_widget_state, with_widget_states, WidgetRoutingState, WidgetStateStore,
+};
 // Widget-owned popups — see `popup`'s own module doc.
 pub use popup::{
     paint_open_popups, DismissReason, OpenPopup, Popup, PopupDismiss, PopupKey, PopupSide,
@@ -1012,7 +1014,10 @@ pub use compose::{
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
+pub use compose::{
+    TreeTableController, TreeTableControllerEvent, TreeTableModel, TreeTableModelState,
+    TreeTableNodeData,
+};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.

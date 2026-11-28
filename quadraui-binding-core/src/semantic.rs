@@ -5,14 +5,12 @@
 //! payload itself.
 
 use quadraui::{
-    CanvasEvent, DataTableEvent, EditOp, Key, ListViewEvent, Modifiers, MouseButton, NamedKey,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    DataTableEvent, Key, ListViewEvent, Modifiers, NamedKey, TextDisplayEvent, TreeEvent, UiEvent,
+    WidgetId,
 };
 
-use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{extra_as, PasswordInput, TextArea};
+use crate::drag::tree_row_path;
 use crate::hit::{HitDetail, PaintedHit};
-use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
@@ -58,7 +56,7 @@ fn data_table_key_event(
 /// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
 /// same fallthrough — in particular Up/Down/vim `j`/`k`, which move the
 /// `List`'s row cursor inside [`crate::host::apply_list_nav_key`]'s own
-/// `WidgetState` entry rather than through an event. A binding's handler
+/// `WidgetStateStore` entry rather than through an event. A binding's handler
 /// therefore keeps seeing navigation keys as `ListViewEvent::KeyPressed`,
 /// which is what an app that tracks its own `ListView::selected_idx`
 /// (the controlled shape, since `selected_idx` is a required descriptor
@@ -81,71 +79,11 @@ fn list_key_event(
     None
 }
 
-/// Left/Right navigation and Enter/Space activation for a focused `TabBar`
-/// — the keyboard half of the seam [`quadraui::TabChrome::focused_index`]
-/// composes with on the paint side. Delegates to
-/// [`TabBar::handle_focus_key`] (the primitive's own pure helper) using the
-/// `focused_index`/`tab_count` [`crate::hit::PaintedHit::TabBar`] recorded
-/// at paint time, the same way [`data_table_key_event`] reads its hit's
-/// `selected_idx`/`total_rows`. Returns `None` for any key
-/// `handle_focus_key` doesn't recognize (or when `tab_count == 0`),
-/// leaving [`focus_scoped_key_event`] to fall through to the raw
-/// `TabBarEvent::KeyPressed` the same way `list_key_event`'s callers do.
-fn tab_bar_key_event(
-    id: WidgetId,
-    key: &str,
-    focused_index: Option<usize>,
-    tab_count: usize,
-) -> Option<UiEvent> {
-    TabBar::handle_focus_key(focused_index, tab_count, key).map(|ev| UiEvent::TabBar(id, ev))
-}
-
-/// Resolves a key focused on a standalone [`PasswordInput`] leaf by
-/// forwarding to [`text_input_key_event`] on its plaintext `inner` —
-/// identical typing/cursor/selection/commit semantics to a bare
-/// standalone `TextInput`, the only difference being what
-/// [`PasswordInput::as_widget`](crate::extra_paint::PasswordInput::as_widget)
-/// paints, which never sees this function at all.
-pub(crate) fn password_key_event(
-    id: WidgetId,
-    password: &PasswordInput,
-    key: &Key,
-    modifiers: Modifiers,
-    text_editors: &TextEditorCache,
-) -> Option<UiEvent> {
-    text_input_key_event(id, &password.inner, key, modifiers, text_editors)
-}
-
-/// Resolves a key focused on a standalone [`TextArea`] leaf: every key
-/// [`EditOp::from_key`] maps goes straight through
-/// [`apply_text_input_edit`] on its `inner` [`TextInput`] — unlike
-/// [`password_key_event`]'s forward to [`text_input_key_event`], Enter is
-/// never special-cased into a commit here, so `EditOp::from_key`'s own
-/// `Enter -> InsertChar('\n')` mapping is what gives this leaf a real
-/// newline on Enter, the one behavioural difference
-/// `FieldKind::TextArea`'s own doc draws against `FieldKind::TextInput`.
-/// A Ctrl/Cmd chord is left unclaimed (`None`) so an app-level accelerator
-/// still fires, same guard [`text_input_key_event`] applies.
-pub(crate) fn text_area_key_event(
-    id: WidgetId,
-    text_area: &TextArea,
-    key: &Key,
-    modifiers: Modifiers,
-    text_editors: &TextEditorCache,
-) -> Option<UiEvent> {
-    if modifiers.ctrl || modifiers.cmd {
-        return None;
-    }
-    let op = EditOp::from_key(key, modifiers)?;
-    apply_text_input_edit(id, &text_area.inner, op, text_editors)
-}
-
 /// The semantic [`UiEvent`] a click on `detail` (within primitive `id`)
-/// stands for, if any — the set the binding's own event handler synthesizes so a tab
-/// click, tab close-button click, tree-row/chevron click, list-item click,
-/// data-table-row/header click, or tab-bar button click reaches the
-/// binding's own event handler as the same shape it would get by pushing that event directly
-/// (`UiEvent::TabBar`/`UiEvent::Tree`/`UiEvent::List`/`UiEvent::DataTable`),
+/// stands for, if any — the set the binding's own event handler synthesizes so a
+/// tree-row/chevron click, list-item click or data-table-row/header click
+/// reaches the binding's own event handler as the same shape it would get by
+/// pushing that event directly (`UiEvent::Tree`/`UiEvent::List`/`UiEvent::DataTable`),
 /// rather than only as a raw `MouseDown`/`DoubleClick` plus a `"hit"` dict
 /// the handler would have to re-interpret itself. `double_click` selects
 /// between a variant's single- and double-click shapes where both exist
@@ -154,50 +92,19 @@ pub(crate) fn text_area_key_event(
 /// `DataTableEvent::RowSelected` vs `RowDoubleClicked`). `None` for every
 /// other `HitDetail` — a data-table header divider or a split divider
 /// (handled separately, via [`crate::drag::ActiveDrag`], since either spans
-/// a drag rather than a single click), a tab-bar scroll-left/right arrow (no semantic
-/// event exists for it), or a modified list-item click (see the `ListItem`
+/// a drag rather than a single click), or a modified list-item click (see the `ListItem`
 /// arm below, which loses the gesture if folded into
 /// `ListViewEvent::SelectionChanged`) — for which the raw
 /// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
 /// event handler unchanged.
-/// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
-/// semantics (currently [`Checkbox`]/[`Slider`]/[`Select`]); an extra with no
-/// recognized click behavior still falls through to the raw `MouseDown`. `point` is
-/// the absolute click position the caller already has (every caller is a
-/// `MouseDown`/`DoubleClick` branch, so it's always available) — only
-/// [`HitDetail::ExtraBody`]'s [`Slider`] arm and [`HitDetail::CanvasRegion`]'s
-/// own arm use it, the latter to translate it into the canvas's own LOCAL
-/// frame for [`quadraui::CanvasEvent`]'s `x`/`y` fields. `button` is the
-/// pressed mouse button the caller's raw `MouseDown` carried — a
-/// `DoubleClick` has no `button` field of its own, so every caller passes
-/// [`MouseButton::Left`] for one (matching `modifiers`' own
-/// `Modifiers::default()` fallback there); only
-/// [`HitDetail::CanvasRegion`]'s non-double-click arm reads it, for
-/// [`quadraui::CanvasEvent::RegionClicked`]'s own `button` field.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
-    button: MouseButton,
     modifiers: Modifiers,
     double_click: bool,
     hit_map: &[PaintedHit],
-    point: quadraui::Point,
 ) -> Option<UiEvent> {
     match detail {
-        HitDetail::TabBarTab { tab } => Some(UiEvent::TabBar(
-            id,
-            TabBarEvent::TabActivated { index: *tab },
-        )),
-        HitDetail::TabBarTabClose { tab } => {
-            Some(UiEvent::TabBar(id, TabBarEvent::TabClosed { index: *tab }))
-        }
-        HitDetail::TabBarRightSegment => {
-            let tab_bar_id = tab_bar_for_right_segment(hit_map, id)?;
-            Some(UiEvent::TabBar(
-                tab_bar_id,
-                TabBarEvent::ButtonClicked { id },
-            ))
-        }
         HitDetail::TreeRow { row } => {
             let path = tree_row_path(hit_map, id, *row)?;
             if double_click {
@@ -250,58 +157,13 @@ pub fn semantic_event_for_hit(
                 ))
             }
         }
-        HitDetail::ExtraBody => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id,
-                extra,
-                area,
-                ..
-            } if *hit_id == id => None,
-            _ => None,
-        }),
-        // Translates the absolute `point` into the canvas's own LOCAL frame
-        // (looked up from the matched `PaintedHit::Extra`'s own `area`,
-        // the same "every `DrawOp`/`CanvasRegion::rect` coordinate" frame
-        // `quadraui::Canvas`'s module doc describes) for
-        // `CanvasEvent::RegionClicked`/`RegionDoubleClicked`'s own `x`/`y`
-        // fields — a region's own rect is authored in that frame, so this
-        // lets an app compare the two without re-deriving the canvas's
-        // absolute paint position itself.
-        HitDetail::CanvasRegion { region } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id, area, ..
-            } if *hit_id == id => {
-                let x = point.x - area.x;
-                let y = point.y - area.y;
-                Some(UiEvent::Canvas(
-                    id,
-                    if double_click {
-                        CanvasEvent::RegionDoubleClicked {
-                            region: *region,
-                            x,
-                            y,
-                        }
-                    } else {
-                        CanvasEvent::RegionClicked {
-                            region: *region,
-                            button,
-                            modifiers,
-                            x,
-                            y,
-                        }
-                    },
-                ))
-            }
-            _ => None,
-        }),
         _ => None,
     }
 }
 
 /// Wire-shaped drag-gesture event [`crate::engine::InteractionEngine::handle`]
-/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`] —
-/// mirrors [`crate::engine::TreeTableControllerWireEvent`]'s own `EventSink`
-/// default-method rollout: that method defaults to ignoring the event and
+/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`],
+/// a default method on that trait: it defaults to ignoring the event and
 /// reporting [`quadraui::Reaction::Continue`], so every existing
 /// [`crate::engine::EventSink`] impl keeps compiling unchanged until a
 /// binding deliberately overrides it to thread this to its own callback.
@@ -401,7 +263,7 @@ pub fn key_to_focus_string(key: &Key) -> String {
 /// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
 /// focused `List`'s Enter with at least one row, straight into
 /// [`list_key_event`]'s `ItemActivated`). A focused
-/// [`crate::extra_paint::WIDGET_KINDS`] leaf (e.g. `Button`, `Switch`) never
+/// [`crate::widget_kinds::WIDGET_KINDS`] leaf (e.g. `Button`, `Switch`) never
 /// reaches this function at all — `InteractionEngine::handle` claims its
 /// `KeyPressed` earlier, through `DynWidget::handle` directly, the same
 /// generic seam its `MouseDown`/`DoubleClick` routing already goes through.
@@ -415,7 +277,6 @@ pub fn focus_scoped_key_event(
     raw_key: &Key,
     modifiers: Modifiers,
     hit_map: &[PaintedHit],
-    text_editors: &TextEditorCache,
 ) -> UiEvent {
     let fallback = UiEvent::KeyPressed {
         key: raw_key.clone(),
@@ -455,21 +316,6 @@ pub fn focus_scoped_key_event(
                         },
                     ))
                 }),
-            PaintedHit::TabBar {
-                id,
-                focused_index,
-                tab_count,
-                ..
-            } if *id == focused => tab_bar_key_event(*id, &key, *focused_index, *tab_count)
-                .or_else(|| {
-                    Some(UiEvent::TabBar(
-                        *id,
-                        TabBarEvent::KeyPressed {
-                            key: key.clone(),
-                            modifiers,
-                        },
-                    ))
-                }),
             PaintedHit::TextDisplay { id, .. } if *id == focused => Some(UiEvent::TextDisplay(
                 *id,
                 TextDisplayEvent::KeyPressed {
@@ -483,96 +329,13 @@ pub fn focus_scoped_key_event(
                 total_rows,
                 ..
             } if *id == focused => data_table_key_event(*id, raw_key, *selected_idx, *total_rows),
-            PaintedHit::Extra { id, extra, .. } if *id == focused => {
-                if let Some(text_input) = extra_as::<TextInput>(extra) {
-                    return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
-                }
-                if let Some(password) = extra_as::<PasswordInput>(extra) {
-                    return password_key_event(*id, password, raw_key, modifiers, text_editors);
-                }
-                if let Some(text_area) = extra_as::<TextArea>(extra) {
-                    return text_area_key_event(*id, text_area, raw_key, modifiers, text_editors);
-                }
-                None
-            }
             _ => None,
         })
         .unwrap_or(fallback)
 }
 
-/// Forwards a resolved [`HitDetail::CanvasRegion`] click to the matched
-/// leaf's own [`crate::scripted::ScriptedExtra`] facet, if it has one —
-/// the counterpart, for a script-defined widget, of
-/// [`semantic_event_for_hit`]'s own `CanvasRegion` arm (which only builds
-/// the `UiEvent::Canvas` an app's own handler sees; a `Canvas` descriptor
-/// has no `on_event` of its own for anything to call). `crate::engine`
-/// calls both at the same site, on every click [`HitDetail::CanvasRegion`]
-/// resolves — see that call site's own comment. `point` is ABSOLUTE
-/// (the same frame `semantic_event_for_hit`'s own `point` parameter takes),
-/// translated into the leaf's own LOCAL frame here via the matched
-/// [`PaintedHit::Extra`]'s `area`, the same translation that other
-/// function's `CanvasRegion` arm already does for
-/// [`CanvasEvent::RegionClicked`]'s own `x`/`y` fields.
-///
-/// Returns `false` (nothing to forward, and so nothing for the caller to
-/// force a redraw over) whenever no leaf named `id` is an `Extra` with a
-/// [`crate::scripted::ScriptedExtra`] facet — true for every hit this
-/// isn't called for as much as for a genuine miss, so a caller is free to
-/// call this unconditionally on a `CanvasRegion` hit without checking the
-/// matched descriptor's own kind first.
-pub fn scripted_region_click(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-    region: WidgetId,
-    button: MouseButton,
-    modifiers: Modifiers,
-    double_click: bool,
-    point: quadraui::Point,
-) -> bool {
-    hit_map
-        .iter()
-        .find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id,
-                extra,
-                area,
-                ..
-            } if *hit_id == id => {
-                let scripted = extra.as_scripted()?;
-                let local = quadraui::Point::new(point.x - area.x, point.y - area.y);
-                Some(scripted.scripted_click_region(region, button, modifiers, local, double_click))
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
-/// Forwards a focused key press to whichever leaf [`FocusTree`][quadraui::FocusTree]
-/// names as focused, if it is an `Extra` with a
-/// [`crate::scripted::ScriptedExtra`] facet — the key-press counterpart of
-/// [`scripted_region_click`] above, called alongside
-/// [`focus_scoped_key_event`] rather than from inside it, for the same
-/// reason: that function's return type has no room for the `bool` a
-/// script's own `on_event` answers with, only a `UiEvent` for the app's
-/// own handler to see.
-pub fn scripted_key_press(hit_map: &[PaintedHit], focused: WidgetId, key: &Key) -> bool {
-    hit_map
-        .iter()
-        .find_map(|hit| match hit {
-            PaintedHit::Extra { id, extra, .. } if *id == focused => {
-                let scripted = extra.as_scripted()?;
-                Some(scripted.scripted_key_pressed(key.clone()))
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     use super::*;
 
     fn rename_session(text: &str, cursor: usize) -> quadraui::TreeRowEditState {
@@ -669,7 +432,6 @@ mod tests {
             Some(UiEvent::Tree(id, TreeEvent::RowRenameCancelled { path }))
         );
     }
-    use quadraui::{Rect, TabBarLayout};
 
     /// `key_to_focus_string` defers to the shared `NamedKey::name` table,
     /// so an F13+ press stringifies to `"F13"` rather than any
@@ -680,241 +442,5 @@ mod tests {
         assert_eq!(key_to_focus_string(&Key::Named(NamedKey::Escape)), "Escape");
         assert_eq!(key_to_focus_string(&Key::Named(NamedKey::F(13))), "F13");
         assert_eq!(key_to_focus_string(&Key::Char('a')), "a");
-    }
-
-    /// A minimal [`PaintedHit::TabBar`] with `tab_count` tabs and no
-    /// close/scroll/right-segment chrome — the `hit_test`-reachable fields
-    /// `focus_scoped_key_event` never touches are left empty, same as
-    /// [`crate::drag::tab_bar_for_right_segment`]'s own test fixtures.
-    fn tab_bar_hit(id: WidgetId, focused_index: Option<usize>, tab_count: usize) -> PaintedHit {
-        PaintedHit::TabBar {
-            id,
-            area: Rect::new(0.0, 0.0, 40.0, 1.0),
-            clip: Rect::new(0.0, 0.0, 40.0, 1.0),
-            layout: TabBarLayout {
-                bar_width: 40.0,
-                bar_height: 1.0,
-                visible_tabs: Vec::new(),
-                visible_segments: Vec::new(),
-                scroll_left: None,
-                scroll_right: None,
-                hit_regions: Vec::new(),
-                resolved_scroll_offset: 0,
-            },
-            focused_index,
-            tab_count,
-        }
-    }
-
-    /// `ArrowRight` on a focused `"tabs"` node with a `focused_index` of
-    /// `0` moves the focus to tab `1` — [`TabBarEvent::FocusMoved`], not
-    /// the raw `TabBarEvent::KeyPressed` fallback. This is the keyboard
-    /// half of the seam [`quadraui::TabChrome::focused_index`] composes on
-    /// the paint side: an app only sees `FocusMoved` here because
-    /// [`focus_scoped_key_event`]'s `PaintedHit::TabBar` arm now tries
-    /// [`tab_bar_key_event`] before falling back to `KeyPressed`.
-    #[test]
-    fn arrow_right_on_a_focused_tab_bar_moves_focus() {
-        let id = WidgetId::new("tabs");
-        let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
-        let text_editors = TextEditorCache::default();
-        let event = focus_scoped_key_event(
-            id,
-            &Key::Named(NamedKey::Right),
-            Modifiers::default(),
-            &hit_map,
-            &text_editors,
-        );
-        assert_eq!(
-            event,
-            UiEvent::TabBar(id, TabBarEvent::FocusMoved { index: 1 })
-        );
-    }
-
-    /// `Enter` on a focused `"tabs"` node activates the currently focused
-    /// tab — [`TabBarEvent::TabActivated`], the keyboard equivalent of a
-    /// pointer click on the tab, mirroring `data_table_key_event`'s own
-    /// Enter-activates-the-selection handling.
-    #[test]
-    fn enter_on_a_focused_tab_bar_activates_it() {
-        let id = WidgetId::new("tabs");
-        let hit_map = vec![tab_bar_hit(id, Some(2), 3)];
-        let text_editors = TextEditorCache::default();
-        let event = focus_scoped_key_event(
-            id,
-            &Key::Named(NamedKey::Enter),
-            Modifiers::default(),
-            &hit_map,
-            &text_editors,
-        );
-        assert_eq!(
-            event,
-            UiEvent::TabBar(id, TabBarEvent::TabActivated { index: 2 })
-        );
-    }
-
-    /// A key `TabBar::handle_focus_key` doesn't recognize (`Escape`) falls
-    /// through to the raw `TabBarEvent::KeyPressed`, same as it always
-    /// did before the `FocusMoved`/`TabActivated` synthesis existed.
-    #[test]
-    fn unrecognized_key_on_a_focused_tab_bar_falls_back_to_key_pressed() {
-        let id = WidgetId::new("tabs");
-        let hit_map = vec![tab_bar_hit(id, Some(0), 3)];
-        let text_editors = TextEditorCache::default();
-        let event = focus_scoped_key_event(
-            id,
-            &Key::Named(NamedKey::Escape),
-            Modifiers::default(),
-            &hit_map,
-            &text_editors,
-        );
-        assert_eq!(
-            event,
-            UiEvent::TabBar(
-                id,
-                TabBarEvent::KeyPressed {
-                    key: "Escape".to_string(),
-                    modifiers: Modifiers::default(),
-                }
-            )
-        );
-    }
-
-    /// A `ScriptWidget` built directly in Rust test code, recording every
-    /// `on_event` call it receives into `log` (shared externally, since
-    /// [`crate::scripted::ScriptedPrimitive`] owns the widget by value) —
-    /// enough to prove [`scripted_region_click`]/[`scripted_key_press`]
-    /// forward the right data, with no real binding callback object in
-    /// scope.
-    struct RecordingWidget {
-        log: Rc<RefCell<Vec<String>>>,
-    }
-
-    impl crate::scripted::ScriptWidget for RecordingWidget {
-        fn measure(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            _constraints: crate::scripted::ScriptedConstraints,
-        ) -> crate::scripted::ScriptedSize {
-            crate::scripted::ScriptedSize::default()
-        }
-
-        fn paint(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            _props: &crate::scripted::ScriptedProps,
-            _rect: Rect,
-        ) -> crate::scripted::ScriptedPaint {
-            crate::scripted::ScriptedPaint::default()
-        }
-
-        fn on_event(
-            &self,
-            event: &crate::scripted::ScriptedInputEvent,
-            _props: &crate::scripted::ScriptedProps,
-            _state: &crate::scripted::ScriptedState,
-        ) -> bool {
-            match event {
-                crate::scripted::ScriptedInputEvent::Canvas(CanvasEvent::RegionClicked {
-                    region,
-                    x,
-                    y,
-                    ..
-                }) => {
-                    self.log
-                        .borrow_mut()
-                        .push(format!("click:{}:{x},{y}", region.as_str()));
-                    true
-                }
-                crate::scripted::ScriptedInputEvent::Key(key) => {
-                    self.log
-                        .borrow_mut()
-                        .push(format!("key:{}", key_to_focus_string(key)));
-                    true
-                }
-                _ => false,
-            }
-        }
-    }
-
-    /// Wraps a [`RecordingWidget`] in a [`PaintedHit::Extra`] at `area` —
-    /// the shape [`scripted_region_click`]/[`scripted_key_press`] both
-    /// scan `hit_map` for.
-    fn recording_scripted_extra_hit(
-        id: WidgetId,
-        area: Rect,
-        log: Rc<RefCell<Vec<String>>>,
-    ) -> PaintedHit {
-        let primitive = crate::scripted::ScriptedPrimitive::new(id, RecordingWidget { log }, true);
-        PaintedHit::Extra {
-            id,
-            area,
-            extra: Rc::new(primitive) as Rc<dyn crate::extra_paint::ExtraPaint>,
-        }
-    }
-
-    /// [`scripted_region_click`] translates `point` into the leaf's own
-    /// LOCAL frame (via the matched hit's `area`) before forwarding to
-    /// `on_event`, the same translation [`semantic_event_for_hit`]'s own
-    /// `CanvasRegion` arm does for `CanvasEvent::RegionClicked`'s `x`/`y`
-    /// — and reports the script's own `true` (consumed) back to the
-    /// caller.
-    #[test]
-    fn scripted_region_click_translates_to_local_and_reports_consumed() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let hit_map = vec![recording_scripted_extra_hit(
-            WidgetId::new("w"),
-            Rect::new(10.0, 20.0, 10.0, 4.0),
-            log.clone(),
-        )];
-
-        let handled = scripted_region_click(
-            &hit_map,
-            WidgetId::new("w"),
-            WidgetId::new("w:region"),
-            MouseButton::Left,
-            Modifiers::default(),
-            false,
-            quadraui::Point::new(18.0, 22.0),
-        );
-
-        assert!(handled, "the script's own on_event reported true");
-        assert_eq!(log.borrow().as_slice(), ["click:w:region:8,2"]);
-    }
-
-    /// With no leaf named `id` at all — or one with no
-    /// [`crate::scripted::ScriptedExtra`] facet — [`scripted_region_click`]
-    /// is a safe no-op reporting `false`, never a panic.
-    #[test]
-    fn scripted_region_click_is_false_when_nothing_matches() {
-        let hit_map: Vec<PaintedHit> = Vec::new();
-        assert!(!scripted_region_click(
-            &hit_map,
-            WidgetId::new("missing"),
-            WidgetId::new("missing:region"),
-            MouseButton::Left,
-            Modifiers::default(),
-            false,
-            quadraui::Point::new(0.0, 0.0),
-        ));
-    }
-
-    /// [`scripted_key_press`] forwards a focused key press to the
-    /// matching leaf's own `on_event`, reporting its `true` (consumed)
-    /// back to the caller.
-    #[test]
-    fn scripted_key_press_forwards_the_key_and_reports_consumed() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let hit_map = vec![recording_scripted_extra_hit(
-            WidgetId::new("w"),
-            Rect::new(0.0, 0.0, 10.0, 4.0),
-            log.clone(),
-        )];
-
-        let handled =
-            scripted_key_press(&hit_map, WidgetId::new("w"), &Key::Named(NamedKey::Enter));
-
-        assert!(handled, "the script's own on_event reported true");
-        assert_eq!(log.borrow().as_slice(), ["key:Enter"]);
     }
 }

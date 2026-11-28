@@ -33,14 +33,14 @@
 //! reachable today as `quadraui_binding_core::wire::X` still resolves,
 //! through this module's own re-exports below.
 //!
-//! [`leaf`]'s dispatch includes one kind with no `Deserialize` shape of
-//! its own: a `"scripted_widget"` leaf carries only an id and this frame's
-//! JSON props, and is spliced in from whatever live
-//! [`crate::scripted::ScriptedPrimitive<W>`] a binding already registered
-//! against that id via [`crate::scripted::register_scripted_widget`] —
-//! see that function's own doc, and `crate::scripted`'s module doc
-//! ("Splicing into a decoded tree without a `Deserialize` impl"), for the
-//! full contract.
+//! [`leaf`]'s generic widget dispatch includes one runtime-registered kind
+//! with no `Deserialize` shape of its own: a `"scripted_widget"` leaf's
+//! payload carries only an id and this frame's JSON props, and decodes to
+//! whatever live [`crate::scripted::ScriptedPrimitive<W>`] a binding
+//! already registered under that id via
+//! [`crate::scripted::register_scripted_widget`] — see `crate::scripted`'s
+//! module doc ("Splicing into a decoded tree without a `Deserialize`
+//! impl") for the full contract.
 
 use serde::Deserializer;
 
@@ -95,22 +95,21 @@ pub(crate) use frame::render_frame_from_value;
 pub use frame::RenderOutput;
 pub use overlay::{decode_layout_dialog, decode_popover, OverlayContent};
 pub use style::{decode_style_overrides, validate_style_set_name, StyleContext};
+pub(crate) use value::decode_widget_checked;
 pub use value::DecodeDiagnostics;
 pub use value::DragRole;
-pub(crate) use value::{decode_value_checked, decode_widget_checked};
 
 pub use layout::LAYOUT_NODE_KEYS;
 pub use value::StaticTabContent;
 
 /// Whether `key` already means something in a layout-tree node dict: the
-/// leaf `"id"`, a layout container, a fixed leaf or extra-primitive kind, or
-/// a node sibling key. A widget kind registered under such a name would be
+/// leaf `"id"`, a layout container, a fixed leaf kind, or a node sibling
+/// key. A widget kind registered under such a name would be
 /// shadowed by that meaning and never decode as the registered kind.
 pub fn is_reserved_node_key(key: &str) -> bool {
     key == "id"
         || LAYOUT_NODE_KEYS.contains(&key)
         || crate::layout::LEAF_KIND_KEYS.contains(&key)
-        || crate::extra_paint::EXTRA_PRIMITIVE_KINDS.contains(&key)
         || value::UNIVERSAL_NODE_SIBLING_KEYS.contains(&key)
         || value::WINDOWED_LEAF_EXTRA_KEYS.contains(&key)
         || value::TEXT_DISPLAY_EXTRA_KEYS.contains(&key)
@@ -259,7 +258,7 @@ mod tests {
 
     /// A node dict naming a kind this decoder has never heard of
     /// (`"carousel"`, neither a [`LAYOUT_NODE_KEYS`] container nor a
-    /// [`crate::layout::LEAF_KIND_KEYS`]/[`EXTRA_PRIMITIVE_KINDS`] leaf) is
+    /// [`crate::layout::LEAF_KIND_KEYS`]/widget leaf) is
     /// an [`DecodeError::UnknownVariant`] naming both the key and the path
     /// it was found at, under the default (warn) [`DecodeDiagnostics`]
     /// policy -- not a silently blank render, whether the dict is the

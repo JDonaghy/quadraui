@@ -16,7 +16,7 @@ pub(super) fn decode(value: &Value) -> Result<LayoutNode, DecodeError> {
 
 /// Unwraps a `DecodeError`, panicking on an `Ok` -- the `#[cfg(test)]`
 /// counterpart of `Result::expect_err`, which the `Ok` types below
-/// (`LayoutNode`, `RenderOutput`, `Rc<dyn ExtraPaint>`) don't derive
+/// (`LayoutNode`, `RenderOutput`) don't derive
 /// `Debug` for.
 pub(super) fn err<T>(result: Result<T, DecodeError>) -> DecodeError {
     match result {

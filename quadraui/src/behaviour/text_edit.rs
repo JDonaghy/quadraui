@@ -26,12 +26,14 @@
 //!   in. It converts to char-column coordinates, applies one op, and
 //!   converts back.
 //!
-//! Undo/redo is deliberately **not** here: it needs a history that
-//! outlives a single op, which is per-widget state. [`EditOp::Undo`]/
-//! [`EditOp::Redo`] are therefore inert in [`EditView::apply`] and served
-//! by [`crate::TextEditor`]'s own [`crate::undo::UndoStack`];
-//! [`mutates_content`] tells such an owner which ops are worth recording
-//! a pre-mutation snapshot for.
+//! Undo/redo needs a history that outlives a single op, which is
+//! per-widget state, so [`EditOp::Undo`]/[`EditOp::Redo`] are inert in
+//! [`EditView::apply`] alone. [`EditHistory::apply`] is the one place
+//! they are served: it runs an op through an [`EditView`], recording a
+//! pre-mutation [`EditSnapshot`] for every op that changes content
+//! ([`mutates_content`]). [`crate::TextEditor`], [`LinesEditState`] and
+//! [`FlatEditState`] each own one, so every editable text widget undoes
+//! the same way.
 //!
 //! Clipboard is likewise not an [`EditOp`]: a copy or cut has to reach the
 //! host (as [`crate::UiEvent::TextCopied`]) and a paste arrives from it (as
@@ -42,6 +44,7 @@
 use crate::accelerator::KeyBinding;
 use crate::event::{Key, NamedKey};
 use crate::types::Modifiers;
+use crate::undo::UndoStack;
 
 /// A caret (or selection-anchor) position: `(line, char_column)`.
 ///
@@ -231,10 +234,12 @@ impl EditIntent {
     /// layer interprets — function keys, Escape, Tab, a bare Enter a
     /// single-line widget means to claim itself, …).
     ///
+    /// Ctrl/Cmd+Z is [`EditOp::Undo`] and Ctrl/Cmd+Shift+Z
+    /// [`EditOp::Redo`], served from the widget's own [`EditHistory`].
     /// Every other Ctrl/Cmd-chorded character is `None`: backends deliver
     /// a chorded letter as a plain [`Key::Char`] with the modifier set, so
-    /// reading it as typing would put a literal `z` in the buffer on
-    /// Ctrl+Z and swallow the app's own accelerator. Ctrl+Alt without Cmd
+    /// reading it as typing would put a literal `s` in the buffer on
+    /// Ctrl+S and swallow the app's own accelerator. Ctrl+Alt without Cmd
     /// stays typing, since that is how AltGr arrives on Windows layouts.
     pub fn from_key(key: &Key, modifiers: Modifiers) -> Option<EditIntent> {
         let alt_gr = modifiers.ctrl && modifiers.alt && !modifiers.cmd;
@@ -244,6 +249,10 @@ impl EditIntent {
                 Key::Char('c') | Key::Char('C') => return Some(EditIntent::Copy),
                 Key::Char('x') | Key::Char('X') => return Some(EditIntent::Cut),
                 Key::Char('v') | Key::Char('V') => return Some(EditIntent::Paste),
+                Key::Char('z') | Key::Char('Z') if modifiers.shift => {
+                    return Some(EditIntent::Op(EditOp::Redo))
+                }
+                Key::Char('z') | Key::Char('Z') => return Some(EditIntent::Op(EditOp::Undo)),
                 Key::Char(_) => return None,
                 _ => {}
             }
@@ -440,7 +449,7 @@ impl EditView<'_> {
     ///
     /// [`EditOp::Undo`]/[`EditOp::Redo`] are inert here and report
     /// `false`: a history outlives one op, so it belongs to the widget
-    /// that owns the buffer — see the module doc.
+    /// that owns the buffer — see [`EditHistory::apply`].
     pub fn apply(&mut self, op: &EditOp) -> bool {
         if self.lines.is_empty() {
             self.lines.push(String::new());
@@ -603,9 +612,26 @@ impl EditView<'_> {
                     true
                 }
             }
-            // Served by the widget's own history — see the module doc.
+            // Served by the widget's own history — see `EditHistory`.
             EditOp::Undo | EditOp::Redo => false,
         }
+    }
+
+    /// The buffer, caret and anchor as one restorable value.
+    pub fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            lines: self.lines.clone(),
+            caret: self.caret(),
+            anchor: *self.anchor,
+        }
+    }
+
+    /// Replace the buffer, caret and anchor with `snapshot`'s.
+    pub fn restore(&mut self, snapshot: EditSnapshot) {
+        *self.lines = snapshot.lines;
+        *self.cursor_line = snapshot.caret.0;
+        *self.cursor_col = snapshot.caret.1;
+        *self.anchor = snapshot.anchor;
     }
 
     /// Move the caret to `pos`, updating (or clearing) the selection
@@ -740,6 +766,101 @@ impl EditView<'_> {
 // shares, so none of them re-derive this module's caret math or keep a
 // second editor.
 
+/// One undo step: the buffer, caret and selection anchor an
+/// [`EditView`] held before an edit. Viewport fields (scroll, focus) are
+/// not part of it, so undoing an edit does not snap the view back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditSnapshot {
+    lines: Vec<String>,
+    caret: Caret,
+    anchor: Option<Caret>,
+}
+
+/// How many undo steps an [`EditHistory`] keeps. Each step clones the
+/// whole buffer, so the bound keeps a long-lived input's memory a small
+/// constant times its buffer size.
+pub const UNDO_HISTORY_LIMIT: usize = 200;
+
+/// A widget's undo/redo history over its own [`EditView`] — the one
+/// implementation of [`EditOp::Undo`]/[`EditOp::Redo`] every editable
+/// text widget shares.
+///
+/// ```
+/// use quadraui::behaviour::text_edit::{EditHistory, EditOp, EditView};
+///
+/// let (mut lines, mut line, mut col, mut anchor) = (vec![String::new()], 0, 0, None);
+/// let mut history = EditHistory::default();
+/// let mut view = EditView {
+///     lines: &mut lines,
+///     cursor_line: &mut line,
+///     cursor_col: &mut col,
+///     anchor: &mut anchor,
+/// };
+/// history.apply(&mut view, &EditOp::InsertText("hi".into()));
+/// history.apply(&mut view, &EditOp::Undo);
+/// assert_eq!(view.lines, &vec![String::new()]);
+/// history.apply(&mut view, &EditOp::Redo);
+/// assert_eq!(view.lines, &vec!["hi".to_string()]);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditHistory {
+    stack: UndoStack<EditSnapshot>,
+}
+
+impl Default for EditHistory {
+    fn default() -> Self {
+        Self {
+            stack: UndoStack::with_limit(UNDO_HISTORY_LIMIT),
+        }
+    }
+}
+
+impl EditHistory {
+    /// Whether an [`EditOp::Undo`] would change anything.
+    pub fn can_undo(&self) -> bool {
+        self.stack.can_undo()
+    }
+
+    /// Whether an [`EditOp::Redo`] would change anything.
+    pub fn can_redo(&self) -> bool {
+        self.stack.can_redo()
+    }
+
+    /// Apply `op` to `view`: [`EditOp::Undo`]/[`EditOp::Redo`] restore
+    /// from this history, and every other op goes to
+    /// [`EditView::apply`], with the pre-edit state recorded when the op
+    /// changed the buffer. Pure caret or selection moves record nothing,
+    /// so moving between two edits does not split them into separate
+    /// undo steps. Returns whether anything changed.
+    pub fn apply(&mut self, view: &mut EditView<'_>, op: &EditOp) -> bool {
+        match op {
+            EditOp::Undo => match self.stack.undo(view.snapshot()) {
+                Some(prev) => {
+                    view.restore(prev);
+                    true
+                }
+                None => false,
+            },
+            EditOp::Redo => match self.stack.redo(view.snapshot()) {
+                Some(next) => {
+                    view.restore(next);
+                    true
+                }
+                None => false,
+            },
+            op if mutates_content(op) => {
+                let before = view.snapshot();
+                let changed = view.apply(op);
+                if changed && *view.lines != before.lines {
+                    self.stack.record(before);
+                }
+                changed
+            }
+            op => view.apply(op),
+        }
+    }
+}
+
 /// Byte offset `byte_offset` into `value` (which may contain `'\n'`,
 /// e.g. a `TextArea`) → `(line, char_column)`, the coordinate space
 /// [`EditView`] operates in.
@@ -786,6 +907,18 @@ pub fn apply_flat_edit_op(
     selection_anchor: Option<usize>,
     op: EditOp,
 ) -> (String, usize, Option<usize>) {
+    apply_flat_edit_op_in(value, cursor, selection_anchor, &op, None)
+}
+
+/// [`apply_flat_edit_op`], served through `history` when there is one so
+/// [`EditOp::Undo`]/[`EditOp::Redo`] act and content edits are recorded.
+fn apply_flat_edit_op_in(
+    value: &str,
+    cursor: usize,
+    selection_anchor: Option<usize>,
+    op: &EditOp,
+    history: Option<&mut EditHistory>,
+) -> (String, usize, Option<usize>) {
     let mut lines: Vec<String> = if value.is_empty() {
         vec![String::new()]
     } else {
@@ -793,13 +926,16 @@ pub fn apply_flat_edit_op(
     };
     let (mut cursor_line, mut cursor_col) = byte_offset_to_line_col(value, cursor);
     let mut anchor = selection_anchor.map(|a| byte_offset_to_line_col(value, a));
-    EditView {
+    let mut view = EditView {
         lines: &mut lines,
         cursor_line: &mut cursor_line,
         cursor_col: &mut cursor_col,
         anchor: &mut anchor,
-    }
-    .apply(&op);
+    };
+    match history {
+        Some(history) => history.apply(&mut view, op),
+        None => view.apply(op),
+    };
 
     let new_value = lines.join("\n");
     let new_cursor = line_col_to_byte_offset(&new_value, cursor_line, cursor_col);
@@ -871,9 +1007,10 @@ pub fn flat_selection_range(
 ///
 /// `cursor` is `None` while the widget still follows its descriptor's own
 /// caret; [`painted_flat_caret`] gives a painter the caret and anchor to
-/// show either way.
+/// show either way. The undo history survives focus changes, the way a
+/// native text field's does.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlatEditState {
     /// The caret byte offset, once editing has moved it.
     pub cursor: Option<usize>,
@@ -882,13 +1019,15 @@ pub struct FlatEditState {
     /// Whether a left press on the text is still held, so pointer moves
     /// extend the selection.
     pub dragging: bool,
+    /// This widget's undo/redo history.
+    pub history: EditHistory,
 }
 
 /// Per-focus editing state for a multi-line widget whose value is a
 /// `Vec<String>` with `(line, char_column)` carets — the
 /// [`handle_lines_edit_event`] counterpart of [`FlatEditState`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinesEditState {
     /// The caret, once editing has moved it.
     pub caret: Option<Caret>,
@@ -897,6 +1036,8 @@ pub struct LinesEditState {
     /// Whether a left press on the text is still held, so pointer moves
     /// extend the selection.
     pub dragging: bool,
+    /// This widget's undo/redo history.
+    pub history: EditHistory,
 }
 
 /// What [`handle_flat_edit_event`] / [`handle_lines_edit_event`] resolved
@@ -970,7 +1111,13 @@ impl FlatTarget<'_> {
 impl EditTarget for FlatTarget<'_> {
     fn apply(&mut self, op: &EditOp) -> Option<String> {
         let (cursor, anchor) = self.caret_and_anchor();
-        let (value, cursor, anchor) = apply_flat_edit_op(self.value, cursor, anchor, op.clone());
+        let (value, cursor, anchor) = apply_flat_edit_op_in(
+            self.value,
+            cursor,
+            anchor,
+            op,
+            Some(&mut self.state.history),
+        );
         self.state.cursor = Some(cursor);
         // A no-op extend (Shift+Left at offset 0, a drag that has not
         // left its press point) leaves `anchor == cursor`; keeping it
@@ -994,7 +1141,9 @@ impl EditTarget for FlatTarget<'_> {
     }
 
     fn focus_out(&mut self) {
-        *self.state = FlatEditState::default();
+        self.state.cursor = None;
+        self.state.anchor = None;
+        self.state.dragging = false;
     }
 
     fn is_dragging(&self) -> bool {
@@ -1030,13 +1179,15 @@ impl EditTarget for LinesTarget<'_> {
         };
         let (mut line, mut col) = self.caret();
         let mut anchor = self.state.anchor;
-        let changed = EditView {
-            lines: &mut lines,
-            cursor_line: &mut line,
-            cursor_col: &mut col,
-            anchor: &mut anchor,
-        }
-        .apply(op);
+        let changed = self.state.history.apply(
+            &mut EditView {
+                lines: &mut lines,
+                cursor_line: &mut line,
+                cursor_col: &mut col,
+                anchor: &mut anchor,
+            },
+            op,
+        );
         self.state.caret = Some((line, col));
         self.state.anchor = anchor.filter(|a| *a != (line, col));
         (changed && lines != self.lines).then(|| lines.join("\n"))
@@ -1053,7 +1204,9 @@ impl EditTarget for LinesTarget<'_> {
     }
 
     fn focus_out(&mut self) {
-        *self.state = LinesEditState::default();
+        self.state.caret = None;
+        self.state.anchor = None;
+        self.state.dragging = false;
     }
 
     fn is_dragging(&self) -> bool {
@@ -1076,8 +1229,11 @@ impl EditTarget for LinesTarget<'_> {
 /// Ctrl/Cmd+C and the copy half of Ctrl/Cmd+X emit
 /// [`crate::UiEvent::TextCopied`] through `cx`; paste is the host's (its
 /// text arrives back as [`crate::interactive::RoutedEvent::Text`]), so
-/// Ctrl/Cmd+V is [`FlatEditOutcome::Ignored`]. Callers claim Enter
-/// before calling when it means commit rather than a newline.
+/// Ctrl/Cmd+V is [`FlatEditOutcome::Ignored`]. Ctrl/Cmd+Z and
+/// Ctrl/Cmd+Shift+Z undo and redo through `state`'s own [`EditHistory`],
+/// and are [`FlatEditOutcome::Ignored`] when it has nothing to give
+/// back, so the chord still reaches an app accelerator. Callers claim
+/// Enter before calling when it means commit rather than a newline.
 pub fn handle_flat_edit_event(
     value: &str,
     cursor: Option<usize>,
@@ -1138,6 +1294,12 @@ fn handle_edit_event(
                 None => FlatEditOutcome::Consumed,
             },
             Some(EditIntent::Paste) | None => FlatEditOutcome::Ignored,
+            // An empty history leaves the chord to the app's own
+            // accelerator.
+            Some(EditIntent::Op(op @ (EditOp::Undo | EditOp::Redo))) => match target.apply(&op) {
+                Some(value) => FlatEditOutcome::Changed(value),
+                None => FlatEditOutcome::Ignored,
+            },
             Some(EditIntent::Op(op)) => commit(target, &op, cx),
         },
         RoutedEvent::Text(text) => commit(target, &EditOp::InsertText(text.clone()), cx),
@@ -1447,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_intent_refuses_a_chorded_letter_that_is_not_a_clipboard_chord() {
+    fn edit_intent_refuses_a_chorded_letter_that_is_not_an_editing_chord() {
         let ctrl = Modifiers {
             ctrl: true,
             ..Default::default()
@@ -1456,7 +1618,7 @@ mod tests {
             cmd: true,
             ..Default::default()
         };
-        assert_eq!(EditIntent::from_key(&Key::Char('z'), ctrl), None);
+        assert_eq!(EditIntent::from_key(&Key::Char('s'), ctrl), None);
         assert_eq!(EditIntent::from_key(&Key::Char('s'), cmd), None);
         assert_eq!(
             EditIntent::from_key(&Key::Char('c'), ctrl),
@@ -1486,7 +1648,7 @@ mod tests {
         let moved = FlatEditState {
             cursor: Some(4),
             anchor: Some(1),
-            dragging: false,
+            ..Default::default()
         };
         assert_eq!(
             painted_flat_caret(Some(&moved), Some(0), None),
@@ -1497,5 +1659,200 @@ mod tests {
             (Some(2), Some(0))
         );
         assert_eq!(painted_flat_caret(None, None, None), (None, None));
+    }
+
+    fn routed_key(key: Key, modifiers: Modifiers) -> crate::interactive::RoutedEvent {
+        crate::interactive::RoutedEvent::Key(crate::interactive::KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    fn ctrl_mods(shift: bool) -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            shift,
+            ..Default::default()
+        }
+    }
+
+    /// Drives one routed event through the flat handler the way a widget
+    /// does, against a value the "app" echoes back after every change.
+    fn flat_step(
+        value: &mut String,
+        state: &mut FlatEditState,
+        event: crate::interactive::RoutedEvent,
+    ) -> FlatEditOutcome {
+        let (outcome, _) = crate::compose::widget_host::with_cx(
+            crate::types::WidgetId::new("f"),
+            crate::primitive::Units::Cells,
+            |cx| handle_flat_edit_event(value, None, None, state, &event, &|_| None, cx),
+        );
+        if let FlatEditOutcome::Changed(new) = &outcome {
+            *value = new.clone();
+        }
+        outcome
+    }
+
+    fn lines_step(
+        lines: &mut Vec<String>,
+        state: &mut LinesEditState,
+        event: crate::interactive::RoutedEvent,
+    ) -> FlatEditOutcome {
+        let (outcome, _) = crate::compose::widget_host::with_cx(
+            crate::types::WidgetId::new("l"),
+            crate::primitive::Units::Cells,
+            |cx| handle_lines_edit_event(lines, (0, 0), state, &event, &|_| None, cx),
+        );
+        if let FlatEditOutcome::Changed(new) = &outcome {
+            *lines = new.split('\n').map(str::to_string).collect();
+        }
+        outcome
+    }
+
+    #[test]
+    fn ctrl_z_and_ctrl_shift_z_map_to_undo_and_redo() {
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('z'), ctrl_mods(false)),
+            Some(EditIntent::Op(EditOp::Undo))
+        );
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('Z'), ctrl_mods(true)),
+            Some(EditIntent::Op(EditOp::Redo))
+        );
+        let cmd = Modifiers {
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('z'), cmd),
+            Some(EditIntent::Op(EditOp::Undo))
+        );
+    }
+
+    #[test]
+    fn edit_history_records_content_edits_only() {
+        let (mut lines, mut line, mut col, mut anchor) = (vec!["ab".to_string()], 0, 2, None);
+        let mut history = EditHistory::default();
+        let mut view = EditView {
+            lines: &mut lines,
+            cursor_line: &mut line,
+            cursor_col: &mut col,
+            anchor: &mut anchor,
+        };
+        assert!(history.apply(&mut view, &EditOp::InsertChar('c')));
+        assert!(history.apply(&mut view, &EditOp::MoveLeft { extend: false }));
+        assert!(history.apply(&mut view, &EditOp::Undo));
+        assert_eq!(view.lines, &vec!["ab".to_string()]);
+        assert_eq!(view.caret(), (0, 2));
+        assert!(!history.can_undo());
+        assert!(history.apply(&mut view, &EditOp::Redo));
+        assert_eq!(view.lines, &vec!["abc".to_string()]);
+        assert!(!history.apply(&mut view, &EditOp::Redo));
+    }
+
+    #[test]
+    fn a_flat_widget_undoes_and_redoes_through_its_own_state() {
+        let mut value = "hi".to_string();
+        let mut state = FlatEditState::default();
+        flat_step(
+            &mut value,
+            &mut state,
+            crate::interactive::RoutedEvent::Text("!".into()),
+        );
+        assert_eq!(value, "hi!");
+        assert_eq!(
+            flat_step(
+                &mut value,
+                &mut state,
+                routed_key(Key::Char('z'), ctrl_mods(false))
+            ),
+            FlatEditOutcome::Changed("hi".into())
+        );
+        assert_eq!(
+            flat_step(
+                &mut value,
+                &mut state,
+                routed_key(Key::Char('z'), ctrl_mods(true))
+            ),
+            FlatEditOutcome::Changed("hi!".into())
+        );
+    }
+
+    #[test]
+    fn undo_with_nothing_to_give_back_leaves_the_chord_to_the_app() {
+        let mut value = "hi".to_string();
+        let mut state = FlatEditState::default();
+        assert_eq!(
+            flat_step(
+                &mut value,
+                &mut state,
+                routed_key(Key::Char('z'), ctrl_mods(false))
+            ),
+            FlatEditOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn undo_history_survives_a_focus_change() {
+        let mut lines = vec![String::new()];
+        let mut state = LinesEditState::default();
+        lines_step(
+            &mut lines,
+            &mut state,
+            crate::interactive::RoutedEvent::Text("ab".into()),
+        );
+        lines_step(
+            &mut lines,
+            &mut state,
+            crate::interactive::RoutedEvent::FocusOut,
+        );
+        assert_eq!(state.caret, None);
+        assert_eq!(
+            lines_step(
+                &mut lines,
+                &mut state,
+                routed_key(Key::Char('z'), ctrl_mods(false))
+            ),
+            FlatEditOutcome::Changed(String::new())
+        );
+    }
+
+    #[test]
+    fn ctrl_word_and_doc_keys_edit_through_the_lines_handler() {
+        let mut lines = vec!["foo bar".to_string()];
+        let mut state = LinesEditState {
+            caret: Some((0, 7)),
+            ..Default::default()
+        };
+        assert_eq!(
+            lines_step(
+                &mut lines,
+                &mut state,
+                routed_key(Key::Named(NamedKey::Backspace), ctrl_mods(false))
+            ),
+            FlatEditOutcome::Changed("foo ".into())
+        );
+        lines_step(
+            &mut lines,
+            &mut state,
+            routed_key(Key::Named(NamedKey::Home), ctrl_mods(false)),
+        );
+        assert_eq!(state.caret, Some((0, 0)));
+        lines_step(
+            &mut lines,
+            &mut state,
+            routed_key(Key::Named(NamedKey::Right), ctrl_mods(false)),
+        );
+        assert_eq!(state.caret, Some((0, 3)));
+        assert_eq!(
+            lines_step(
+                &mut lines,
+                &mut state,
+                routed_key(Key::Named(NamedKey::Delete), ctrl_mods(false))
+            ),
+            FlatEditOutcome::Changed("foo".into())
+        );
     }
 }

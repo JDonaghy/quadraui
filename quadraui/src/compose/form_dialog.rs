@@ -209,11 +209,14 @@ impl FormDialog {
     }
 
     /// The form as painted: the descriptor overlaid with `state`'s caret,
-    /// scrub position and scroll, and showing its focus highlight only
-    /// while no button holds keyboard focus.
+    /// scrub position, scroll and field focus, and showing its focus
+    /// highlight only while no button holds keyboard focus.
     pub fn live_form(&self, state: &FormDialogState) -> Option<Form> {
-        let mut form = self.form.clone()?;
-        form_contract::overlay_state(&mut form, &state.form);
+        let mut form = self
+            .form
+            .as_ref()?
+            .live(Some(&state.form), false)
+            .into_owned();
         form.has_focus = form.has_focus && state.focused_button.is_none();
         Some(form)
     }
@@ -409,6 +412,7 @@ impl FormDialog {
         };
         match target {
             Some(id) => {
+                state.form.focused_field = Some(*id);
                 self.focus_field(*id, cx);
                 Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged {
                     id: *id,
@@ -433,8 +437,7 @@ impl FormDialog {
             None => {
                 let stops = self.form_stops();
                 let current = self
-                    .form
-                    .as_ref()
+                    .live_form(state)
                     .and_then(|f| f.focused_field)
                     .and_then(|id| stops.iter().position(|s| *s == id));
                 let at_boundary = match current {

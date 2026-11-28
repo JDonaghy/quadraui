@@ -542,6 +542,39 @@ impl TreeTableEvent {
     }
 }
 
+/// Events a `TreeTableModel` (the wire kind
+/// `"tree_table_controller"`) reports to the app. Rows are named by the
+/// app's own stable node id rather than by position, since a sort or an
+/// expand moves a node's flattened row. Serialized under the
+/// `"TreeTableController"` event key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(rename = "TreeTableControllerWireEvent"))]
+pub enum TreeTableModelEvent {
+    /// Row selected — click or keyboard navigation.
+    RowSelected { id: String },
+    /// Enter pressed, or a row/chevron double-clicked.
+    RowActivated { id: String },
+    /// A branch node's expand state flipped; its children were already
+    /// loaded (or this collapses).
+    ToggleExpand { id: String, expand: bool },
+    /// A lazy branch (`has_children` with no `children`) was expanded for
+    /// the first time. The app answers by sending the node's `children`
+    /// in its next render; until it does, the branch shows a loading row
+    /// and is not asked about again.
+    ChildrenRequested { id: String },
+    /// A header click sorted every loaded level's children by `col`'s
+    /// cell text. An app that orders rows itself sends them in its own
+    /// order with `sort_override` set.
+    SortChanged { col: usize, ascending: bool },
+}
+
+impl crate::interactive::WidgetAction for TreeTableModelEvent {
+    fn into_ui_event(self, id: crate::types::WidgetId) -> crate::UiEvent {
+        crate::UiEvent::TreeTableModel(id, self)
+    }
+}
+
 // Shared GUI (GTK/macOS/Win) paint implementation. A `TreeTable` paints
 // exactly as `DataTable` does —
 // `data_table::native_surface_paint::paint_with_layout`'s shared

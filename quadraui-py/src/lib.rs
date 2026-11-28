@@ -187,12 +187,11 @@ use quadraui_binding_core::{
     resolve_layout_node_windowed, resolve_render_refs, set_as_default_protocol_client,
     set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, LayoutLeaf, LayoutNode, LeafDescriptor, OverrideError, RenderOutput,
-    RowsRequestedEvent, ServiceError, StyleContext, TreeTableControllerNode,
-    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
+    ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
+    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, RowsRequestedEvent, ServiceError,
+    StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{
@@ -1012,7 +1011,9 @@ impl AppLogic for PyAppLogic {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let Some(callback) = self.render_callback.as_ref() else {
-            draw_bands(backend, self.host.render_refs(), &mut hits);
+            self.engine.paint_with_widget_state(|| {
+                draw_bands(backend, self.host.render_refs(), &mut hits)
+            });
             // No render callback: nothing painted through `paint_layout`
             // this frame, so there is no layout-tree leaf tooltip to
             // resolve -- clears out anything a previously registered
@@ -1059,7 +1060,10 @@ impl AppLogic for PyAppLogic {
                 // paints this frame.
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                draw_bands(backend, resolved.as_refs(), &mut hits);
+                // Every generic leaf paints from the state its own input
+                // handling walked (a text input's caret, say).
+                self.engine
+                    .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
@@ -1082,7 +1086,9 @@ impl AppLogic for PyAppLogic {
                 // `paint_layout_windowed`'s own doc), while one that does
                 // gets its real scrollbar extent and a band-painted
                 // payload instead of its `items_window` going unread.
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+                self.engine.paint_with_widget_state(|| {
+                    paint_layout_windowed(backend, area, &node, &mut hits, &windows)
+                });
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see
@@ -1111,10 +1117,9 @@ impl AppLogic for PyAppLogic {
     /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
     /// context-menu routing, divider/scrollbar drag, click-to-focus,
     /// focus-scoped key/paste routing, and semantic event substitution --
-    /// including a resolved region click or a focused key press reaching a
-    /// `ScriptedPrimitive<PyScriptWidget>` leaf's own `on_event`, via
-    /// `InteractionEngine::handle`'s generic `scripted_region_click`/
-    /// `scripted_key_press` forwarding, with the same modal-stack
+    /// including a region click or a focused key press reaching a
+    /// `ScriptedPrimitive<PyScriptWidget>` leaf's own `on_event`, through
+    /// its `Interactive::handle` on the generic widget routing, with the same modal-stack
     /// precedence `dispatch_overlays` already gives every built-in modal
     /// surface). `App.__init__` always calls `set_handler`, so this is
     /// `None` only for a `PyAppLogic` built outside that wrapper.
@@ -1287,57 +1292,12 @@ impl EventSink for PyEventSink<'_> {
         })
     }
 
-    /// Delivers a `"tree_table_controller"` extra's
-    /// [`TreeTableControllerWireEvent`] to the same registered Python
-    /// handler [`Self::dispatch`] calls, as `{"TreeTableController": (id,
-    /// event)}` — `id` is the extra's own id (a plain `str`), `event` the
-    /// pythonized wire event (e.g. `{"RowSelected": {"id": "..."}}`),
-    /// mirroring the `{"TreeTable": (table_id, event)}` shape a flat-slot
-    /// `TreeTable`'s own `TreeTableEvent` already reaches the handler as.
-    /// A `"ChildrenRequested"` here is answered with
-    /// `QuiApp.set_tree_table_children`; a `"SortChanged"` may be answered
-    /// with `QuiApp.set_tree_table_sort_override` to replace the engine's
-    /// default comparator's result with a host-chosen order.
-    fn dispatch_tree_table_controller(
-        &mut self,
-        id: WidgetId,
-        event: TreeTableControllerWireEvent,
-    ) -> Reaction {
-        Python::attach(|py| {
-            let event_value = match pythonize::pythonize(py, &event) {
-                Ok(value) => value,
-                Err(err) => {
-                    record_error(
-                        self.pending_error,
-                        InternalError::new_err(format!(
-                            "failed to pythonize tree table controller event: {err}"
-                        )),
-                    );
-                    return Reaction::Exit;
-                }
-            };
-            let dict = PyDict::new(py);
-            if let Err(err) = dict.set_item("TreeTableController", (id.as_str(), event_value)) {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-            match self.handler.call1(py, (dict,)) {
-                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
-                Err(err) => {
-                    record_error(self.pending_error, err);
-                    Reaction::Exit
-                }
-            }
-        })
-    }
-
     /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
     /// leaf's [`RowsRequestedEvent`] to the same registered Python handler
     /// [`Self::dispatch`] calls, as `{"RowsRequested": {"id": ..., "start":
     /// ..., "count": ...}}` — the synthesized-event shape
     /// `docs/bindings-wire-format.md`'s own `RowsRequestedEvent` entry
-    /// describes, mirroring [`Self::dispatch_tree_table_controller`]'s
-    /// `{"TreeTableController": ...}`.
+    /// describes.
     ///
     /// The app answers by re-rendering that leaf with
     /// `items_window = {"start": start, "total": <unchanged>}` and the
@@ -1912,13 +1872,10 @@ fn render_output_from_callback(
 // placeholder `Canvas` with a live
 // `quadraui_binding_core::ScriptedPrimitive<PyScriptWidget>` -- the exact
 // seam `quadraui_binding_core::scripted`'s own module doc describes "a
-// real binding implements this once per host language" for. From here
-// on this binding's `layout`/`paint`/`paint_cells` calls into it exactly
-// like any other `ExtraPaint`; region clicks and focused keys are routed
-// to it separately, by `PyAppLogic::handle` below (see
-// `script_widget_click`/`script_widget_key`'s own doc for why that can't
-// go through the generic `semantic_event_for_hit`/`focus_scoped_key_event`
-// path a hand-written `Canvas` descriptor's own regions already use).
+// real binding implements this once per host language" for -- as a
+// generic `"scripted_widget"` widget leaf. From here on it lays out,
+// paints and receives region clicks and focused keys exactly like any
+// other generic widget leaf, through its own `Interactive` impl.
 
 /// One `Widget` registration drained from `quadraui.app.widget._PENDING`
 /// for this frame.
@@ -2082,7 +2039,10 @@ fn apply_pending_script_widgets_leaf(
     );
     primitive.set_props(entry.props);
     primitive.set_state(entry.state);
-    leaf.descriptor = LeafDescriptor::Extra(Rc::new(primitive));
+    leaf.descriptor = LeafDescriptor::Widget {
+        kind: quadraui_binding_core::SCRIPTED_WIDGET_KIND,
+        widget: Rc::new(primitive),
+    };
 }
 
 /// The `quadraui_binding_core::ScriptWidget` impl this binding wraps
@@ -2587,8 +2547,7 @@ impl QuiAppWaker {
 /// `set_login_item`, `set_as_default_protocol_client`,
 /// `remove_as_default_protocol_client`, `begin_drag_out`,
 /// `add_recent_document`, `clear_recent_documents`, `set_dock_menu`,
-/// `set_jump_list`, `set_tree_table_children`,
-/// `set_tree_table_sort_override` — plus [`Self::apply_tab_activated`], a
+/// `set_jump_list` — plus [`Self::apply_tab_activated`], a
 /// write into the engine's own widget-state store with no restricted
 /// `QuiApp` method of its own at all (see its own doc) — so a registered
 /// event handler can request one of them without re-entering `QuiApp`'s
@@ -2983,64 +2942,6 @@ impl QuiAppActions {
             .push_back(DeferredAction::DefineStyle(
                 name.to_string(),
                 Box::new(parsed),
-            ));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::SetTreeTableChildren`] — same arguments
-    /// and the same decoding (via [`tree_table_controller_nodes_from_wire`])
-    /// as `QuiApp::set_tree_table_children`, which this is the only way to
-    /// answer from inside a registered event handler: a
-    /// `"tree_table_controller"` extra's `"ChildrenRequested"` event is
-    /// only ever delivered there, and a direct `app.set_tree_table_children(...)`
-    /// call from that same dispatch raises [`ReentrantCallError`]. `children`
-    /// decodes and converts synchronously, so a malformed descriptor still
-    /// raises immediately from the handler's own call; only the write into
-    /// the cached controller (a no-op if `id` names no cached controller)
-    /// waits for [`flush_deferred_actions`].
-    fn set_tree_table_children(
-        &self,
-        id: &str,
-        node_id: &str,
-        children: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let children: Vec<TreeTableControllerNode> = pythonize::depythonize(children.as_any())
-            .map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_children: invalid descriptor: {err}"
-                ))
-            })?;
-        let children = tree_table_controller_nodes_from_wire(children);
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::SetTreeTableChildren(
-                WidgetId::new(id),
-                node_id.to_string(),
-                children,
-            ));
-        Ok(())
-    }
-
-    /// Queues a [`DeferredAction::SetTreeTableSortOverride`] — same
-    /// arguments and the same decoding as
-    /// `QuiApp::set_tree_table_sort_override`, which this is the only way
-    /// to answer from inside a registered event handler, for the same
-    /// reason [`Self::set_tree_table_children`]'s own doc gives: a
-    /// `"tree_table_controller"` extra's `"SortChanged"` event is only ever
-    /// delivered there.
-    fn set_tree_table_sort_override(&self, id: &str, nodes: &Bound<'_, PyList>) -> PyResult<()> {
-        let nodes: Vec<TreeTableControllerNode> =
-            pythonize::depythonize(nodes.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_sort_override: invalid descriptor: {err}"
-                ))
-            })?;
-        let nodes = tree_table_controller_nodes_from_wire(nodes);
-        self.queue
-            .borrow_mut()
-            .push_back(DeferredAction::SetTreeTableSortOverride(
-                WidgetId::new(id),
-                nodes,
             ));
         Ok(())
     }
@@ -3454,8 +3355,7 @@ impl QuiApp {
     /// Returns a [`QuiAppActions`] handle: an object a registered event
     /// handler can call `show_overlay`/`dismiss_overlay`/`send_notification`/
     /// `open_path`/
-    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash`/
-    /// `set_tree_table_children`/`set_tree_table_sort_override` on
+    /// `reveal_in_file_manager`/`move_to_trash`/`restore_from_trash` on
     /// instead of this `QuiApp` itself, since the handler already holds
     /// this app's one mutable borrow for the whole dispatch that invoked
     /// it and a direct call on `self` from there raises "already
@@ -4545,88 +4445,6 @@ impl QuiApp {
                         .map_err(|err| InternalError::new_err(format!("widget_state: {err}")))
                 })
                 .transpose()
-        })
-    }
-
-    /// Answers a `"tree_table_controller"` extra's `"ChildrenRequested"`
-    /// event — delivered to the registered handler as
-    /// `{"TreeTableController": (id, {"ChildrenRequested": {"id":
-    /// node_id}})}` — by attaching `children` (a list of wire nodes, the
-    /// same `{"id": ..., "cells": [...], "icon": ..., "has_children":
-    /// ..., "children": ...}` shape a `"tree_table_controller"` extra's
-    /// own `"nodes"` list takes) under `node_id`, found anywhere in the
-    /// tree, not just at the top level. A no-op if `id` names no cached
-    /// controller (it hasn't been painted this frame, or at all yet).
-    ///
-    /// Call this from top-level script code only (e.g. after
-    /// `step`/`step_once`/`run` returns, having seen a `ChildrenRequested`
-    /// event land), never from inside the registered event handler or
-    /// render callback — the only place `ChildrenRequested` is ever
-    /// actually delivered: both already hold this `QuiApp`'s one mutable
-    /// borrow for the whole dispatch, so a reentrant call here raises
-    /// [`ReentrantCallError`] — see [`guard_against_reentrant_call`]'s own
-    /// doc. From inside a handler, call
-    /// [`QuiAppActions::set_tree_table_children`] (via [`Self::actions`])
-    /// instead.
-    fn set_tree_table_children(
-        slf: Py<Self>,
-        py: Python<'_>,
-        id: &str,
-        node_id: &str,
-        children: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let children: Vec<TreeTableControllerNode> = pythonize::depythonize(children.as_any())
-            .map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_children: invalid descriptor: {err}"
-                ))
-            })?;
-        let children = tree_table_controller_nodes_from_wire(children);
-        let mut this = guard_against_reentrant_call(&slf, py, "set_tree_table_children")?;
-        this.guarded(|app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_children(WidgetId::new(id), node_id, children);
-            Ok(())
-        })
-    }
-
-    /// Overrides the comparator a `"tree_table_controller"` extra's
-    /// `{"TreeTableController": (id, {"SortChanged": {"col": ...,
-    /// "ascending": ...}})}` event already applied by default: replaces
-    /// every loaded node under `id`'s cached controller with `nodes` (the
-    /// same wire-node shape [`Self::set_tree_table_children`]'s own
-    /// `children` takes), already ordered however the host likes
-    /// (numeric, locale-aware, ...). Selection survives by node id, not
-    /// position. A no-op if `id` names no cached controller.
-    ///
-    /// Same "top-level script code only, never from inside the registered
-    /// event handler or render callback" restriction as
-    /// [`Self::set_tree_table_children`], for the same reason — see that
-    /// method's own doc. From inside a handler, call
-    /// [`QuiAppActions::set_tree_table_sort_override`] (via
-    /// [`Self::actions`]) instead.
-    fn set_tree_table_sort_override(
-        slf: Py<Self>,
-        py: Python<'_>,
-        id: &str,
-        nodes: &Bound<'_, PyList>,
-    ) -> PyResult<()> {
-        let nodes: Vec<TreeTableControllerNode> =
-            pythonize::depythonize(nodes.as_any()).map_err(|err| {
-                InvalidDescriptorError::new_err(format!(
-                    "set_tree_table_sort_override: invalid descriptor: {err}"
-                ))
-            })?;
-        let nodes = tree_table_controller_nodes_from_wire(nodes);
-        let mut this = guard_against_reentrant_call(&slf, py, "set_tree_table_sort_override")?;
-        this.guarded(|app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_sort_override(WidgetId::new(id), nodes);
-            Ok(())
         })
     }
 
@@ -8861,8 +8679,8 @@ def handle(event):
     }
 
     /// A `tabs` leaf nested in a `Split`'s `second` pane paints its strip at
-    /// a non-zero origin, exercising the same LOCAL-frame translation in
-    /// `hit_test_painted`'s `PaintedHit::TabBar` arm as the tree test above.
+    /// a non-zero origin, exercising the strip's own widget-local
+    /// translation the way the tree test above exercises the tree's.
     /// A `MouseDown` landing on a non-first tab must be replaced by the
     /// semantic `UiEvent::TabBar(TabActivated)` it stands for, carrying that
     /// tab's own index.
@@ -11160,11 +10978,11 @@ def handle(event):
         });
     }
 
-    /// Clicking a `"menu_bar"` extra's top-level item opens its dropdown
-    /// (no event reaches Python — a bare open/close is navigation, not an
-    /// app-level action) and a later click on one of its items closes the
-    /// dropdown and dispatches exactly one `UiEvent::MenuActivated` to the
-    /// registered handler, carrying the activated item's id.
+    /// Clicking a `"menu_bar"` leaf's top-level item reports the opened
+    /// view as `UiEvent::AppMenu(bar, Changed(view))`, which the app
+    /// echoes onto its descriptor so the dropdown paints; a later click on
+    /// one of its items reports the closed view and then exactly one
+    /// `UiEvent::MenuActivated`, carrying the activated item's id.
     #[test]
     fn clicking_a_menu_bar_item_opens_its_dropdown_and_selecting_emits_menu_activated() {
         Python::attach(|py| {
@@ -11172,9 +10990,10 @@ def handle(event):
             py.run(
                 c"
 received = []
+view = {}
 
 def render():
-    return {'menu_bar': {
+    return {'menu_bar': dict({
         'id': 'bar:main',
         'items': [
             {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
@@ -11182,12 +11001,14 @@ def render():
                 {'id': 'item:quit', 'label': {'spans': [{'text': 'Quit', 'fg': None, 'bg': None}]}},
             ]},
         ],
-        'open_item': None,
-        'focused_item': None,
-    }}
+    }, **view)}
 
 def handle(event):
-    received.append(event)
+    if 'AppMenu' in event:
+        view.clear()
+        view.update(event['AppMenu'][1]['Changed'])
+    elif 'MenuActivated' in event:
+        received.append(event)
 ",
                 Some(&locals),
                 Some(&locals),
@@ -11241,7 +11062,7 @@ def handle(event):
             assert_eq!(
                 received_list.len(),
                 0,
-                "opening the dropdown is pure navigation: nothing reaches Python yet"
+                "opening the dropdown activates nothing"
             );
 
             let item_bounds = app
@@ -11603,38 +11424,36 @@ def handle(event):
         });
     }
 
-    /// Opening a message dialog while a `"menu_bar"` extra's dropdown is
-    /// open closes the dropdown first: paint order puts the dialog on top
-    /// of the bar (`render_dialog` runs after `sync_menu_bar`), so without
-    /// this, the dropdown would be stuck open but invisible underneath,
-    /// and `handle` would route a click/Enter to it (`MenuActivated`)
-    /// instead of to the dialog it paints on top of, since `handle`
-    /// previously checked the dropdown before the dialog. Pins the fix:
-    /// the dropdown's "Open" item vanishes the moment the dialog opens,
-    /// and Enter resolves the dialog rather than activating the hidden
-    /// menu item.
+    /// Opening a message dialog while a `"menu_bar"` leaf's dropdown is
+    /// open hides the dropdown and takes its input: a modal sits above
+    /// every widget's popups, so the dropdown's "Open" item vanishes the
+    /// moment the dialog opens, and Enter resolves the dialog rather than
+    /// activating the hidden menu item.
     #[test]
-    fn open_message_dialog_closes_an_open_menu_bar_dropdown_and_claims_input() {
+    fn open_message_dialog_hides_an_open_menu_bar_dropdown_and_claims_input() {
         Python::attach(|py| {
             let locals = PyDict::new(py);
             py.run(
                 c"
 received = []
+view = {}
 
 def render():
-    return {'menu_bar': {
+    return {'menu_bar': dict({
         'id': 'bar:main',
         'items': [
             {'id': 'menu:file', 'label': '&File', 'disabled': False, 'submenu': [
                 {'id': 'item:open', 'label': {'spans': [{'text': 'Open', 'fg': None, 'bg': None}]}},
             ]},
         ],
-        'open_item': None,
-        'focused_item': None,
-    }}
+    }, **view)}
 
 def handle(event):
-    received.append(event)
+    if 'AppMenu' in event:
+        view.clear()
+        view.update(event['AppMenu'][1]['Changed'])
+    elif 'FocusChanged' not in event:
+        received.append(event)
 ",
                 Some(&locals),
                 Some(&locals),

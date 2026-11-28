@@ -101,6 +101,109 @@ fragment step for this package (that mechanism, and
 
 ### Changed
 
+- A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
+  is a generic widget routed through the core `TabBar`'s own input
+  handling (#2977), with these visible changes:
+  - A press on a tab bar carries the `"widget_body"` hit detail; the
+    `"tab_bar_tab"`, `"tab_bar_tab_close"`, `"tab_bar_scroll_left"`,
+    `"tab_bar_scroll_right"` and `"tab_bar_right_segment"` hit details are
+    gone.
+  - Keyboard focus walks: each Left/Right moves on from the tab the last
+    press reached (before, a bare tab bar started from tab 0 on every
+    press), and Enter/Space activate it. While the bar has not moved focus
+    yet, a `"tabs"` node's `focused_index` is the starting tab.
+  - A key the bar has no use for still reaches the handler once, as the
+    bar's `TabBar` `KeyPressed` event and not also as the raw `KeyPressed`.
+  - A double-click on a tab reaches the handler as the raw `DoubleClick`
+    (before, a second `TabActivated`).
+
+- The four text-entry leaf kinds, `"text_input"`, `"text_field"`,
+  `"password"` and `"textarea"`, are the core widgets painted and edited
+  through their own state (#2977/#2978), with these visible changes:
+  - `"text_input"` is the multi-line core `TextInput`: Enter inserts a line
+    break (a `TextInputChanged` with the `\n`) instead of reporting
+    `TextInputCommitted`. Use `"text_field"` or `"password"` for a field that
+    commits on Enter.
+  - A key that only moves the caret or the selection (arrows, Home/End,
+    Shift-selection, Ctrl/Cmd+A) is claimed by a focused `"text_input"`,
+    and no longer reaches the handler as a raw `KeyPressed`.
+  - `"text_field"` now edits: typing, paste, click-to-caret, the clear
+    button and Enter (a `TextInputCommitted`) all work, where it used to paint only.
+  - `"textarea"` with no `"cursor"` edits from the end of its value
+    (it used to start at column 0), and a click on a `"textarea"` or
+    `"password"` leaf focuses it without moving the caret. Both now answer
+    Ctrl/Cmd+A (select all) and Ctrl/Cmd+C/X (copy and cut, as
+    `TextCopied`; a password swallows them), which used to pass through.
+  - `"password"` accepts a `"placeholder"`, and a `"textarea"`'s
+    `"placeholder"` is a string, no longer nullable; `wire.d.ts` follows.
+  - A `"text_input"` leaf's natural height counts its border rows, so
+    under a non-`stretch` `align` it sizes to the box it paints.
+- `TextArea(value, { placeholder: null })` omits the placeholder
+  instead of sending `null`.
+
+- A `"menu_bar"` leaf is the whole application menu (`AppMenu`). A click
+  or key that opens a menu or moves a highlight reports
+  `{ AppMenu: [id, { Changed: view }] }`. An object that leaves every view
+  key out (`open_item`, `focused_item`, `dropdown_selected`,
+  `submenu_path`, `submenu_selected`) is uncontrolled: the menu keeps its
+  own view, so it opens and closes with no app code, as before. An app
+  that merges each `Changed` view back into the `menu_bar` object it
+  renders next controls the view instead. An activation
+  still reports `{ MenuActivated: itemId }`, now after the `Changed` view
+  that closes the menu and with the `hit: { kind: "widget_body" }` every
+  generic leaf's event carries. The dropdown is a popup routed to the
+  menu: a press on a row activates it, and a press elsewhere or Escape
+  closes the menu (as a `Changed` view). The bar is a focus stop, and its
+  Alt mnemonics and arrow keys reach it while it holds focus, not
+  globally. While a dialog is open the dropdown is hidden and takes no
+  input; it is no longer closed by opening the dialog. `wire.d.ts`'s
+  `MenuBar`/`MenuBarItem` types are now `AppMenu`/`MenuDef`.
+- A `"form"` leaf routes through `Form`'s own widget contract: its events
+  carry `hit: { kind: "widget_body" }` like every generic leaf's. Field
+  focus the descriptor leaves unset is still the form's own to track; Tab
+  inside a focused form walks its fields and moves on to the next stop
+  past either end, Up/Down move between fields the focused one has no use
+  for, and a wheel notch scrolls it. A form's slider field (`SliderField`)
+  moves on a click or drag on its track and on the arrow keys and Home/End
+  while focused, firing `onChange`, instead of only through an a11y
+  Increment/Decrement. Any open widget popup (a `"combo_box"` list) now
+  receives the press that lands on it, instead of the press being dropped.
+- **Breaking:** a `"tree_table_controller"` leaf's `nodes` are content
+  read every frame (#2978, 0.12 rec 14), no longer a seed read once on
+  the leaf's first frame. The widget keeps only what the user does to the
+  tree -- expanded branches, the selection, the scroll position and the
+  header sort -- keyed by node id. So:
+  - lazily loaded children reach the widget as that node's `children` in
+    the next render, not through a method call;
+  - `selected_id` selects that node whenever the app changes it (between
+    changes the user's own selection stands);
+  - the new `sort_override: true` says `nodes` already arrive in the
+    app's own order for the current sort, so a header click reports
+    `SortChanged` and moves the sort indicator but does not re-order the
+    rows;
+  - `has_focus` paints as sent; keyboard focus no longer forces the
+    focused look on.
+
+  Events keep their `{"TreeTableController": [id, event]}` shape and
+  variants, and now reach the handler through the ordinary `UiEvent` path,
+  so `pushEvent` accepts that shape too. See *Removed* for the migration.
+- A generic widget leaf lays out and paints with the `Interactive` state
+  its own events left (#2978): binding-core keeps that state in the same
+  per-thread store the Rust runtime paints from. A widget whose paint
+  reads its state (a caret, a text selection, an open section) now shows
+  it in a `quadraui-node` app as it does in a Rust one.
+- A `"scripted_widget"` leaf's payload now names the registered widget's
+  id: `{ id, scripted_widget: { id, props } }` (#2978). The leaf decodes
+  through core's runtime kind registry into a generic widget leaf, so the
+  payload carries its id like every other widget kind's does.
+  `defineWidget` builds this shape; a raw `registerScriptedWidget` caller
+  must add `id` to the leaf it returns. A pointer that enters or leaves a
+  script widget reports `MouseEntered`/`MouseLeft` with hit detail
+  `{ kind: "widget_body" }` rather than `{ kind: "canvas_region", region }`;
+  its `{ Canvas: [id, { RegionHovered }] }` events are unchanged. The
+  payload's generated type is no longer named `ScriptedWidgetDescriptor`
+  in `wire.d.ts`.
+
 - A `"completions"` overlay (`showOverlay("completions", ...)`) now routes
   pointer input through core `Completions`' own event handling: a click
   on a row reports `{ List: [id, { SelectionChanged: { idx: n } }] }` and
@@ -180,9 +283,72 @@ fragment step for this package (that mechanism, and
 
 ### Removed
 
+- The `"extra_body"` hit detail (#2977). Every widget leaf is a generic
+  widget now and reports `"widget_body"`; no leaf produced `"extra_body"`
+  any more. The `_HitDetailExtraBody` type is gone from `wire.d.ts`.
+
+- The `"canvas_region"` hit detail (#2978): a script widget reports
+  `"widget_body"` like every other generic widget, and its region events
+  arrive as `{ Canvas: [id, ...] }`.
+
 - `QuiApp.listCharWidth()` and `QuiApp.scrollbarReserve()` (#2979, 0.12
   rec 14), part of the 0.12 binding API cleanup. Budget row text with
   `charWidth()` or `measureText()` instead.
+
+- `QuiApp.setTreeTableChildren(id, nodeId, children)` and
+  `QuiApp.setTreeTableSortOverride(id, nodes)` (#2978, 0.12 rec 14).
+  Lazily loaded children and a host sort order are
+  `"tree_table_controller"` descriptor content now: keep them in the app's
+  own model and send them from the render callback. Before:
+
+  ```ts
+  app.setHandler((event) => {
+    if ("TreeTableController" in event) {
+      const [tableId, payload] = event.TreeTableController;
+      if ("ChildrenRequested" in payload) pending.push([tableId, payload.ChildrenRequested.id]);
+    }
+  });
+  app.run(1);
+  for (const [tableId, nodeId] of pending) app.setTreeTableChildren(tableId, nodeId, load(nodeId));
+  ```
+
+  After -- the handler records what the app now knows, and the render
+  callback builds the whole tree from it:
+
+  ```ts
+  const loaded = new Map<string, Node[]>(); // node id -> children the app has loaded
+  let sort: [number, boolean] | null = null; // set when the app sorts rows itself
+
+  app.setHandler((event) => {
+    if (!("TreeTableController" in event)) return;
+    const payload = event.TreeTableController[1];
+    if ("ChildrenRequested" in payload) {
+      const id = payload.ChildrenRequested.id;
+      loaded.set(id, load(id));
+    } else if ("SortChanged" in payload) {
+      sort = [payload.SortChanged.col, payload.SortChanged.ascending];
+    }
+  });
+
+  const wire = (n: Node): object => ({
+    id: n.id,
+    cells: n.cells,
+    ...(n.isBranch ? { has_children: true } : {}),
+    // Leave `children` out until loaded: that is a lazy branch.
+    ...(loaded.has(n.id) ? { children: myOrder(loaded.get(n.id)!, sort).map(wire) } : {}),
+  });
+
+  app.setRender(() => ({
+    row: [{ id: "files", tree_table_controller: {
+      id: "files", columns, nodes: myOrder(roots, sort).map(wire),
+      sort_override: sort !== null, // leave out to keep the built-in text sort
+    } }],
+  }));
+  ```
+
+  An app that is happy with the built-in sort (cell text, branches first
+  with `folders_first`) leaves `sort_override` out and ignores
+  `SortChanged`.
 
 - `QuiApp.insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
   `insertDataTable`/`insertTabBar`/`insertProgress`/`insertSpinner`/
@@ -211,6 +377,28 @@ fragment step for this package (that mechanism, and
   | `dismissRichTextPopup()` | `dismissOverlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
 ### Fixed
+
+- While a modal overlay (`showOverlay("message_dialog", ...)` and the
+  other modal kinds) is open, a click, pointer move or key it does not use
+  no longer reaches the widget painted beside or beneath it.
+- Ctrl/Cmd+Z in a `form` text, textarea or password row undoes back past
+  the last keystroke: the row keeps its undo history while it holds focus.
+  Before, each keystroke started a fresh history, so undo had nothing to
+  restore.
+- A focused `"text_input"` answers Ctrl+Left/Right (word jump),
+  Ctrl+Backspace/Delete (word delete) and Ctrl+Home/End, which used to
+  pass through unhandled, and Ctrl/Cmd+Z/Ctrl/Cmd+Shift+Z undo and redo in
+  every text-entry leaf, not only `"text_input"`.
+- The caret of a text-entry leaf, and of a `"command_line"` or
+  `"palette"` query, paints where the widget's own editing put it, not
+  where the descriptor's `cursor` says.
+- A text-entry leaf inside a layout dialog or popover keeps editing:
+  keys and typed text reach it through the same routing as the main tree.
+- A double-click or a wheel notch on an open `"completions"` list or
+  `"rich_text_popup"` that the overlay itself ignores no longer reaches the
+  handler or the widget painted beneath it: an overlay swallows every
+  press, double-click and wheel notch that lands on it (#2978). A press on
+  a completions list outside its rows no longer dismisses it.
 
 - A layout-tree render keeps the stored state of a subtree that is not
   painted this frame -- an unselected `"tabs"` entry, a `"scroll"` child

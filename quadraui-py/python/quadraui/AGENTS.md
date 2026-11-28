@@ -130,10 +130,7 @@ into `fields=`: `ToggleField`, `TextInputField`, `SliderField`,
 `PasswordField`, `TextAreaField`, `SelectField` (a `Dropdown` row). Every
 one takes `on_change`, and `TextInputField`/`PasswordField` also take
 `on_submit` (fires once on Enter) -- see each builder's own docstring for
-exactly which `FormEvent` it answers. `SliderField` is the one exception:
-paint/a11y only for now, since `FormController` has no click/drag/arrow-key
-arm for `FieldKind::Slider` -- use the standalone `Slider` leaf for a
-real interactive slider. `Checkbox`, `Slider`, `Select`, `Password`,
+exactly which `FormEvent` it answers. `Checkbox`, `Slider`, `Select`, `Password`,
 `TextArea` are the same five controls as bare, `Form`-less leaves -- use
 one of those instead of a one-field `Form` for a single standalone
 control.

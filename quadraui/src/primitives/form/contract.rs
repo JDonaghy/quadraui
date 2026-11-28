@@ -307,6 +307,7 @@
 //! [`super`]'s module doc already describes.
 
 use crate::a11y::A11yAction;
+use crate::behaviour::text_edit::EditHistory;
 use crate::event::{Key, MouseButton, NamedKey, Point, Rect};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
@@ -422,6 +423,54 @@ impl Form {
     }
 }
 
+impl Form {
+    /// [`Primitive::layout`] for this form exactly as given — the caller
+    /// has already overlaid its live state ([`Self::live`]).
+    fn layout_live(&self, ctx: &LayoutCtx, rect: Rect) -> FormPrimitiveLayout {
+        // `ctx.units()` is a reliable *runtime* discriminator between a
+        // TUI caller and a pixel-backend one even when both features are
+        // compiled into the same binary — see `LayoutCtx::units`'s own
+        // doc.
+        #[cfg(feature = "tui")]
+        {
+            if matches!(ctx.units(), crate::primitive::Units::Cells) {
+                return FormPrimitiveLayout {
+                    area: rect,
+                    layout: super::cell_layout::tui_form_layout(self, cell_area(rect)),
+                    toolbars: Vec::new(),
+                };
+            }
+        }
+        // Labels, values and hints are chrome — painted in the backend's
+        // UI font by `super::native_surface_paint` — so this measures
+        // them through the calling backend's own `Backend::measure_text`
+        // for `FontRole::Chrome`, the same measurer every pixel
+        // rasteriser paints the form's text with. Without a measurer in reach
+        // (`LayoutCtx::new`) it degrades to the `ctx.char_width`
+        // approximation.
+        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Chrome,
+        };
+        // Rows pitch off the backend's own line height
+        // (`Backend::line_height`), the metric every pixel painter of an
+        // embedded form body sizes its rows from, so a form painted here
+        // and one painted inside a `MultiSectionView` section share one
+        // row pitch.
+        let row_h =
+            crate::primitives::layout_metrics::form_row_height(ctx.editor_line_height() as f64);
+        let layout = self.layout(rect.width, rect.height, |i| {
+            crate::primitives::layout_metrics::form_field_measure(&self.fields[i], row_h, &measure)
+        });
+        let toolbars = self.toolbar_field_layouts(ctx, rect, &layout);
+        FormPrimitiveLayout {
+            area: rect,
+            layout,
+            toolbars,
+        }
+    }
+}
+
 impl Primitive for Form {
     type Layout = FormPrimitiveLayout;
     type Event = FormEvent;
@@ -468,49 +517,16 @@ impl Primitive for Form {
     }
 
     /// Resolve the form-relative layout for `rect`, in whichever unit
-    /// the caller measures in — see this module's own doc.
+    /// the caller measures in — see this module's own doc — for the form
+    /// as its live state shows it ([`Self::live`]): the stored
+    /// [`FormState`] and whether the host reports it focused
+    /// ([`PaintState::focus_ring_visible`]).
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
-        // `ctx.units()` is a reliable *runtime* discriminator between a
-        // TUI caller and a pixel-backend one even when both features are
-        // compiled into the same binary — see `LayoutCtx::units`'s own
-        // doc.
-        #[cfg(feature = "tui")]
-        {
-            if matches!(ctx.units(), crate::primitive::Units::Cells) {
-                return FormPrimitiveLayout {
-                    area: rect,
-                    layout: super::cell_layout::tui_form_layout(self, cell_area(rect)),
-                    toolbars: Vec::new(),
-                };
-            }
-        }
-        // Labels, values and hints are chrome — painted in the backend's
-        // UI font by `super::native_surface_paint` — so this measures
-        // them through the calling backend's own `Backend::measure_text`
-        // for `FontRole::Chrome`, the same measurer every pixel
-        // rasteriser paints the form's text with. Without a measurer in reach
-        // (`LayoutCtx::new`) it degrades to the `ctx.char_width`
-        // approximation.
-        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
-            ctx,
-            role: crate::FontRole::Chrome,
-        };
-        // Rows pitch off the backend's own line height
-        // (`Backend::line_height`), the metric every pixel painter of an
-        // embedded form body sizes its rows from, so a form painted here
-        // and one painted inside a `MultiSectionView` section share one
-        // row pitch.
-        let row_h =
-            crate::primitives::layout_metrics::form_row_height(ctx.editor_line_height() as f64);
-        let layout = self.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(&self.fields[i], row_h, &measure)
+        let stored = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state.and_then(|s| s.downcast_ref::<FormState>()).cloned()
         });
-        let toolbars = self.toolbar_field_layouts(ctx, rect, &layout);
-        FormPrimitiveLayout {
-            area: rect,
-            layout,
-            toolbars,
-        }
+        let live = self.live(stored.as_ref(), ctx.paint_state().focus_ring_visible());
+        live.layout_live(ctx, rect)
     }
 
     /// Runs the shared pixel painter at the already-resolved layout, with
@@ -576,33 +592,55 @@ impl Primitive for Form {
 }
 
 impl Form {
-    /// This form with the text caret and date scrub position its own
-    /// editing has walked to, for a painter — read off the persistent
-    /// [`FormState`] `env` carries. The scroll offset is not overlaid:
-    /// the layout being painted was resolved from the descriptor's own.
+    /// This form as its painter shows it: [`Self::live`] over the
+    /// persistent [`FormState`] and the focus `env` carries.
     fn with_painted_edit(&self, env: &crate::PaintEnv) -> std::borrow::Cow<'_, Self> {
-        match env.widget_state_as::<FormState>() {
-            Some(state) if state.text_edit.is_some() || state.date_edit.is_some() => {
-                let mut painted = self.clone();
-                let edits = FormState {
-                    scroll_offset: None,
-                    ..state.clone()
-                };
-                overlay_state(&mut painted, &edits);
-                std::borrow::Cow::Owned(painted)
-            }
-            _ => std::borrow::Cow::Borrowed(self),
+        self.live(
+            env.widget_state_as::<FormState>(),
+            env.state.focus_ring_visible(),
+        )
+    }
+
+    /// This form with its live interaction state applied: the caret, date
+    /// scrub position and scroll offset `state` holds, the field focus
+    /// `state` tracks while the descriptor leaves
+    /// [`Form::focused_field`] unset, and `has_focus` raised when the
+    /// host reports the form focused. Borrowed unchanged when none of
+    /// that differs from the descriptor.
+    pub(crate) fn live(
+        &self,
+        state: Option<&FormState>,
+        focused: bool,
+    ) -> std::borrow::Cow<'_, Self> {
+        let adopt_focus =
+            self.focused_field.is_none() && state.is_some_and(|s| s.focused_field.is_some());
+        let raise_focus = focused && !self.has_focus;
+        let overlay = state.is_some_and(|s| {
+            s.text_edit.is_some() || s.date_edit.is_some() || s.scroll_offset.is_some()
+        });
+        if !adopt_focus && !raise_focus && !overlay {
+            return std::borrow::Cow::Borrowed(self);
         }
+        let mut live = self.clone();
+        if let Some(state) = state {
+            if adopt_focus {
+                live.focused_field = state.focused_field;
+            }
+            overlay_state(&mut live, state);
+        }
+        live.has_focus |= focused;
+        std::borrow::Cow::Owned(live)
     }
 }
 
 // ── Interaction state ───────────────────────────────────────────────
 
-/// Live caret and selection anchor for the field currently being typed
-/// into. The *value* is **not** cached here — it is always read fresh
-/// off the descriptor (the host's own canonical string), so the host
-/// staying the single source of truth for field content still holds;
-/// only cursor placement lives here.
+/// Live caret, selection anchor and undo history for the field currently
+/// being typed into. The field's current *value* is read fresh off the
+/// descriptor (the host's own canonical string) on every edit; `history`
+/// holds earlier value snapshots of this field only, so Ctrl/Cmd+Z can
+/// emit one of them back to the host. The whole cursor, history
+/// included, is dropped when focus moves to another field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextCursor {
     /// The field this caret belongs to, so moving focus away and back
@@ -612,6 +650,9 @@ pub struct TextCursor {
     pub cursor: usize,
     /// Byte offset the current selection started at, if any.
     pub selection_anchor: Option<usize>,
+    /// The field's undo/redo history, kept while the field holds focus so
+    /// Ctrl/Cmd+Z reaches back past the last keystroke.
+    pub history: EditHistory,
 }
 
 /// Live focused-day / visible-month for the [`FieldKind::DatePicker`]
@@ -694,6 +735,12 @@ pub struct FormState {
     /// read by every following pointer move so the value keeps tracking
     /// the cursor, and cleared on release.
     pub slider_drag: Option<WidgetId>,
+    /// The field focus last moved to, for a descriptor that leaves
+    /// [`Form::focused_field`] unset: Tab, Up/Down and clicks still move
+    /// field focus, and the form paints and edits that field, with no
+    /// host echoing [`FormEvent::FocusChanged`] back. A descriptor that
+    /// sets `focused_field` keeps control of it.
+    pub focused_field: Option<WidgetId>,
 }
 
 impl PaintState for FormState {}
@@ -1424,6 +1471,7 @@ pub(crate) fn move_focus(
                 field_id: id,
                 cursor,
                 selection_anchor,
+                history: EditHistory::default(),
             }
         });
     // Same seeding as `new_text_edit` above, but for a `DatePicker`:
@@ -1528,11 +1576,12 @@ pub(crate) fn handle_text_event(
     let mut edit = FlatEditState::default();
     if let Some(e) = state
         .text_edit
-        .as_ref()
+        .as_mut()
         .filter(|e| e.field_id == focused_id)
     {
         edit.cursor = Some(e.cursor);
         edit.anchor = e.selection_anchor;
+        edit.history = std::mem::take(&mut e.history);
     }
     let outcome = handle_flat_edit_event(
         value,
@@ -1547,6 +1596,7 @@ pub(crate) fn handle_text_event(
         field_id: focused_id,
         cursor,
         selection_anchor: edit.anchor,
+        history: edit.history,
     });
     match outcome {
         FlatEditOutcome::Changed(value) => Handled::Event(FormEvent::TextInputChanged {
@@ -2055,7 +2105,9 @@ impl Interactive for Form {
     /// ([`super::focus_order`], which skips `Label`, `ReadOnly` and
     /// disabled fields) — so a host's focus traversal can land on a
     /// single field without the form having to be entered first, and
-    /// Tab inside the form walks the same stops.
+    /// Tab inside the form walks the same stops. Whenever field focus
+    /// moves, [`Interactive::handle`] requests focus for the new field's
+    /// stop, so the host knows which child holds focus.
     fn focus(&self) -> FocusSpec {
         let stops: Vec<crate::interactive::FocusStop> = super::focus_order(self)
             .iter()
@@ -2087,53 +2139,15 @@ impl Interactive for Form {
         layout: &FormPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<FormEvent> {
-        let rows = viewport_rows(layout, single_row_height(layout));
-        match event {
-            RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
-                local,
-                ..
-            } => {
-                cx.request_focus(None);
-                click_field(self, state, &layout.layout, local.x, local.y)
+        let live = self.live(Some(&*state), false);
+        let handled = live.handle_live(state, event, layout, cx);
+        if let Handled::Event(FormEvent::FocusChanged { id }) = &handled {
+            state.focused_field = Some(*id);
+            if let Some(stop) = super::focus_order(self).iter().position(|s| s == id) {
+                cx.request_focus(Some(SubTarget(stop as u64)));
             }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Move,
-                local,
-                ..
-            } if state.slider_drag.is_some() => {
-                slider_drag_to(self, state, &layout.layout, local.x)
-            }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Up(MouseButton::Left),
-                ..
-            } => {
-                state.slider_drag = None;
-                Handled::Consumed
-            }
-            RoutedEvent::Wheel { dy, .. } => {
-                let delta = crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0);
-                state.scroll_by(self, delta, rows);
-                Handled::Consumed
-            }
-            RoutedEvent::Key(key) => handle_key(self, state, &key.key, &key.modifiers, rows, cx),
-            // A lone space delivered as text rather than as a key still
-            // activates a focused item row or plain `Toggle` — the one
-            // text character with activation semantics. Any other text,
-            // and a space on a text field, inserts.
-            RoutedEvent::Text(text) if text == " " => activate_focused_on_space(self, state)
-                .unwrap_or_else(|| handle_text_event(self, state, event, cx)),
-            RoutedEvent::Text(_) => handle_text_event(self, state, event, cx),
-            // `A11yAction` names no field through this generic seam, so
-            // `Click` activates whichever field is focused — the same
-            // one Enter/Space activates, matching the
-            // assistive-technology default-action convention.
-            RoutedEvent::Action(A11yAction::Click) => self
-                .focused_field
-                .map(|id| Handled::Event(form_click_event(self, &id)))
-                .unwrap_or(Handled::Ignored),
-            _ => Handled::Ignored,
         }
+        handled
     }
 
     fn a11y_actions(&self, _state: &FormState) -> Vec<A11yAction> {
@@ -2160,6 +2174,114 @@ impl Interactive for Form {
         }
         items.extend(regions);
         items
+    }
+}
+
+/// Whether moving field focus by `delta` from the focused field would
+/// step past either end of the form's focus order. A form with no field
+/// focused enters at the end it is approached from, so it is never at its
+/// boundary; one with no focusable field always is.
+fn focus_at_boundary(form: &Form, delta: isize) -> bool {
+    let stops = super::focus_order(form);
+    match form
+        .focused_field
+        .and_then(|id| stops.iter().position(|s| *s == id))
+    {
+        _ if stops.is_empty() => true,
+        Some(i) if delta > 0 => i + 1 >= stops.len(),
+        Some(0) if delta < 0 => true,
+        _ => false,
+    }
+}
+
+impl Form {
+    /// [`Interactive::handle`] for the form as [`Self::live`] shows it.
+    fn handle_live(
+        &self,
+        state: &mut FormState,
+        event: &RoutedEvent,
+        layout: &FormPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<FormEvent> {
+        let rows = viewport_rows(layout, single_row_height(layout));
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => {
+                cx.request_focus(None);
+                let handled = click_field(self, state, &layout.layout, local.x, local.y);
+                if state.slider_drag.is_some() {
+                    cx.capture_pointer();
+                }
+                handled
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } if state.slider_drag.is_some() => {
+                slider_drag_to(self, state, &layout.layout, local.x)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(MouseButton::Left),
+                ..
+            } => {
+                if state.slider_drag.take().is_some() {
+                    cx.release_pointer();
+                }
+                Handled::Consumed
+            }
+            RoutedEvent::Wheel { dy, .. } => {
+                let delta = crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0);
+                state.scroll_by(self, delta, rows);
+                Handled::Consumed
+            }
+            RoutedEvent::Key(key) => self.handle_routed_key(state, key, rows, cx),
+            // A lone space delivered as text rather than as a key still
+            // activates a focused item row or plain `Toggle` — the one
+            // text character with activation semantics. Any other text,
+            // and a space on a text field, inserts.
+            RoutedEvent::Text(text) if text == " " => activate_focused_on_space(self, state)
+                .unwrap_or_else(|| handle_text_event(self, state, event, cx)),
+            RoutedEvent::Text(_) => handle_text_event(self, state, event, cx),
+            // `A11yAction` names no field through this generic seam, so
+            // `Click` activates whichever field is focused — the same
+            // one Enter/Space activates, matching the
+            // assistive-technology default-action convention.
+            RoutedEvent::Action(A11yAction::Click) => self
+                .focused_field
+                .map(|id| Handled::Event(form_click_event(self, &id)))
+                .unwrap_or(Handled::Ignored),
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// A routed keystroke: the shared key handling, except that a plain
+    /// Up/Down the focused field has no use for moves field focus,
+    /// stopping at either end.
+    fn handle_routed_key(
+        &self,
+        state: &mut FormState,
+        key: &crate::interactive::KeyEvent,
+        rows: usize,
+        cx: &mut EventCx,
+    ) -> Handled<FormEvent> {
+        let mods = key.modifiers;
+        let handled = handle_key(self, state, &key.key, &mods, rows, cx);
+        let plain = !mods.ctrl && !mods.alt && !mods.cmd && !mods.shift;
+        let vertical = match key.key {
+            Key::Named(NamedKey::Up) if plain => Some(-1),
+            Key::Named(NamedKey::Down) if plain => Some(1),
+            _ => None,
+        };
+        match (handled, vertical) {
+            (Handled::Ignored, Some(delta)) if !focus_at_boundary(self, delta) => {
+                move_focus(self, state, delta, rows)
+            }
+            (handled, _) => handled,
+        }
     }
 }
 

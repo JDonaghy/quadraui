@@ -190,19 +190,17 @@ descendant's `{"class": "secondary"}` against that narrowed theme.
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
 -- exactly one `<kind>` key is present alongside `"id"`. `LayoutLeafNode`'s
 own field table in the generated reference lists every registered kind key
-and the descriptor type it carries: the six fixed kinds
-(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"button"`,
-`"text_display"`, `"list"`, `"tree"`, `"data_table"`, `"tab_bar"`),
-`"status_bar"`, and every additive kind registered in
-`quadraui-binding-core::extra_paint::EXTRA_PRIMITIVE_KINDS` (`"progress"`,
-`"spinner"`, `"image"`, `"form"`, `"text_input"`, `"number_input"`,
-`"combo_box"`, `"date_picker"`, `"radio_group"`, `"switch"`, `"chart"`,
-`"message_list"`, `"board"`, `"pipeline_view"`, `"minimap"`,
-`"multi_section_view"`, `"diff_view"`, `"activity_bar"`, `"toolbar"`,
-`"menu_bar"`, `"command_line"`, `"command_center"`, `"palette"`,
-`"scrollbar"`, `"editor"`, `"terminal"`, `"canvas"`, `"scroll_view"`,
-`"find_replace"`). Adding a kind to either Rust-side list is what adds its
-row to `LayoutLeafNode`'s table below -- this page never lists them by hand.
+and the descriptor type it carries: the fixed kinds
+(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"text_display"`,
+`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`) and every generic widget
+kind (`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
+`quadraui::widget_kinds!` table declares, such as `"button"`, `"form"`,
+`"menu_bar"`, `"text_input"` and `"palette"`, plus any kind a binding
+registers at runtime). A generic kind decodes into its core widget and is
+painted, hit-tested and routed through that widget's own
+`Primitive`/`Interactive` implementation. Adding a kind to either list is
+what adds its row to `LayoutLeafNode`'s table below -- this page never
+lists them by hand.
 
 `RenderFrameDict` is the older, flat, per-slot shape some callbacks return
 instead of a `LayoutNode` tree: the same kind keys as `LayoutLeafNode`, but
@@ -238,12 +236,14 @@ in the generated reference for its variants.
 
 ## Controlled vs. uncontrolled fields
 
-Several leaf descriptors carry a field that mirrors a piece of state
-`quadraui-binding-core::widget_state::WidgetState` also tracks per widget
-across frames -- a scroll offset, a checked flag, a focused index. Every
-such field is optional (`field_opt` in the generated reference: the key may
-be omitted) and follows the same resolution rule, applied per widget id by
-`WidgetState::resolve`:
+Several leaf descriptors carry a field that mirrors a piece of state the
+binding's engine also tracks per widget across frames, in a
+`quadraui::WidgetStateStore` -- a scroll offset, a checked flag, a focused
+index, a menu bar's open dropdown. Every such field is optional
+(`field_opt` in the generated reference: the key may be omitted) and
+follows the same resolution rule, applied per widget id
+(`WidgetStateStore::resolve` for a host-resolved value, the widget's own
+`Interactive::State` for a generic widget kind):
 
 - **Controlled** -- the descriptor sets the field (key present, non-null).
   The app's value wins outright for this frame, and is written back into the
@@ -261,7 +261,7 @@ reference below are the common examples.
 
 ### `Form.focused_field`
 
-A `"form"` extra's own `focused_field` follows the rule above, with a
+A `"form"` leaf's own `focused_field` follows the rule above, with a
 richer uncontrolled behaviour than a plain scroll offset or checked flag:
 
 - **Controlled** -- the render callback sets `focused_field` to a field id
@@ -285,11 +285,30 @@ interaction (typing into whichever field is focused, toggling a switch,
 clicking a button) working with no app code tracking focus at all -- the
 form is never a dead end just because the key was left `null`.
 
+### `menu_bar` view
+
+A `"menu_bar"` leaf (`AppMenu`) carries its view as `open_item`,
+`focused_item`, `dropdown_selected`, `submenu_path` and
+`submenu_selected`, and reports every change as
+`{"AppMenu": [id, {"Changed": <view>}]}`:
+
+- **Controlled** -- the render callback merges each `Changed` view into
+  the next frame's `"menu_bar"` dict. The descriptor's view then wins.
+- **Uncontrolled** -- the render callback leaves every view key unset. The
+  menu keeps the view itself, so a click or an Alt mnemonic opens a
+  dropdown, the highlight moves and an activation or Escape closes it with
+  no app code. `Changed` is still reported, for an app that wants to
+  observe it.
+
+A closed view and an omitted one are the same descriptor. So a controlled
+app that closes an open menu on its own, before any further input reaches
+the menu, sees the menu's own last view again until that input arrives.
+
 ### `has_focus` is not a controlled/uncontrolled field
 
-`has_focus` on a `"text_input"`/`"password"`/`"textarea"` extra (and on a
+`has_focus` on a `"text_input"`/`"password"`/`"textarea"` leaf (and on a
 `Form`'s own fields) looks like it belongs in the list above, but it isn't
-tracked by `WidgetState::resolve` at all -- it is purely cosmetic, read only
+resolved per widget at all -- it is purely cosmetic, read only
 when painting the caret/focus-ring chrome. Which widget actually *receives*
 a typed key or click is decided entirely by the engine's own focus state
 (`backend.focus_tree().focused_id()`, set by click-to-focus or
@@ -379,6 +398,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ActivityItem`](#wire-activityitem)
 - [`AlignValue`](#wire-alignvalue)
 - [`Anchor`](#wire-anchor)
+- [`AppMenu`](#wire-appmenu)
 - [`AppMenuEvent`](#wire-appmenuevent)
 - [`AppMenuView`](#wire-appmenuview)
 - [`AuxHit`](#wire-auxhit)
@@ -527,8 +547,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ListViewEvent`](#wire-listviewevent)
 - [`ListViewLeaf`](#wire-listviewleaf)
 - [`Markdown`](#wire-markdown)
-- [`MenuBar`](#wire-menubar)
-- [`MenuBarItem`](#wire-menubaritem)
+- [`MenuDef`](#wire-menudef)
 - [`MessageDialogOverlayDescriptor`](#wire-messagedialogoverlaydescriptor)
 - [`MessageList`](#wire-messagelist)
 - [`MessageListEvent`](#wire-messagelistevent)
@@ -573,7 +592,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`RenderOutput`](#wire-renderoutput)
 - [`RowAlign`](#wire-rowalign)
 - [`RowsRequestedEvent`](#wire-rowsrequestedevent)
-- [`ScriptedWidgetDescriptor`](#wire-scriptedwidgetdescriptor)
 - [`ScrollAxis`](#wire-scrollaxis)
 - [`ScrollAxisValue`](#wire-scrollaxisvalue)
 - [`ScrollDelta`](#wire-scrolldelta)
@@ -783,12 +801,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_FormEventToggleChanged`](#wire-_formeventtogglechanged)
 - [`_FormEventToolbarButtonClicked`](#wire-_formeventtoolbarbuttonclicked)
 - [`_HeaderHitDict`](#wire-_headerhitdict)
-- [`_HitDetailCanvasRegion`](#wire-_hitdetailcanvasregion)
 - [`_HitDetailDataTableFooter`](#wire-_hitdetaildatatablefooter)
 - [`_HitDetailDataTableHeader`](#wire-_hitdetaildatatableheader)
 - [`_HitDetailDataTableHeaderDivider`](#wire-_hitdetaildatatableheaderdivider)
 - [`_HitDetailDataTableRow`](#wire-_hitdetaildatatablerow)
-- [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
 - [`_HitDetailListItem`](#wire-_hitdetaillistitem)
 - [`_HitDetailListTitle`](#wire-_hitdetaillisttitle)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
@@ -799,11 +815,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitFirstPane`](#wire-_hitdetailsplitfirstpane)
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailTabBarRightSegment`](#wire-_hitdetailtabbarrightsegment)
-- [`_HitDetailTabBarScrollLeft`](#wire-_hitdetailtabbarscrollleft)
-- [`_HitDetailTabBarScrollRight`](#wire-_hitdetailtabbarscrollright)
-- [`_HitDetailTabBarTab`](#wire-_hitdetailtabbartab)
-- [`_HitDetailTabBarTabClose`](#wire-_hitdetailtabbartabclose)
 - [`_HitDetailTextDisplayLine`](#wire-_hitdetailtextdisplayline)
 - [`_HitDetailTextDisplayScrollbarThumb`](#wire-_hitdetailtextdisplayscrollbarthumb)
 - [`_HitDetailTextDisplayScrollbarTrackAfter`](#wire-_hitdetailtextdisplayscrollbartrackafter)
@@ -817,6 +828,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_Icon1`](#wire-_icon1)
 - [`_Icon2`](#wire-_icon2)
 - [`_KeyBindingDict`](#wire-_keybindingdict)
+- [`_LayoutLeafNodeScriptedWidget`](#wire-_layoutleafnodescriptedwidget)
 - [`_ListViewEventItemActivated`](#wire-_listvieweventitemactivated)
 - [`_ListViewEventItemDoubleClicked`](#wire-_listvieweventitemdoubleclicked)
 - [`_ListViewEventKeyPressed`](#wire-_listvieweventkeypressed)
@@ -1075,6 +1087,23 @@ Common shape for every overlay primitive that positions a box relative to an anc
 | `margin` | `number` | yes | Gap between `rect` and the overlay along the placement axis. |
 | `preferred` | `Side` | yes | Side of `rect` the overlay prefers to open on. |
 | `rect` | `Rect` | yes | Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates. |
+
+<a id="wire-appmenu"></a>
+#### `AppMenu`
+
+An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dropdown_selected` | `number` | no | Highlighted item in the open dropdown. |
+| `focused_item` | `number \| null` | no | The bar item keyboard or pointer focus sits on. |
+| `id` | `WidgetId` | yes | The menu's id, also the painted bar's. |
+| `items` | `MenuDef[]` | yes | The top-level menus, in bar order. |
+| `native` | `boolean` | no | Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens. |
+| `open_item` | `number \| null` | no | The menu whose dropdown is open. |
+| `submenu_path` | `number[]` | no | Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open. |
+| `submenu_selected` | `number[]` | no | Highlighted item at each open submenu depth, parallel to `submenu_path`. |
+| `typeahead` | `boolean` | no | Whether a plain printable key in an open dropdown is type-ahead (on by default). |
 
 <a id="wire-appmenuevent"></a>
 #### `AppMenuEvent`
@@ -1965,7 +1994,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 <a id="wire-draggesturewireevent"></a>
 #### `DragGestureWireEvent`
 
-Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` — mirrors `crate::engine::TreeTableControllerWireEvent`'s own `EventSink` default-method rollout: that method defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
+Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
 
 Alias for `_DragGestureWireEventDragStarted | _DragGestureWireEventDragOver | _DragGestureWireEventDropped`.
 
@@ -2363,7 +2392,7 @@ Alias for `"Opened" | "Closed"`.
 
 The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-icon"></a>
 #### `Icon`
@@ -2584,7 +2613,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `list` | `ListView \| ListViewLeaf` | no |  |
 | `markdown` | `Markdown` | no |  |
 | `max` | `number \| null` | no |  |
-| `menu_bar` | `MenuBar` | no |  |
+| `menu_bar` | `AppMenu` | no |  |
 | `message_list` | `MessageList` | no |  |
 | `min` | `number \| null` | no |  |
 | `minimap` | `Minimap` | no |  |
@@ -2595,7 +2624,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `pipeline_view` | `PipelineView` | no |  |
 | `progress` | `ProgressBar` | no |  |
 | `radio_group` | `RadioGroup` | no |  |
-| `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
+| `scripted_widget` | `_LayoutLeafNodeScriptedWidget` | no | The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. |
 | `scroll_view` | `ScrollView` | no |  |
 | `scrollbar` | `Scrollbar` | no |  |
 | `select` | `Select` | no |  |
@@ -2882,29 +2911,17 @@ A scrollable, read-only markdown viewer.
 | `scroll_offset` | `number` | no | Lines scrolled off the top. |
 | `source` | `string` | yes | Raw markdown text. |
 
-<a id="wire-menubar"></a>
-#### `MenuBar`
+<a id="wire-menudef"></a>
+#### `MenuDef`
 
-Declarative description of a menu bar.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `focused_item` | `number \| null` | no | Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal. |
-| `id` | `WidgetId` | yes |  |
-| `items` | `MenuBarItem[]` | yes |  |
-| `open_item` | `number \| null` | no | Index of the currently-open menu (if any). |
-
-<a id="wire-menubaritem"></a>
-#### `MenuBarItem`
-
-One top-level menu entry.
+One top-level menu and its dropdown items.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `disabled` | `boolean` | no | When true, the item is rendered dimmed and clicks are ignored. |
-| `id` | `WidgetId` | yes |  |
+| `disabled` | `boolean` | no | When true, the item is rendered dimmed and does not open. |
+| `id` | `WidgetId` | yes | The menu's id, the bar item's. |
 | `label` | `string` | yes | Display label, e.g. |
-| `submenu` | `ContextMenuItem[] \| null` | no | Declarative dropdown items. |
+| `submenu` | `ContextMenuItem[] \| null` | no | The dropdown's items, in order. |
 
 <a id="wire-messagedialogoverlaydescriptor"></a>
 #### `MessageDialogOverlayDescriptor`
@@ -3208,15 +3225,16 @@ One `run_shell` activity-bar panel entry.
 <a id="wire-passwordinput"></a>
 #### `PasswordInput`
 
-`PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`.
+A standalone masked single-line input. The value is held in plaintext; only painting masks it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cursor` | `number \| null` | no |  |
-| `has_focus` | `boolean` | no |  |
+| `cursor` | `number \| null` | no | The caret as a byte offset into `value`; `None` puts it at the end. |
+| `has_focus` | `boolean` | no | Whether to paint the focused wash and caret. |
 | `id` | `WidgetId` | yes |  |
-| `mask_char` | `string` | no |  |
-| `value` | `string` | no |  |
+| `mask_char` | `string` | no | The glyph painted for each character of the value. |
+| `placeholder` | `string` | no | Shown dimmed while the value is empty. |
+| `value` | `string` | no | The plaintext value. |
 
 <a id="wire-pathpickeraction"></a>
 #### `PathPickerAction`
@@ -3372,7 +3390,7 @@ A flat render frame: one optional descriptor per widget kind.
 | `image` | `Image \| null` | no |  |
 | `list` | `(ListView \| ListViewLeaf) \| null` | no |  |
 | `markdown` | `Markdown \| null` | no |  |
-| `menu_bar` | `MenuBar \| null` | no |  |
+| `menu_bar` | `AppMenu \| null` | no |  |
 | `message_list` | `MessageList \| null` | no |  |
 | `minimap` | `Minimap \| null` | no |  |
 | `multi_section_view` | `MultiSectionView \| null` | no |  |
@@ -3425,15 +3443,6 @@ The `{id, start, count}` a binding should ask its app's render callback for next
 | `count` | `number` | yes |  |
 | `id` | `WidgetId` | yes |  |
 | `start` | `number` | yes |  |
-
-<a id="wire-scriptedwidgetdescriptor"></a>
-#### `ScriptedWidgetDescriptor`
-
-The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl").
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `props` | `unknown` | no |  |
 
 <a id="wire-scrollaxis"></a>
 #### `ScrollAxis`
@@ -4162,16 +4171,16 @@ Scrollbar state for a `Terminal`. Paint builds a `crate::Scrollbar::vertical` fr
 <a id="wire-textarea"></a>
 #### `TextArea`
 
-`TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset.
+A standalone multi-line input over a flat `value` (lines separated by `'/n'`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cursor` | `number \| null` | no |  |
-| `has_focus` | `boolean` | no |  |
+| `cursor` | `number \| null` | no | The caret as a byte offset into `value`; `None` puts it at the end. |
+| `has_focus` | `boolean` | no | Whether to paint the focused wash. |
 | `id` | `WidgetId` | yes |  |
-| `placeholder` | `string \| null` | no |  |
-| `value` | `string` | no |  |
-| `visible_rows` | `number` | no |  |
+| `placeholder` | `string` | no | Shown dimmed while the value is empty. |
+| `value` | `string` | no | The text, lines separated by `'/n'`. |
+| `visible_rows` | `number` | no | Rows tall — the viewport height, independent of how many lines the value holds. |
 
 <a id="wire-textdisplay"></a>
 #### `TextDisplay`
@@ -4451,23 +4460,24 @@ Declarative description of a `TreeTable` widget: a `DataTable` plus per-row tree
 <a id="wire-treetablecontrollerdescriptor"></a>
 #### `TreeTableControllerDescriptor`
 
-A `"tree_table_controller"` extra: the hierarchical-model counterpart of `"tree_table"` (`TreeTable`/`quadraui::TreeTableNode`'s flat, host-flattened shape). Unlike every other additive primitive on this trait, decoding this is only ever the SEED for a `crate::engine::InteractionEngine`-cached `TreeTableController` — `crate::engine::InteractionEngine::sync_tree_tables` reads `nodes`/ `selected_id` exactly once, the first frame this `id` is seen (`Self::seed_controller`), then leaves the controller's own live expand/selection/sort state alone on every later frame, the same "seed once, then the richer controller owns it" rule that method's own doc gives for a `Form.scroll_offset`. `Self::paint` (the bare, non-interactive fallback every `ExtraPaint` impl gets painted with before that sync ever runs) builds a throwaway controller the same way, so the very first frame — before any controller is cached at all — still paints the full seeded model rather than nothing.
+A hierarchical tree table as a contract widget — the wire kind `"tree_table_controller"`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `bordered` | `boolean` | no |  |
 | `columns` | `Column[]` | no |  |
-| `folders_first` | `boolean` | no |  |
+| `folders_first` | `boolean` | no | Sort branches before leaves at every level when a header click sorts. |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
 | `nodes` | `TreeTableControllerNode[]` | no |  |
 | `selected_id` | `string \| null` | no |  |
 | `show_scrollbar` | `boolean` | no |  |
+| `sort_override` | `boolean` | no | `nodes` already arrive in the app's own order for the current sort: a header click still toggles the sort indicator and reports `TreeTableModelEvent::SortChanged`, but the widget does not re-order the rows itself. |
 
 <a id="wire-treetablecontrollernode"></a>
 #### `TreeTableControllerNode`
 
-One node in a `"tree_table_controller"` extra's hierarchical model — the wire mirror of `TreeTableNodeData`, which has no `Deserialize` of its own (its fields are private; only its `TreeTableNodeData::leaf`/`TreeTableNodeData::branch`/ `TreeTableNodeData::lazy_branch` constructors are public), so a wire node decodes into this plain mirror first and `Self::into_node_data` then picks the matching constructor. `has_children: false` is always a `TreeTableNodeData::leaf` (`children` ignored); `has_children: true` with `children` present (including an empty list) is a `TreeTableNodeData::branch`; `has_children: true` with `children` absent is a `TreeTableNodeData::lazy_branch` — the same three-way split `quadraui::compose::tree_table_controller`'s own module doc describes for *Lazy loading*.
+One node in `TreeTableController`'s hierarchical model: an app-level row, not yet flattened into a `TreeTableNode`/`DataRow` pair.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -4480,7 +4490,7 @@ One node in a `"tree_table_controller"` extra's hierarchical model — the wire 
 <a id="wire-treetablecontrollerwireevent"></a>
 #### `TreeTableControllerWireEvent`
 
-Wire-shaped mirror of `TreeTableControllerEvent` — the same field shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself has neither; it's an in-crate-only `quadraui::compose` type), and `Consumed`/`Ignored` dropped: `InteractionEngine::handle` only ever calls `EventSink::dispatch_tree_table_controller` for the five variants below, folding `Consumed`/`Ignored` straight into its own `Reaction` instead (see that method's own `TreeTableController` routing blocks).
+Events a `TreeTableModel` (the wire kind `"tree_table_controller"`) reports to the app. Rows are named by the app's own stable node id rather than by position, since a sort or an expand moves a node's flattened row. Serialized under the `"TreeTableController"` event key.
 
 Exactly one of the tags below is present on the wire (a discriminated union):
 
@@ -4489,8 +4499,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `RowSelected` | `_TreeTableControllerWireEventRowSelected` | Row selected — click or keyboard navigation. |
 | `RowActivated` | `_TreeTableControllerWireEventRowActivated` | Enter pressed, or a row/chevron double-clicked. |
 | `ToggleExpand` | `_TreeTableControllerWireEventToggleExpand` | A branch node's expand state flipped; its children were already loaded (or this collapses). |
-| `ChildrenRequested` | `_TreeTableControllerWireEventChildrenRequested` | A lazy branch was expanded for the first time with no loaded children — the host should fetch them and answer via `InteractionEngine::set_tree_table_children`. |
-| `SortChanged` | `_TreeTableControllerWireEventSortChanged` | A header click (re-)sorted every loaded level's children by `col`'s cell text — see `TreeTableController::header_clicked`'s own doc for how a host overrides the comparator via `InteractionEngine::set_tree_table_sort_override`. |
+| `ChildrenRequested` | `_TreeTableControllerWireEventChildrenRequested` | A lazy branch (`has_children` with no `children`) was expanded for the first time. |
+| `SortChanged` | `_TreeTableControllerWireEventSortChanged` | A header click sorted every loaded level's children by `col`'s cell text. |
 
 <a id="wire-treetableevent"></a>
 #### `TreeTableEvent`
@@ -4626,7 +4636,7 @@ Alias for `"activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart
 <a id="wire-widgetstatesnapshot"></a>
 #### `WidgetStateSnapshot`
 
-A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once.
+A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5662,16 +5672,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- |
 | `Action` | `string` | Right-aligned action button. |
 
-<a id="wire-_hitdetailcanvasregion"></a>
-#### `_HitDetailCanvasRegion`
-
-Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"canvas_region"` | yes |  |
-| `region` | `WidgetId` | yes |  |
-
 <a id="wire-_hitdetaildatatablefooter"></a>
 #### `_HitDetailDataTableFooter`
 
@@ -5703,15 +5703,6 @@ Landed on a declared region of a script-defined widget — `region` is that regi
 | `kind` | `"data_table_row"` | yes |  |
 | `row` | `number` | yes |  |
 
-<a id="wire-_hitdetailextrabody"></a>
-#### `_HitDetailExtraBody`
-
-Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"extra_body"` | yes |  |
-
 <a id="wire-_hitdetaillistitem"></a>
 #### `_HitDetailListItem`
 
@@ -5730,7 +5721,7 @@ Landed on an additive primitive's interactive region (currently `crate::extra_pa
 <a id="wire-_hitdetailscrollbody"></a>
 #### `_HitDetailScrollBody`
 
-Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::ExtraBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets.
+Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5793,43 +5784,6 @@ Landed on a `quadraui::SplitTree` divider — `split_index` is the pre-order ind
 | --- | --- | --- | --- |
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
-
-<a id="wire-_hitdetailtabbarrightsegment"></a>
-#### `_HitDetailTabBarRightSegment`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_right_segment"` | yes |  |
-
-<a id="wire-_hitdetailtabbarscrollleft"></a>
-#### `_HitDetailTabBarScrollLeft`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_scroll_left"` | yes |  |
-
-<a id="wire-_hitdetailtabbarscrollright"></a>
-#### `_HitDetailTabBarScrollRight`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_scroll_right"` | yes |  |
-
-<a id="wire-_hitdetailtabbartab"></a>
-#### `_HitDetailTabBarTab`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_tab"` | yes |  |
-| `tab` | `number` | yes |  |
-
-<a id="wire-_hitdetailtabbartabclose"></a>
-#### `_HitDetailTabBarTabClose`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_tab_close"` | yes |  |
-| `tab` | `number` | yes |  |
 
 <a id="wire-_hitdetailtextdisplayline"></a>
 #### `_HitDetailTextDisplayLine`
@@ -5906,7 +5860,7 @@ Landed before the thumb on a tree's vertical scrollbar track (page-up zone). Han
 <a id="wire-_hitdetailwidgetbody"></a>
 #### `_HitDetailWidgetBody`
 
-Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area — the `Widget` counterpart of `Self::ExtraBody`. Carries no sub-region detail, same reason: a `DynWidget` has no `ExtraPaint::hit_test`-style sub-region test to resolve one finer than "landed somewhere on the widget" against. Routed through `DynWidget::handle` (not `semantic_event_for_hit`, which has no arm for this detail and falls through to `None`) by `crate::engine::InteractionEngine::handle`.
+Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5938,6 +5892,16 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `Literal` | `string` | App-specific binding. |
+
+<a id="wire-_layoutleafnodescriptedwidget"></a>
+#### `_LayoutLeafNodeScriptedWidget`
+
+The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl").
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes |  |
+| `props` | `unknown` | no |  |
 
 <a id="wire-_listvieweventitemactivated"></a>
 #### `_ListViewEventItemActivated`
@@ -7076,6 +7040,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` | A `crate::TreeTable` chevron/row/header/column interaction — see `TreeTableEvent`'s own variants, in particular `TreeTableEvent::ToggleExpanded` for the branch-expand chevron click `DataTableEvent` has no counterpart for. |
+| `TreeTableController` | `[WidgetId, TreeTableControllerWireEvent]` | A `TreeTableModel` (wire kind `"tree_table_controller"`) row, chevron or header interaction, naming rows by the app's node ids. |
 | `CellGrid` | `[WidgetId, CellGridEvent]` | A `crate::CellGrid` cell was clicked, moving the cursor to its absolute `(row, col)` — see `CellGridEvent::CursorMoved`. |
 | `MultiSectionView` | `[WidgetId, MultiSectionViewEvent]` | A `crate::MultiSectionView` header, divider, scrollbar or aux input was used, or one of its section bodies reported an event — see `crate::MultiSectionViewEvent`. |
 | `Chat` | `[WidgetId, ChatEvent]` | A `crate::Chat` was submitted, cancelled or clicked, or one of its controlled fields changed — see `crate::ChatEvent`. |

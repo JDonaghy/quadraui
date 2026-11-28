@@ -18,7 +18,6 @@
 pub mod deferred;
 pub mod drag;
 pub mod engine;
-pub mod extra_paint;
 pub mod hit;
 pub mod host;
 pub mod layout;
@@ -26,14 +25,12 @@ pub mod render;
 pub mod scripted;
 pub mod semantic;
 pub mod services;
-pub mod text_input;
-pub mod widget_state;
+pub mod widget_kinds;
 pub mod wire;
 
 pub use wire::WIRE_VERSION;
 
-/// A wire-decode failure from any decoder in [`wire`] or
-/// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
+/// A wire-decode failure from any decoder in [`wire`] — the core counterpart of a
 /// binding's own descriptor-decode exception taxonomy (`quadraui-py`'s
 /// `InvalidDescriptorError` and its per-variant subclasses). `#[non_exhaustive]`
 /// so a binding match always carries a wildcard arm, and so this crate can add
@@ -256,8 +253,7 @@ impl std::error::Error for DecodeError {}
 
 /// Deserializes `deserializer` into `T`, wrapping any failure as a
 /// [`DecodeError::Borrow`] whose path is `what` — the shared tail every
-/// per-kind decoder in this crate (`wire::decode_layout_node`,
-/// `extra_paint::decode_extra_primitive`, ...) reduces to once it has a
+/// per-kind decoder in this crate (`wire::decode_layout_node`, ...) reduces to once it has a
 /// concrete type and a `serde::Deserializer` in hand. Public so a binding
 /// crate with its own fixed-slot descriptor types (`quadraui-ffi`'s
 /// `qui_<kind>_insert` family) can decode straight into them with the same
@@ -277,17 +273,12 @@ pub use deferred::{
     decode_overlay, overlay_anchor_from_value, ContextMenuOverlayDescriptor,
     MessageDialogOverlayDescriptor, OVERLAY_KINDS,
 };
-pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
+pub use drag::{find_split_layout, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
-    InteractionEngine, TreeTableControllerWireEvent,
+    InteractionEngine,
 };
-pub use extra_paint::{
-    decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
-    TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
-};
-pub use extra_paint::{register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds};
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
@@ -306,11 +297,10 @@ pub use host::{
     resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs, resolve_scroll_offset,
     resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_cursor_windowed,
     resolve_tree_expansion, step_driver, stored_cursor_scroll_offset, take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner,
-    tree_table_controller_nodes_from_wire, widget_state_snapshot, window_close_reaction, with_tray,
-    with_window, BindingHost, ErasedShellDriver, GuardedFailure, OverrideError,
-    WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE, SLOT_LIST,
-    SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    text_display_from_lines, theme_color_value, toast_corner, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
+    OverrideError, WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
+    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
 };
 pub use layout::LayoutGrid;
 pub use layout::{validate_unique_leaf_ids, LayoutContainer, LayoutLeaf, LayoutNode};
@@ -329,9 +319,10 @@ pub use render::{
     WindowedTreeExtent,
 };
 pub use scripted::{
-    register_scripted_widget, unregister_scripted_widget, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedExtra, ScriptedInputEvent, ScriptedLayout, ScriptedPaint,
-    ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ScriptedWidgetDescriptor,
+    ensure_scripted_widget_kind, register_scripted_widget, unregister_scripted_widget,
+    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedLayout,
+    ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
+    ScriptedWidgetDescriptor, SCRIPTED_WIDGET_KIND,
 };
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
@@ -342,9 +333,9 @@ pub use services::{
     set_jump_list, set_login_item, update_apply_on_quit, update_check_for_update,
     update_download_and_stage, ServiceError, UpdateInfoWire,
 };
-pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
-pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
-pub use widget_state::WidgetState;
+pub use widget_kinds::{
+    register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds, WIDGET_KINDS,
+};
 pub use wire::{
     decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,
     decode_render_output, decode_render_output_with_styles, decode_shell_config,

@@ -64,6 +64,19 @@ export interface Anchor {
   rect: Rect; // Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates.
 }
 
+/** An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`). */
+export interface AppMenu {
+  dropdown_selected?: number; // Highlighted item in the open dropdown.
+  focused_item?: number | null; // The bar item keyboard or pointer focus sits on.
+  id: WidgetId; // The menu's id, also the painted bar's.
+  items: MenuDef[]; // The top-level menus, in bar order.
+  native?: boolean; // Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens.
+  open_item?: number | null; // The menu whose dropdown is open.
+  submenu_path?: number[]; // Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open.
+  submenu_selected?: number[]; // Highlighted item at each open submenu depth, parallel to `submenu_path`.
+  typeahead?: boolean; // Whether a plain printable key in an open dropdown is type-ahead (on by default).
+}
+
 /** What an `AppMenu` reports. */
 export type AppMenuEvent = { Activated: WidgetId; } | { Changed: AppMenuView; };
 
@@ -585,7 +598,7 @@ export interface DiffView {
 /** What a `DiffView` reports. `scroll_offset` and `focused_pane` are the app's: it writes each back onto the descriptor. */
 export type DiffViewEvent = { Scrolled: _DiffViewEventScrolled; } | { PaneFocused: _DiffViewEventPaneFocused; };
 
-/** Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` — mirrors `crate::engine::TreeTableControllerWireEvent`'s own `EventSink` default-method rollout: that method defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path. */
+/** Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path. */
 export type DragGestureWireEvent = _DragGestureWireEventDragStarted | _DragGestureWireEventDragOver | _DragGestureWireEventDropped;
 
 /** One drawing instruction. Coordinates are LOCAL to the canvas — see the module doc's "Coordinate frame" section. */
@@ -816,7 +829,7 @@ export type HeaderHit = ("Chevron" | "TitleArea") | _HeaderHitDict;
 export type HelpOverlayAction = "Opened" | "Closed";
 
 /** The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself. */
-export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 /** `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first. */
 export type Icon = _Icon1 | _Icon2;
@@ -956,7 +969,7 @@ export interface LayoutLeafNode {
   list?: ListView | ListViewLeaf;
   markdown?: Markdown;
   max?: number | null;
-  menu_bar?: MenuBar;
+  menu_bar?: AppMenu;
   message_list?: MessageList;
   min?: number | null;
   minimap?: Minimap;
@@ -967,7 +980,7 @@ export interface LayoutLeafNode {
   pipeline_view?: PipelineView;
   progress?: ProgressBar;
   radio_group?: RadioGroup;
-  scripted_widget?: ScriptedWidgetDescriptor;
+  scripted_widget?: _LayoutLeafNodeScriptedWidget; // The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent.
   scroll_view?: ScrollView;
   scrollbar?: Scrollbar;
   select?: Select;
@@ -1178,20 +1191,12 @@ export interface Markdown {
   source: string; // Raw markdown text.
 }
 
-/** Declarative description of a menu bar. */
-export interface MenuBar {
-  focused_item?: number | null; // Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal.
-  id: WidgetId;
-  items: MenuBarItem[];
-  open_item?: number | null; // Index of the currently-open menu (if any).
-}
-
-/** One top-level menu entry. */
-export interface MenuBarItem {
-  disabled?: boolean; // When true, the item is rendered dimmed and clicks are ignored.
-  id: WidgetId;
+/** One top-level menu and its dropdown items. */
+export interface MenuDef {
+  disabled?: boolean; // When true, the item is rendered dimmed and does not open.
+  id: WidgetId; // The menu's id, the bar item's.
   label: string; // Display label, e.g.
-  submenu?: ContextMenuItem[] | null; // Declarative dropdown items.
+  submenu?: ContextMenuItem[] | null; // The dropdown's items, in order.
 }
 
 /** The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`. */
@@ -1369,13 +1374,14 @@ export interface PanelDefinitionDescriptor {
   tooltip?: string | null;
 }
 
-/** `PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`. */
+/** A standalone masked single-line input. The value is held in plaintext; only painting masks it. */
 export interface PasswordInput {
-  cursor?: number | null;
-  has_focus?: boolean;
+  cursor?: number | null; // The caret as a byte offset into `value`; `None` puts it at the end.
+  has_focus?: boolean; // Whether to paint the focused wash and caret.
   id: WidgetId;
-  mask_char?: string;
-  value?: string;
+  mask_char?: string; // The glyph painted for each character of the value.
+  placeholder?: string; // Shown dimmed while the value is empty.
+  value?: string; // The plaintext value.
 }
 
 /** What a path picker reports: a confirmed path or a dismissal, plus the browsing changes the host applies onto the picker's `PathPickerState` (the pickers' `apply` does it). */
@@ -1472,7 +1478,7 @@ export interface RenderFrameDict {
   image?: Image | null;
   list?: (ListView | ListViewLeaf) | null;
   markdown?: Markdown | null;
-  menu_bar?: MenuBar | null;
+  menu_bar?: AppMenu | null;
   message_list?: MessageList | null;
   minimap?: Minimap | null;
   multi_section_view?: MultiSectionView | null;
@@ -1513,11 +1519,6 @@ export interface RowsRequestedEvent {
   count: number;
   id: WidgetId;
   start: number;
-}
-
-/** The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl"). */
-export interface ScriptedWidgetDescriptor {
-  props?: unknown;
 }
 
 /** Orientation of a scrollbar. */
@@ -1956,14 +1957,14 @@ export interface TerminalScrollbar {
   width?: number | null; // Scrollbar width in surface-native units (pixels on a pixel backend, cells on TUI).
 }
 
-/** `TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset. */
+/** A standalone multi-line input over a flat `value` (lines separated by `'/n'`). */
 export interface TextArea {
-  cursor?: number | null;
-  has_focus?: boolean;
+  cursor?: number | null; // The caret as a byte offset into `value`; `None` puts it at the end.
+  has_focus?: boolean; // Whether to paint the focused wash.
   id: WidgetId;
-  placeholder?: string | null;
-  value?: string;
-  visible_rows?: number;
+  placeholder?: string; // Shown dimmed while the value is empty.
+  value?: string; // The text, lines separated by `'/n'`.
+  visible_rows?: number; // Rows tall — the viewport height, independent of how many lines the value holds.
 }
 
 /** Declarative description of a `TextDisplay`. */
@@ -2118,19 +2119,20 @@ export interface TreeTable {
   vim_keys?: boolean; // `j`/`k` move the selection like Down/Up (while no Ctrl/Alt/Cmd is held), instead of starting a type-to-jump search.
 }
 
-/** A `"tree_table_controller"` extra: the hierarchical-model counterpart of `"tree_table"` (`TreeTable`/`quadraui::TreeTableNode`'s flat, host-flattened shape). Unlike every other additive primitive on this trait, decoding this is only ever the SEED for a `crate::engine::InteractionEngine`-cached `TreeTableController` — `crate::engine::InteractionEngine::sync_tree_tables` reads `nodes`/ `selected_id` exactly once, the first frame this `id` is seen (`Self::seed_controller`), then leaves the controller's own live expand/selection/sort state alone on every later frame, the same "seed once, then the richer controller owns it" rule that method's own doc gives for a `Form.scroll_offset`. `Self::paint` (the bare, non-interactive fallback every `ExtraPaint` impl gets painted with before that sync ever runs) builds a throwaway controller the same way, so the very first frame — before any controller is cached at all — still paints the full seeded model rather than nothing. */
+/** A hierarchical tree table as a contract widget — the wire kind `"tree_table_controller"`. */
 export interface TreeTableControllerDescriptor {
   bordered?: boolean;
   columns?: Column[];
-  folders_first?: boolean;
+  folders_first?: boolean; // Sort branches before leaves at every level when a header click sorts.
   has_focus?: boolean;
   id: WidgetId;
   nodes?: TreeTableControllerNode[];
   selected_id?: string | null;
   show_scrollbar?: boolean;
+  sort_override?: boolean; // `nodes` already arrive in the app's own order for the current sort: a header click still toggles the sort indicator and reports `TreeTableModelEvent::SortChanged`, but the widget does not re-order the rows itself.
 }
 
-/** One node in a `"tree_table_controller"` extra's hierarchical model — the wire mirror of `TreeTableNodeData`, which has no `Deserialize` of its own (its fields are private; only its `TreeTableNodeData::leaf`/`TreeTableNodeData::branch`/ `TreeTableNodeData::lazy_branch` constructors are public), so a wire node decodes into this plain mirror first and `Self::into_node_data` then picks the matching constructor. `has_children: false` is always a `TreeTableNodeData::leaf` (`children` ignored); `has_children: true` with `children` present (including an empty list) is a `TreeTableNodeData::branch`; `has_children: true` with `children` absent is a `TreeTableNodeData::lazy_branch` — the same three-way split `quadraui::compose::tree_table_controller`'s own module doc describes for *Lazy loading*. */
+/** One node in `TreeTableController`'s hierarchical model: an app-level row, not yet flattened into a `TreeTableNode`/`DataRow` pair. */
 export interface TreeTableControllerNode {
   cells?: StyledText[];
   children?: TreeTableControllerNode[] | null;
@@ -2139,7 +2141,7 @@ export interface TreeTableControllerNode {
   id: string;
 }
 
-/** Wire-shaped mirror of `TreeTableControllerEvent` — the same field shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself has neither; it's an in-crate-only `quadraui::compose` type), and `Consumed`/`Ignored` dropped: `InteractionEngine::handle` only ever calls `EventSink::dispatch_tree_table_controller` for the five variants below, folding `Consumed`/`Ignored` straight into its own `Reaction` instead (see that method's own `TreeTableController` routing blocks). */
+/** Events a `TreeTableModel` (the wire kind `"tree_table_controller"`) reports to the app. Rows are named by the app's own stable node id rather than by position, since a sort or an expand moves a node's flattened row. Serialized under the `"TreeTableController"` event key. */
 export type TreeTableControllerWireEvent = { RowSelected: _TreeTableControllerWireEventRowSelected; } | { RowActivated: _TreeTableControllerWireEventRowActivated; } | { ToggleExpand: _TreeTableControllerWireEventToggleExpand; } | { ChildrenRequested: _TreeTableControllerWireEventChildrenRequested; } | { SortChanged: _TreeTableControllerWireEventSortChanged; };
 
 /** Events a `TreeTable` emits back to the app. Row events carry the row's `TreePath` alongside its flat index. */
@@ -2209,7 +2211,7 @@ export type WidgetId = string;
 /** Every leaf widget kind key a layout-tree leaf node may carry. */
 export type WidgetKind = "activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart" | "checkbox" | "combo_box" | "command_center" | "command_line" | "context_menu" | "data_table" | "date_picker" | "diff_view" | "editor" | "find_replace" | "form" | "icon_grid" | "image" | "list" | "markdown" | "menu_bar" | "message_list" | "minimap" | "multi_section_view" | "number_input" | "palette" | "password" | "pipeline_view" | "progress" | "radio_group" | "scripted_widget" | "scroll_view" | "scrollbar" | "select" | "slider" | "spinner" | "status_bar" | "switch" | "tab_bar" | "terminal" | "text_display" | "text_field" | "text_input" | "textarea" | "toolbar" | "tree" | "tree_table" | "tree_table_controller";
 
-/** A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once. */
+/** A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once. */
 export interface WidgetStateSnapshot {
   active_tab?: number | null; // A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
   expanded?: number[][] | null; // A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
@@ -2786,12 +2788,6 @@ export interface _FormEventToolbarButtonClicked {
 
 export type _HeaderHitDict = { Action: string; };
 
-/** Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead. */
-export interface _HitDetailCanvasRegion {
-  kind: "canvas_region";
-  region: WidgetId;
-}
-
 export interface _HitDetailDataTableFooter {
   kind: "data_table_footer";
 }
@@ -2811,11 +2807,6 @@ export interface _HitDetailDataTableRow {
   row: number;
 }
 
-/** Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant. */
-export interface _HitDetailExtraBody {
-  kind: "extra_body";
-}
-
 export interface _HitDetailListItem {
   index: number;
   kind: "list_item";
@@ -2825,7 +2816,7 @@ export interface _HitDetailListTitle {
   kind: "list_title";
 }
 
-/** Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::ExtraBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets. */
+/** Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets. */
 export interface _HitDetailScrollBody {
   kind: "scroll_body";
 }
@@ -2861,28 +2852,6 @@ export interface _HitDetailSplitSecondPane {
 export interface _HitDetailSplitTreeDivider {
   kind: "split_tree_divider";
   split_index: number;
-}
-
-export interface _HitDetailTabBarRightSegment {
-  kind: "tab_bar_right_segment";
-}
-
-export interface _HitDetailTabBarScrollLeft {
-  kind: "tab_bar_scroll_left";
-}
-
-export interface _HitDetailTabBarScrollRight {
-  kind: "tab_bar_scroll_right";
-}
-
-export interface _HitDetailTabBarTab {
-  kind: "tab_bar_tab";
-  tab: number;
-}
-
-export interface _HitDetailTabBarTabClose {
-  kind: "tab_bar_tab_close";
-  tab: number;
 }
 
 export interface _HitDetailTextDisplayLine {
@@ -2927,7 +2896,7 @@ export interface _HitDetailTreeScrollbarTrackBefore {
   kind: "tree_scrollbar_track_before";
 }
 
-/** Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area — the `Widget` counterpart of `Self::ExtraBody`. Carries no sub-region detail, same reason: a `DynWidget` has no `ExtraPaint::hit_test`-style sub-region test to resolve one finer than "landed somewhere on the widget" against. Routed through `DynWidget::handle` (not `semantic_event_for_hit`, which has no arm for this detail and falls through to `None`) by `crate::engine::InteractionEngine::handle`. */
+/** Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to. */
 export interface _HitDetailWidgetBody {
   kind: "widget_body";
 }
@@ -2945,6 +2914,12 @@ export interface _Icon2 {
 }
 
 export type _KeyBindingDict = { Literal: string; };
+
+/** The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl"). */
+export interface _LayoutLeafNodeScriptedWidget {
+  id: string;
+  props?: unknown;
+}
 
 export interface _ListViewEventItemActivated {
   idx: number;
@@ -3560,7 +3535,7 @@ export interface _UiEventCommandCenterActivated {
   widget: WidgetId;
 }
 
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; } | { GlobalShortcut: GlobalShortcutId; } | { KeyPressed: _UiEventKeyPressed; } | { CharTyped: string; } | { MouseDown: _UiEventMouseDown; } | { MouseUp: _UiEventMouseUp; } | { MouseMoved: _UiEventMouseMoved; } | { MouseEntered: _UiEventMouseEntered; } | { MouseLeft: _UiEventMouseLeft; } | { DoubleClick: _UiEventDoubleClick; } | { Scroll: _UiEventScroll; } | { WindowResized: _UiEventWindowResized; } | { WindowFocused: boolean; } | { DpiChanged: number; } | { WindowStateChanged: _UiEventWindowStateChanged; } | { FilesDropped: _UiEventFilesDropped; } | { ClipboardPaste: string; } | { OpenRequested: _UiEventOpenRequested; } | { TextCopied: string; } | { FocusChanged: WidgetId | null; } | { SystemThemeChanged: SystemTheme; } | { PowerStateChanged: _UiEventPowerStateChanged; } | { ScrollOffsetChanged: _UiEventScrollOffsetChanged; } | { ScrollbarMoved: _UiEventScrollbarMoved; } | { SwitchToggled: _UiEventSwitchToggled; } | { RadioGroupSelectionChanged: _UiEventRadioGroupSelectionChanged; } | { ButtonActivated: _UiEventButtonActivated; } | { CommandCenterActivated: _UiEventCommandCenterActivated; } | { TextSelectionChanged: _UiEventTextSelectionChanged; } | { SplitDividerDragged: _UiEventSplitDividerDragged; } | { MenuActivated: WidgetId; } | { ContextMenuItemActivated: WidgetId; } | { MessageDialogResolved: WidgetId; } | { ToastActionClicked: WidgetId; } | { CompletionItemActivated: [WidgetId, number]; } | { RichTextLinkClicked: [WidgetId, string]; } | { TrayClicked: _UiEventTrayClicked; } | { NotificationActivated: _UiEventNotificationActivated; } | { Tree: [WidgetId, TreeEvent]; } | { List: [WidgetId, ListViewEvent]; } | { Form: [WidgetId, FormEvent]; } | { Palette: [WidgetId, PaletteEvent]; } | { TabBar: [WidgetId, TabBarEvent]; } | { StatusBar: [WidgetId, StatusBarEvent]; } | { ActivityBar: [WidgetId, ActivityBarEvent]; } | { Terminal: [WidgetId, TerminalEvent]; } | { TextDisplay: [WidgetId, TextDisplayEvent]; } | { Chart: [WidgetId, ChartEvent]; } | { DataTable: [WidgetId, DataTableEvent]; } | { TreeTable: [WidgetId, TreeTableEvent]; } | { CellGrid: [WidgetId, CellGridEvent]; } | { MultiSectionView: [WidgetId, MultiSectionViewEvent]; } | { Chat: [WidgetId, ChatEvent]; } | { Sidebar: [WidgetId, SidebarAction]; } | { TabGroup: [WidgetId, TabGroupEvent]; } | { ScrollView: [WidgetId, ScrollViewEvent]; } | { Editor: [WidgetId, EditorEvent]; } | { Minimap: [WidgetId, MinimapEvent]; } | { Board: [WidgetId, BoardAction]; } | { PipelineView: [WidgetId, PipelineEvent]; } | { DiffView: [WidgetId, DiffViewEvent]; } | { MessageList: [WidgetId, MessageListEvent]; } | { FindReplace: [WidgetId, FindReplaceEvent]; } | { HelpOverlay: [WidgetId, HelpOverlayAction]; } | { PathPicker: [WidgetId, PathPickerAction]; } | { DualModePalette: [WidgetId, DualModePaletteAction]; } | { AppMenu: [WidgetId, AppMenuEvent]; } | { ShellView: [WidgetId, ShellEvent]; } | { BottomPanel: [WidgetId, BottomPanelEvent]; } | { Workspace: [WidgetId, WorkspaceEvent]; } | { Toolbar: [WidgetId, ToolbarEvent]; } | { Canvas: [WidgetId, CanvasEvent]; } | { BackendNative: BackendNativeEvent; } | { User: UserPayload; };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; } | { GlobalShortcut: GlobalShortcutId; } | { KeyPressed: _UiEventKeyPressed; } | { CharTyped: string; } | { MouseDown: _UiEventMouseDown; } | { MouseUp: _UiEventMouseUp; } | { MouseMoved: _UiEventMouseMoved; } | { MouseEntered: _UiEventMouseEntered; } | { MouseLeft: _UiEventMouseLeft; } | { DoubleClick: _UiEventDoubleClick; } | { Scroll: _UiEventScroll; } | { WindowResized: _UiEventWindowResized; } | { WindowFocused: boolean; } | { DpiChanged: number; } | { WindowStateChanged: _UiEventWindowStateChanged; } | { FilesDropped: _UiEventFilesDropped; } | { ClipboardPaste: string; } | { OpenRequested: _UiEventOpenRequested; } | { TextCopied: string; } | { FocusChanged: WidgetId | null; } | { SystemThemeChanged: SystemTheme; } | { PowerStateChanged: _UiEventPowerStateChanged; } | { ScrollOffsetChanged: _UiEventScrollOffsetChanged; } | { ScrollbarMoved: _UiEventScrollbarMoved; } | { SwitchToggled: _UiEventSwitchToggled; } | { RadioGroupSelectionChanged: _UiEventRadioGroupSelectionChanged; } | { ButtonActivated: _UiEventButtonActivated; } | { CommandCenterActivated: _UiEventCommandCenterActivated; } | { TextSelectionChanged: _UiEventTextSelectionChanged; } | { SplitDividerDragged: _UiEventSplitDividerDragged; } | { MenuActivated: WidgetId; } | { ContextMenuItemActivated: WidgetId; } | { MessageDialogResolved: WidgetId; } | { ToastActionClicked: WidgetId; } | { CompletionItemActivated: [WidgetId, number]; } | { RichTextLinkClicked: [WidgetId, string]; } | { TrayClicked: _UiEventTrayClicked; } | { NotificationActivated: _UiEventNotificationActivated; } | { Tree: [WidgetId, TreeEvent]; } | { List: [WidgetId, ListViewEvent]; } | { Form: [WidgetId, FormEvent]; } | { Palette: [WidgetId, PaletteEvent]; } | { TabBar: [WidgetId, TabBarEvent]; } | { StatusBar: [WidgetId, StatusBarEvent]; } | { ActivityBar: [WidgetId, ActivityBarEvent]; } | { Terminal: [WidgetId, TerminalEvent]; } | { TextDisplay: [WidgetId, TextDisplayEvent]; } | { Chart: [WidgetId, ChartEvent]; } | { DataTable: [WidgetId, DataTableEvent]; } | { TreeTable: [WidgetId, TreeTableEvent]; } | { TreeTableController: [WidgetId, TreeTableControllerWireEvent]; } | { CellGrid: [WidgetId, CellGridEvent]; } | { MultiSectionView: [WidgetId, MultiSectionViewEvent]; } | { Chat: [WidgetId, ChatEvent]; } | { Sidebar: [WidgetId, SidebarAction]; } | { TabGroup: [WidgetId, TabGroupEvent]; } | { ScrollView: [WidgetId, ScrollViewEvent]; } | { Editor: [WidgetId, EditorEvent]; } | { Minimap: [WidgetId, MinimapEvent]; } | { Board: [WidgetId, BoardAction]; } | { PipelineView: [WidgetId, PipelineEvent]; } | { DiffView: [WidgetId, DiffViewEvent]; } | { MessageList: [WidgetId, MessageListEvent]; } | { FindReplace: [WidgetId, FindReplaceEvent]; } | { HelpOverlay: [WidgetId, HelpOverlayAction]; } | { PathPicker: [WidgetId, PathPickerAction]; } | { DualModePalette: [WidgetId, DualModePaletteAction]; } | { AppMenu: [WidgetId, AppMenuEvent]; } | { ShellView: [WidgetId, ShellEvent]; } | { BottomPanel: [WidgetId, BottomPanelEvent]; } | { Workspace: [WidgetId, WorkspaceEvent]; } | { Toolbar: [WidgetId, ToolbarEvent]; } | { Canvas: [WidgetId, CanvasEvent]; } | { BackendNative: BackendNativeEvent; } | { User: UserPayload; };
 
 export interface _UiEventDoubleClick {
   position: Point;

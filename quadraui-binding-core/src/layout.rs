@@ -17,7 +17,6 @@ use quadraui::{
 use quadraui::layout::{grid_cell_rects, GridTrack};
 use quadraui::primitive::DynWidget;
 
-use crate::extra_paint::ExtraPaint;
 use crate::DecodeError;
 
 /// One node of a render callback's layout tree: a `Row`/`Column` container
@@ -199,9 +198,8 @@ pub struct LayoutStyled {
 /// `$setter` being the [`quadraui::Style`] `with_*` builder
 /// [`StyleOverride::apply_style`] calls and `$decode` the
 /// `crate::wire::value` reader `crate::wire::style::style_override_fields`
-/// calls) exactly once, then hands that table to a callback macro — the
-/// same X-macro shape `crate::extra_paint::extra_primitives` already uses
-/// for its own `"kind" => Type` dispatch table. `define_style_override`
+/// calls) exactly once, then hands that table to a callback macro.
+/// `define_style_override`
 /// below is this struct's own callback.
 macro_rules! style_override_tokens {
     ($callback:ident $(, $extra:tt)*) => {
@@ -936,10 +934,10 @@ pub struct LayoutScroll {
     pub axis: ScrollAxis,
     /// Controlled scroll offset from the wire — `None` means uncontrolled
     /// (the engine owns it, resolved in [`crate::host::resolve_layout_node`]
-    /// against [`crate::widget_state::WidgetState`] the same way
+    /// against [`quadraui::WidgetStateStore`] the same way
     /// [`crate::host::resolve_split_ratio`] resolves a `Split`'s divider).
     /// Unlike `Split::ratio` (a bare `f32` with no "unset" sentinel), this
-    /// field is already `Option<f32>`, so `WidgetState::resolve`'s own
+    /// field is already `Option<f32>`, so `WidgetStateStore::resolve`'s own
     /// controlled/uncontrolled policy applies directly — no baseline latch
     /// needed.
     pub offset: Option<f32>,
@@ -991,32 +989,15 @@ pub enum LeafDescriptor {
     Tree(TreeView),
     DataTable(DataTable),
     TabBar(TabBar),
-    /// Any additive primitive kind registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table, or a `"scripted_widget"` leaf
-    /// spliced in from `crate::scripted::register_scripted_widget`'s own
-    /// registry (see that function's doc). Unlike the five variants above,
-    /// neither ever adds a new `LeafDescriptor` variant — both route
-    /// through this one.
-    Extra(Rc<dyn ExtraPaint>),
-    /// A kind registered in [`crate::extra_paint::WIDGET_KINDS`], decoded
-    /// through [`quadraui::decode_widget`] into a type-erased
-    /// [`quadraui::primitive::DynWidget`] rather than an [`ExtraPaint`] —
-    /// the generic seam a binding kind joins when its `quadraui::Primitive`
-    /// has no bespoke paint/hit-test/event wiring of its own to write
-    /// here, only the decode a [`WIDGET_KINDS`] entry adds (both as a
-    /// layout-tree leaf, this variant, and as a flat
-    /// [`crate::render::RenderFrame::widgets`] slot, which carries the
-    /// same decoded `DynWidget` without going through `LeafDescriptor` at
-    /// all). Painted via [`quadraui::DrawsPrimitives::draw_dyn`]
-    /// (see [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
+    /// A kind registered in [`crate::widget_kinds::WIDGET_KINDS`] or at
+    /// runtime, decoded through [`quadraui::decode_widget`] into a
+    /// type-erased [`quadraui::primitive::DynWidget`]. Painted via
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] (see
+    /// [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
     /// whole area (see [`crate::hit::PaintedHit::Widget`]), and routed to
-    /// [`DynWidget::handle`] on a click (see
+    /// [`DynWidget::handle`] (see
     /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
-    /// arm). `kind` is the matched [`WIDGET_KINDS`] string, kept for
-    /// diagnostics — nothing in this generic path downcasts on it, unlike
-    /// [`Self::Extra`]'s own kind-specific arms.
-    ///
-    /// [`WIDGET_KINDS`]: crate::extra_paint::WIDGET_KINDS
+    /// arm). `kind` is the matched kind string, kept for diagnostics.
     Widget {
         kind: &'static str,
         widget: Rc<dyn DynWidget>,
@@ -1025,23 +1006,8 @@ pub enum LeafDescriptor {
 
 /// The descriptor keys a layout tree leaf dict may carry — the five names
 /// [`crate::render::RenderFrame`]'s own flat-slot `Deserialize` impl uses
-/// for its slots, each mapping to its own [`LeafDescriptor`] variant, plus
-/// `"scripted_widget"` (see [`LeafDescriptor::Extra`]'s own doc), which
-/// maps to [`LeafDescriptor::Extra`] like every
-/// [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] kind does — unlike those,
-/// though, `"scripted_widget"` can't be decoded through that same
-/// `extra_primitives!` table (no `Deserialize` impl exists, or ever will,
-/// for a live script callback object), so it is listed here instead,
-/// handled by its own arm in `crate::wire::leaf::layout_leaf_from_value`'s
-/// per-key loop.
-pub const LEAF_KIND_KEYS: [&str; 6] = [
-    "text_display",
-    "list",
-    "tree",
-    "data_table",
-    "tab_bar",
-    "scripted_widget",
-];
+/// for its slots, each mapping to its own [`LeafDescriptor`] variant.
+pub const LEAF_KIND_KEYS: [&str; 5] = ["text_display", "list", "tree", "data_table", "tab_bar"];
 
 /// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
 /// raises on the first repeated id, naming both the offending `kind` (the

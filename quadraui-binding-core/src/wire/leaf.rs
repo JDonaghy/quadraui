@@ -5,11 +5,8 @@
 
 use serde_json::Value;
 
-use crate::extra_paint::{
-    decode_extra_primitive_checked, decode_widget_leaf, widget_leaf_kinds, EXTRA_PRIMITIVE_KINDS,
-};
 use crate::layout::{LayoutLeaf, LeafDescriptor, LEAF_KIND_KEYS};
-use crate::scripted::{lookup_scripted_widget, ScriptedWidgetDescriptor};
+use crate::widget_kinds::{decode_widget_leaf, widget_leaf_kinds};
 use crate::DecodeError;
 
 use super::value::{
@@ -31,11 +28,10 @@ fn record_items_window(diagnostics: &DecodeDiagnostics, id: &str, body: &Value) 
 }
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`], an
-/// [`EXTRA_PRIMITIVE_KINDS`] kind, or a [`crate::extra_paint::widget_leaf_kinds`]
-/// kind must be present and hold a `dict` — a leaf with two keys from any
-/// two of the three sets is rejected by the single `found` duplicate
-/// check shared across all three loops below. Also reads this leaf's
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or a
+/// [`crate::widget_kinds::widget_leaf_kinds`] kind must be present and
+/// hold a `dict` — a leaf with two kind keys is rejected by the single
+/// `found` duplicate check shared across both loops below. Also reads this leaf's
 /// optional
 /// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
 /// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
@@ -56,7 +52,7 @@ pub(super) fn layout_leaf_from_value(
         None => return Err(DecodeError::missing_field(what, "leaf.id")),
     };
     let context = format!("{what} › leaf#{id}");
-    // "id" plus whichever of `LEAF_KIND_KEYS`/`EXTRA_PRIMITIVE_KINDS` holds
+    // "id" plus whichever of `LEAF_KIND_KEYS`/`widget_leaf_kinds()` holds
     // this leaf's one descriptor, plus the sibling keys every layout-tree
     // node dict may carry regardless of its own kind, plus the two
     // leaf-only drag-role keys and the one leaf-only accessibility-override
@@ -65,7 +61,6 @@ pub(super) fn layout_leaf_from_value(
     let widget_kinds = widget_leaf_kinds();
     let known_keys: Vec<&str> = std::iter::once("id")
         .chain(LEAF_KIND_KEYS)
-        .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
         .chain(widget_kinds.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
         .chain(DRAG_ROLE_KEYS)
@@ -149,61 +144,12 @@ pub(super) fn layout_leaf_from_value(
                 value_dict,
                 &[],
             )?),
-            // No `Deserialize` impl constructs this one from scratch — see
-            // `crate::scripted`'s own module doc, "Splicing into a decoded
-            // tree without a `Deserialize` impl". The dict carries only
-            // this frame's `"props"`; the live widget itself is recovered
-            // from whatever `crate::scripted::register_scripted_widget`
-            // call already registered it under this leaf's own `id`.
-            "scripted_widget" => {
-                let descriptor: ScriptedWidgetDescriptor =
-                    decode_value_checked(diagnostics, &context, key, value_dict, &[])?;
-                let extra = lookup_scripted_widget(&id).ok_or_else(|| {
-                    DecodeError::borrow(
-                        &context,
-                        format!(
-                            "no scripted widget is registered for leaf id {id:?} — \
-                             the binding must call \
-                             quadraui_binding_core::scripted::register_scripted_widget \
-                             before decoding a tree containing it"
-                        ),
-                    )
-                })?;
-                if let Some(scripted) = extra.as_scripted() {
-                    scripted.set_scripted_props(descriptor.props);
-                }
-                LeafDescriptor::Extra(extra)
-            }
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
     }
-    // Additive primitive kinds share the same leaf dict shape and the same
-    // `found` duplicate-detection as the five fixed kinds above; a new
-    // additive primitive only ever adds a line to `extra_paint`'s
-    // `extra_primitives!` table, never a new loop here.
-    for kind in EXTRA_PRIMITIVE_KINDS {
-        let Some(v) = obj_get(value, kind) else {
-            continue;
-        };
-        let value_dict = must_be_dict(&context, v, kind)?;
-        if found.is_some() {
-            return Err(DecodeError::borrow(
-                &context,
-                "has more than one descriptor kind",
-            ));
-        }
-        found = Some(LeafDescriptor::Extra(decode_extra_primitive_checked(
-            diagnostics,
-            &context,
-            kind,
-            value_dict,
-        )?));
-    }
-    // `widget_leaf_kinds()` mirrors `EXTRA_PRIMITIVE_KINDS`'s own loop above,
-    // decoding into `LeafDescriptor::Widget` via `quadraui::decode_widget`
-    // instead of `LeafDescriptor::Extra` via `decode_extra_primitive_checked`
-    // — the two tables never overlap, so a leaf can match at most one kind
-    // across all three loops regardless of which it lands in.
+    // `widget_leaf_kinds()` decodes into `LeafDescriptor::Widget` via
+    // `quadraui::decode_widget`, sharing the fixed kinds' `found`
+    // duplicate check.
     for &kind in &widget_kinds {
         let Some(v) = obj_get(value, kind) else {
             continue;
@@ -224,10 +170,7 @@ pub(super) fn layout_leaf_from_value(
     let descriptor = found.ok_or_else(|| {
         DecodeError::borrow(
             &context,
-            format!(
-                "is missing a descriptor (one of {LEAF_KIND_KEYS:?}, {:?}, or {:?})",
-                EXTRA_PRIMITIVE_KINDS, widget_kinds
-            ),
+            format!("is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {widget_kinds:?})"),
         )
     })?;
 
@@ -291,40 +234,39 @@ mod tests {
         }
     }
 
-    /// A `"scripted_widget"` leaf naming an id with a live registration
-    /// (via [`crate::scripted::register_scripted_widget`]) decodes into
-    /// the exact `Rc` that was registered — never a fresh instance, the
-    /// whole point of this kind not going through
-    /// `extra_primitives!`'s `Deserialize`-and-construct dispatch (see
-    /// `crate::scripted`'s own module doc) — with this frame's `"props"`
-    /// applied onto it.
+    /// A `"scripted_widget"` leaf whose payload names a registered id
+    /// decodes, through the core kind registry, into a generic widget
+    /// leaf wrapping the very widget that was registered — never a fresh
+    /// instance — with this frame's `"props"` applied onto it.
     #[test]
     fn scripted_widget_leaf_decodes_the_registered_primitive_and_applies_props() {
-        use crate::extra_paint::ExtraPaint;
         use crate::scripted::{register_scripted_widget, unregister_scripted_widget};
-        use std::rc::Rc;
 
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             quadraui::WidgetId::new("sw"),
             TestWidget,
             false,
-        ));
-        register_scripted_widget("sw", primitive.clone() as Rc<dyn ExtraPaint>);
+        );
+        register_scripted_widget(primitive.clone());
 
         let value = json!({
             "id": "sw",
-            "scripted_widget": { "props": { "color": "blue" } },
+            "scripted_widget": { "id": "sw", "props": { "color": "blue" } },
         });
         let node = decode(&value).expect("a registered scripted_widget leaf decodes");
         let crate::layout::LayoutNode::Leaf(leaf) = node else {
             panic!("expected a leaf node");
         };
-        let LeafDescriptor::Extra(extra) = leaf.descriptor else {
-            panic!("expected an Extra descriptor");
+        let LeafDescriptor::Widget { kind, widget } = leaf.descriptor else {
+            panic!("expected a generic widget descriptor");
         };
+        assert_eq!(kind, "scripted_widget");
         assert!(
-            Rc::ptr_eq(&extra, &(primitive.clone() as Rc<dyn ExtraPaint>)),
-            "the decoded leaf must wrap the exact Rc that was registered, not a fresh instance"
+            widget
+                .as_any()
+                .downcast_ref::<crate::scripted::ScriptedPrimitive<TestWidget>>()
+                .is_some(),
+            "the decoded leaf must wrap the registered scripted widget"
         );
         assert_eq!(primitive.props(), json!({"color": "blue"}));
 
@@ -337,7 +279,7 @@ mod tests {
     fn scripted_widget_leaf_with_no_registration_is_a_decode_error() {
         let value = json!({
             "id": "unregistered",
-            "scripted_widget": {},
+            "scripted_widget": { "id": "unregistered" },
         });
         let error = err(decode(&value));
         assert!(
@@ -576,23 +518,6 @@ mod tests {
         assert!(
             error.to_string().contains("draggable") && error.to_string().contains("leaf"),
             "{error}"
-        );
-    }
-
-    /// An unregistered additive primitive kind is rejected with every
-    /// registered kind named in the error.
-    #[test]
-    fn rejects_an_unknown_extra_primitive_kind() {
-        let err = err(crate::extra_paint::decode_extra_primitive(
-            "test",
-            "not_a_real_kind",
-            json!({}),
-        ));
-        assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
-        assert!(
-            err.to_string().contains("not_a_real_kind"),
-            "{}",
-            err.to_string()
         );
     }
 

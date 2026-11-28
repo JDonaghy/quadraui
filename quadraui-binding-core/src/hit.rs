@@ -8,15 +8,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::{
-    CanvasHit, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point, PressZone, Rect,
-    ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
-    TextDisplayHit, TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout,
-    UiEvent, WidgetId,
+    DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point, PressZone, Rect, ScrollAxis,
+    Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TextDisplayHit, TextDisplayLayout, TreePath,
+    TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use quadraui::primitive::DynWidget;
 
-use crate::extra_paint::ExtraPaint;
 use crate::wire::DragRole;
 
 /// Which absolute slice of a windowed `List`/`Tree`/`DataTable`/
@@ -59,7 +57,7 @@ pub fn loaded_row_path(
 /// position into the primitive (and sub-region) under it.
 pub enum PaintedHit {
     /// `area` is the absolute rect this tree was painted into, and the
-    /// frame `layout` is relative to (like `List`/`DataTable`/`TabBar`'s
+    /// frame `layout` is relative to (like `List`/`DataTable`'s
     /// own layout) — a hit-test must translate a click into it via
     /// `area`'s origin before calling `layout.hit_test`, and `area` is
     /// never narrowed by [`clip_hits_to_viewport`] for exactly that
@@ -178,24 +176,6 @@ pub enum PaintedHit {
         /// `Some` only for a windowed table — see [`LoadedRows`]'s own doc.
         loaded_rows: Option<LoadedRows>,
     },
-    TabBar {
-        id: WidgetId,
-        area: Rect,
-        /// See [`Self::Tree`]'s own doc.
-        clip: Rect,
-        layout: TabBarLayout,
-        /// The bar's own tab count and keyboard-focused tab, as painted —
-        /// read by [`crate::semantic::focus_scoped_key_event`] so an arrow
-        /// key or Enter on a focused `TabBar` resolves through
-        /// [`quadraui::TabBar::handle_focus_key`] the same way
-        /// [`Self::List`]'s `selected_idx`/`total_items` feed
-        /// [`crate::semantic::list_key_event`]. `focused_index` is `None`
-        /// for a bare `TabBar` leaf (no [`quadraui::TabChrome`] involved)
-        /// and for a `"tabs"` layout node whose `focused_index` wasn't set;
-        /// `tab_count` is `TabBar::tabs.len()` regardless.
-        focused_index: Option<usize>,
-        tab_count: usize,
-    },
     /// `area` is the absolute rect this display was painted into;
     /// `layout` is in a frame relative to `area`'s origin **shifted down by
     /// `body_offset`** — unlike [`Self::Tree`]/[`Self::List`]/[`Self::DataTable`],
@@ -243,36 +223,16 @@ pub enum PaintedHit {
         id: WidgetId,
         layout: SplitTreeLayout,
     },
-    /// One additive primitive (anything registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table),
-    /// painted by `draw_bands`'s extras loop or by a
-    /// [`crate::layout::LeafDescriptor::Extra`]
-    /// leaf. `area` is the ABSOLUTE rect it was painted into — the same frame
-    /// [`ExtraPaint::hit_test`] expects, so no translation is needed before
-    /// calling it (matching `Button`/`Checkbox`'s own layout convention: no
-    /// local-frame remap). `extra` is an [`Rc`] clone of the slot's/leaf's
-    /// descriptor, kept alive past this frame's render so a later `handle`
-    /// call can still hit-test and tab-stop against it.
-    Extra {
-        id: WidgetId,
-        area: Rect,
-        extra: Rc<dyn ExtraPaint>,
-    },
     /// One [`crate::layout::LeafDescriptor::Widget`], painted by
     /// [`crate::render::paint_leaf`]'s `Widget` arm. `area` is the
-    /// ABSOLUTE rect it was painted into, exactly like [`Self::Extra`]'s
-    /// own `area` — hit-tested the same whole-area way
-    /// ([`HitDetail::WidgetBody`] on any `area.contains(point)`), since
-    /// [`DynWidget`] carries no `ExtraPaint::hit_test`-style sub-region
-    /// test of its own yet. `widget` is an [`Rc`] clone of the leaf's own
-    /// descriptor, kept alive past this frame's render the same reason
-    /// [`Self::Extra`]'s `extra` is — so a later click can resolve
-    /// `DynWidget::handle` against it — but, unlike `Extra`, no layout is
-    /// stashed alongside it: [`DynWidget::layout`] is cheap to recompute
-    /// against `area` at click time, and always reproduces exactly what
-    /// [`quadraui::DrawsPrimitives::draw_dyn`] painted this frame (see
-    /// that method's own doc), so there is nothing a stored layout would
-    /// save.
+    /// ABSOLUTE rect it was painted into, hit-tested as a whole
+    /// ([`HitDetail::WidgetBody`] on any `area.contains(point)`): the
+    /// widget resolves its own sub-regions in [`DynWidget::handle`].
+    /// `widget` is an [`Rc`] clone of the leaf's own descriptor, kept alive
+    /// past this frame's render so a later event can resolve
+    /// `DynWidget::handle` against it; its layout is recomputed against
+    /// `area` at event time, which reproduces exactly what
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] painted this frame.
     Widget {
         id: WidgetId,
         area: Rect,
@@ -358,9 +318,8 @@ pub struct ScrollChildHit {
 ///
 /// Only the hit kinds whose containment test lives in a plain field this
 /// module can reach are narrowed, via [`primary_bounds_mut`]:
-/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Extra`]'s
-/// `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
-/// [`PaintedHit::DataTable`]/[`PaintedHit::TabBar`]/
+/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
+/// [`PaintedHit::DataTable`]/
 /// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
 /// [`PaintedHit::Tree`]'s own doc for why moving a local-frame kind's
 /// `area` instead would desync it from the layout `area`'s origin
@@ -404,7 +363,7 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
 }
 
 /// The hit kind's own containment-test rect — [`PaintedHit::Widget`]'s
-/// `area`, [`PaintedHit::Extra`]'s `area`, the local-frame kinds'
+/// `area`, the local-frame kinds'
 /// own `clip` (see [`PaintedHit::Tree`]'s doc), and a nested
 /// [`PaintedHit::Scroll`]'s own `viewport` — or `None` for a chrome-layout
 /// kind with no single outer bounds. The one place [`clip_hits_to_viewport`]
@@ -416,9 +375,7 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         PaintedHit::Tree { clip, .. }
         | PaintedHit::List { clip, .. }
         | PaintedHit::DataTable { clip, .. }
-        | PaintedHit::TabBar { clip, .. }
         | PaintedHit::TextDisplay { clip, .. } => Some(clip),
-        PaintedHit::Extra { area, .. } => Some(area),
         PaintedHit::Widget { area, .. } => Some(area),
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
         PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
@@ -485,15 +442,6 @@ pub enum HitDetail {
         row: usize,
     },
     DataTableFooter,
-    TabBarTab {
-        tab: usize,
-    },
-    TabBarTabClose {
-        tab: usize,
-    },
-    TabBarScrollLeft,
-    TabBarScrollRight,
-    TabBarRightSegment,
     TextDisplayLine {
         line: usize,
     },
@@ -524,37 +472,15 @@ pub enum HitDetail {
     /// (page-down zone). Handled directly in the binding's own event handler, same as
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
-    /// Landed on an additive primitive's interactive region (currently
-    /// [`crate::extra_paint::Checkbox`] and [`quadraui::TextInput`]). Carries no
-    /// sub-region detail yet —
-    /// just enough for the binding's own event handler to set `widget` and
-    /// attach this as `hit`, so it sees the click reached the primitive.
-    /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
-    /// separate extension of this variant.
-    ExtraBody,
     /// Landed on a [`crate::layout::LeafDescriptor::Widget`]'s whole
-    /// painted area — the `Widget` counterpart of [`Self::ExtraBody`].
-    /// Carries no sub-region detail, same reason: a [`DynWidget`] has no
-    /// `ExtraPaint::hit_test`-style sub-region test to resolve one finer
-    /// than "landed somewhere on the widget" against. Routed through
-    /// [`DynWidget::handle`] (not `semantic_event_for_hit`, which has no
-    /// arm for this detail and falls through to `None`) by
-    /// [`crate::engine::InteractionEngine::handle`].
+    /// painted area. Carries no sub-region detail: the widget resolves its
+    /// own sub-regions in [`DynWidget::handle`], which
+    /// [`crate::engine::InteractionEngine::handle`] routes the event to.
     WidgetBody,
-    /// Landed on a declared region of a script-defined widget — `region`
-    /// is that region's own [`WidgetId`], resolved through
-    /// [`crate::scripted::ScriptedExtra::scripted_hit_test`] ahead of
-    /// [`Self::ExtraBody`]'s coarser "landed somewhere on the widget"
-    /// answer. A point in no region still
-    /// falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions
-    /// through `Canvas`'s own `Interactive` instead.
-    CanvasRegion {
-        region: WidgetId,
-    },
     /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
     /// on no more specific descendant hit — e.g. empty space between
     /// stacked content items. Carries no sub-region detail, mirroring
-    /// [`Self::ExtraBody`]; the binding's own wheel routing uses this to
+    /// [`Self::WidgetBody`]; the binding's own wheel routing uses this to
     /// resolve which `Scroll` a wheel event targets.
     ScrollBody,
     /// Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone)
@@ -664,29 +590,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     DataTableHit::Scrollbar | DataTableHit::Empty => {}
                 }
             }
-            PaintedHit::TabBar {
-                id,
-                area,
-                clip,
-                layout,
-                ..
-            } => {
-                if !clip.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
-                    TabBarHit::Tab(tab) => return Some((*id, HitDetail::TabBarTab { tab })),
-                    TabBarHit::TabClose(tab) => {
-                        return Some((*id, HitDetail::TabBarTabClose { tab }))
-                    }
-                    TabBarHit::ScrollLeft => return Some((*id, HitDetail::TabBarScrollLeft)),
-                    TabBarHit::ScrollRight => return Some((*id, HitDetail::TabBarScrollRight)),
-                    TabBarHit::RightSegment(right_id) => {
-                        return Some((right_id, HitDetail::TabBarRightSegment))
-                    }
-                    TabBarHit::Empty => {}
-                }
-            }
             PaintedHit::TextDisplay {
                 id,
                 area,
@@ -737,25 +640,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 // thicker visual grab target.
                 if let Some(split_index) = layout.hit_test_divider(point, 1.0) {
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
-                }
-            }
-            PaintedHit::Extra { id, area, extra } => {
-                if let Some(scripted) = extra.as_scripted() {
-                    // A script-defined widget's own declared regions
-                    // (`ScriptWidget::paint`'s returned `ScriptedPaint::regions`)
-                    // resolve through the identical `CanvasHit` vocabulary,
-                    // via `crate::scripted::ScriptedExtra::scripted_hit_test`
-                    // rather than a `Canvas` this crate can downcast to.
-                    match scripted.scripted_hit_test(point) {
-                        CanvasHit::Region { id: region } => {
-                            return Some((*id, HitDetail::CanvasRegion { region }));
-                        }
-                        CanvasHit::Inside => return Some((*id, HitDetail::ExtraBody)),
-                        CanvasHit::Outside => {}
-                        _ => {}
-                    }
-                } else if extra.hit_test(*area, point) {
-                    return Some((*id, HitDetail::ExtraBody));
                 }
             }
             PaintedHit::Widget { id, area, .. } => {
@@ -1332,102 +1216,6 @@ mod tests {
         // doesn't resolve to it.
         assert!(!scrollbar.track.contains(Point { x: 19.0, y: 20.0 }));
         assert!(scrollbar.track.contains(Point { x: 19.0, y: 5.0 }));
-    }
-
-    /// A `ScriptWidget` built directly in Rust test code (mirroring
-    /// `crate::scripted`'s own `Swatch` test widget): one region covering
-    /// its right half — the minimum needed to prove `hit_test_painted`'s
-    /// `Extra` arm resolves a `crate::scripted::ScriptedExtra`-exposing
-    /// extra's declared region.
-    struct HalfRegionWidget;
-
-    impl crate::scripted::ScriptWidget for HalfRegionWidget {
-        fn measure(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            constraints: crate::scripted::ScriptedConstraints,
-        ) -> crate::scripted::ScriptedSize {
-            crate::scripted::ScriptedSize {
-                width: constraints.max_width.unwrap_or(10.0),
-                height: constraints.max_height.unwrap_or(4.0),
-            }
-        }
-
-        fn paint(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            _props: &crate::scripted::ScriptedProps,
-            rect: Rect,
-        ) -> crate::scripted::ScriptedPaint {
-            crate::scripted::ScriptedPaint {
-                ops: Vec::new(),
-                regions: vec![quadraui::CanvasRegion {
-                    id: WidgetId::new("widget:region"),
-                    rect: Rect::new(rect.width / 2.0, 0.0, rect.width / 2.0, rect.height),
-                    cursor: None,
-                }],
-            }
-        }
-
-        fn on_event(
-            &self,
-            _event: &crate::scripted::ScriptedInputEvent,
-            _props: &crate::scripted::ScriptedProps,
-            _state: &crate::scripted::ScriptedState,
-        ) -> bool {
-            false
-        }
-    }
-
-    /// A point inside a script-defined widget's declared region resolves
-    /// to [`HitDetail::CanvasRegion`]; a point inside
-    /// the widget's body but outside every declared region resolves to
-    /// the coarser [`HitDetail::ExtraBody`] instead — mirroring
-    /// [`quadraui::CanvasHit::Inside`]'s own fallback.
-    #[test]
-    fn hit_test_painted_resolves_a_scripted_widgets_declared_region() {
-        use quadraui::primitive::{LayoutCtx, Primitive};
-
-        let area = Rect::new(0.0, 0.0, 10.0, 4.0);
-        let primitive = crate::scripted::ScriptedPrimitive::new(
-            WidgetId::new("widget"),
-            HalfRegionWidget,
-            true,
-        );
-        // Populates the paint cache `ScriptedExtra::scripted_hit_test`
-        // reads from — a fresh `ScriptedPrimitive` reports `Outside`
-        // everywhere until its first paint. Paints straight through
-        // `Primitive::paint_cells`, the same seam `crate::scripted`'s own
-        // tests use, rather than standing up a whole `Backend`.
-        let ctx = LayoutCtx::new(1.0, 1.0, false);
-        let layout = Primitive::layout(&primitive, &ctx, area);
-        let cell_area = ratatui::layout::Rect::new(0, 0, 10, 4);
-        let mut buf = ratatui::buffer::Buffer::empty(cell_area);
-        primitive.paint_cells(
-            &layout,
-            &mut quadraui::tui::BufferCellSurface::new(&mut buf),
-            &quadraui::PaintEnv::new(&quadraui::Theme::default(), &quadraui::Style::default()),
-        );
-
-        let hits = vec![PaintedHit::Extra {
-            id: WidgetId::new("widget"),
-            area,
-            extra: Rc::new(primitive) as Rc<dyn ExtraPaint>,
-        }];
-
-        assert_eq!(
-            hit_test_painted(&hits, Point { x: 8.0, y: 2.0 }),
-            Some((
-                WidgetId::new("widget"),
-                HitDetail::CanvasRegion {
-                    region: WidgetId::new("widget:region")
-                }
-            ))
-        );
-        assert_eq!(
-            hit_test_painted(&hits, Point { x: 1.0, y: 2.0 }),
-            Some((WidgetId::new("widget"), HitDetail::ExtraBody))
-        );
     }
 
     /// [`drag_roles_by_widget_id`]'s whole contract: every `String` key

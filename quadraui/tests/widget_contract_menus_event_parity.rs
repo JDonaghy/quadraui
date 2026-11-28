@@ -7,18 +7,18 @@
 //! widget module's own tests) resolves to.
 //!
 //! `Toolbar` and `ContextMenu` also have a binding-host leg
-//! (`quadraui-binding-core`'s engine tests). `MenuBar` has none: the
-//! binding layer's `"menu_bar"` pairs the bar with an `AppMenu` that owns
-//! its dropdowns, so a click on a top-level item opens that dropdown
-//! inside the host instead of reporting `UiEvent::MenuActivated` for the
-//! item, as the widget contract does.
+//! (`quadraui-binding-core`'s engine tests). The binding layer's
+//! `"menu_bar"` is the whole application menu, an `AppMenu`, so its
+//! binding-host leg pairs with this file's `AppMenu` test rather than the
+//! bare `MenuBar` strip's: a click on a top-level item opens its dropdown,
+//! and a click on a dropdown row activates it.
 
 use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, ContextMenu, ContextMenuItem, ContextMenuPlacement, FrameTree, MenuBar,
-    MenuBarItem, Reaction, Rect, ScreenLayout, StyledText, Surface, Toolbar, ToolbarButton,
-    ToolbarEvent, UiEvent, WidgetId,
+    AppLogic, AppMenu, AppMenuEvent, AppMenuView, Backend, ContextMenu, ContextMenuItem,
+    ContextMenuPlacement, FrameTree, MenuBar, MenuBarItem, MenuDef, Reaction, Rect, ScreenLayout,
+    StyledText, Surface, Toolbar, ToolbarButton, ToolbarEvent, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 40;
@@ -203,5 +203,106 @@ fn a_click_on_a_context_menu_row_matches_the_parity_event() {
     assert!(
         events.contains(&UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))),
         "a click on the highlighted row activates it: {events:?}"
+    );
+}
+
+/// An `AppMenu` painted and routed as a `Surface::Widget`, whose app
+/// applies every view change it reports — the controlled contract.
+struct AppMenuApp {
+    menu: AppMenu,
+    rect: Rect,
+    events: Vec<UiEvent>,
+}
+
+impl AppLogic for AppMenuApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect: self.rect,
+            widget: Box::new(self.menu.clone()),
+        });
+        frame.draw(backend);
+    }
+
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.menu.id, self.rect, Box::new(self.menu.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::AppMenu(_, change) = &event {
+            self.menu.apply(change);
+        }
+        self.events.push(event);
+        Reaction::Redraw
+    }
+}
+
+/// The TuiDriver leg of the application menu's event parity: a click on
+/// "File" reports the opened view, and a click on "Save" in the dropdown
+/// popup reports the closed view, then the activation. The binding host's
+/// `"menu_bar"` leaf reports the same events for the same clicks
+/// (`quadraui-binding-core`'s
+/// `menu_bar_click_open_then_activate_matches_the_widget_contract_parity_events`).
+#[test]
+fn a_click_open_then_activate_on_an_app_menu_matches_the_parity_events() {
+    let id = WidgetId::new("menubar:main");
+    let menu = AppMenu::new(
+        id,
+        vec![
+            MenuDef {
+                id: WidgetId::new("menu:file"),
+                label: "&File".into(),
+                disabled: false,
+                items: vec![context_item("menu:file:save", "Save")],
+            },
+            MenuDef {
+                id: WidgetId::new("menu:edit"),
+                label: "&Edit".into(),
+                disabled: false,
+                items: vec![context_item("menu:edit:undo", "Undo")],
+            },
+        ],
+    );
+    let mut driver = TuiDriver::new(
+        AppMenuApp {
+            menu,
+            rect: Rect::new(0.0, 0.0, 40.0, 3.0),
+            events: Vec::new(),
+        },
+        COLS,
+        ROWS,
+    );
+    let (x, y) = driver.find("File").expect("the bar paints its items");
+    driver.click(x, y);
+    let (x, y) = driver
+        .find("Save")
+        .unwrap_or_else(|| panic!("the open dropdown paints its rows:\n{}", driver.screen()));
+    driver.click(x, y);
+
+    let events: Vec<UiEvent> = driver
+        .app()
+        .events
+        .iter()
+        .filter(|e| matches!(e, UiEvent::AppMenu(..) | UiEvent::MenuActivated(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            UiEvent::AppMenu(
+                id,
+                AppMenuEvent::Changed(AppMenuView {
+                    open_item: Some(0),
+                    focused_item: Some(0),
+                    ..Default::default()
+                }),
+            ),
+            UiEvent::AppMenu(id, AppMenuEvent::Changed(AppMenuView::default())),
+            UiEvent::MenuActivated(WidgetId::new("menu:file:save")),
+        ]
     );
 }

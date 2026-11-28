@@ -68,6 +68,18 @@ class Anchor(TypedDict):
     preferred: Side  # Side of `rect` the overlay prefers to open on.
     rect: Rect  # Bounds of the element the overlay is positioned against, in ABSOLUTE (target-surface) coordinates.
 
+class AppMenu(TypedDict):
+    """An application menu bar: the top-level menus, which one is open, and its dropdown and submenu cascade. Serialises with the same shape as a `MenuBar` (`id`, `items`, `open_item`, `focused_item`)."""
+    dropdown_selected: NotRequired[int]  # Highlighted item in the open dropdown.
+    focused_item: NotRequired[Optional[int]]  # The bar item keyboard or pointer focus sits on.
+    id: WidgetId  # The menu's id, also the painted bar's.
+    items: List[MenuDef]  # The top-level menus, in bar order.
+    native: NotRequired[bool]  # Whether the host's effective menu style is native (`Backend::effective_menu_style`): the bar is then the platform's own, nothing paints in the window and no dropdown opens.
+    open_item: NotRequired[Optional[int]]  # The menu whose dropdown is open.
+    submenu_path: NotRequired[List[int]]  # Depth-first path of open submenus within the open dropdown: `submenu_path[d]` is the item at depth `d` whose child is open.
+    submenu_selected: NotRequired[List[int]]  # Highlighted item at each open submenu depth, parallel to `submenu_path`.
+    typeahead: NotRequired[bool]  # Whether a plain printable key in an open dropdown is type-ahead (on by default).
+
 class AppMenuEvent(TypedDict):
     """What an `AppMenu` reports."""
     Activated: NotRequired[WidgetId]  # An action item was activated.
@@ -579,7 +591,7 @@ class DiffViewEvent(TypedDict):
     Scrolled: NotRequired[_DiffViewEventScrolled]  # A wheel notch or PageUp/PageDown scrolled the view to `scroll_offset`, already clamped so the last line stays reachable.
     PaneFocused: NotRequired[_DiffViewEventPaneFocused]  # Tab or a click moved keyboard focus to `pane` (side-by-side mode).
 
-# Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture` — mirrors `crate::engine::TreeTableControllerWireEvent`'s own `EventSink` default-method rollout: that method defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
+# Wire-shaped drag-gesture event `crate::engine::InteractionEngine::handle` dispatches through `crate::engine::EventSink::dispatch_drag_gesture`, a default method on that trait: it defaults to ignoring the event and reporting `quadraui::Reaction::Continue`, so every existing `crate::engine::EventSink` impl keeps compiling unchanged until a binding deliberately overrides it to thread this to its own callback. Derives `Serialize` only, not `Deserialize`: `HitDetail` — the shape every `*_detail` field below reuses rather than inventing a second drag-specific hit description — has no `Deserialize` of its own either, since neither type has a reverse (host -> engine) decode path.
 DragGestureWireEvent = Union[_DragGestureWireEventDragStarted, _DragGestureWireEventDragOver, _DragGestureWireEventDropped]
 
 # One drawing instruction. Coordinates are LOCAL to the canvas — see the module doc's "Coordinate frame" section.
@@ -826,7 +838,7 @@ HeaderHit = Union[Literal['Chevron', 'TitleArea'], _HeaderHitDict]
 HelpOverlayAction = Literal['Opened', 'Closed']
 
 # The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailWidgetBody, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 # `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first.
 Icon = Union[_Icon1, _Icon2]
@@ -970,7 +982,7 @@ LayoutLeafNode = TypedDict(
         "list": NotRequired[Union[ListView, ListViewLeaf]],
         "markdown": NotRequired[Markdown],
         "max": NotRequired[Optional[float]],
-        "menu_bar": NotRequired[MenuBar],
+        "menu_bar": NotRequired[AppMenu],
         "message_list": NotRequired[MessageList],
         "min": NotRequired[Optional[float]],
         "minimap": NotRequired[Minimap],
@@ -981,7 +993,7 @@ LayoutLeafNode = TypedDict(
         "pipeline_view": NotRequired[PipelineView],
         "progress": NotRequired[ProgressBar],
         "radio_group": NotRequired[RadioGroup],
-        "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
+        "scripted_widget": NotRequired[_LayoutLeafNodeScriptedWidget],  # The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent.
         "scroll_view": NotRequired[ScrollView],
         "scrollbar": NotRequired[Scrollbar],
         "select": NotRequired[Select],
@@ -1206,19 +1218,12 @@ class Markdown(TypedDict):
     scroll_offset: NotRequired[int]  # Lines scrolled off the top.
     source: str  # Raw markdown text.
 
-class MenuBar(TypedDict):
-    """Declarative description of a menu bar."""
-    focused_item: NotRequired[Optional[int]]  # Keyboard-focused item (for Alt+navigation) — may differ from `open_item` during arrow-key traversal.
-    id: WidgetId
-    items: List[MenuBarItem]
-    open_item: NotRequired[Optional[int]]  # Index of the currently-open menu (if any).
-
-class MenuBarItem(TypedDict):
-    """One top-level menu entry."""
-    disabled: NotRequired[bool]  # When true, the item is rendered dimmed and clicks are ignored.
-    id: WidgetId
+class MenuDef(TypedDict):
+    """One top-level menu and its dropdown items."""
+    disabled: NotRequired[bool]  # When true, the item is rendered dimmed and does not open.
+    id: WidgetId  # The menu's id, the bar item's.
     label: str  # Display label, e.g.
-    submenu: NotRequired[Optional[List[ContextMenuItem]]]  # Declarative dropdown items.
+    submenu: NotRequired[Optional[List[ContextMenuItem]]]  # The dropdown's items, in order.
 
 class MessageDialogOverlayDescriptor(TypedDict):
     """The `"message_dialog"` `show_overlay` descriptor. `severity` is `"info"`, `"question"`, `"warning"` or `"error"`."""
@@ -1391,12 +1396,13 @@ class PanelDefinitionDescriptor(TypedDict):
     tooltip: NotRequired[Optional[str]]
 
 class PasswordInput(TypedDict):
-    """`PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`."""
-    cursor: NotRequired[Optional[int]]
-    has_focus: NotRequired[bool]
+    """A standalone masked single-line input. The value is held in plaintext; only painting masks it."""
+    cursor: NotRequired[Optional[int]]  # The caret as a byte offset into `value`; `None` puts it at the end.
+    has_focus: NotRequired[bool]  # Whether to paint the focused wash and caret.
     id: WidgetId
-    mask_char: NotRequired[str]
-    value: NotRequired[str]
+    mask_char: NotRequired[str]  # The glyph painted for each character of the value.
+    placeholder: NotRequired[str]  # Shown dimmed while the value is empty.
+    value: NotRequired[str]  # The plaintext value.
 
 # What a path picker reports: a confirmed path or a dismissal, plus the browsing changes the host applies onto the picker's `PathPickerState` (the pickers' `apply` does it).
 PathPickerAction = Union[Literal['Cancelled'], _PathPickerActionDict]
@@ -1488,7 +1494,7 @@ class RenderFrameDict(TypedDict):
     image: NotRequired[Optional[Image]]
     list: NotRequired[Optional[Union[ListView, ListViewLeaf]]]
     markdown: NotRequired[Optional[Markdown]]
-    menu_bar: NotRequired[Optional[MenuBar]]
+    menu_bar: NotRequired[Optional[AppMenu]]
     message_list: NotRequired[Optional[MessageList]]
     minimap: NotRequired[Optional[Minimap]]
     multi_section_view: NotRequired[Optional[MultiSectionView]]
@@ -1528,10 +1534,6 @@ class RowsRequestedEvent(TypedDict):
     count: int
     id: WidgetId
     start: int
-
-class ScriptedWidgetDescriptor(TypedDict):
-    """The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl")."""
-    props: NotRequired[Any]
 
 # Orientation of a scrollbar.
 ScrollAxis = Literal['Vertical', 'Horizontal']
@@ -1989,13 +1991,13 @@ class TerminalScrollbar(TypedDict):
     width: NotRequired[Optional[int]]  # Scrollbar width in surface-native units (pixels on a pixel backend, cells on TUI).
 
 class TextArea(TypedDict):
-    """`TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset."""
-    cursor: NotRequired[Optional[int]]
-    has_focus: NotRequired[bool]
+    """A standalone multi-line input over a flat `value` (lines separated by `'/n'`)."""
+    cursor: NotRequired[Optional[int]]  # The caret as a byte offset into `value`; `None` puts it at the end.
+    has_focus: NotRequired[bool]  # Whether to paint the focused wash.
     id: WidgetId
-    placeholder: NotRequired[Optional[str]]
-    value: NotRequired[str]
-    visible_rows: NotRequired[int]
+    placeholder: NotRequired[str]  # Shown dimmed while the value is empty.
+    value: NotRequired[str]  # The text, lines separated by `'/n'`.
+    visible_rows: NotRequired[int]  # Rows tall — the viewport height, independent of how many lines the value holds.
 
 class TextDisplay(TypedDict):
     """Declarative description of a `TextDisplay`."""
@@ -2162,18 +2164,19 @@ class TreeTable(TypedDict):
     vim_keys: NotRequired[bool]  # `j`/`k` move the selection like Down/Up (while no Ctrl/Alt/Cmd is held), instead of starting a type-to-jump search.
 
 class TreeTableControllerDescriptor(TypedDict):
-    """A `"tree_table_controller"` extra: the hierarchical-model counterpart of `"tree_table"` (`TreeTable`/`quadraui::TreeTableNode`'s flat, host-flattened shape). Unlike every other additive primitive on this trait, decoding this is only ever the SEED for a `crate::engine::InteractionEngine`-cached `TreeTableController` — `crate::engine::InteractionEngine::sync_tree_tables` reads `nodes`/ `selected_id` exactly once, the first frame this `id` is seen (`Self::seed_controller`), then leaves the controller's own live expand/selection/sort state alone on every later frame, the same "seed once, then the richer controller owns it" rule that method's own doc gives for a `Form.scroll_offset`. `Self::paint` (the bare, non-interactive fallback every `ExtraPaint` impl gets painted with before that sync ever runs) builds a throwaway controller the same way, so the very first frame — before any controller is cached at all — still paints the full seeded model rather than nothing."""
+    """A hierarchical tree table as a contract widget — the wire kind `"tree_table_controller"`."""
     bordered: NotRequired[bool]
     columns: NotRequired[List[Column]]
-    folders_first: NotRequired[bool]
+    folders_first: NotRequired[bool]  # Sort branches before leaves at every level when a header click sorts.
     has_focus: NotRequired[bool]
     id: WidgetId
     nodes: NotRequired[List[TreeTableControllerNode]]
     selected_id: NotRequired[Optional[str]]
     show_scrollbar: NotRequired[bool]
+    sort_override: NotRequired[bool]  # `nodes` already arrive in the app's own order for the current sort: a header click still toggles the sort indicator and reports `TreeTableModelEvent::SortChanged`, but the widget does not re-order the rows itself.
 
 class TreeTableControllerNode(TypedDict):
-    """One node in a `"tree_table_controller"` extra's hierarchical model — the wire mirror of `TreeTableNodeData`, which has no `Deserialize` of its own (its fields are private; only its `TreeTableNodeData::leaf`/`TreeTableNodeData::branch`/ `TreeTableNodeData::lazy_branch` constructors are public), so a wire node decodes into this plain mirror first and `Self::into_node_data` then picks the matching constructor. `has_children: false` is always a `TreeTableNodeData::leaf` (`children` ignored); `has_children: true` with `children` present (including an empty list) is a `TreeTableNodeData::branch`; `has_children: true` with `children` absent is a `TreeTableNodeData::lazy_branch` — the same three-way split `quadraui::compose::tree_table_controller`'s own module doc describes for *Lazy loading*."""
+    """One node in `TreeTableController`'s hierarchical model: an app-level row, not yet flattened into a `TreeTableNode`/`DataRow` pair."""
     cells: NotRequired[List[StyledText]]
     children: NotRequired[Optional[List[TreeTableControllerNode]]]
     has_children: NotRequired[bool]
@@ -2181,12 +2184,12 @@ class TreeTableControllerNode(TypedDict):
     id: str
 
 class TreeTableControllerWireEvent(TypedDict):
-    """Wire-shaped mirror of `TreeTableControllerEvent` — the same field shapes, but `Serialize`/`Deserialize` (`TreeTableControllerEvent` itself has neither; it's an in-crate-only `quadraui::compose` type), and `Consumed`/`Ignored` dropped: `InteractionEngine::handle` only ever calls `EventSink::dispatch_tree_table_controller` for the five variants below, folding `Consumed`/`Ignored` straight into its own `Reaction` instead (see that method's own `TreeTableController` routing blocks)."""
+    """Events a `TreeTableModel` (the wire kind `"tree_table_controller"`) reports to the app. Rows are named by the app's own stable node id rather than by position, since a sort or an expand moves a node's flattened row. Serialized under the `"TreeTableController"` event key."""
     RowSelected: NotRequired[_TreeTableControllerWireEventRowSelected]  # Row selected — click or keyboard navigation.
     RowActivated: NotRequired[_TreeTableControllerWireEventRowActivated]  # Enter pressed, or a row/chevron double-clicked.
     ToggleExpand: NotRequired[_TreeTableControllerWireEventToggleExpand]  # A branch node's expand state flipped; its children were already loaded (or this collapses).
-    ChildrenRequested: NotRequired[_TreeTableControllerWireEventChildrenRequested]  # A lazy branch was expanded for the first time with no loaded children — the host should fetch them and answer via `InteractionEngine::set_tree_table_children`.
-    SortChanged: NotRequired[_TreeTableControllerWireEventSortChanged]  # A header click (re-)sorted every loaded level's children by `col`'s cell text — see `TreeTableController::header_clicked`'s own doc for how a host overrides the comparator via `InteractionEngine::set_tree_table_sort_override`.
+    ChildrenRequested: NotRequired[_TreeTableControllerWireEventChildrenRequested]  # A lazy branch (`has_children` with no `children`) was expanded for the first time.
+    SortChanged: NotRequired[_TreeTableControllerWireEventSortChanged]  # A header click sorted every loaded level's children by `col`'s cell text.
 
 class TreeTableEvent(TypedDict):
     """Events a `TreeTable` emits back to the app. Row events carry the row's `TreePath` alongside its flat index."""
@@ -2264,7 +2267,7 @@ WidgetId = str
 WidgetKind = Literal['activity_bar', 'board', 'button', 'canvas', 'cell_grid', 'chart', 'checkbox', 'combo_box', 'command_center', 'command_line', 'context_menu', 'data_table', 'date_picker', 'diff_view', 'editor', 'find_replace', 'form', 'icon_grid', 'image', 'list', 'markdown', 'menu_bar', 'message_list', 'minimap', 'multi_section_view', 'number_input', 'palette', 'password', 'pipeline_view', 'progress', 'radio_group', 'scripted_widget', 'scroll_view', 'scrollbar', 'select', 'slider', 'spinner', 'status_bar', 'switch', 'tab_bar', 'terminal', 'text_display', 'text_field', 'text_input', 'textarea', 'toolbar', 'tree', 'tree_table', 'tree_table_controller']
 
 class WidgetStateSnapshot(TypedDict):
-    """A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once."""
+    """A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once."""
     active_tab: NotRequired[Optional[int]]  # A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
     expanded: NotRequired[Optional[List[List[int]]]]  # A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
     ratio: NotRequired[Optional[float]]  # A `Split`'s stored divider ratio, if `id` is one being tracked by `resolve_split_ratio`.
@@ -2817,11 +2820,6 @@ class _FormEventToolbarButtonClicked(TypedDict):
 class _HeaderHitDict(TypedDict):
     Action: str  # Right-aligned action button.
 
-class _HitDetailCanvasRegion(TypedDict):
-    """Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead."""
-    kind: Literal['canvas_region']
-    region: WidgetId
-
 class _HitDetailDataTableFooter(TypedDict):
     kind: Literal['data_table_footer']
 
@@ -2837,10 +2835,6 @@ class _HitDetailDataTableRow(TypedDict):
     kind: Literal['data_table_row']
     row: int
 
-class _HitDetailExtraBody(TypedDict):
-    """Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant."""
-    kind: Literal['extra_body']
-
 class _HitDetailListItem(TypedDict):
     index: int
     kind: Literal['list_item']
@@ -2849,7 +2843,7 @@ class _HitDetailListTitle(TypedDict):
     kind: Literal['list_title']
 
 class _HitDetailScrollBody(TypedDict):
-    """Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::ExtraBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets."""
+    """Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets."""
     kind: Literal['scroll_body']
 
 class _HitDetailScrollScrollbarThumb(TypedDict):
@@ -2877,23 +2871,6 @@ class _HitDetailSplitTreeDivider(TypedDict):
     """Landed on a `quadraui::SplitTree` divider — `split_index` is the pre-order index of the `SplitTree::Split` node being resized (see `quadraui::SplitTreeDivider::split_index`). Arms a drag in the binding's own event handler, mirroring `SplitDivider`'s `crate::drag::ActiveDrag` handling."""
     kind: Literal['split_tree_divider']
     split_index: int
-
-class _HitDetailTabBarRightSegment(TypedDict):
-    kind: Literal['tab_bar_right_segment']
-
-class _HitDetailTabBarScrollLeft(TypedDict):
-    kind: Literal['tab_bar_scroll_left']
-
-class _HitDetailTabBarScrollRight(TypedDict):
-    kind: Literal['tab_bar_scroll_right']
-
-class _HitDetailTabBarTab(TypedDict):
-    kind: Literal['tab_bar_tab']
-    tab: int
-
-class _HitDetailTabBarTabClose(TypedDict):
-    kind: Literal['tab_bar_tab_close']
-    tab: int
 
 class _HitDetailTextDisplayLine(TypedDict):
     kind: Literal['text_display_line']
@@ -2929,7 +2906,7 @@ class _HitDetailTreeScrollbarTrackBefore(TypedDict):
     kind: Literal['tree_scrollbar_track_before']
 
 class _HitDetailWidgetBody(TypedDict):
-    """Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area — the `Widget` counterpart of `Self::ExtraBody`. Carries no sub-region detail, same reason: a `DynWidget` has no `ExtraPaint::hit_test`-style sub-region test to resolve one finer than "landed somewhere on the widget" against. Routed through `DynWidget::handle` (not `semantic_event_for_hit`, which has no arm for this detail and falls through to `None`) by `crate::engine::InteractionEngine::handle`."""
+    """Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to."""
     kind: Literal['widget_body']
 
 class _Icon1(TypedDict):
@@ -2944,6 +2921,11 @@ class _Icon2(TypedDict):
 
 class _KeyBindingDict(TypedDict):
     Literal: str  # App-specific binding.
+
+class _LayoutLeafNodeScriptedWidget(TypedDict):
+    """The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl")."""
+    id: str
+    props: NotRequired[Any]
 
 class _ListViewEventItemActivated(TypedDict):
     idx: int
@@ -3526,6 +3508,7 @@ class _UiEventDict(TypedDict):
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]  # A `crate::TreeTable` chevron/row/header/column interaction — see `TreeTableEvent`'s own variants, in particular `TreeTableEvent::ToggleExpanded` for the branch-expand chevron click `DataTableEvent` has no counterpart for.
+    TreeTableController: NotRequired[Tuple[WidgetId, TreeTableControllerWireEvent]]  # A `TreeTableModel` (wire kind `"tree_table_controller"`) row, chevron or header interaction, naming rows by the app's node ids.
     CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]  # A `crate::CellGrid` cell was clicked, moving the cursor to its absolute `(row, col)` — see `CellGridEvent::CursorMoved`.
     MultiSectionView: NotRequired[Tuple[WidgetId, MultiSectionViewEvent]]  # A `crate::MultiSectionView` header, divider, scrollbar or aux input was used, or one of its section bodies reported an event — see `crate::MultiSectionViewEvent`.
     Chat: NotRequired[Tuple[WidgetId, ChatEvent]]  # A `crate::Chat` was submitted, cancelled or clicked, or one of its controlled fields changed — see `crate::ChatEvent`.

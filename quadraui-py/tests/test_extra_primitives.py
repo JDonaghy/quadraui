@@ -6,12 +6,9 @@ same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
 container) behind that same render callback -- the one other path a
 descriptor can reach the screen through.
 
-These three primitives prove the additive mechanism described in the
-`EXTRA_PRIMITIVES` doc comment in `quadraui-py/src/lib.rs`: registering a new
-one costs an `ExtraPaint` impl (one line for a whole-area primitive like
-these three, a little layout derivation for one that needs a measure pass)
-and one line appended to the `EXTRA_PRIMITIVES` registry slice -- never an
-edit to the six-slot machinery (`LeafDescriptor`'s six-variant set) that
+These three primitives prove the generic widget leaf: registering a new
+kind costs one `widget_kinds!` line -- never an edit to the six-slot
+machinery (`LeafDescriptor`'s six-variant set) that
 `test_descriptors.py` exercises, and never a new pymethod, since a render
 callback dict already covers any registered kind by name.
 
@@ -119,7 +116,7 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
     # The container primitives (`Split`, `Panel`, ...) are plain `LayoutNode`
     # recursion, same as `row`/`column` -- this nests a `split` inside a
     # `panel`'s content, with one pane holding a `scrollbar` (an
-    # `EXTRA_PRIMITIVES` kind, not one of the six original fixed-slot
+    # generic widget kind, not one of the six original fixed-slot
     # leaves) alongside an ordinary `text_display` leaf in the other pane.
     #
     # A `Scrollbar` paints from its own absolute `track` rect rather than
@@ -206,16 +203,14 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
         app.screen()
 
 
-# Parametrised table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry
+# Parametrised table proving every interactive generic widget kind
 # that has a dedicated `FormEvent` (`switch` already has its own dedicated
 # test above, and `progress`/`spinner`/`image` have no event at all)
 # round-trips through a literal inline layout-tree leaf -- a
 # `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape a render
 # callback writes. Each case pushes the events a real app would dispatch (a
 # focusing click, then a key/char where the kind needs one) and asserts the
-# final dispatched event the handler receives. `radio_group` rides the
-# generic `WIDGET_KINDS` seam rather than `ExtraPaint`, but is kept here too
-# for parity coverage of the same literal-leaf shape.
+# final dispatched event the handler receives.
 _INLINE_LEAF_CASES = [
     pytest.param(
         {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
@@ -250,7 +245,7 @@ _INLINE_LEAF_CASES = [
             {"FocusChanged": "rg:1"},
             # `RadioGroup::select` resolves a click straight to the
             # clicked option -- no `Form` wrapper, since `RadioGroup` is a
-            # `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+            # generic widget leaf with its own event.
             {"RadioGroupSelectionChanged": {"widget": "rg:1", "index": 1}},
             # The arrow key routes through `InteractionEngine`'s own
             # dyn-widget-key dispatch, which attaches a `hit` dict even to
@@ -434,10 +429,9 @@ _INLINE_LEAF_CASES = [
         [
             {"FocusChanged": "ta:1"},
             None,
-            # The focusing click lands at column 0 (the default cursor
-            # position for a textarea with no explicit `cursor`), so
-            # Enter's inserted newline lands before "hi", not after it.
-            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "\nhi"}}),
+            # A textarea with no explicit `cursor` edits from the end of
+            # its value, so Enter's inserted newline lands after "hi".
+            ("ta:1", {"TextInputChanged": {"id": "ta:1", "value": "hi\n"}}),
         ],
         id="textarea",
     ),
@@ -666,8 +660,8 @@ def test_number_input_up_key_increments_the_focused_value():
 
 
 def test_radio_group_arrow_key_changes_the_selection():
-    # `RadioGroup` is a `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS`
-    # one, so `RadioGroupEvent::SelectionChanged` reaches Python as a bare
+    # `RadioGroup` is a generic widget leaf with its own event, so
+    # `RadioGroupEvent::SelectionChanged` reaches Python as a bare
     # `RadioGroupSelectionChanged` event rather than a `Form`-wrapped one.
     app = QuiApp(40, 20)
     app.set_render(
@@ -919,13 +913,8 @@ def test_form_leaf_control_width_min_control_width_prevents_clipping():
 
 
 def test_form_toggle_click_routes_through_form_controller():
-    # `FormEvent::ButtonClicked` was never emitted anywhere -- `"form"`
-    # painted via `Form`'s own plain, non-interactive `ExtraPaint::paint`
-    # with no hit-testing/routing at all. A click on a `Toggle` field now
-    # resolves through the cached `FormController`
-    # (`InteractionEngine::sync_forms`/`handle`'s own dispatch), the same
-    # `FormEvent::ToggleChanged` a `Form`-embedding host driving
-    # `FormController` directly would get.
+    # A click on a `Toggle` field resolves through the form's own
+    # `Interactive::handle` to `FormEvent::ToggleChanged`.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -1184,12 +1173,8 @@ def test_form_text_field_click_then_typing_routes_through_form_controller():
 
 
 def test_form_descriptor_has_focus_seeds_the_controller_highlight():
-    # `FormController::build_form` unconditionally overwrites `has_focus`
-    # with its own cached state -- without `sync_forms` seeding that cached
-    # state from the descriptor first, a form painted with `has_focus:
-    # True` directly (no click, no engine focus at all) would silently
-    # lose its focused-row highlight the moment it's routed through
-    # `FormController` instead of `Form`'s own plain `ExtraPaint::paint`.
+    # A form painted with `has_focus: True` directly (no click, no engine
+    # focus at all) shows its focused-row highlight.
     # `(50, 60, 90)` is `Theme::default()`'s `selected_bg`, paired with the
     # focused row; an unfocused row uses `tab_bar_bg` (`(20, 22, 30)`).
     app = QuiApp(40, 20)
@@ -1270,8 +1255,8 @@ def test_form_focus_highlight_tracks_engine_focus_in_both_directions():
                 ],
             },
             # A second focusable extra to move engine focus onto, banded
-            # right after the form (`EXTRA_PRIMITIVE_KINDS` puts `"form"`
-            # before `"switch"`), so the row below proves the highlight
+            # right after the form (the generic slots paint `"form"` before
+            # `"switch"`), so the row below proves the highlight
             # clears once focus actually leaves the form.
             "switch": {"id": "sw:1", "value": False},
         }
@@ -1617,20 +1602,17 @@ def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
 
 def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # Acceptance criterion: `form`/`number_input`/`combo_box`/`date_picker`
-    # all newly return `tab_stop() -> true` (`ExtraPaint::tab_stop`), which
-    # changes `Tab` behaviour for any app painting them --
-    # `runtime::preprocess_event`'s own step 3 cycles `app.tab_stops()`,
-    # built from `InteractionEngine::tab_stops`'s own paint-order traversal
-    # of the hit map. One `Tab` per extra, in `EXTRA_PRIMITIVE_KINDS`'
-    # registration order (`form` < `number_input` < `combo_box` <
+    # are all tab stops -- `runtime::preprocess_event`'s own step 3 cycles
+    # `app.tab_stops()`, built from `InteractionEngine::tab_stops`'s own
+    # paint-order traversal of the hit map. One `Tab` per leaf, in
+    # `WIDGET_KINDS` order (`form` < `number_input` < `combo_box` <
     # `date_picker`), must focus it -- plus one extra `Tab` for `form`
-    # itself: a render callback's `frame` is resynced against the engine's
-    # own tracked state every frame (`resolve_render_refs`), so once
-    # `settings` has engine focus, the next `Tab` moves `FormController`'s
-    # own cursor onto its first field before a further `Tab` yields back to
-    # the engine's cycle. A sixth `Tab` then wraps the whole lap back to
-    # `settings`, proving the cycle is closed. `radio_group` is a
-    # `WIDGET_KINDS` member now, not an `EXTRA_PRIMITIVE_KINDS` one, and a
+    # itself: once `settings` holds focus it walks its own fields, so the
+    # next `Tab` moves onto its first field, and a further `Tab` past its
+    # last field yields back to the engine's cycle. A sixth `Tab` then
+    # wraps the whole lap back to `settings`, proving the cycle is closed.
+    # The form's own event arrives with the `widget_body` hit every
+    # generic leaf's event carries. A
     # flat render-callback dict's generic-widget slots (`WIDGET_KINDS`) are
     # not wired into this `tab_stops()` traversal, so it is left out of this
     # render tree entirely rather than asserted as an untested no-op.
@@ -1669,7 +1651,10 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
 
     assert received == [
         {"FocusChanged": "settings"},
-        {"Form": ("settings", {"FocusChanged": {"id": "name"}})},
+        {
+            "Form": ("settings", {"FocusChanged": {"id": "name"}}),
+            "hit": {"kind": "widget_body"},
+        },
         {"FocusChanged": "ni:1"},
         {"FocusChanged": "combo:1"},
         {"FocusChanged": "date:1"},
@@ -2118,8 +2103,7 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
 # `{"row": [{"id", "<kind>": {...}}]}` leaf -- the shape a render callback
 # writes -- instead of a flat `{"<kind>": {...}}` dict, proving the
 # chrome-bar leaf path
-# (`ExtraPaint::paint_chrome`'s `chrome_hits`, and for `menu_bar`,
-# `render_overlays`'s `sync_menu_bar`) carries the same semantic event all
+# (each bar's own `Interactive::handle`) carries the same semantic event all
 # the way to the handler, not just its paint.
 def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
     app = QuiApp(40, 20)
@@ -2227,12 +2211,13 @@ def test_inline_tree_leaf_activity_bar_click_emits_item_clicked():
 
 
 def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
-    # `render_overlays`'s `sync_menu_bar` call reads this frame's hit map
-    # generically -- it never distinguishes a flat-slot `"menu_bar"` from
-    # one painted through an inline leaf -- so an `Alt+F` opens the bar's
-    # one top-level menu and `Enter` activates its sole leaf item exactly
-    # as it would for a slot-painted bar.
+    # The `"menu_bar"` leaf is the application menu, routed like any other
+    # leaf: once it holds focus (Tab, its only stop), `Alt+F` opens the
+    # bar's one top-level menu and `Enter` activates its sole leaf item.
+    # Which menu is open is the app's to keep: it echoes every
+    # `AppMenu(..., {"Changed": view})` back onto the descriptor.
     app = QuiApp(40, 20)
+    view = {}
 
     def render():
         return {
@@ -2257,6 +2242,7 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
                                 ],
                             },
                         ],
+                        **view,
                     },
                 },
             ]
@@ -2266,17 +2252,23 @@ def test_inline_tree_leaf_menu_bar_alt_activation_emits_menu_activated():
     app.screen()
 
     received = []
-    app.set_handler(lambda event: received.append(event))
-    app.push_event(
-        {"KeyPressed": {"key": {"Char": "f"}, "modifiers": {"alt": True}, "repeat": False}}
-    )
-    app.run(1)
-    app.push_event(
-        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
-    )
-    app.run(1)
 
-    assert {"MenuActivated": "menu:file:save"} in received, received
+    def handle(event):
+        received.append(event)
+        if "AppMenu" in event:
+            view.clear()
+            view.update(event["AppMenu"][1]["Changed"])
+
+    app.set_handler(handle)
+    for key, modifiers in (
+        ({"Named": "Tab"}, {}),
+        ({"Char": "f"}, {"alt": True}),
+        ({"Named": "Enter"}, {}),
+    ):
+        app.push_event({"KeyPressed": {"key": key, "modifiers": modifiers, "repeat": False}})
+        app.run(1)
+
+    assert any(event.get("MenuActivated") == "menu:file:save" for event in received), received
 
 
 def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event():
@@ -2462,8 +2454,8 @@ def test_palette_renders_item_text():
 # just above `test_activity_bar_renders_item_fallback_glyph`. Each one here
 # mirrors that same descriptor through a literal inline
 # `{"row": [{"id", "<kind>": {...}}]}` leaf instead, proving
-# `layout_leaf_from_value`'s generic `EXTRA_PRIMITIVE_KINDS` decode (and
-# `paint_leaf`'s matching `LeafDescriptor::Extra` paint) covers every
+# `layout_leaf_from_value`'s generic widget decode (and `paint_leaf`'s
+# matching `LeafDescriptor::Widget` paint) covers every
 # data-view kind, not just the two already proven this way.
 def test_inline_tree_leaf_message_list_renders_row_text():
     app = QuiApp(40, 20)
@@ -2621,8 +2613,8 @@ def test_inline_tree_leaf_multi_section_view_renders_section_header_title():
 # paint-and-click coverage in `test_missing_primitives.py` (C17).
 # These three mirror that same click behaviour (click-to-focus for the two
 # tab stops, a bare routed hit for the non-focusable `Canvas`) through a
-# literal inline leaf instead, proving the generic `LeafDescriptor::Extra`
-# path carries `ExtraPaint::hit_test`/`tab_stop` the same way a flat-slot
+# literal inline leaf instead, proving the generic `LeafDescriptor::Widget`
+# path carries hit-testing and tab stops the same way a flat-slot
 # descriptor does.
 def test_inline_tree_leaf_editor_focuses_it_and_routes_the_hit():
     app = QuiApp(40, 20)
@@ -3076,13 +3068,11 @@ def test_text_input_ctrl_letter_passes_through_unclaimed():
     assert received[0]["KeyPressed"]["key"] == {"Char": "s"}
 
 
-def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
-    # `Left`/`Right`/etc move the cursor but never change the text, so
-    # `apply_text_input_edit` reports no change and the caller falls back
-    # to the plain `KeyPressed` -- the cursor move itself is still cached
-    # (exercised by the backspace-after-typing test above landing in the
-    # right place), but nothing `Form`-shaped reaches Python for it.
-    app, _state, received = _focused_text_input_app("hi")
+def test_text_input_arrow_key_moves_the_caret_and_reaches_no_handler():
+    # `Left` moves the caret and changes no text: the input's own state
+    # claims it, so nothing reaches Python for it, and the next typed
+    # character lands at the moved caret.
+    app, state, received = _focused_text_input_app("hi", click_x=4.0)
 
     app.push_event(
         {
@@ -3094,10 +3084,35 @@ def test_text_input_arrow_key_falls_through_as_raw_key_pressed():
         }
     )
     app.run(1)
+    assert received == []
 
-    assert len(received) == 1
-    assert "KeyPressed" in received[0]
-    assert received[0]["KeyPressed"]["key"] == {"Named": "Left"}
+    app.push_event({"CharTyped": "!"})
+    app.run(1)
+    assert state["value"] == "h!i"
+
+
+def test_text_input_ctrl_word_and_home_keys_edit_through_the_core_state():
+    # Ctrl+Backspace/Ctrl+Delete delete a word, Ctrl+Left jumps one, and
+    # Home/End move to the line's ends -- the same keys every core text
+    # widget answers, with the caret the input's own state walked to.
+    app, state, received = _focused_text_input_app("foo bar", click_x=9.0)
+
+    def key(named, **modifiers):
+        app.push_event(
+            {"KeyPressed": {"key": {"Named": named}, "modifiers": modifiers, "repeat": False}}
+        )
+        app.run(1)
+
+    key("Backspace", ctrl=True)
+    assert state["value"] == "foo "
+    key("Home")
+    app.push_event({"CharTyped": "X"})
+    app.run(1)
+    assert state["value"] == "Xfoo "
+    key("End")
+    key("Left", ctrl=True)
+    key("Delete", ctrl=True)
+    assert state["value"] == " "
 
 
 def test_text_input_click_places_the_caret_at_the_clicked_column():
@@ -3167,10 +3182,10 @@ def test_text_input_shift_left_selects_then_backspace_deletes_the_selection():
 def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
     # `Ctrl+A` on a focused `text_input` resolves to this primitive's own
     # built-in `EditOp::SelectAll`, not a literal "a". `SelectAll` changes
-    # no text itself, so -- same as a pure cursor move -- it produces no
-    # `Form` event and falls through as the raw `KeyPressed`; what matters
-    # is that the selection it leaves behind in the cache makes the next
-    # typed character replace the whole buffer instead of being inserted
+    # no text itself, so -- same as a pure cursor move -- the input claims
+    # it and nothing reaches Python; what matters is that the selection it
+    # leaves behind in the input's own state makes the next typed
+    # character replace the whole buffer instead of being inserted
     # alongside it.
     app, state, received = _focused_text_input_app("hello", click_x=7.0)
 
@@ -3184,10 +3199,8 @@ def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
         }
     )
     app.run(1)
-    assert len(received) == 1
-    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+    assert received == []
 
-    received.clear()
     app.push_event({"CharTyped": "X"})
     app.run(1)
 
@@ -3199,15 +3212,13 @@ def test_text_input_ctrl_a_selects_all_then_typing_replaces_it():
 
 
 def test_text_input_cmd_a_selects_all_on_macos_chord():
-    # Regression (#1910 fix-round review): on macOS the SelectAll/Undo/Redo
-    # chords arrive with `cmd`, not `ctrl` (`ns_modifier_flags_to_quadraui`
-    # maps a real Cmd into `Modifiers { cmd: true, ctrl: false, .. }`).
-    # `edit_op_from_binding` compares against `parse_binding`'s hard-coded
-    # Ctrl-primary chord, so it must treat Ctrl and Cmd as one interchangeable
-    # primary modifier -- otherwise Cmd+A/Z/Shift+Z silently stop working on
-    # macOS. Mirror of the `ctrl` SelectAll test above with `cmd` in place of
-    # `ctrl`: the SelectAll must still fire, so the next typed char replaces
-    # the whole buffer rather than inserting alongside it.
+    # On macOS the SelectAll/Undo/Redo chords arrive with `cmd`, not `ctrl`
+    # (`ns_modifier_flags_to_quadraui` maps a real Cmd into
+    # `Modifiers { cmd: true, ctrl: false, .. }`), so Ctrl and Cmd must be
+    # one interchangeable primary modifier. Mirror of the `ctrl` SelectAll
+    # test above with `cmd` in place of `ctrl`: the SelectAll must still
+    # fire, so the next typed char replaces the whole buffer rather than
+    # inserting alongside it.
     app, state, received = _focused_text_input_app("hello", click_x=7.0)
 
     app.push_event(
@@ -3220,10 +3231,8 @@ def test_text_input_cmd_a_selects_all_on_macos_chord():
         }
     )
     app.run(1)
-    assert len(received) == 1
-    assert received[0]["KeyPressed"]["key"] == {"Char": "a"}
+    assert received == []
 
-    received.clear()
     app.push_event({"CharTyped": "X"})
     app.run(1)
 
@@ -3236,10 +3245,8 @@ def test_text_input_cmd_a_selects_all_on_macos_chord():
 
 def test_text_input_ctrl_z_undoes_then_ctrl_shift_z_redoes():
     # `Ctrl+Z`/`Ctrl+Shift+Z` resolve to this primitive's own built-in
-    # `EditOp::Undo`/`Redo`, served from the cached `TextEditor`'s own
-    # history -- which now survives across calls instead of starting
-    # empty every keystroke (see `apply_text_input_edit`'s doc for why a
-    # fresh `TextEditor` per call could never undo anything).
+    # `EditOp::Undo`/`Redo`, served from the undo history in the input's
+    # own state, which survives across keystrokes.
     app, state, received = _focused_text_input_app("hi", click_x=4.0)
 
     app.push_event({"CharTyped": "!"})
@@ -3331,10 +3338,10 @@ def test_clicking_a_switch_inside_a_layout_tree_leaf_uses_the_leaf_id():
     assert received[1]["SwitchToggled"] == {"widget": "leaf:1", "value": True}
 
 
-def test_text_input_enter_commits_current_value():
-    # `Enter` on a focused `text_input` always commits -- this primitive has
-    # no multiline mode to special-case -- carrying whatever value the
-    # current descriptor snapshot holds.
+def test_text_input_enter_inserts_a_newline():
+    # A `text_input` is the multi-line core `TextInput`: Enter inserts a
+    # line break at the caret rather than committing. A single-line entry
+    # that commits on Enter is `text_field` (or `password`).
     app = QuiApp(40, 20)
     app.set_render(lambda: {"text_input": {"id": "ti:1", "lines": ["hello"]}})
     app.screen()
@@ -3357,7 +3364,31 @@ def test_text_input_enter_commits_current_value():
     assert len(received) == 1
     widget_id, form_event = received[0]["Form"]
     assert widget_id == "ti:1"
-    assert form_event == {"TextInputCommitted": {"id": "ti:1", "value": "hello"}}
+    assert form_event == {"TextInputChanged": {"id": "ti:1", "value": "\nhello"}}
+
+
+def test_text_field_leaf_edits_and_commits_through_the_core_state():
+    # A `text_field` leaf edits like every core single-line field: the
+    # focusing click parks the caret at the clicked column (the start),
+    # typed text lands there, and Enter commits the current value.
+    app = QuiApp(40, 20)
+    app.set_render(lambda: {"text_field": {"id": "tf:1", "value": "hi"}})
+    app.screen()
+    focus = _click_events(app, 1.0, 0.0)
+    assert focus[0]["FocusChanged"] == "tf:1"
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event({"CharTyped": "!"})
+    app.push_event(
+        {"KeyPressed": {"key": {"Named": "Enter"}, "modifiers": {}, "repeat": False}}
+    )
+    app.run(2)
+
+    assert [tuple(e["Form"]) for e in received] == [
+        ("tf:1", {"TextInputChanged": {"id": "tf:1", "value": "!hi"}}),
+        ("tf:1", {"TextInputCommitted": {"id": "tf:1", "value": "hi"}}),
+    ]
 
 
 def test_switch_enter_toggles_once_the_engines_focus_tree_names_it_focused():
@@ -3739,16 +3770,22 @@ def test_dismiss_overlay_message_dialog_closes_without_resolving():
     assert received == []
 
 
-def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
-    # Paint order puts the dialog on top of the menu bar's dropdown
-    # (`render_dialog` runs after `sync_menu_bar`); `handle` now routes
-    # the dialog ahead of the menu bar too, and
-    # `show_overlay("message_dialog", ...)` closes any open dropdown so
-    # nothing is left underneath holding input precedence it no longer has
-    # paint precedence for.
+def test_show_overlay_message_dialog_hides_an_open_menu_bar_dropdown():
+    # A modal sits above every widget's popups: while the dialog is open
+    # the menu bar's dropdown neither paints nor takes input, so Enter
+    # resolves the dialog rather than activating the hidden menu item.
     app = QuiApp(40, 20)
     received = []
-    app.set_handler(lambda event: received.append(event))
+    view = {}
+
+    def handle(event):
+        if "AppMenu" in event:
+            view.clear()
+            view.update(event["AppMenu"][1]["Changed"])
+        elif "FocusChanged" not in event:
+            received.append(event)
+
+    app.set_handler(handle)
     app.set_render(
         lambda: {
             "menu_bar": {
@@ -3768,8 +3805,7 @@ def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
                         ],
                     }
                 ],
-                "open_item": None,
-                "focused_item": None,
+                **view,
             }
         }
     )
@@ -3788,7 +3824,7 @@ def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
         ),
     )
 
-    assert not app.screen_contains("Open"), "the dialog must close the dropdown underneath it"
+    assert not app.screen_contains("Open"), "the dialog must hide the dropdown underneath it"
     assert app.screen_contains("OK")
 
     app.push_event(
@@ -3797,3 +3833,119 @@ def test_show_overlay_message_dialog_closes_an_open_menu_bar_dropdown():
     app.run(1)
 
     assert received == [{"MessageDialogResolved": "ok"}]
+
+
+def _file_menu_bar():
+    return {
+        "id": "bar:main",
+        "items": [
+            {
+                "id": "menu:file",
+                "label": "&File",
+                "submenu": [
+                    {
+                        "id": "item:save",
+                        "label": {"spans": [{"text": "Save", "fg": None, "bg": None}]},
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_a_menu_bar_whose_app_never_echoes_its_view_still_opens_on_click():
+    # Leaving every view key out makes the menu uncontrolled: it keeps its
+    # own open dropdown, so an app with no `AppMenu` handling still has a
+    # working menu.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(lambda: {"menu_bar": _file_menu_bar()})
+
+    row, col = _locate(app, "File")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert app.screen_contains("Save"), app.screen()
+
+    row, col = _locate(app, "Save")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    assert any(event.get("MenuActivated") == "item:save" for event in received), received
+    assert not app.screen_contains("Save"), app.screen()
+
+
+def test_a_menu_bar_whose_app_never_echoes_its_view_opens_on_its_alt_mnemonic():
+    app = QuiApp(40, 20)
+    app.set_handler(lambda _event: None)
+    app.set_render(lambda: {"row": [{"id": "bar:main", "menu_bar": _file_menu_bar()}]})
+    app.screen()
+    for key, modifiers in (({"Named": "Tab"}, {}), ({"Char": "f"}, {"alt": True})):
+        app.push_event({"KeyPressed": {"key": key, "modifiers": modifiers, "repeat": False}})
+        app.run(1)
+    assert app.screen_contains("Save"), app.screen()
+
+
+def test_a_focused_tab_bar_delivers_a_key_it_does_not_use_once():
+    # The tab bar reports a key it has no use for as its own scoped
+    # `KeyPressed`; the raw `KeyPressed` is not delivered as well.
+    app = QuiApp(40, 20)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(
+        lambda: {"tab_bar": {"id": "tabs", "tabs": [{"label": "One"}, {"label": "Two"}]}}
+    )
+    row, col = _locate(app, "One")
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": col + 0.5, "y": row + 0.5}, "modifiers": {}}}
+    )
+    app.run(1)
+    received.clear()
+
+    app.push_event({"KeyPressed": {"key": {"Named": "Delete"}, "modifiers": {}, "repeat": False}})
+    app.run(1)
+
+    keys = [
+        event
+        for event in received
+        if "KeyPressed" in event
+        or ("TabBar" in event and "KeyPressed" in event["TabBar"][1])
+    ]
+    assert len(keys) == 1, received
+    assert keys[0]["TabBar"][0] == "tabs"
+    assert keys[0]["TabBar"][1]["KeyPressed"]["key"] == "Delete"
+
+
+def test_a_modal_message_dialog_keeps_clicks_from_the_widget_beside_it():
+    app = QuiApp(40, 12)
+    received = []
+    app.set_handler(received.append)
+    app.set_render(
+        lambda: {"row": [{"id": "b", "button": {"id": "b", "label": "UNDERNEATH-UNDERNEATH-UNDERNEATH"}}]}
+    )
+    app.show_overlay(
+        "message_dialog",
+        _message_dialog("Sure?", "Really?", [{"id": "ok", "label": "OK", "is_default": True}]),
+    )
+    # The button's left edge stays painted beside the dialog.
+    row, col = _locate(app, "[ UND")
+    x = col + 2.5
+    received.clear()
+
+    for event in (
+        {"MouseDown": {"button": "Left", "position": {"x": x, "y": row + 0.5}, "modifiers": {}}},
+        {"MouseUp": {"button": "Left", "position": {"x": x, "y": row + 0.5}, "modifiers": {}}},
+        {"MouseMoved": {"position": {"x": x, "y": row + 0.5}, "buttons": {}}},
+    ):
+        app.push_event(event)
+        app.run(1)
+
+    reached_button = [event for event in received if "'b'" in repr(event)]
+    assert reached_button == [], received
+    assert not any(
+        "MouseUp" in event or "MouseDown" in event or "DoubleClick" in event or "FocusChanged" in event
+        for event in received
+    ), received

@@ -74,7 +74,7 @@
 //!   newtype-struct identifier (see [`decode_via_json`]).
 //! - [`decode_via_core`] first materializes the JS value into one
 //!   [`serde_json::Value`] via [`to_descriptor_value`], then hands `&value`
-//!   to a kind-dispatched core decoder (`decode_extra_primitive` today;
+//!   to a kind-dispatched core decoder (`decode_overlay` today;
 //!   `decode_layout_node`/`decode_render_output` are exercised directly
 //!   against a hand-built `serde_json::Value` by this module's own tests,
 //!   with no napi-visible method routing JS input through them yet, since
@@ -316,14 +316,12 @@ use quadraui_binding_core::{
     resolve_app_path, resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
     set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    tree_table_controller_nodes_from_wire, update_apply_on_quit, update_check_for_update,
-    update_download_and_stage, validate_style_set_name, widget_state_snapshot,
-    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
-    EventSink, ExtraPaint, GuardedFailure, HitDetail, InteractionEngine, OverrideError,
-    RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y, ScriptedConstraints,
-    ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize,
-    ScriptedState, ServiceError, StyleContext, TreeTableControllerNode,
-    TreeTableControllerWireEvent, UpdateInfoWire, WindowCloseHandling,
+    update_apply_on_quit, update_check_for_update, update_download_and_stage,
+    validate_style_set_name, widget_state_snapshot, window_close_reaction, with_tray, with_window,
+    BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
+    InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
+    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
+    ScriptedSize, ScriptedState, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
@@ -978,7 +976,8 @@ impl Drop for RenderCtxScope {
 // `quadraui.app.widget.Widget` wraps `PyScriptWidget` around. Unlike that
 // binding, this one leans on the *other* half of the seam
 // `quadraui_binding_core::scripted` offers: `register_scripted_widget`
-// plus a `"scripted_widget"` wire leaf, rather than decoding an empty
+// plus a `"scripted_widget"` wire leaf (`{"id": .., "props": ..}`, decoded
+// through core's runtime kind registry), rather than decoding an empty
 // `Canvas` placeholder and splicing a fresh primitive in after the fact.
 // `js/app/widget.ts`'s `build(resolvedId, ...)` calls
 // [`register_scripted_widget`] (this module's own napi export, aliased
@@ -987,8 +986,7 @@ impl Drop for RenderCtxScope {
 // this module is already running when that `build` call happens -- so the
 // registration is always in place in `quadraui_binding_core::scripted`'s
 // own thread-local registry before `decode_render_output_with_styles`
-// (called right after the callback returns) reaches that leaf's
-// `"scripted_widget"` decode arm.
+// (called right after the callback returns) decodes that leaf.
 //
 // **Why no `props`/`state` marshaling.** `quadraui-py`'s `PyScriptWidget`
 // converts `ScriptedPrimitive`'s own `props`/`state` fields to/from Python
@@ -1264,7 +1262,7 @@ impl ScriptWidget for NodeScriptWidget {
 /// `quadraui-node/js/app/widget.ts`'s `defineWidget`) in a fresh
 /// [`NodeScriptWidget`]/[`ScriptedPrimitive`] and registers it against
 /// `id` via [`core_register_scripted_widget`], so the very next
-/// `"scripted_widget"` leaf named `id` that `decode_render_output_with_styles`
+/// `"scripted_widget"` leaf whose payload names `id` that `decode_render_output_with_styles`
 /// decodes (the one `widget.ts`'s own `build(id, ...)` call returns,
 /// always from the same JS call stack right after this one returns) picks
 /// it up. Must be called synchronously from inside a running
@@ -1294,8 +1292,11 @@ pub fn register_scripted_widget(
         on_event: on_event.create_ref()?,
         a11y: a11y.create_ref()?,
     };
-    let primitive = ScriptedPrimitive::new(WidgetId::new(id.as_str()), widget, focusable);
-    core_register_scripted_widget(id, Rc::new(primitive) as Rc<dyn ExtraPaint>);
+    core_register_scripted_widget(ScriptedPrimitive::new(
+        WidgetId::new(id.as_str()),
+        widget,
+        focusable,
+    ));
     Ok(())
 }
 
@@ -1324,7 +1325,8 @@ impl AppLogic for NodeAppLogic {
         let Some(callback) = self.render_callback.as_ref() else {
             let resolved =
                 resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
-            draw_bands(backend, resolved.as_refs(), &mut hits);
+            self.engine
+                .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
             // No render callback: nothing painted through `paint_layout`
             // this frame, so there is no layout-tree leaf tooltip to
             // resolve -- clears out anything a previously registered
@@ -1375,7 +1377,10 @@ impl AppLogic for NodeAppLogic {
             Some(RenderOutput::Flat(frame)) => {
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                draw_bands(backend, resolved.as_refs(), &mut hits);
+                // Every generic leaf paints from the state its own input
+                // handling walked (a text input's caret, say).
+                self.engine
+                    .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
@@ -1396,7 +1401,9 @@ impl AppLogic for NodeAppLogic {
                 // render callback never sends an `"items_window"` key
                 // paints identically either way (see
                 // `paint_layout_windowed`'s own doc).
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+                self.engine.paint_with_widget_state(|| {
+                    paint_layout_windowed(backend, area, &node, &mut hits, &windows)
+                });
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see
@@ -1429,9 +1436,9 @@ impl AppLogic for NodeAppLogic {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let reaction = match (self.handler.as_ref(), self.env.get()) {
             (Some(handler), Some(env)) => {
-                // `InteractionEngine::handle` forwards a resolved region
-                // click or a focused key press straight into a
-                // `ScriptedPrimitive` leaf's own `on_event` -- see the
+                // `InteractionEngine::handle` routes a region click or a
+                // focused key press into a `ScriptedPrimitive` leaf's own
+                // `Interactive::handle`, which calls its `on_event` -- see the
                 // "Script widgets" module section's own doc for why that
                 // needs a live `Env` installed for this whole call, not
                 // just whatever `handler` itself touches.
@@ -1690,71 +1697,12 @@ impl EventSink for NodeEventSink<'_> {
         }
     }
 
-    /// Delivers a `"tree_table_controller"` extra's cached
-    /// [`TreeTableControllerWireEvent`] to the same registered handler
-    /// [`Self::dispatch`] calls, as `{"TreeTableController": [id, event]}` --
-    /// `id` is the extra's own id (a plain JS string), `event` the JSON
-    /// encoding of the wire event (e.g. `{"RowSelected": {"id": "..."}}`),
-    /// mirroring the `{"TreeTable": [tableId, event]}` shape a flat-slot
-    /// `TreeTable`'s own `TreeTableEvent` already reaches the handler as
-    /// (a Rust tuple's `Serialize` impl produces a JSON array, which
-    /// `encode_via_json`/`Env::to_js_value` then converts into a JS array --
-    /// destructured here as `event.TreeTableController[0]`/`[1]`, the
-    /// napi-rs analog of `quadraui-py`'s Python-tuple
-    /// `event.TreeTableController`). A `"ChildrenRequested"` here is
-    /// answered with `QuiApp.setTreeTableChildren`; a `"SortChanged"` may
-    /// be answered with `QuiApp.setTreeTableSortOverride` to replace the
-    /// engine's default comparator's result with a host-chosen order.
-    fn dispatch_tree_table_controller(
-        &mut self,
-        id: WidgetId,
-        event: TreeTableControllerWireEvent,
-    ) -> Reaction {
-        let event_value = match serde_json::to_value(&event) {
-            Ok(value) => value,
-            Err(err) => {
-                record_error(
-                    self.pending_error,
-                    invalid_descriptor_error(format!(
-                        "failed to convert tree table controller event to JSON: {err}"
-                    )),
-                );
-                return Reaction::Exit;
-            }
-        };
-        let wrapped = serde_json::json!({ "TreeTableController": [id.as_str(), event_value] });
-        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
-            Ok(value) => value,
-            Err(err) => {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-        };
-        let func = match self.handler.borrow_back(&self.env) {
-            Ok(func) => func,
-            Err(err) => {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-        };
-        match func.call(js_payload) {
-            Ok(result) => {
-                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
-            }
-            Err(err) => {
-                record_error(self.pending_error, err);
-                Reaction::Exit
-            }
-        }
-    }
-
     /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
     /// leaf's [`RowsRequestedEvent`] to the same registered JS handler
     /// [`EventSink::dispatch`] calls, as
     /// `{"RowsRequested": {id, start, count}}` -- the synthesized-event
     /// shape `docs/bindings-wire-format.md`'s own `RowsRequestedEvent`
-    /// entry describes, mirroring the
-    /// `{"TreeTableController": [...]}` above.
+    /// entry describes.
     ///
     /// The app answers by re-rendering that leaf with
     /// `items_window: {start, total}` and the `count` rows from `start`;
@@ -3155,72 +3103,6 @@ impl QuiApp {
             widget_state_snapshot(self.driver.app().engine.widget_state(), WidgetId::new(id))
                 .map(WidgetStateJs::from);
         encode_via_json(env, "widgetState", &snapshot)
-    }
-
-    /// Answers a `"tree_table_controller"` extra's `"ChildrenRequested"`
-    /// event -- delivered to the registered handler as
-    /// `{"TreeTableController": [id, {"ChildrenRequested": {"id":
-    /// nodeId}}]}` -- by attaching `children` (a list of wire nodes, the
-    /// same `{"id": ..., "cells": [...], "icon": ..., "has_children":
-    /// ..., "children": ...}` shape a `"tree_table_controller"` extra's
-    /// own `"nodes"` list takes) under `nodeId`, found anywhere in the
-    /// tree, not just at the top level. Call after `step`/`run` returns,
-    /// not from inside the handler itself (that raises
-    /// `ReentrantCallError`). A no-op if `id` names no cached controller
-    /// (it hasn't been painted this frame, or at all yet). Raises
-    /// `LiveRunnerActiveError` once `startTui`/`startNative` is active --
-    /// see [`QuiApp::check_not_live`]'s doc.
-    #[napi(js_name = "setTreeTableChildren")]
-    pub fn set_tree_table_children(
-        &mut self,
-        env: Env,
-        id: String,
-        node_id: String,
-        children: Unknown,
-    ) -> Result<()> {
-        self.check_not_live()?;
-        let children: Vec<TreeTableControllerNode> =
-            decode_via_json("setTreeTableChildren", children)?;
-        let children = tree_table_controller_nodes_from_wire(children);
-        self.guarded(env, |app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_children(WidgetId::new(id), &node_id, children);
-            Ok(())
-        })
-    }
-
-    /// Overrides the comparator a `"tree_table_controller"` extra's
-    /// `{"TreeTableController": [id, {"SortChanged": {"col": ...,
-    /// "ascending": ...}}]}` event already applied by default: replaces
-    /// every loaded node under `id`'s cached controller with `nodes` (the
-    /// same wire-node shape [`Self::set_tree_table_children`]'s own
-    /// `children` takes), already ordered however the host likes
-    /// (numeric, locale-aware, ...). Selection survives by node id, not
-    /// position. Call after `step`/`run` returns, not from inside the
-    /// handler itself (that raises `ReentrantCallError`). A no-op if `id`
-    /// names no cached controller. Raises `LiveRunnerActiveError` once
-    /// `startTui`/`startNative` is active -- see
-    /// [`QuiApp::check_not_live`]'s doc.
-    #[napi(js_name = "setTreeTableSortOverride")]
-    pub fn set_tree_table_sort_override(
-        &mut self,
-        env: Env,
-        id: String,
-        nodes: Unknown,
-    ) -> Result<()> {
-        self.check_not_live()?;
-        let nodes: Vec<TreeTableControllerNode> =
-            decode_via_json("setTreeTableSortOverride", nodes)?;
-        let nodes = tree_table_controller_nodes_from_wire(nodes);
-        self.guarded(env, |app| {
-            app.driver
-                .app()
-                .engine
-                .set_tree_table_sort_override(WidgetId::new(id), nodes);
-            Ok(())
-        })
     }
 
     /// Queues a [`UiEvent`] decoded from a JS object, drained one per

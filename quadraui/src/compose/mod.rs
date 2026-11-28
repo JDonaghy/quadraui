@@ -95,7 +95,7 @@ pub mod toolbar_hover_tracker;
 ))]
 pub mod tree_table_controller;
 pub(crate) mod widget_host;
-pub use widget_host::{drive_ui_event, Driven};
+pub use widget_host::{drive_ui_event, routed_event, Driven};
 pub mod workspace;
 
 pub use app_shell::{
@@ -170,7 +170,8 @@ pub use toolbar_hover_tracker::ToolbarHoverTracker;
     all(feature = "macos", target_os = "macos")
 ))]
 pub use tree_table_controller::{
-    NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
+    NodeId, TreeTableController, TreeTableControllerEvent, TreeTableModel, TreeTableModelLayout,
+    TreeTableModelState, TreeTableNodeData,
 };
 pub use workspace::{
     Workspace, WorkspaceDoc, WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState,

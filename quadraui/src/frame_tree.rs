@@ -111,7 +111,7 @@ impl FrameTree {
 
     /// The topmost open popup whose rect contains `point`.
     pub fn popup_at(&self, point: Point) -> Option<&OpenPopup> {
-        self.popups.iter().rev().find(|p| p.rect.contains(point))
+        crate::popup::popup_at(&self.popups, point)
     }
 
     /// What is under `point`: the topmost popup containing it, otherwise
