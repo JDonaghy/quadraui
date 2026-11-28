@@ -25,79 +25,65 @@ builds and clicks this exact file (`examples/hero/rust/src/main.rs`):
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust,noplayground
 use quadraui::prelude::*;
-use quadraui::{primitive::DynWidget, Button, FrameTree, StyledSpan};
-use std::cell::Cell;
 
 #[derive(Default)]
 pub struct Counter {
     pub count: i32,
-    cell: Cell<(f32, f32)>,
 }
 
-impl Counter {
-    fn view(&self) -> ScreenLayout {
-        let (w, h) = self.cell.get(); // one character cell, in this backend's units
-        let text = StyledSpan::plain(format!("Count: {}", self.count));
-        let mut label = TextDisplay::new(WidgetId::new("count"));
-        label.lines = vec![TextDisplayLine {
-            spans: vec![text],
-            decoration: Default::default(),
-            timestamp: None,
-        }];
-        let mut ui = ScreenLayout::new();
-        let mut put = |col: f32, row: f32, cols: f32, widget: Box<dyn DynWidget>| {
-            let rect = Rect::new(col * w, row * h, cols * w, h);
-            ui.push(Surface::Widget { rect, widget })
-        };
-        put(0.0, 0.0, 20.0, Box::new(label));
-        put(0.0, 2.0, 5.0, Box::new(Button::new("dec".into(), "-")));
-        put(6.0, 2.0, 5.0, Box::new(Button::new("inc".into(), "+")));
-        ui
-    }
+#[derive(Clone)]
+pub enum Msg {
+    Inc,
+    Dec,
 }
 
-impl AppLogic for Counter {
-    type AreaId = ();
-    fn render(&self, backend: &mut dyn Backend, _: ()) {
-        self.cell.set((backend.char_width(), backend.line_height()));
-        self.view().draw(backend);
+impl View for Counter {
+    type Msg = Msg;
+    fn view(&self) -> Node<Msg> {
+        column([
+            text(format!("Count: {}", self.count)).id("count").content(),
+            row([
+                button("-").id("dec").on_click(Msg::Dec).content(),
+                button("+").id("inc").on_click(Msg::Inc).content(),
+            ])
+            .gap(8.0)
+            .content(),
+        ])
+        .gap(16.0)
     }
-    fn frame_tree(&self, _: ()) -> FrameTree {
-        self.view().into_frame_tree()
-    }
-    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
-            UiEvent::KeyPressed {
-                key: Key::Char('q'),
-                ..
-            } => return Reaction::Exit,
-            _ => return Reaction::Continue,
+    fn update(&mut self, msg: Msg) -> Command {
+        match msg {
+            Msg::Inc => self.count += 1,
+            Msg::Dec => self.count -= 1,
         }
-        Reaction::Redraw
+        Command::None
     }
 }
 
 fn main() -> Result<(), quadraui::RunError> {
-    quadraui::tui::run(Counter::default()) // or gtk::run, macos::run, win::run: same Counter
+    run_tui(Counter::default()) // or run_native: the same Counter in a window
 }
 ```
 
 The three parts:
 
-- **State** is the `Counter` struct. (`cell` remembers the backend's
-  character size between `render` and `frame_tree`; see the note below.)
-- **View** is `view()`: it builds a `ScreenLayout` of widgets, every frame.
-  `render` paints it; `frame_tree` hands the same widgets to the runtime so
-  clicks reach them.
-- **Update** is `handle()`: match the event, change state, return
-  `Reaction::Redraw` (or `Reaction::Exit`).
+- **State** is the `Counter` struct.
+- **View** is `view()`: it returns a tree of nodes, every frame. `column`
+  and `row` stack their children; `text` and `button` are widgets, and
+  `.id(..)` names one (tests find it by that name, and focus and widget
+  state are kept under it).
+- **Update** is `update()`: `.on_click(Msg::Inc)` turns a click on that
+  button into the message `Msg::Inc`, and `update` applies it. Every
+  message redraws; return `Command::Exit` to quit.
 
-Rust has no `App`, `Column` or `Row` (the Python and Node versions do).
-`put` places a widget at a column and row, `cols` cells wide and one row
-(`h`) high. A widget that needs several rows, such as a list, needs a
-height too: add a `rows` argument and use `rows * h`.
+Children share their container equally unless they ask otherwise:
+`.content()` sizes one to fit, `.fixed(px)`, `.weight(w)`, `.percent(p)`,
+`.min(px)` and `.max(px)` do what they say, and `.gap(px)` spaces a
+container's children. Sizes are surface pixels; the terminal rounds them up
+to whole cells of 8×16 pixels, so `.gap(16.0)` between rows is one line.
+
+`q`, Escape and Ctrl-C quit when no widget took the key. A view that wants
+them overrides `quits_on`; one that wants other keys overrides `on_event`.
 
 ## 3. Run it in the terminal
 
@@ -113,16 +99,21 @@ input is piped or there is no terminal.
 
 ## 4. Run it in a native window
 
-Swap the backend feature and the runner call. Nothing else changes:
+Enable a native backend feature and call `run_native` instead of
+`run_tui`. Nothing else changes:
 
-| Platform | Feature | Last line of `main` |
-|---|---|---|
-| macOS | `cargo add quadraui --features macos` | `quadraui::macos::run(Counter::default())` |
-| Linux | `cargo add quadraui --features gtk` | `quadraui::gtk::run(Counter::default())` |
-| Windows | `cargo add quadraui --features win` | `quadraui::win::run(Counter::default())` |
+| Platform | Feature |
+|---|---|
+| macOS | `cargo add quadraui --features macos` |
+| Linux | `cargo add quadraui --features gtk` |
+| Windows | `cargo add quadraui --features win` |
 
-Enable several features to choose at run time, for example from a
-`--tui` flag.
+`run_native(Counter::default())` opens a window on the native backend this
+build enables, and returns `RunError::Backend(BackendError::Unsupported)`
+when there is none, so an app can fall back to `run_tui`.
+
+Enable `tui` and a native feature together to choose at run time, for
+example from a `--tui` flag.
 
 **Windows:** a binary using the `win` feature must embed the Common-Controls
 v6 manifest, or Windows refuses to start it (error 0xc0000139). Copy
@@ -141,9 +132,10 @@ painted, click it, then read the screen. This is
 #[path = "../src/main.rs"]
 mod hero;
 
+use quadraui::app::Run;
 use quadraui::tui::testing::TuiDriver;
 
-fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
+fn click_label(driver: &mut TuiDriver<Run<hero::Counter>>, label: &str) {
     let (x, y) = driver
         .find(label)
         .unwrap_or_else(|| panic!("{label:?} not on screen:\n{}", driver.screen()));
@@ -152,7 +144,7 @@ fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
 
 #[test]
 fn plus_minus_plus_counts_to_one() {
-    let mut driver = TuiDriver::new(hero::Counter::default(), 30, 5);
+    let mut driver = TuiDriver::new(Run::new(hero::Counter::default()), 30, 5);
     driver.render();
     assert!(driver.screen_contains("Count: 0"), "{}", driver.screen());
     // `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a
@@ -166,7 +158,10 @@ fn plus_minus_plus_counts_to_one() {
 - The `#[path]` line compiles `src/main.rs` into the test as module
   `hero`, so a binary crate can test its app. In your own project you can
   do the same, or move `Counter` into `src/lib.rs` and `use counter::Counter`.
-- `TuiDriver::new(app, 30, 5)` is a 30x5-cell terminal. `click(x, y)`
+- `TuiDriver::new(Run::new(app), 30, 5)` is a 30x5-cell terminal. `Run`
+  is the adapter `run_tui` uses: it makes a `View` an `AppLogic`, the
+  trait every runner and test driver takes. It derefs to your view, so
+  `driver.app().count` reads the state. `click(x, y)`
   takes cell coordinates; `find(text)` gives the coordinates of painted
   text. `press(key)`, `type_char(c)`, `screen()` and `app()` do what their
   names say. Tab and bar parts have helpers by id, such as
@@ -185,71 +180,43 @@ The counter uses two widgets. The
 [parity app](https://github.com/JDonaghy/quadraui/tree/develop/examples/parity)
 is a todo list CI runs in all three languages, with a text field, a list
 and a status bar. Its Rust version, `examples/parity/rust/src/main.rs`,
-shows the parts the counter does not. `ListView` and `ListItem` have no
-`new()` or `Default` yet, so every field is spelled out:
+shows the parts the counter does not: a form with a text field, a list
+and a status bar, each mapping its events to a message:
 
 <!-- sample: examples/parity/rust/src/main.rs -->
 ```rust,noplayground
-        let items = self.todos.iter().map(|t| ListItem {
-            text: StyledText::plain(t),
-            icon: None,
-            detail: None,
-            decoration: Default::default(),
-        });
-        let list = ListView {
-            id: WidgetId::new("todos"),
-            title: None,
-            items: items.collect(),
-            selected_idx: self.selected,
-            scroll_offset: 0,
-            has_focus: false,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
+        let draft = text_field("draft", &self.draft).label("New");
+        column([
+            form([draft.on_change(Msg::Edit).on_submit(|_| Msg::Add)]).id("form"),
+            list(&self.todos)
+                .selected(self.selected)
+                .id("todos")
+                .on_select(Msg::Select),
 ```
 
-A text field is a `FormField` with `kind: FieldKind::TextInput { .. }`
-inside a `Form`; the file builds one in full. Their events, matched in
-`handle`:
+`on_change` gets the field's whole new text and `on_submit` fires on Enter.
+`list(items)` makes one row per item; `.selected(i)` is the row the app
+shows selected, and `.on_select` reports a new one. Leave the form's
+focused field alone: the runner keeps it, as the Python and Node engines
+do. `log` records each update for the parity check; your app does not need
+it.
 
-<!-- sample: examples/parity/rust/src/main.rs -->
-```rust,noplayground
-        match event {
-            UiEvent::Form(_, FormEvent::TextInputChanged { value, .. }) => {
-                self.log.push(format!("edit {value}"));
-                self.draft = value;
-            }
-            UiEvent::Form(_, FormEvent::TextInputCommitted { .. }) => self.add(),
-            UiEvent::Form(_, FormEvent::FocusChanged { id }) => self.focused_field = Some(id),
-            UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) => {
-                self.log.push(format!("select {idx}"));
-                self.selected = idx;
-            }
-```
+Any widget can be a node: `widget(descriptor)` takes one built in full
+(it implements `Leaf`), and `.with(|w: &mut ListView| ...)` edits a field
+the constructor does not take. The [API reference](https://docs.rs/quadraui)
+lists every widget's fields and every `UiEvent`. `.on(|id, event| ...)`
+maps any event a widget emits.
 
-`TextInputChanged` carries the whole new value; `TextInputCommitted` is
-Enter. The form's focused field is app state in Rust, which is why the app
-tracks `FocusChanged`. `log` records each update for the parity check;
-your app does not need it. The
-[API reference](https://docs.rs/quadraui) lists every widget's fields and
-every `UiEvent`.
+## Beyond `View`
 
-## About the hand-placed layout
-
-The Rust view places each widget in a `Rect` by hand, which is why it is
-longer than the [Python](python.md) and [Node](node.md) versions. Those get
-`Column` and `Row` from their app layer; a Rust equivalent is proposed in
-[`examples/hero/README.md`](https://github.com/JDonaghy/quadraui/blob/develop/examples/hero/README.md)
-but not built yet. For real apps today, `ShellApp` gives you a VS Code-style
-frame with the regions already laid out: the smallest one is
+`View` is the app layer. Underneath it, `AppLogic` is the trait every
+runner takes (`render`, `handle`, `frame_tree`), for an app that paints
+and routes by hand. `ShellApp` gives you a VS Code-style frame with the
+regions already laid out: the smallest one is
 [`quadraui/examples/hello.rs`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/examples/hello.rs)
 (`cargo run --example hello --features tui` in a clone). The `layout`
 feature adds flexbox and grid for computing rectangles
-([Layout](../concepts/layout.md)); it has no worked example in these pages
-yet, so see `quadraui::flex` in the [API reference](https://docs.rs/quadraui).
+([Layout](../concepts/layout.md)).
 
 ## More
 

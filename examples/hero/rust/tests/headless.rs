@@ -7,9 +7,10 @@
 #[path = "../src/main.rs"]
 mod hero;
 
+use quadraui::app::Run;
 use quadraui::tui::testing::TuiDriver;
 
-fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
+fn click_label(driver: &mut TuiDriver<Run<hero::Counter>>, label: &str) {
     let (x, y) = driver
         .find(label)
         .unwrap_or_else(|| panic!("{label:?} not on screen:\n{}", driver.screen()));
@@ -18,7 +19,7 @@ fn click_label(driver: &mut TuiDriver<hero::Counter>, label: &str) {
 
 #[test]
 fn plus_minus_plus_counts_to_one() {
-    let mut driver = TuiDriver::new(hero::Counter::default(), 30, 5);
+    let mut driver = TuiDriver::new(Run::new(hero::Counter::default()), 30, 5);
     driver.render();
     assert!(driver.screen_contains("Count: 0"), "{}", driver.screen());
     // `+ - +`, not `+ + -`: two clicks on one spot this fast fold into a

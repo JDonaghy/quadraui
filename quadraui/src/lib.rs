@@ -386,6 +386,9 @@ pub mod tui;
 #[cfg_attr(docsrs, doc(cfg(feature = "win")))]
 pub mod win;
 
+// The model-view-update app layer: `View`, `Node` trees laid out by the
+// core stack solver, and the `Run` adapter onto `AppLogic`.
+pub mod app;
 pub mod compose;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────

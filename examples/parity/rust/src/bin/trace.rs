@@ -28,7 +28,7 @@ fn hex(color: quadraui::tui::testing::Color) -> String {
     format!("{r:02x}{g:02x}{b:02x}")
 }
 
-fn frame(driver: &mut TuiDriver<todo::Todo>, input: Value) -> Value {
+fn frame(driver: &mut TuiDriver<Run<todo::Todo>>, input: Value) -> Value {
     driver.render();
     let screen = driver.screen();
     let rows: Vec<&str> = screen.trim_end_matches('\n').split('\n').collect();
@@ -65,7 +65,7 @@ fn main() {
         .nth(1)
         .expect("usage: parity-trace SCRIPT.json");
     let script: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let mut driver = TuiDriver::new(todo::Todo::default(), WIDTH, HEIGHT);
+    let mut driver = TuiDriver::new(Run::new(todo::Todo::default()), WIDTH, HEIGHT);
     let mut trace = vec![frame(&mut driver, Value::Null)];
     for step in script {
         if let Some(at) = step.get("click") {

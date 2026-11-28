@@ -8,6 +8,12 @@
 //! on screen and has no way to tell `StatusBar` (the thing they need)
 //! from `SidebarPanelHit` (the thing they don't, yet).
 //!
+//! It leads with the app layer ([`crate::app`]): [`View`], the
+//! [`Node`] constructors (`column`/`row`, `text`, `button`, `list`,
+//! `form`, …) and the `run_tui`/[`run_native`] one-liners — everything a
+//! first app needs. The `AppLogic` names below are the layer underneath,
+//! for an app that paints and routes by hand.
+//!
 //! `quadraui::prelude::*` is not a replacement for the crate root — it's
 //! a subset, picked for "building your first `AppLogic` app": the two
 //! runner traits, the event/geometry types every `handle`/`render`
@@ -21,6 +27,14 @@
 //! ```
 //! use quadraui::prelude::*;
 //! ```
+
+// ── App layer: View + Node tree + run_tui/run_native ────────────────────
+#[cfg(feature = "tui")]
+pub use crate::app::run_tui;
+pub use crate::app::{
+    button, column, form, list, row, run_native, status_bar, text, text_field, widget, Command,
+    Field, Leaf, Node, Run, View,
+};
 
 // ── Runner (quadraui::{tui,gtk}::run) ───────────────────────────────────
 pub use crate::runner::{AppLogic, Reaction, StepOutcome};

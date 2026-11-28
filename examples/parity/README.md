@@ -53,20 +53,14 @@ that step is removed from the file, so a fix cannot go unnoticed.
 | `button-pressed-after-release` | After a click, Rust paints the button with the pressed colour; Python and Node paint the hover colour. |
 | `controlled-list-ignores-arrow-keys` | Down on a focused list whose selection the app pins moves the selection and fires `SelectionChanged` in Rust. Python and Node do nothing. |
 
-## API gaps the Rust version shows
+## How the Rust version is built
 
-- Rust has no layout tree. Python and Node write `Column(...)`/`Row(...)`,
-  while Rust places rects by hand with a `shares` helper that copies the
-  bindings' equal-share split.
-- `Form`, `FormField`, `ListView` and `ListItem` have no `Default` or
-  builder, so the Rust view spells out every field. The bindings get those
-  defaults from their wire decoder.
-- In Rust the form's focused field is app state. The app sets it from
-  `FormEvent::FocusChanged` and clears it by reading `Backend::focus_tree()`,
-  since nothing reports that focus left the form. In Python and Node the
-  engine owns it.
-- `AppLogic::frame_tree` and `extra_tab_stops` get no `Backend`, so the Rust
-  app builds its view at a fixed 40x12 for routing.
+It uses the Rust app layer (`quadraui::app`), the same shape as the Python
+and Node versions: `column`/`row` with equal shares, `form`/`text_field`,
+`list` and `status_bar` nodes whose handlers map events to a `Msg`, and one
+`update`. The tracer wraps it in `Run`, the `AppLogic` adapter, to drive it
+through `TuiDriver`. As in Python and Node, the form's focused field is left
+to the runner.
 
 ## Limits of the comparison
 
