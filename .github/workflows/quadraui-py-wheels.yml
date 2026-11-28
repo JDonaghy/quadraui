@@ -324,8 +324,8 @@ jobs:
     # containers, so pip's own tag choice is under test as well as what the
     # chosen wheel does on that host (see `quadraui-py/ci/linux_wheel_smoke.py`).
     name: linux smoke (${{ matrix.name }})
-    needs: [build, linux-gtk]
-    if: ${{ !cancelled() && needs.build.result == 'success' && needs.linux-gtk.result == 'success' }}
+    needs: [bump-shape, build, linux-gtk]
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' && needs.build.result == 'success' && needs.linux-gtk.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
