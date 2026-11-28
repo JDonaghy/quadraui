@@ -97,6 +97,7 @@ pub enum PaletteMode {
 ///     create_label: None,
 ///     preview: None,
 ///     mode: Default::default(),
+///     show_mode_badge: true,
 /// };
 ///
 /// let layout = palette.layout(60.0, 20.0, 1.0, 1.0, 0.0, 1.0, |_| {
@@ -153,6 +154,11 @@ pub struct Palette {
     /// [`PaletteMode::Input`].
     #[serde(default)]
     pub mode: PaletteMode,
+    /// Paint the `[L]`/`[I]` mode badge at the right of the title row.
+    /// Default `true`; a host that never switches [`Self::mode`] turns it
+    /// off, since the badge then names a mode the user cannot change.
+    #[serde(default = "default_true")]
+    pub show_mode_badge: bool,
 }
 
 impl Default for Palette {
@@ -174,6 +180,7 @@ impl Default for Palette {
             create_label: None,
             preview: None,
             mode: PaletteMode::default(),
+            show_mode_badge: true,
         }
     }
 }
@@ -1288,6 +1295,7 @@ pub(crate) mod native_surface_paint {
                 create_label: None,
                 preview: None,
                 mode: PaletteMode::List,
+                show_mode_badge: true,
             }
         }
 
@@ -1831,7 +1839,11 @@ pub(crate) mod cell_paint {
             PaletteMode::List => "[L]",
             PaletteMode::Input => "[I]",
         };
-        let badge_w = badge.chars().count() as u16;
+        let badge_w = if palette.show_mode_badge {
+            badge.chars().count() as u16
+        } else {
+            0
+        };
 
         // Top border with title overlay.
         for col in 0..w {
@@ -1865,7 +1877,7 @@ pub(crate) mod cell_paint {
         // Paint the badge right-aligned inside the title border (before the
         // ╮). Leave one cell gap between badge and ╮: the badge starts at
         // `w - 1 - badge_w`.
-        if w > badge_w + 2 {
+        if palette.show_mode_badge && w > badge_w + 2 {
             let badge_start = w - 1 - badge_w;
             for (i, ch) in badge.chars().enumerate() {
                 surface.put_char(x0 + badge_start + i as u16, y0, ch, style(accent_fg, bg));
@@ -2460,18 +2472,19 @@ impl crate::primitive::Primitive for Palette {
         let bottom = if cells { 1.0 } else { BOTTOM_INSET };
         let height = title_h + query_h + rows as f32 * item_h + create_h + bottom;
 
-        // Title row: the `" {title} "` overlay, the `N/M` count and the
-        // three-column `[L]`/`[I]` mode badge, with a column of clearance
-        // either side of the badge.
+        // Title row: the `" {title} "` overlay, the `N/M` count and, when
+        // shown, the three-column `[L]`/`[I]` mode badge with a column of
+        // clearance either side of it.
         let count_w = if self.total_count > 0 {
             crate::text_util::display_width(&format!("  {}/{}", self.items.len(), self.total_count))
                 as f32
         } else {
             0.0
         };
+        let badge_w = if self.show_mode_badge { 5.0 } else { 0.0 };
         let title_w = (crate::text_util::display_width(&self.title) as f32 + 2.0) * gap
             + count_w * gap
-            + 5.0 * gap;
+            + badge_w * gap;
         // Query row: the `"> "` prompt plus the query text.
         let query_w = if self.show_query {
             (2 + crate::text_util::display_width(&self.query)) as f32 * gap
@@ -3336,6 +3349,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: PaletteMode::List,
+            show_mode_badge: true,
         };
         let json = serde_json::to_string(&palette).unwrap();
         let back: Palette = serde_json::from_str(&json).unwrap();
@@ -3401,6 +3415,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: PaletteMode::List,
+            show_mode_badge: true,
         }
     }
 
@@ -3798,6 +3813,7 @@ mod tests {
                 total_count: 3,
                 preview: None,
                 mode: PaletteMode::List,
+                show_mode_badge: true,
             }
         }
 
@@ -4130,6 +4146,29 @@ mod tests {
             assert_eq!(cell_char(&buf2, 16, 0), '[', "input badge '[' at col 16");
             assert_eq!(cell_char(&buf2, 17, 0), 'I', "input badge 'I' at col 17");
             assert_eq!(cell_char(&buf2, 18, 0), ']', "input badge ']' at col 18");
+        }
+
+        /// `show_mode_badge: false` leaves the title row's right end to
+        /// the border, and the natural width shrinks by the badge.
+        #[test]
+        fn a_hidden_mode_badge_is_not_painted() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 8));
+            let mut p = make_palette();
+            p.show_mode_badge = false;
+            paint(&mut buf, RRect::new(0, 0, 20, 8), &p, &Theme::default());
+            let title: String = (0..20).map(|x| cell_char(&buf, x, 0)).collect();
+            assert!(!title.contains("[L]"), "{title}");
+            assert_eq!(cell_char(&buf, 17, 0), '─');
+
+            use crate::primitive::{LayoutCtx, Primitive, Size};
+            let ctx = LayoutCtx::new(1.0, 1.0, false);
+            let avail = Size::new(200.0, 50.0);
+            let mut shown = make_palette();
+            shown.title = "A long palette title".into();
+            let mut hidden = shown.clone();
+            hidden.show_mode_badge = false;
+            let w = |p: &Palette| Primitive::measure(p, &ctx, avail).width.unwrap();
+            assert!(w(&hidden) < w(&shown));
         }
 
         /// `Input` mode paints no `├──┤` separator at row 2, and still

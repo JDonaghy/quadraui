@@ -5754,6 +5754,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         // Reads the cell metrics off the backend rather than assuming
@@ -7129,6 +7130,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: Default::default(),
+            show_mode_badge: true,
         };
         let diff = chrome_font_diff_pixel_count(
             200,

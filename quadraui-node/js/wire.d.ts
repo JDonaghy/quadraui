@@ -725,6 +725,7 @@ export interface FindReplacePanel {
   cursor?: number; // Cursor position within the focused field (char offset).
   focus?: number; // Which field has focus: 0 = find, 1 = replace.
   group_bounds: Rect; // Bounding rect of the active editor group, in the surface's own units.
+  hidden_toggles?: FindReplaceToggle[]; // Toggles this panel does not offer — say regex and preserve-case for a host whose search engine has neither.
   hit_regions?: [FrHitRegion, FindReplaceClickTarget][]; // Hit regions for click handling, in char-cell units relative to the panel content corner (inside borders).
   id?: WidgetId; // This overlay's id — the one its `FindReplaceEvent`s are reported under.
   in_selection?: boolean; // Find in selection mode.
@@ -1336,6 +1337,7 @@ export interface Palette {
   query_cursor?: number; // Cursor byte offset in `query`.
   scroll_offset?: number; // How many rows have been scrolled past.
   selected_idx: number; // Index into `items` of the currently highlighted row.
+  show_mode_badge?: boolean; // Paint the `[L]`/`[I]` mode badge at the right of the title row.
   show_query?: boolean; // When `false`, the query input row and separator are hidden — producing a popup-style list (tab switcher, branch picker).
   title: string; // Header text shown above the query input, e.g.
   total_count?: number; // Total number of items in the underlying source (before filtering).

@@ -12,18 +12,16 @@ Rust), which is how the counter's `q` works while a button has focus.
 
 Widgets declare their stops themselves (`Interactive::focus()` in Rust,
 returning none, one stop, or one per child), so a screen gets a sensible
-Tab order with no extra code. The focused widget paints a focus ring.
+Tab order with no extra code. Plain text is not a stop: a `TextDisplay`
+takes focus only when it shows a scrollbar (`show_scrollbar`), so the
+keyboard can scroll it.
 
-Two things you will notice in the terminal today, both open issues rather
-than intended behaviour:
-
-- A `TextDisplay` is a Tab stop. In the counter, Tab therefore visits
-  the `Count:` label as well as the buttons, and while the label has
-  focus its focus ring covers the text.
-- In Python and Node, the focus ring outlines the button's whole share
-  of the layout (often several rows tall, since `Column` and `Row` split
-  space equally) and is drawn over the button's left bracket, so `[ + ]`
-  shows as `│ + ]`. The Rust counter draws no ring.
+The focused widget shows a focus ring, the same in Rust, Python and Node.
+In the terminal the ring never covers what the widget draws: a focused
+button keeps `[ + ]` intact, its brackets turn the accent colour and the
+label is underlined at its own width, not the width of its layout cell. A
+taller widget, such as a list, gets a box drawn in the blank cells around
+its text. A form shows its focused field with its own highlight instead.
 
 ## Setting focus
 

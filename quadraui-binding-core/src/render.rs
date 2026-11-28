@@ -346,32 +346,12 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
 }
 
-/// The per-call paint state a generic leaf paints with: whether it holds
-/// keyboard focus, as [`quadraui::primitive::PaintState::focus_ring_visible`]. A
-/// widget whose look follows focus (a form's focused-row highlight) reads
-/// it there, so the host's focus shows without the app echoing it onto
-/// the descriptor.
-struct LeafFocus(bool);
-
-impl quadraui::primitive::PaintState for LeafFocus {
-    fn focus_ring_visible(&self) -> bool {
-        self.0
-    }
-}
-
 /// Paints one generic leaf at `area`, unless the platform presents it
 /// itself ([`DynWidget::native_presentation`], a native menu bar), in
 /// which case nothing paints in the window. Returns whether it painted,
 /// so a natively presented leaf records no hit to route window input to.
 fn paint_widget_leaf(backend: &mut dyn Backend, area: Rect, widget: &dyn DynWidget) -> bool {
-    if widget.native_presentation(backend, area) {
-        return false;
-    }
-    let focused = widget
-        .id()
-        .is_some_and(|id| backend.focus_tree().focused_id() == Some(id));
-    backend.draw_dyn(area, widget, &LeafFocus(focused));
-    true
+    quadraui::frame::draw_widget(backend, area, widget)
 }
 
 /// How many lines of `td` fit in `rect` at a zero scroll offset — mirrors
@@ -429,6 +409,7 @@ fn draw_text_display_hit(
         // is right for every other caller (`draw_bands`, an unwindowed
         // layout-tree leaf).
         loaded_rows: None,
+        focusable: !matches!(quadraui::Interactive::focus(td), quadraui::FocusSpec::None),
     }
 }
 

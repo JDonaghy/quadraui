@@ -1634,6 +1634,10 @@ pub struct CellGridPrimitiveLayout {
     pub area: Rect,
     /// The grid-local layout itself.
     pub layout: CellGridLayout,
+    /// One character's advance in the laying-out backend's units — where
+    /// the inline editor's characters fall, for placing its caret under
+    /// the pointer.
+    pub char_width: f32,
 }
 
 impl CellGridPrimitiveLayout {
@@ -1670,7 +1674,11 @@ impl crate::primitive::Primitive for CellGrid {
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
             let layout = paint_cells::layout(self, rect);
-            return CellGridPrimitiveLayout { area: rect, layout };
+            return CellGridPrimitiveLayout {
+                area: rect,
+                layout,
+                char_width: ctx.char_width,
+            };
         }
 
         // No live text measurer reaches `Primitive::layout` on a pixel
@@ -1709,7 +1717,11 @@ impl crate::primitive::Primitive for CellGrid {
             scrollbar_w,
             scrollbar_h,
         );
-        CellGridPrimitiveLayout { area: rect, layout }
+        CellGridPrimitiveLayout {
+            area: rect,
+            layout,
+            char_width: ctx.char_width,
+        }
     }
 
     /// Paints through [`native_surface_paint::paint`] on every pixel
@@ -1780,9 +1792,10 @@ impl crate::primitive::Primitive for CellGrid {
 // onto its own `CellGrid` before painting the next frame, the same way
 // it already applies `CellGridEvent::CellsRequested`.
 //
-// `CellGridState` holds only the one piece of interaction state with
-// no `CellGrid` field of its own: the fixed corner of an in-progress
-// mouse drag, cleared on release.
+// `CellGridState` holds only the interaction state with no `CellGrid`
+// field of its own: the fixed corner of an in-progress mouse drag, and
+// whether a drag-select inside the inline editor is in progress, both
+// cleared on release.
 
 impl WidgetAction for CellGridEvent {
     fn into_ui_event(self, id: WidgetId) -> UiEvent {
@@ -1791,13 +1804,16 @@ impl WidgetAction for CellGridEvent {
 }
 
 /// [`Interactive::State`] for [`CellGrid`] — see this section's module
-/// doc for why it carries only the in-progress drag anchor.
+/// doc for why it carries only the in-progress drags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellGridState {
     /// The selection's fixed corner for an in-progress mouse drag, set on
     /// a press and cleared on release — `None` whenever no drag is
     /// active.
     pub drag_anchor: Option<(usize, usize)>,
+    /// Whether a left press on the inline editor's text is still held,
+    /// so pointer moves extend the edit's text selection.
+    pub edit_drag: bool,
 }
 
 impl CellGrid {
@@ -1858,6 +1874,77 @@ impl CellGrid {
         Handled::Event(CellGridEvent::Navigated {
             cursor,
             selection_anchor,
+            row_scroll,
+            col_scroll,
+        })
+    }
+
+    /// Move the cursor to `cell` (clamped into the sheet), collapse the
+    /// selection, and scroll it into view against `layout` — the
+    /// [`CellGridEvent::Navigated`] a host applies when it moves the cursor
+    /// itself (a find jumping to its next match), the same event the
+    /// grid's own keyboard and mouse navigation report. `layout` is the
+    /// one this frame painted, from
+    /// [`crate::DrawsPrimitives::layout_primitive`]'s
+    /// [`CellGridPrimitiveLayout::layout`]. `None` for an empty sheet.
+    pub fn navigate_to(
+        &self,
+        cell: (usize, usize),
+        layout: &CellGridLayout,
+    ) -> Option<CellGridEvent> {
+        match self.navigated(cell, false, layout) {
+            Handled::Event(event) => Some(event),
+            _ => None,
+        }
+    }
+
+    /// Scroll the body by `d_rows`/`d_cols` without moving the cursor or
+    /// the selection, clamped so the last row and column can still reach
+    /// the viewport — a wheel notch.
+    fn scroll_by(
+        &self,
+        d_rows: isize,
+        d_cols: isize,
+        layout: &CellGridLayout,
+    ) -> Handled<CellGridEvent> {
+        let body_rows = layout.rows.len().saturating_sub(layout.frozen_rows);
+        let body_cols = layout.cols.len().saturating_sub(layout.frozen_cols);
+        // Once the sheet's last row (column) is on screen there is
+        // nothing further to scroll to; until then the viewport's own
+        // row (column) count is the capacity.
+        let at_end = |spans: &[ResolvedSpan], total: usize| {
+            spans.last().is_some_and(|span| span.index + 1 >= total)
+        };
+        let mut max_row = self
+            .row_count
+            .saturating_sub(self.frozen_rows)
+            .saturating_sub(body_rows);
+        if at_end(&layout.rows, self.row_count) {
+            max_row = max_row.min(self.row_scroll);
+        }
+        let mut max_col = self
+            .col_count
+            .saturating_sub(self.frozen_cols)
+            .saturating_sub(body_cols);
+        if at_end(&layout.cols, self.col_count) {
+            max_col = max_col.min(self.col_scroll);
+        }
+        let row_scroll = crate::primitives::scrollbar::scroll_by_clamped(
+            self.row_scroll.min(max_row),
+            d_rows,
+            max_row,
+        );
+        let col_scroll = crate::primitives::scrollbar::scroll_by_clamped(
+            self.col_scroll.min(max_col),
+            d_cols,
+            max_col,
+        );
+        if (row_scroll, col_scroll) == (self.row_scroll, self.col_scroll) {
+            return Handled::Consumed;
+        }
+        Handled::Event(CellGridEvent::Navigated {
+            cursor: self.cursor,
+            selection_anchor: self.selection_anchor,
             row_scroll,
             col_scroll,
         })
@@ -2067,6 +2154,8 @@ impl CellGrid {
         &self,
         edit: &CellEditState,
         event: &RoutedEvent,
+        offset_at: &dyn Fn(Point) -> Option<usize>,
+        state: &mut CellGridState,
         cx: &mut EventCx,
     ) -> Handled<CellGridEvent> {
         use crate::behaviour::text_edit::{
@@ -2085,18 +2174,21 @@ impl CellGrid {
         let mut flat = FlatEditState {
             cursor: Some(cursor),
             anchor: edit.selection_anchor,
+            dragging: state.edit_drag,
             ..Default::default()
         };
         let before = flat.clone();
-        let text = match handle_flat_edit_event(
+        let outcome = handle_flat_edit_event(
             &edit.text,
             Some(edit.cursor),
             edit.selection_anchor,
             &mut flat,
             event,
-            &|_| None,
+            offset_at,
             cx,
-        ) {
+        );
+        state.edit_drag = flat.dragging;
+        let text = match outcome {
             FlatEditOutcome::Changed(text) => text,
             FlatEditOutcome::Consumed if flat != before => edit.text.clone(),
             FlatEditOutcome::Consumed => return Handled::Consumed,
@@ -2129,6 +2221,7 @@ impl CellGrid {
         key: &Key,
         modifiers: &Modifiers,
         layout: &CellGridLayout,
+        state: &mut CellGridState,
         cx: &mut EventCx,
     ) -> Handled<CellGridEvent> {
         let (row, col) = self.cursor;
@@ -2171,6 +2264,8 @@ impl CellGrid {
                     modifiers: *modifiers,
                     repeat: false,
                 }),
+                &|_| None,
+                state,
                 cx,
             ) {
                 // A key the editor does not interpret (F-keys, a bare
@@ -2181,6 +2276,29 @@ impl CellGrid {
                 other => other,
             },
         }
+    }
+
+    /// The byte offset into `edit`'s text under widget-local point `p`:
+    /// the editor paints the text from the cursor column's left edge, one
+    /// character per [`CellGridPrimitiveLayout::char_width`], so the
+    /// nearest character boundary to `p.x` (clamped to the text) is the
+    /// caret position. `None` when the cursor column is scrolled out of
+    /// view.
+    fn edit_offset_at(
+        &self,
+        edit: &CellEditState,
+        layout: &CellGridPrimitiveLayout,
+        p: Point,
+    ) -> Option<usize> {
+        let col = layout
+            .layout
+            .cols
+            .iter()
+            .find(|c| c.index == self.cursor.1)?;
+        let chars = ((p.x - col.start) / layout.char_width.max(f32::EPSILON))
+            .floor()
+            .max(0.0) as usize;
+        Some(crate::behaviour::text_edit::col_to_byte(&edit.text, chars))
     }
 
     /// `PointerKind::Down(MouseButton::Left)` with no active edit —
@@ -2293,15 +2411,31 @@ impl Interactive for CellGrid {
             // (see `CellEditState`'s own doc) — a mouse event that moved
             // the cursor out from under it without first committing or
             // cancelling would leave the painted editor and the edit
-            // buffer describing different cells. So while editing, only
-            // keyboard input (whose semantics this impl fully owns —
-            // commit, cancel, insert, delete) is routed anywhere; mouse
-            // input is inert.
+            // buffer describing different cells. So while editing, the
+            // pointer only reaches the editor itself: a press on the
+            // cursor cell places the caret, and a drag from there selects
+            // text. A press anywhere else is inert.
+            let offset_at = |p: Point| self.edit_offset_at(edit, layout, p);
             return match event {
                 RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
-                    self.handle_key_editing(edit, key, modifiers, &layout.layout, cx)
+                    self.handle_key_editing(edit, key, modifiers, &layout.layout, state, cx)
                 }
-                RoutedEvent::Text(text) if !text.is_empty() => self.edit_event(edit, event, cx),
+                RoutedEvent::Text(text) if !text.is_empty() => {
+                    self.edit_event(edit, event, &|_| None, state, cx)
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(MouseButton::Left),
+                    local,
+                    ..
+                } if layout.layout.hit_test(local.x, local.y)
+                    == CellGridHit::Cell(self.cursor.0, self.cursor.1) =>
+                {
+                    self.edit_event(edit, event, &offset_at, state, cx)
+                }
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Move | PointerKind::Up(MouseButton::Left),
+                    ..
+                } if state.edit_drag => self.edit_event(edit, event, &offset_at, state, cx),
                 // A drag started before this edit began (press → type →
                 // release, with no commit/cancel in between) still owns
                 // the capture and `state.drag_anchor` — releasing both
@@ -2355,6 +2489,18 @@ impl Interactive for CellGrid {
             // fresh edit seeded with the whole string, the `RoutedEvent`
             // counterpart of a plain `Key::Char` press above.
             RoutedEvent::Text(text) if !text.is_empty() => self.begin_typing(text.clone()),
+
+            // A wheel notch scrolls the body a row (a horizontal one a
+            // column) per notch, leaving the cursor and selection where
+            // they are.
+            RoutedEvent::Wheel { dx, dy, .. } => {
+                let d_rows = crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0);
+                let d_cols = crate::primitives::scrollbar::wheel_row_delta(*dx, 1.0);
+                if (d_rows, d_cols) == (0, 0) {
+                    return Handled::Ignored;
+                }
+                self.scroll_by(d_rows, d_cols, &layout.layout)
+            }
 
             _ => Handled::Ignored,
         }
@@ -3348,6 +3494,7 @@ mod interactive_tests {
         let layout = layout_for(&g);
         let mut state = CellGridState {
             drag_anchor: Some((0, 0)),
+            ..Default::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(g.id, &mut host);
@@ -3638,6 +3785,7 @@ mod interactive_tests {
         // for the idle path.
         let mut state = CellGridState {
             drag_anchor: Some((1, 1)),
+            ..Default::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(g.id, &mut host);
@@ -3659,6 +3807,150 @@ mod interactive_tests {
         // The edit itself is untouched — only the stale drag bookkeeping
         // was cleaned up.
         assert_eq!(g.editing.as_ref().map(|e| e.text.as_str()), Some("hi"));
+    }
+
+    // ── Host-driven navigation and the wheel ─────────────────────────
+
+    /// `navigate_to` moves the cursor, collapses the selection and scrolls
+    /// the target into view, the same `Navigated` the grid's own
+    /// navigation reports.
+    #[test]
+    fn navigate_to_scrolls_a_far_cell_into_view() {
+        let mut g = grid(100, 5);
+        g.selection_anchor = Some((0, 0));
+        let layout = layout_for(&g);
+        let Some(CellGridEvent::Navigated {
+            cursor,
+            selection_anchor,
+            row_scroll,
+            ..
+        }) = g.navigate_to((60, 2), &layout.layout)
+        else {
+            panic!("navigate_to reports Navigated");
+        };
+        assert_eq!(cursor, (60, 2));
+        assert_eq!(selection_anchor, None);
+        assert!(row_scroll > 0 && row_scroll <= 60, "{row_scroll}");
+        assert_eq!(grid(0, 0).navigate_to((1, 1), &layout.layout), None);
+    }
+
+    fn wheel(dx: f32, dy: f32) -> RoutedEvent {
+        RoutedEvent::Wheel {
+            dx,
+            dy,
+            local: Point::new(10.0, 10.0),
+            mods: Modifiers::default(),
+        }
+    }
+
+    /// A notch down scrolls one row, a horizontal notch one column; the
+    /// cursor and selection stay put.
+    #[test]
+    fn the_wheel_scrolls_without_moving_the_cursor() {
+        let mut g = grid(100, 100);
+        g.cursor = (3, 4);
+        let layout = layout_for(&g);
+        let mut state = CellGridState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        assert_eq!(
+            g.handle(&mut state, &wheel(0.0, -1.0), &layout, &mut cx),
+            Handled::Event(CellGridEvent::Navigated {
+                cursor: (3, 4),
+                selection_anchor: None,
+                row_scroll: 1,
+                col_scroll: 0,
+            })
+        );
+        assert_eq!(
+            g.handle(&mut state, &wheel(-1.0, 0.0), &layout, &mut cx),
+            Handled::Event(CellGridEvent::Navigated {
+                cursor: (3, 4),
+                selection_anchor: None,
+                row_scroll: 0,
+                col_scroll: 1,
+            })
+        );
+        // Already at the top: nothing to scroll, but the notch is the
+        // grid's.
+        assert_eq!(
+            g.handle(&mut state, &wheel(0.0, 1.0), &layout, &mut cx),
+            Handled::Consumed
+        );
+    }
+
+    /// Once the sheet's last row is on screen the wheel scrolls no further.
+    #[test]
+    fn the_wheel_stops_at_the_last_row() {
+        let g = grid(3, 3);
+        let layout = layout_for(&g);
+        let mut state = CellGridState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        assert_eq!(
+            g.handle(&mut state, &wheel(0.0, -1.0), &layout, &mut cx),
+            Handled::Consumed
+        );
+    }
+
+    /// While editing, a press on the cursor cell places the caret under
+    /// the pointer and a drag selects; the drag releases its capture.
+    #[test]
+    fn a_press_and_drag_on_the_edited_cell_place_the_caret_and_select() {
+        let mut g = grid(5, 5);
+        g.default_col_width = 80.0;
+        g.editing = Some(CellEditState {
+            text: "hello".to_string(),
+            cursor: 5,
+            selection_anchor: None,
+            placeholder: None,
+        });
+        let layout = layout_for(&g);
+        // `layout_for` lays out 8-unit characters: x = 8.0 is on the `e`.
+        let pointer = |kind, x: f32| RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point::new(x, 0.5),
+            mods: Modifiers::default(),
+        };
+        let mut state = CellGridState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+
+        let down = g.handle(
+            &mut state,
+            &pointer(PointerKind::Down(MouseButton::Left), 8.0),
+            &layout,
+            &mut cx,
+        );
+        let Handled::Event(CellGridEvent::CellEditChanged { edit, .. }) = down else {
+            panic!("the press moves the caret: {down:?}");
+        };
+        assert_eq!((edit.cursor, edit.selection_anchor), (1, None));
+        assert!(state.edit_drag);
+        g.editing = Some(edit);
+
+        let moved = g.handle(
+            &mut state,
+            &pointer(PointerKind::Move, 24.0),
+            &layout,
+            &mut cx,
+        );
+        let Handled::Event(CellGridEvent::CellEditChanged { edit, .. }) = moved else {
+            panic!("the drag extends the selection: {moved:?}");
+        };
+        assert_eq!((edit.cursor, edit.selection_anchor), (3, Some(1)));
+        g.editing = Some(edit);
+
+        let _ = g.handle(
+            &mut state,
+            &pointer(PointerKind::Up(MouseButton::Left), 24.0),
+            &layout,
+            &mut cx,
+        );
+        assert!(!state.edit_drag);
+        drop(cx);
+        assert_eq!(host.released, 1);
     }
 
     // ── Focus ────────────────────────────────────────────────────────

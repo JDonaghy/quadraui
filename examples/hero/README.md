@@ -155,11 +155,10 @@ binding-only ones.
 6. **Python and Node require `App(width, height)` even for a live run.**
    The size only matters headless. It should default for
    `run_tui`/`run_native`.
-7. **The TUI focus ring covers the focused button's label** in Python and
-   Node: `[ + ]` renders as `│ + ]`. The Rust `AppLogic` version shows no
-   focus ring at all. So a cross-language parity test that compares frames
-   cell for cell (#3077) would fail on focus styling before it gets to
-   anything else.
+7. **Focus renders the same in all three languages.** A focused `[ + ]`
+   keeps both brackets: they turn the accent colour and the ring
+   underlines the button at its natural width. The parity check (#3077)
+   compares focus states cell for cell.
 8. **App-layer children always take equal shares of space.** The wire
    accepts per-child `"size"`/`"min"`/`"max"`, but the `Column`/`Row` node
    constructors don't expose them. The label therefore takes half the

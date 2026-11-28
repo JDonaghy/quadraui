@@ -228,6 +228,7 @@ impl DualModePalette {
             create_label: None,
             preview: None,
             mode: self.mode,
+            show_mode_badge: true,
         }
     }
 

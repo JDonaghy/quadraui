@@ -5710,6 +5710,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         }
     }
 

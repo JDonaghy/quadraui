@@ -714,6 +714,7 @@ class FindReplacePanel(TypedDict):
     cursor: NotRequired[int]  # Cursor position within the focused field (char offset).
     focus: NotRequired[int]  # Which field has focus: 0 = find, 1 = replace.
     group_bounds: Rect  # Bounding rect of the active editor group, in the surface's own units.
+    hidden_toggles: NotRequired[List[FindReplaceToggle]]  # Toggles this panel does not offer — say regex and preserve-case for a host whose search engine has neither.
     hit_regions: NotRequired[List[Tuple[FrHitRegion, FindReplaceClickTarget]]]  # Hit regions for click handling, in char-cell units relative to the panel content corner (inside borders).
     id: NotRequired[WidgetId]  # This overlay's id — the one its `FindReplaceEvent`s are reported under.
     in_selection: NotRequired[bool]  # Find in selection mode.
@@ -1361,6 +1362,7 @@ class Palette(TypedDict):
     query_cursor: NotRequired[int]  # Cursor byte offset in `query`.
     scroll_offset: NotRequired[int]  # How many rows have been scrolled past.
     selected_idx: int  # Index into `items` of the currently highlighted row.
+    show_mode_badge: NotRequired[bool]  # Paint the `[L]`/`[I]` mode badge at the right of the title row.
     show_query: NotRequired[bool]  # When `false`, the query input row and separator are hidden — producing a popup-style list (tab switcher, branch picker).
     title: str  # Header text shown above the query input, e.g.
     total_count: NotRequired[int]  # Total number of items in the underlying source (before filtering).

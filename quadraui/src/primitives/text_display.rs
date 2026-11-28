@@ -91,6 +91,9 @@ pub struct TextDisplay {
     /// gutter width (1 cell on TUI, ~12px on GTK). The scrollbar's
     /// thumb + track hit regions are included in the layout's
     /// `hit_regions` for drag interaction.
+    ///
+    /// It also makes the pane a Tab stop, so the keyboard can scroll it;
+    /// without a scrollbar a `TextDisplay` takes no keyboard focus.
     #[serde(default)]
     pub show_scrollbar: bool,
 }
@@ -1709,15 +1712,17 @@ impl crate::interactive::Interactive for TextDisplay {
     type State = TextDisplayState;
     type Action = TextDisplayEvent;
 
-    /// One focus stop as a whole: a read-only log pane takes focus so
-    /// the keyboard can scroll it, but has no focusable sub-parts.
-    /// [`crate::interactive::FocusSpec::None`] for an empty buffer —
-    /// there is nothing to scroll.
+    /// A plain run of text (a label, a heading, a counter's readout) is
+    /// not a Tab stop: there is nothing for the keyboard to do on it. A
+    /// pane that shows a scrollbar ([`TextDisplay::show_scrollbar`]) is
+    /// one focus stop as a whole, so the keyboard can scroll it — the
+    /// scrollbar is the opt-in. An empty buffer is never a stop: there is
+    /// nothing to scroll.
     fn focus(&self) -> crate::interactive::FocusSpec {
-        if self.lines.is_empty() {
-            crate::interactive::FocusSpec::None
-        } else {
+        if self.show_scrollbar && !self.lines.is_empty() {
             crate::interactive::FocusSpec::Stop
+        } else {
+            crate::interactive::FocusSpec::None
         }
     }
 
@@ -1980,8 +1985,16 @@ mod interactive_tests {
 
     #[test]
     fn an_empty_display_is_not_a_focus_stop() {
-        assert_eq!(Interactive::focus(&display(0, false)), FocusSpec::None);
-        assert_eq!(Interactive::focus(&display(3, false)), FocusSpec::Stop);
+        assert_eq!(Interactive::focus(&display(0, true)), FocusSpec::None);
+        assert_eq!(Interactive::focus(&display(3, true)), FocusSpec::Stop);
+    }
+
+    /// Plain text is not a Tab stop; showing a scrollbar opts the pane in,
+    /// so the keyboard can scroll it.
+    #[test]
+    fn only_a_display_with_a_scrollbar_is_a_focus_stop() {
+        assert_eq!(Interactive::focus(&display(3, false)), FocusSpec::None);
+        assert_eq!(Interactive::focus(&display(3, true)), FocusSpec::Stop);
     }
 
     #[test]

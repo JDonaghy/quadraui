@@ -870,11 +870,21 @@ def StatusBar(
     return Node("status_bar", id, callbacks, {}, build)
 
 
-def TextDisplay(lines: list["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
-    """A `TextDisplay` leaf -- plain read-only text."""
+def TextDisplay(
+    lines: list["TextDisplayLineDescriptor"],
+    *,
+    id: Optional[str] = None,
+    show_scrollbar: bool = False,
+) -> Node:
+    """A `TextDisplay` leaf -- plain read-only text. It is not a Tab stop;
+    `show_scrollbar=True` paints a scrollbar and makes the pane a Tab stop
+    the keyboard can scroll, as in Rust."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": node_id, "text_display": {"id": node_id, "lines": lines}}
+        payload: Dict[str, Any] = {"id": node_id, "lines": lines}
+        if show_scrollbar:
+            payload["show_scrollbar"] = True
+        return {"id": node_id, "text_display": payload}
 
     return Node("text_display", id, {}, {}, build)
 

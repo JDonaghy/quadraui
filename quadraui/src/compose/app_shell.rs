@@ -1404,6 +1404,7 @@ fn record_children(layout: &ShellViewLayout) {
             .collect(),
         hover_targets: None,
         paint_state: Default::default(),
+        focus_ring: Interactive::focus_ring(bar, &layout.activity).resolve(layout.activity.area),
     });
     if let Some((header, header_layout)) = &layout.sidebar_header {
         crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
@@ -1416,6 +1417,7 @@ fn record_children(layout: &ShellViewLayout) {
                 .collect(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: Interactive::focus_ring(header, header_layout).resolve(header_layout.area),
         });
     }
 }

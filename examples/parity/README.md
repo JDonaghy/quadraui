@@ -12,7 +12,9 @@ written once in each language:
 
 The app is a `New` text field, a list of todos, `Add` and `Clear` buttons and
 a status bar. Typing edits the draft, and Enter or `Add` appends it.
-Clicking a row selects it, and `Clear` empties the list. Every update also
+Clicking a row selects it, and `Clear` empties the list. The script also
+covers keyboard focus: a clicked button, the focused list and Tab back into
+the form each paint their focus the same way in all three languages. Every update also
 appends a line such as `edit Bu`, `add Tea` or `select 1` to the app's `log`,
 the same vocabulary in every language.
 
@@ -41,7 +43,7 @@ Running each app live: `cargo run -p quadraui-parity --features tui --bin todo`,
 
 ## Known divergences
 
-Python and Node match exactly at every step. Rust does not yet, in three
+Python and Node match exactly at every step. Rust does not yet, in two
 places. [`known_divergences.json`](known_divergences.json) records each one
 with the steps and the cell region where it shows. The check allows a
 difference only there. If a listed step stops differing, the check fails until
@@ -49,7 +51,6 @@ that step is removed from the file, so a fix cannot go unnoticed.
 
 | Id | What differs |
 |---|---|
-| `form-focus-ring` | A focused `Form` gets the runner's focus ring around its whole rect in Rust. The ring covers the field, so typed text is hidden. Python and Node draw no ring on a form. |
 | `button-pressed-after-release` | After a click, Rust paints the button with the pressed colour; Python and Node paint the hover colour. |
 | `controlled-list-ignores-arrow-keys` | Down on a focused list whose selection the app pins moves the selection and fires `SelectionChanged` in Rust. Python and Node do nothing. |
 
@@ -74,7 +75,9 @@ that step is removed from the file, so a fix cannot go unnoticed.
   the Rust tracer maps those to black too. A default-vs-black difference
   would not show.
 - Only glyph, fg and bg are compared. Bold, italic and underline are not,
-  because the bindings do not expose them.
+  because the bindings do not expose them. A focused button's ring is an
+  underline, so the check sees its focus through the accent-coloured
+  brackets it also paints.
 - Two clicks within 1.5 cells and 400ms fold into a double-click, measured on
   the wall clock. Python and Node cannot turn folding off, so `script.json`
   never puts two clicks that close in a row.

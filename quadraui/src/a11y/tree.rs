@@ -3770,6 +3770,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: PaletteMode::default(),
+            show_mode_badge: true,
         };
         let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),

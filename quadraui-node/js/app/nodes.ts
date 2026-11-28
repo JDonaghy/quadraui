@@ -989,14 +989,22 @@ exports.StatusBar = StatusBar;
 
 export interface TextDisplayOptions {
   id?: string;
+  /** Paint a scrollbar and make the pane a Tab stop the keyboard can scroll. */
+  showScrollbar?: boolean;
 }
 
-/** A `TextDisplay` leaf -- plain read-only text. */
+/**
+ * A `TextDisplay` leaf -- plain read-only text. It is not a Tab stop;
+ * `showScrollbar: true` paints a scrollbar and makes the pane a Tab stop
+ * the keyboard can scroll, as in Rust.
+ */
 function TextDisplay(lines: TextDisplayLineDescriptor[], options: TextDisplayOptions = {}): Node {
-  const { id = null } = options;
+  const { id = null, showScrollbar = false } = options;
 
   function build(nodeId: string, _children: Record<string, unknown>): Record<string, unknown> {
-    return { id: nodeId, text_display: { id: nodeId, lines } };
+    const payload: Record<string, unknown> = { id: nodeId, lines };
+    if (showScrollbar) payload.show_scrollbar = true;
+    return { id: nodeId, text_display: payload };
   }
 
   return { kind: "text_display", id, callbacks: {}, children: {}, build };

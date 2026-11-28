@@ -3070,6 +3070,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         }
     }
 
