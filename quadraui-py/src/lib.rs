@@ -10379,15 +10379,13 @@ def handle(event):
         });
     }
 
-    /// A Ctrl-click on a list item is a multi-select gesture
-    /// `ListViewEvent::SelectionChanged` can't represent (it carries no
-    /// modifiers), so `semantic_event_for_hit` leaves it unmapped: the raw
-    /// `MouseDown` reaches Python with its own `modifiers` and its `"hit"`
-    /// dict still attached, letting the handler compute the selection
-    /// itself. Click-to-focus still runs ahead of it, the same as a plain
-    /// click.
+    /// A Ctrl-click on a list item is a multi-select gesture: the shared
+    /// selection core turns it into `ListViewEvent::SelectionSet` with the
+    /// clicked item added to the selection, so Python receives the
+    /// selection rather than a raw `MouseDown` to work it out from.
+    /// Click-to-focus still runs ahead of it, the same as a plain click.
     #[test]
-    fn ctrl_click_over_a_list_item_leaves_the_raw_mouse_down_and_hit_attached() {
+    fn ctrl_click_over_a_list_item_reports_the_grown_selection() {
         Python::attach(|py| {
             let locals = PyDict::new(py);
             py.run(
@@ -10460,53 +10458,33 @@ def handle(event):
                 "the click must still emit a FocusChanged ahead of the raw MouseDown"
             );
 
-            let click_event_dict = received_list
-                .get_item(1)
-                .expect("second item")
+            let event = received_list.get_item(1).expect("second item");
+            let list: (String, Py<PyAny>) = event
                 .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let mouse_down = click_event_dict
-                .get_item("MouseDown")
+                .expect("event payload must be a dict")
+                .get_item("List")
                 .expect("dict lookup")
-                .expect("a Ctrl-click must dispatch the raw MouseDown, not a List key")
-                .cast_into::<PyDict>()
-                .expect("MouseDown payload must be a dict");
-            let widget: String = mouse_down
-                .get_item("widget")
-                .expect("dict lookup")
-                .expect("widget key must be present")
+                .unwrap_or_else(|| {
+                    panic!("a Ctrl-click must report a List event, got {received_list:?}")
+                })
                 .extract()
-                .expect("widget must be the clicked list's own id");
-            assert_eq!(widget, "list:main");
-            let modifiers = mouse_down
-                .get_item("modifiers")
+                .expect("List payload must be (id, event)");
+            assert_eq!(list.0, "list:main");
+            let inner = list
+                .1
+                .bind(py)
+                .cast::<PyDict>()
+                .expect("ListViewEvent must be a dict")
+                .clone();
+            let indices: Vec<usize> = inner
+                .get_item("SelectionSet")
                 .expect("dict lookup")
-                .expect("modifiers key must be present")
-                .cast_into::<PyDict>()
-                .expect("modifiers payload must be a dict");
-            let ctrl: bool = modifiers
-                .get_item("ctrl")
-                .expect("dict lookup")
-                .expect("ctrl key must be present")
+                .unwrap_or_else(|| panic!("a Ctrl-click must report SelectionSet, got {inner:?}"))
+                .get_item("indices")
+                .expect("indices key must be present")
                 .extract()
-                .expect("ctrl must be a bool");
-            assert!(
-                ctrl,
-                "the Ctrl modifier must survive onto the raw MouseDown"
-            );
-            let hit = click_event_dict
-                .get_item("hit")
-                .expect("dict lookup")
-                .expect("the hit dict must still be attached since no semantic event replaced it")
-                .cast_into::<PyDict>()
-                .expect("hit payload must be a dict");
-            let index: usize = hit
-                .get_item("index")
-                .expect("dict lookup")
-                .expect("index key must be present")
-                .extract()
-                .expect("index must be an int");
-            assert_eq!(index, 1, "the clicked item's own index must be reported");
+                .expect("indices must be a list of ints");
+            assert_eq!(indices, vec![0, 1], "Ctrl adds Beta to the selected Alpha");
         });
     }
 
