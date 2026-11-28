@@ -936,10 +936,10 @@ pub struct LayoutScroll {
     pub axis: ScrollAxis,
     /// Controlled scroll offset from the wire — `None` means uncontrolled
     /// (the engine owns it, resolved in [`crate::host::resolve_layout_node`]
-    /// against [`crate::widget_state::WidgetState`] the same way
+    /// against [`quadraui::WidgetStateStore`] the same way
     /// [`crate::host::resolve_split_ratio`] resolves a `Split`'s divider).
     /// Unlike `Split::ratio` (a bare `f32` with no "unset" sentinel), this
-    /// field is already `Option<f32>`, so `WidgetState::resolve`'s own
+    /// field is already `Option<f32>`, so `WidgetStateStore::resolve`'s own
     /// controlled/uncontrolled policy applies directly — no baseline latch
     /// needed.
     pub offset: Option<f32>,
@@ -992,10 +992,8 @@ pub enum LeafDescriptor {
     DataTable(DataTable),
     TabBar(TabBar),
     /// Any additive primitive kind registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table, or a `"scripted_widget"` leaf
-    /// spliced in from `crate::scripted::register_scripted_widget`'s own
-    /// registry (see that function's doc). Unlike the five variants above,
-    /// neither ever adds a new `LeafDescriptor` variant — both route
+    /// `EXTRA_PRIMITIVES` decode table. Unlike the five variants above, it
+    /// never adds a new `LeafDescriptor` variant — every such kind routes
     /// through this one.
     Extra(Rc<dyn ExtraPaint>),
     /// A kind registered in [`crate::extra_paint::WIDGET_KINDS`], decoded
@@ -1025,23 +1023,8 @@ pub enum LeafDescriptor {
 
 /// The descriptor keys a layout tree leaf dict may carry — the five names
 /// [`crate::render::RenderFrame`]'s own flat-slot `Deserialize` impl uses
-/// for its slots, each mapping to its own [`LeafDescriptor`] variant, plus
-/// `"scripted_widget"` (see [`LeafDescriptor::Extra`]'s own doc), which
-/// maps to [`LeafDescriptor::Extra`] like every
-/// [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] kind does — unlike those,
-/// though, `"scripted_widget"` can't be decoded through that same
-/// `extra_primitives!` table (no `Deserialize` impl exists, or ever will,
-/// for a live script callback object), so it is listed here instead,
-/// handled by its own arm in `crate::wire::leaf::layout_leaf_from_value`'s
-/// per-key loop.
-pub const LEAF_KIND_KEYS: [&str; 6] = [
-    "text_display",
-    "list",
-    "tree",
-    "data_table",
-    "tab_bar",
-    "scripted_widget",
-];
+/// for its slots, each mapping to its own [`LeafDescriptor`] variant.
+pub const LEAF_KIND_KEYS: [&str; 5] = ["text_display", "list", "tree", "data_table", "tab_bar"];
 
 /// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
 /// raises on the first repeated id, naming both the offending `kind` (the

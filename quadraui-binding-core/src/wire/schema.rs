@@ -146,7 +146,7 @@ impl JsonSchema for RenderFrameDict {
             json_schema!({"type": "integer", "minimum": 0}).to_value(),
         );
         for (kind, schema) in leaf_kind_schemas(generator) {
-            if kind == "scripted_widget" {
+            if kind == crate::scripted::SCRIPTED_WIDGET_KIND {
                 continue;
             }
             props.insert(
@@ -221,9 +221,6 @@ pub fn leaf_kind_schemas(generator: &mut SchemaGenerator) -> Vec<(&'static str, 
                 leaf_body_with_extras::<quadraui::DataTable>(generator, "DataTableLeaf", true)
             }
             "tab_bar" => generator.subschema_for::<quadraui::TabBar>(),
-            "scripted_widget" => {
-                generator.subschema_for::<crate::scripted::ScriptedWidgetDescriptor>()
-            }
             other => unreachable!("LEAF_KIND_KEYS entry {other:?} has no schema arm"),
         };
         out.push((kind, schema));
@@ -259,6 +256,7 @@ fn root<T: JsonSchema>(generator: &mut SchemaGenerator, roots: &mut Map<String, 
 /// Builds the whole wire schema document. Deterministic: two calls in one
 /// process with the same runtime registrations return equal values.
 pub fn wire_schema() -> Value {
+    crate::scripted::ensure_scripted_widget_kind();
     let mut generator = SchemaSettings::draft2020_12().into_generator();
     let mut kinds = Map::new();
     for (kind, schema) in leaf_kind_schemas(&mut generator) {

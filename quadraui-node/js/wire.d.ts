@@ -829,7 +829,7 @@ export type HeaderHit = ("Chevron" | "TitleArea") | _HeaderHitDict;
 export type HelpOverlayAction = "Opened" | "Closed";
 
 /** The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself. */
-export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 /** `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first. */
 export type Icon = _Icon1 | _Icon2;
@@ -980,7 +980,7 @@ export interface LayoutLeafNode {
   pipeline_view?: PipelineView;
   progress?: ProgressBar;
   radio_group?: RadioGroup;
-  scripted_widget?: ScriptedWidgetDescriptor;
+  scripted_widget?: _LayoutLeafNodeScriptedWidget; // The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent.
   scroll_view?: ScrollView;
   scrollbar?: Scrollbar;
   select?: Select;
@@ -1519,11 +1519,6 @@ export interface RowsRequestedEvent {
   count: number;
   id: WidgetId;
   start: number;
-}
-
-/** The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl"). */
-export interface ScriptedWidgetDescriptor {
-  props?: unknown;
 }
 
 /** Orientation of a scrollbar. */
@@ -2216,7 +2211,7 @@ export type WidgetId = string;
 /** Every leaf widget kind key a layout-tree leaf node may carry. */
 export type WidgetKind = "activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart" | "checkbox" | "combo_box" | "command_center" | "command_line" | "context_menu" | "data_table" | "date_picker" | "diff_view" | "editor" | "find_replace" | "form" | "icon_grid" | "image" | "list" | "markdown" | "menu_bar" | "message_list" | "minimap" | "multi_section_view" | "number_input" | "palette" | "password" | "pipeline_view" | "progress" | "radio_group" | "scripted_widget" | "scroll_view" | "scrollbar" | "select" | "slider" | "spinner" | "status_bar" | "switch" | "tab_bar" | "terminal" | "text_display" | "text_field" | "text_input" | "textarea" | "toolbar" | "tree" | "tree_table" | "tree_table_controller";
 
-/** A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once. */
+/** A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once. */
 export interface WidgetStateSnapshot {
   active_tab?: number | null; // A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
   expanded?: number[][] | null; // A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
@@ -2793,12 +2788,6 @@ export interface _FormEventToolbarButtonClicked {
 
 export type _HeaderHitDict = { Action: string; };
 
-/** Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead. */
-export interface _HitDetailCanvasRegion {
-  kind: "canvas_region";
-  region: WidgetId;
-}
-
 export interface _HitDetailDataTableFooter {
   kind: "data_table_footer";
 }
@@ -2952,6 +2941,12 @@ export interface _Icon2 {
 }
 
 export type _KeyBindingDict = { Literal: string; };
+
+/** The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl"). */
+export interface _LayoutLeafNodeScriptedWidget {
+  id: string;
+  props?: unknown;
+}
 
 export interface _ListViewEventItemActivated {
   idx: number;

@@ -18,6 +18,8 @@
 //! runtime kind registry. A stateful built-in kind (`"tree_table_controller"`)
 //! shows the engine keeping widget state across frames a host decodes
 //! afresh each time.
+//! A script-defined widget (`"scripted_widget"`,
+//! registered through `register_scripted_widget`) takes the same route.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -258,7 +260,6 @@ fn registering_a_reserved_node_key_as_a_kind_is_refused() {
         "tabs",
         "text_input",
         "text_display",
-        "scripted_widget",
         "style",
         "a11y",
         "id",
@@ -272,6 +273,107 @@ fn registering_a_reserved_node_key_as_a_kind_is_refused() {
         );
         assert!(!quadraui::widget_kinds::runtime_widget_kinds().contains(&reserved));
     }
+    assert!(
+        matches!(
+            quadraui_binding_core::register_widget_kind("scripted_widget", decode),
+            Err(quadraui::widget_kinds::KindError::Duplicate(_))
+        ),
+        "binding-core owns the scripted_widget kind"
+    );
+}
+
+/// A script-defined widget: one clickable region over its right half,
+/// recording every event its script receives.
+struct HostScript {
+    log: std::rc::Rc<RefCell<Vec<String>>>,
+}
+
+impl quadraui_binding_core::ScriptWidget for HostScript {
+    fn measure(
+        &self,
+        _ctx: &quadraui::primitive::LayoutCtx,
+        constraints: quadraui_binding_core::ScriptedConstraints,
+    ) -> quadraui_binding_core::ScriptedSize {
+        quadraui_binding_core::ScriptedSize {
+            width: constraints.max_width.unwrap_or(10.0),
+            height: constraints.max_height.unwrap_or(1.0),
+        }
+    }
+
+    fn paint(
+        &self,
+        _ctx: &quadraui::primitive::LayoutCtx,
+        _props: &quadraui_binding_core::ScriptedProps,
+        rect: Rect,
+    ) -> quadraui_binding_core::ScriptedPaint {
+        quadraui_binding_core::ScriptedPaint {
+            ops: Vec::new(),
+            regions: vec![quadraui::CanvasRegion {
+                id: WidgetId::new("stars:right"),
+                rect: Rect::new(rect.width / 2.0, 0.0, rect.width / 2.0, rect.height),
+                cursor: None,
+            }],
+        }
+    }
+
+    fn on_event(
+        &self,
+        event: &quadraui_binding_core::ScriptedInputEvent,
+        props: &quadraui_binding_core::ScriptedProps,
+        _state: &quadraui_binding_core::ScriptedState,
+    ) -> bool {
+        self.log.borrow_mut().push(format!("{event:?} {props}"));
+        true
+    }
+}
+
+/// A host registers a script-defined widget through binding-core's
+/// public API, names it in its view as a `"scripted_widget"` leaf, and a
+/// click on its region reaches both the script and the host's sink.
+#[test]
+fn a_host_routes_a_click_into_a_script_defined_widget() {
+    let log = std::rc::Rc::new(RefCell::new(Vec::new()));
+    quadraui_binding_core::register_scripted_widget(quadraui_binding_core::ScriptedPrimitive::new(
+        WidgetId::new("stars"),
+        HostScript { log: log.clone() },
+        true,
+    ));
+    let view = serde_json::json!({
+        "column": [
+            {"id": "stars", "scripted_widget": {"id": "stars", "props": {"value": 3}}},
+        ]
+    });
+    let mut driver = TuiDriver::new(HostApp::new(view), 10, 4);
+    driver.render();
+    driver.click(8.0, 0.0);
+
+    assert_eq!(log.borrow().len(), 1, "{:?}", log.borrow());
+    assert!(
+        log.borrow()[0].contains("RegionClicked"),
+        "{:?}",
+        log.borrow()
+    );
+    assert!(
+        log.borrow()[0].contains("\"value\":3"),
+        "{:?}",
+        log.borrow()
+    );
+    let id = WidgetId::new("stars");
+    assert!(
+        driver.app().sink.borrow().events.contains(&UiEvent::Canvas(
+            id,
+            quadraui::CanvasEvent::RegionClicked {
+                region: WidgetId::new("stars:right"),
+                button: quadraui::MouseButton::Left,
+                modifiers: quadraui::Modifiers::default(),
+                x: 8.0,
+                y: 0.0,
+            }
+        )),
+        "{:?}",
+        driver.app().sink.borrow().events
+    );
+    quadraui_binding_core::unregister_scripted_widget("stars");
 }
 
 /// A host's `show_overlay("context_menu", ...)` decodes, opens, paints and

@@ -318,7 +318,7 @@ use quadraui_binding_core::{
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     update_apply_on_quit, update_check_for_update, update_download_and_stage,
     validate_style_set_name, widget_state_snapshot, window_close_reaction, with_tray, with_window,
-    BindingHost, DecodeError, ErasedShellDriver, EventSink, ExtraPaint, GuardedFailure, HitDetail,
+    BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
     InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
     ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
     ScriptedSize, ScriptedState, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
@@ -976,7 +976,8 @@ impl Drop for RenderCtxScope {
 // `quadraui.app.widget.Widget` wraps `PyScriptWidget` around. Unlike that
 // binding, this one leans on the *other* half of the seam
 // `quadraui_binding_core::scripted` offers: `register_scripted_widget`
-// plus a `"scripted_widget"` wire leaf, rather than decoding an empty
+// plus a `"scripted_widget"` wire leaf (`{"id": .., "props": ..}`, decoded
+// through core's runtime kind registry), rather than decoding an empty
 // `Canvas` placeholder and splicing a fresh primitive in after the fact.
 // `js/app/widget.ts`'s `build(resolvedId, ...)` calls
 // [`register_scripted_widget`] (this module's own napi export, aliased
@@ -985,8 +986,7 @@ impl Drop for RenderCtxScope {
 // this module is already running when that `build` call happens -- so the
 // registration is always in place in `quadraui_binding_core::scripted`'s
 // own thread-local registry before `decode_render_output_with_styles`
-// (called right after the callback returns) reaches that leaf's
-// `"scripted_widget"` decode arm.
+// (called right after the callback returns) decodes that leaf.
 //
 // **Why no `props`/`state` marshaling.** `quadraui-py`'s `PyScriptWidget`
 // converts `ScriptedPrimitive`'s own `props`/`state` fields to/from Python
@@ -1262,7 +1262,7 @@ impl ScriptWidget for NodeScriptWidget {
 /// `quadraui-node/js/app/widget.ts`'s `defineWidget`) in a fresh
 /// [`NodeScriptWidget`]/[`ScriptedPrimitive`] and registers it against
 /// `id` via [`core_register_scripted_widget`], so the very next
-/// `"scripted_widget"` leaf named `id` that `decode_render_output_with_styles`
+/// `"scripted_widget"` leaf whose payload names `id` that `decode_render_output_with_styles`
 /// decodes (the one `widget.ts`'s own `build(id, ...)` call returns,
 /// always from the same JS call stack right after this one returns) picks
 /// it up. Must be called synchronously from inside a running
@@ -1292,8 +1292,11 @@ pub fn register_scripted_widget(
         on_event: on_event.create_ref()?,
         a11y: a11y.create_ref()?,
     };
-    let primitive = ScriptedPrimitive::new(WidgetId::new(id.as_str()), widget, focusable);
-    core_register_scripted_widget(id, Rc::new(primitive) as Rc<dyn ExtraPaint>);
+    core_register_scripted_widget(ScriptedPrimitive::new(
+        WidgetId::new(id.as_str()),
+        widget,
+        focusable,
+    ));
     Ok(())
 }
 
@@ -1433,9 +1436,9 @@ impl AppLogic for NodeAppLogic {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let reaction = match (self.handler.as_ref(), self.env.get()) {
             (Some(handler), Some(env)) => {
-                // `InteractionEngine::handle` forwards a resolved region
-                // click or a focused key press straight into a
-                // `ScriptedPrimitive` leaf's own `on_event` -- see the
+                // `InteractionEngine::handle` routes a region click or a
+                // focused key press into a `ScriptedPrimitive` leaf's own
+                // `Interactive::handle`, which calls its `on_event` -- see the
                 // "Script widgets" module section's own doc for why that
                 // needs a live `Env` installed for this whole call, not
                 // just whatever `handler` itself touches.

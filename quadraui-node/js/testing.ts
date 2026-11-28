@@ -596,10 +596,10 @@ class Widget {
    * Presses a key *at this widget*: the focus-scoped shape a real backend
    * delivers to a focused `tree`/`list`/.../`status_bar` (`EVENT_SCOPES`).
    * A `defineWidget` script widget (role `"scripted_widget"`) has no such
-   * scoped shape -- `InteractionEngine::handle` resolves it by focus
+   * scoped shape -- `InteractionEngine::handle` routes it by focus
    * alone, the same plain top-level `KeyPressed` every unclaimed key
-   * already is (`quadraui_binding_core::engine`'s own
-   * `scripted_key_press` forwarding) -- so this sends that instead;
+   * already is (the focused widget's own `Interactive::handle`) -- so
+   * this sends that instead;
    * focus this widget first -- a real click (`harness.clickAt`/`clickText`,
    * or an app click helper built on either) resolved against its own
    * declared region, the way a user actually would, since `.focus()`'s own

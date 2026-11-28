@@ -54,13 +54,56 @@ use std::collections::HashMap;
 use crate::primitive::DynWidget;
 use crate::types::WidgetId;
 
+/// One stored value plus the frame sweep's "seen this frame" mark (see
+/// [`WidgetStateStore::gc`]).
+struct Slot {
+    value: Box<dyn Any>,
+    seen: bool,
+}
+
+impl Slot {
+    fn new(value: Box<dyn Any>) -> Self {
+        Self { value, seen: true }
+    }
+}
+
 /// Persistent per-widget interaction state, type-erased behind `dyn Any`
 /// — the same erasure [`DynWidget::new_state`] already produces — and
 /// keyed by [`WidgetId`] so it survives across frames. See the module
 /// doc for why this can't just live on the widget descriptor itself.
+///
+/// Besides a widget's own [`crate::interactive::Interactive::State`]
+/// ([`Self::state_for`]), a host keeps plain typed values here — a
+/// container's scroll offset, a split's ratio — through [`Self::resolve`],
+/// [`Self::value`] and [`Self::set`].
+///
+/// # Controlled / uncontrolled resolution
+///
+/// A descriptor can optionally carry a value for the same piece of state
+/// this store tracks. [`Self::resolve`] decides which one wins:
+///
+/// - `controlled` is `Some(value)` — the descriptor set the field, so the
+///   app's value wins outright. It is also written back into the store, so
+///   that if a later frame's descriptor goes back to `None` for the same
+///   id, resolution resumes from this value instead of an older stored one.
+/// - `controlled` is `None` — the stored value wins: the entry already in
+///   the store for `id`, or `default()` the first time `id` is seen (or
+///   when the entry was stored under a different concrete type).
+///
+/// # Frame sweep
+///
+/// A host that renders frames drops the state of anything that stopped
+/// rendering with [`Self::gc`]: every [`Self::state_for`], [`Self::resolve`]
+/// and [`Self::set`] marks its id seen, [`Self::mark_seen`] and
+/// [`Self::keep_alive`] mark ids without touching their values, and `gc` —
+/// called once per frame, after everything still live has been marked —
+/// removes every unmarked entry and clears the marks for the next frame.
+/// A widget that stops rendering is therefore collected after exactly one
+/// frame of absence. [`Self::retain`] is the alternative for a host that
+/// already knows the live ids.
 #[derive(Default)]
 pub struct WidgetStateStore {
-    states: HashMap<WidgetId, Box<dyn Any>>,
+    states: HashMap<WidgetId, Slot>,
 }
 
 impl WidgetStateStore {
@@ -74,12 +117,101 @@ impl WidgetStateStore {
     /// *a* value of the right concrete type (any two `Counter` values
     /// produce the same `State` shape) — it's consulted only on the
     /// first call for a given `id` and never overwrites state already
-    /// stored for it.
+    /// stored for it. Marks `id` seen this frame.
     pub fn state_for(&mut self, id: WidgetId, widget: &dyn DynWidget) -> &mut dyn Any {
-        self.states
+        let slot = self
+            .states
             .entry(id)
-            .or_insert_with(|| widget.new_state())
-            .as_mut()
+            .or_insert_with(|| Slot::new(widget.new_state()));
+        slot.seen = true;
+        slot.value.as_mut()
+    }
+
+    /// Resolves `id`'s value of type `V` against the descriptor's
+    /// `controlled` value — see "Controlled / uncontrolled resolution" —
+    /// and marks `id` seen this frame. An entry stored under a different
+    /// concrete type is discarded and reseeded from `default()`.
+    pub fn resolve<V>(
+        &mut self,
+        id: WidgetId,
+        controlled: Option<V>,
+        default: impl FnOnce() -> V,
+    ) -> V
+    where
+        V: Clone + 'static,
+    {
+        if let Some(value) = controlled {
+            self.states.insert(id, Slot::new(Box::new(value.clone())));
+            return value;
+        }
+        match self.states.get_mut(&id) {
+            Some(slot) => {
+                slot.seen = true;
+                match slot.value.downcast_ref::<V>() {
+                    Some(value) => value.clone(),
+                    None => {
+                        let value = default();
+                        slot.value = Box::new(value.clone());
+                        value
+                    }
+                }
+            }
+            None => {
+                let value = default();
+                self.states.insert(id, Slot::new(Box::new(value.clone())));
+                value
+            }
+        }
+    }
+
+    /// `id`'s stored value of type `V` — `None` when nothing is stored for
+    /// `id` or it was stored under a different concrete type. Does not mark
+    /// `id` seen.
+    pub fn value<V>(&self, id: &WidgetId) -> Option<V>
+    where
+        V: Clone + 'static,
+    {
+        self.states
+            .get(id)
+            .and_then(|slot| slot.value.downcast_ref::<V>())
+            .cloned()
+    }
+
+    /// Overwrites `id`'s stored value and marks `id` seen this frame.
+    pub fn set<V>(&mut self, id: WidgetId, value: V)
+    where
+        V: 'static,
+    {
+        self.states.insert(id, Slot::new(Box::new(value)));
+    }
+
+    /// Marks `id`'s entry, if any, seen this frame without reading it.
+    pub fn mark_seen(&mut self, id: &WidgetId) {
+        if let Some(slot) = self.states.get_mut(id) {
+            slot.seen = true;
+        }
+    }
+
+    /// Marks every entry whose id `keep` accepts as seen this frame,
+    /// without reading, resolving or reseeding it — for state owned by a
+    /// subtree that has no geometry this frame (an unselected tab, a
+    /// scroll child outside the viewport) but must survive [`Self::gc`]
+    /// until it is shown again.
+    pub fn keep_alive(&mut self, keep: impl Fn(&str) -> bool) {
+        for (id, slot) in self.states.iter_mut() {
+            if keep(id.as_str()) {
+                slot.seen = true;
+            }
+        }
+    }
+
+    /// Drops every entry not marked seen since the last `gc`, then clears
+    /// the marks for the next frame — see "Frame sweep".
+    pub fn gc(&mut self) {
+        self.states.retain(|_, slot| slot.seen);
+        for slot in self.states.values_mut() {
+            slot.seen = false;
+        }
     }
 
     /// Drop every stored state whose id does not satisfy `is_live` —
@@ -93,7 +225,7 @@ impl WidgetStateStore {
 
     /// `id`'s stored state, or `None` when it has none yet.
     pub fn get(&self, id: &WidgetId) -> Option<&dyn Any> {
-        self.states.get(id).map(|s| s.as_ref())
+        self.states.get(id).map(|slot| slot.value.as_ref())
     }
 
     /// Whether `id` has stored state.
@@ -105,6 +237,20 @@ impl WidgetStateStore {
     /// `State::default()`.
     pub fn remove(&mut self, id: &WidgetId) {
         self.states.remove(id);
+    }
+
+    /// Moves `id`'s stored value out of the store — for a host that keeps
+    /// a widget's state in a store of its own and lends it to this
+    /// thread's runtime store (see [`with_widget_states`]) for one paint,
+    /// so [`crate::DrawsPrimitives::draw_dyn`] hands the widget its state.
+    pub fn take(&mut self, id: &WidgetId) -> Option<Box<dyn Any>> {
+        self.states.remove(id).map(|slot| slot.value)
+    }
+
+    /// Stores `state` as `id`'s value, replacing any — the counterpart of
+    /// [`Self::take`]. Marks `id` seen this frame.
+    pub fn insert(&mut self, id: WidgetId, state: Box<dyn Any>) {
+        self.states.insert(id, Slot::new(state));
     }
 
     /// Drop every stored state.
@@ -254,6 +400,112 @@ mod tests {
         fn units(&self) -> Units {
             Units::Cells
         }
+    }
+
+    #[test]
+    fn controlled_value_wins_over_a_stored_uncontrolled_one() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:controlled-wins");
+        assert_eq!(store.resolve(id, None::<i32>, || 1), 1);
+        assert_eq!(store.resolve(id, Some(99), || unreachable!()), 99);
+    }
+
+    #[test]
+    fn controlled_value_is_written_back_so_a_later_uncontrolled_frame_resumes_from_it() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:controlled-writes-back");
+        assert_eq!(store.resolve(id, Some(42), || 0), 42);
+        assert_eq!(store.resolve(id, None::<i32>, || unreachable!()), 42);
+    }
+
+    #[test]
+    fn uncontrolled_value_persists_across_frames_without_recomputing_default() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:persists");
+        let calls = std::cell::Cell::new(0);
+        let seed = || {
+            calls.set(calls.get() + 1);
+            7
+        };
+        assert_eq!(store.resolve(id, None::<i32>, seed), 7);
+        assert_eq!(store.resolve(id, None::<i32>, || unreachable!()), 7);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn set_overwrites_and_value_reads_back_by_type() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:set-get");
+        store.set(id, "hello".to_string());
+        assert_eq!(store.value::<String>(&id), Some("hello".to_string()));
+        assert_eq!(store.value::<i32>(&id), None);
+    }
+
+    #[test]
+    fn gc_keeps_an_id_marked_this_frame_and_resets_its_mark() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:gc-keeps");
+        store.resolve(id, None::<i32>, || 5);
+        store.gc();
+        assert_eq!(store.value::<i32>(&id), Some(5));
+        store.gc();
+        assert_eq!(store.value::<i32>(&id), None);
+    }
+
+    #[test]
+    fn gc_keeps_widget_state_only_while_it_is_marked() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("toy:gc");
+        store.state_for(id, &Toy);
+        store.gc();
+        store.mark_seen(&id);
+        store.gc();
+        assert!(store.contains(&id));
+        store.gc();
+        assert!(!store.contains(&id));
+    }
+
+    #[test]
+    fn keep_alive_marks_matching_ids_without_touching_their_values() {
+        let mut store = WidgetStateStore::new();
+        let kept = WidgetId::new("widget-state-test:kept");
+        let dropped = WidgetId::new("widget-state-test:dropped");
+        store.set(kept, 1_i32);
+        store.set(dropped, 2_i32);
+        store.gc();
+        store.keep_alive(|id| id.ends_with(":kept"));
+        store.gc();
+        assert_eq!(store.value::<i32>(&kept), Some(1));
+        assert!(!store.contains(&dropped));
+    }
+
+    #[test]
+    fn take_and_insert_move_a_value_between_stores() {
+        let mut lender = WidgetStateStore::new();
+        let mut borrower = WidgetStateStore::new();
+        let id = WidgetId::new("toy:lent");
+        lender.state_for(id, &Toy);
+        let state = lender.take(&id).expect("the lender holds the state");
+        assert!(!lender.contains(&id));
+        borrower.insert(id, state);
+        assert!(borrower
+            .get(&id)
+            .unwrap()
+            .downcast_ref::<ToyState>()
+            .is_some());
+    }
+
+    #[test]
+    fn resolve_reseeds_from_default_when_the_stored_type_changes() {
+        let mut store = WidgetStateStore::new();
+        let id = WidgetId::new("widget-state-test:type-change");
+        store.set(id, 123_i32);
+        assert_eq!(
+            store.resolve(id, None::<String>, || "fresh".to_string()),
+            "fresh".to_string()
+        );
+        assert_eq!(store.value::<String>(&id), Some("fresh".to_string()));
+        assert_eq!(store.value::<i32>(&id), None);
     }
 
     #[test]

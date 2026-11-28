@@ -76,18 +76,6 @@ pub trait ExtraPaint: std::any::Any {
         let _ = backend;
         NaturalSize::NONE
     }
-
-    /// This descriptor's [`crate::scripted::ScriptedExtra`] facet, for an
-    /// extra that is a script-defined widget — `None` by default, correct
-    /// for every hand-built extra above, which has no script-side
-    /// `on_event` for `hit.rs`/`semantic.rs` to forward a resolved region
-    /// click or a focused key press to. Only
-    /// `crate::scripted::ScriptedPrimitive<W>` overrides this, and does so
-    /// generically (no `W` type parameter escapes that one `impl`) — see
-    /// that type's own doc.
-    fn as_scripted(&self) -> Option<&dyn crate::scripted::ScriptedExtra> {
-        None
-    }
 }
 
 /// Recovers the concrete descriptor (`Form`, `MenuBar`, ...) kept alive
@@ -117,14 +105,14 @@ macro_rules! extra_primitive_count {
 /// [`ExtraPaint`] impl above) and never a second table to keep in
 /// lockstep with it.
 macro_rules! extra_primitives {
-    ($( $kind:literal => $ty:ty ),+ $(,)?) => {
+    ($( $kind:literal => $ty:ty ),* $(,)?) => {
         /// The additive primitive kind names, in [`decode_extra_primitive`]'s
         /// dispatch order. [`crate::render::draw_bands`] iterates this
         /// (rather than the `extra` slot `HashMap` itself) so the paint
         /// order a frame produces is deterministic, independent of the
         /// map's iteration order.
-        pub const EXTRA_PRIMITIVE_KINDS: [&str; extra_primitive_count!($($kind),+)] =
-            [$($kind),+];
+        pub const EXTRA_PRIMITIVE_KINDS: [&str; extra_primitive_count!($($kind),*)] =
+            [$($kind),*];
 
         /// Decodes one additive primitive descriptor, dispatched by `kind`
         /// through the same table [`EXTRA_PRIMITIVE_KINDS`] names — both
@@ -140,7 +128,7 @@ macro_rules! extra_primitives {
                 $(
                     $kind => Ok(Rc::new(crate::decode_value::<$ty, D>(what, deserializer)?)
                         as Rc<dyn ExtraPaint>),
-                )+
+                )*
                 _ => Err(crate::DecodeError::unknown_variant(
                     what,
                     "kind",
@@ -153,7 +141,7 @@ macro_rules! extra_primitives {
         /// Hands each [`EXTRA_PRIMITIVE_KINDS`] entry's descriptor type to
         /// `visitor`, in table order.
         pub fn visit_extra_primitive_kinds<V: quadraui::KindVisitor>(visitor: &mut V) {
-            $( visitor.visit::<$ty>($kind); )+
+            $( visitor.visit::<$ty>($kind); )*
         }
 
         /// [`decode_extra_primitive`] against an already-[`serde_json::Value`]
@@ -175,7 +163,7 @@ macro_rules! extra_primitives {
                     $kind => Ok(Rc::new(crate::wire::decode_value_checked::<$ty>(
                         diagnostics, what, kind, value, &[],
                     )?) as Rc<dyn ExtraPaint>),
-                )+
+                )*
                 _ => Err(crate::DecodeError::unknown_variant(
                     what,
                     "kind",
@@ -343,6 +331,7 @@ pub const WIDGET_KINDS: [&str; 43] = [
 /// this one) that registers a kind through [`register_widget_kind`] gets it
 /// decoded, painted and routed with no table edit here.
 pub fn widget_leaf_kinds() -> Vec<&'static str> {
+    crate::scripted::ensure_scripted_widget_kind();
     let mut kinds = WIDGET_KINDS.to_vec();
     kinds.extend(
         quadraui::widget_kinds::runtime_widget_kinds()
@@ -382,6 +371,7 @@ pub fn register_widget_kind_with_schema(
 }
 
 fn reject_reserved_kind(kind: &str) -> Result<(), quadraui::widget_kinds::KindError> {
+    crate::scripted::ensure_scripted_widget_kind();
     if crate::wire::is_reserved_node_key(kind) {
         return Err(quadraui::widget_kinds::KindError::Duplicate(
             kind.to_string(),

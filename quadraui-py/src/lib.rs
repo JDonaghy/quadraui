@@ -1117,10 +1117,9 @@ impl AppLogic for PyAppLogic {
     /// owns the full `event -> hit -> semantic` orchestration (menu-bar/
     /// context-menu routing, divider/scrollbar drag, click-to-focus,
     /// focus-scoped key/paste routing, and semantic event substitution --
-    /// including a resolved region click or a focused key press reaching a
-    /// `ScriptedPrimitive<PyScriptWidget>` leaf's own `on_event`, via
-    /// `InteractionEngine::handle`'s generic `scripted_region_click`/
-    /// `scripted_key_press` forwarding, with the same modal-stack
+    /// including a region click or a focused key press reaching a
+    /// `ScriptedPrimitive<PyScriptWidget>` leaf's own `on_event`, through
+    /// its `Interactive::handle` on the generic widget routing, with the same modal-stack
     /// precedence `dispatch_overlays` already gives every built-in modal
     /// surface). `App.__init__` always calls `set_handler`, so this is
     /// `None` only for a `PyAppLogic` built outside that wrapper.
@@ -1873,13 +1872,10 @@ fn render_output_from_callback(
 // placeholder `Canvas` with a live
 // `quadraui_binding_core::ScriptedPrimitive<PyScriptWidget>` -- the exact
 // seam `quadraui_binding_core::scripted`'s own module doc describes "a
-// real binding implements this once per host language" for. From here
-// on this binding's `layout`/`paint`/`paint_cells` calls into it exactly
-// like any other `ExtraPaint`; region clicks and focused keys are routed
-// to it separately, by `PyAppLogic::handle` below (see
-// `script_widget_click`/`script_widget_key`'s own doc for why that can't
-// go through the generic `semantic_event_for_hit`/`focus_scoped_key_event`
-// path a hand-written `Canvas` descriptor's own regions already use).
+// real binding implements this once per host language" for -- as a
+// generic `"scripted_widget"` widget leaf. From here on it lays out,
+// paints and receives region clicks and focused keys exactly like any
+// other generic widget leaf, through its own `Interactive` impl.
 
 /// One `Widget` registration drained from `quadraui.app.widget._PENDING`
 /// for this frame.
@@ -2043,7 +2039,10 @@ fn apply_pending_script_widgets_leaf(
     );
     primitive.set_props(entry.props);
     primitive.set_state(entry.state);
-    leaf.descriptor = LeafDescriptor::Extra(Rc::new(primitive));
+    leaf.descriptor = LeafDescriptor::Widget {
+        kind: quadraui_binding_core::SCRIPTED_WIDGET_KIND,
+        widget: Rc::new(primitive),
+    };
 }
 
 /// The `quadraui_binding_core::ScriptWidget` impl this binding wraps

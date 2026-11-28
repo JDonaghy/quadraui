@@ -174,6 +174,17 @@ fragment step for this package (that mechanism, and
   per-thread store the Rust runtime paints from. A widget whose paint
   reads its state (a caret, a text selection, an open section) now shows
   it in a `quadraui-node` app as it does in a Rust one.
+- A `"scripted_widget"` leaf's payload now names the registered widget's
+  id: `{ id, scripted_widget: { id, props } }` (#2978). The leaf decodes
+  through core's runtime kind registry into a generic widget leaf, so the
+  payload carries its id like every other widget kind's does.
+  `defineWidget` builds this shape; a raw `registerScriptedWidget` caller
+  must add `id` to the leaf it returns. A pointer that enters or leaves a
+  script widget reports `MouseEntered`/`MouseLeft` with hit detail
+  `{ kind: "widget_body" }` rather than `{ kind: "canvas_region", region }`;
+  its `{ Canvas: [id, { RegionHovered }] }` events are unchanged. The
+  payload's generated type is no longer named `ScriptedWidgetDescriptor`
+  in `wire.d.ts`.
 
 - A `"completions"` overlay (`showOverlay("completions", ...)`) now routes
   pointer input through core `Completions`' own event handling: a click
@@ -253,6 +264,10 @@ fragment step for this package (that mechanism, and
   grid, one column narrower than before).
 
 ### Removed
+
+- The `"canvas_region"` hit detail (#2978): a script widget reports
+  `"widget_body"` like every other generic widget, and its region events
+  arrive as `{ Canvas: [id, ...] }`.
 
 - `QuiApp.listCharWidth()` and `QuiApp.scrollbarReserve()` (#2979, 0.12
   rec 14), part of the 0.12 binding API cleanup. Budget row text with
@@ -350,6 +365,11 @@ fragment step for this package (that mechanism, and
   where the descriptor's `cursor` says.
 - A text-entry leaf inside a layout dialog or popover keeps editing:
   keys and typed text reach it through the same routing as the main tree.
+- A double-click or a wheel notch on an open `"completions"` list or
+  `"rich_text_popup"` that the overlay itself ignores no longer reaches the
+  handler or the widget painted beneath it: an overlay swallows every
+  press, double-click and wheel notch that lands on it (#2978). A press on
+  a completions list outside its rows no longer dismisses it.
 
 - A layout-tree render keeps the stored state of a subtree that is not
   painted this frame -- an unselected `"tabs"` entry, a `"scroll"` child

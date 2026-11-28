@@ -15,17 +15,17 @@ use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormDialog, FormDialogAction, FormDialogState,
-    Handled, MessageDialog, MessageDialogState, 
+    ContextMenuController, ContextMenuOutcome, FormDialog, FormDialogState, Handled,
+    MessageDialog,
 };
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    wheel_row_delta, Backend, CanvasEvent, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
-    Column, CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
+    wheel_row_delta, Backend, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
+    CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
     ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
-    FloatMeasure, Key, KeyEvent, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
+    FloatMeasure, FormEvent, Key, KeyEvent, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
     NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupLayout,
     RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, Toast,
     ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure,
@@ -37,7 +37,6 @@ use crate::drag::{
     gesture_target_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
     tree_scroll_state, ActiveDrag, DataTableColumnDrag, GestureDrag, ScrollDrag, ScrollbarDrag,
 };
-use crate::extra_paint::extra_as;
 use crate::hit::{
     data_table_rows_and_viewport, event_position, hit_test_painted, list_rows_and_viewport,
     set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport, windowed_leaf_extent,
@@ -50,11 +49,7 @@ use crate::host::{
 };
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
-use crate::semantic::{
-    focus_scoped_key_event, scripted_key_press, scripted_region_click, semantic_event_for_hit,
-    DragGestureWireEvent,
-};
-use crate::widget_state::WidgetState;
+use crate::semantic::{focus_scoped_key_event, semantic_event_for_hit, DragGestureWireEvent};
 use crate::wire::DragRole;
 
 /// `backend.viewport()`, as a `(0, 0)`-origin [`Rect`] — the shape every
@@ -226,11 +221,9 @@ impl LayoutContent {
                 let semantic = semantic_event_for_hit(
                     id,
                     &detail,
-                    button,
                     modifiers,
                     double_click,
                     &self.hits.borrow(),
-                    position,
                 );
                 let resolved = semantic.unwrap_or_else(|| event.clone());
                 Some(
@@ -547,44 +540,6 @@ fn is_escape(event: &UiEvent) -> bool {
     )
 }
 
-/// The [`RoutedEvent`] an imperative overlay painted at `bounds` receives
-/// for `event`: a press, a double-click or a wheel notch landing inside
-/// it, in its own local space. `None` for anything else, which the
-/// overlay does not see.
-fn overlay_pointer_event(event: &UiEvent, bounds: Rect) -> Option<RoutedEvent> {
-    let local = |position: &Point| Point::new(position.x - bounds.x, position.y - bounds.y);
-    match event {
-        UiEvent::MouseDown {
-            button,
-            position,
-            modifiers,
-            ..
-        } if bounds.contains(*position) => Some(RoutedEvent::Pointer {
-            kind: PointerKind::Down(*button),
-            sub: None,
-            local: local(position),
-            mods: *modifiers,
-        }),
-        UiEvent::DoubleClick { position, .. } if bounds.contains(*position) => {
-            Some(RoutedEvent::Pointer {
-                kind: PointerKind::DoubleClick(MouseButton::Left),
-                sub: None,
-                local: local(position),
-                mods: Modifiers::default(),
-            })
-        }
-        UiEvent::Scroll {
-            delta, position, ..
-        } if bounds.contains(*position) => Some(RoutedEvent::Wheel {
-            dx: delta.x,
-            dy: delta.y,
-            local: local(position),
-            mods: Modifiers::default(),
-        }),
-        _ => None,
-    }
-}
-
 /// The one binding-specific step [`InteractionEngine::handle`] cannot do
 /// itself: handing a resolved [`UiEvent`] (and, for a pointer event that
 /// landed on a specific sub-area, its [`HitDetail`]) to the binding's own
@@ -661,22 +616,16 @@ enum Overlay {
     /// painted by the host's own render path instead — see that method's
     /// own doc.
     Float(Float, FloatMeasure, Option<FloatContent>),
-    RichTextPopup(RichTextPopup, Point),
-    Completions(Completions, Point),
-    /// A modal [`MessageDialog`] and the state it keeps between events —
-    /// opened via [`InteractionEngine::open_message_dialog`].
-    Dialog(MessageDialog, MessageDialogState),
-    /// A modal [`FormDialog`] hosting a [`quadraui::Form`]'s fields, and
-    /// the state it keeps between events — opened via
-    /// [`InteractionEngine::open_form_dialog`]. Shares [`Overlay::rank`]
-    /// with [`Overlay::Dialog`] so only one modal dialog (of either kind)
-    /// is ever open at once.
-    FormDialog(FormDialog, FormDialogState),
+    /// A contract widget shown imperatively — a message or form dialog, a
+    /// completions list, a rich-text popup — painted through
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] and routed through its own
+    /// [`DynWidget::handle`], with its state in
+    /// [`InteractionEngine::widget_state`]. See [`WidgetOverlay`].
+    Widget(WidgetOverlay),
     /// A modal [`Dialog`] hosting an arbitrary [`LayoutNode`] subtree in
     /// its body — opened via [`InteractionEngine::open_layout_dialog`].
-    /// Shares [`Overlay::rank`] with [`Overlay::Dialog`] and
-    /// [`Overlay::FormDialog`], so only one modal dialog of any kind is
-    /// ever open at once.
+    /// Shares [`Overlay::rank`] with the modal [`WidgetOverlay`] kinds, so
+    /// only one modal dialog of any kind is ever open at once.
     LayoutDialog(Box<LayoutDialog>),
     Tooltip(Tooltip, Rect),
     /// Unlike every other variant, more than one of these can be in the
@@ -700,15 +649,137 @@ impl Overlay {
         match self {
             Overlay::ContextMenu(_) => 0,
             Overlay::Float(..) => 1,
-            Overlay::RichTextPopup(..) => 2,
-            Overlay::Completions(..) => 3,
-            Overlay::Dialog(..) => 4,
-            Overlay::FormDialog(..) => 4,
+            Overlay::Widget(entry) => entry.kind.rank(),
             Overlay::LayoutDialog(_) => 4,
             Overlay::Tooltip(..) => 5,
             Overlay::Toast(_) => 6,
         }
     }
+}
+
+/// Which imperative surface an [`Overlay::Widget`] entry is: fixes its
+/// z-rank, where it is laid out and how it claims input. The widget
+/// itself is routed generically either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidgetOverlayKind {
+    /// [`MessageDialog`], opened via [`InteractionEngine::open_message_dialog`].
+    MessageDialog,
+    /// [`FormDialog`], opened via [`InteractionEngine::open_form_dialog`].
+    FormDialog,
+    /// [`Completions`], shown via [`InteractionEngine::show_completions`].
+    Completions,
+    /// [`RichTextPopup`], shown via [`InteractionEngine::show_rich_text_popup`].
+    RichTextPopup,
+}
+
+impl WidgetOverlayKind {
+    fn rank(self) -> u8 {
+        match self {
+            WidgetOverlayKind::RichTextPopup => 2,
+            WidgetOverlayKind::Completions => 3,
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog => 4,
+        }
+    }
+
+    /// A modal dialog: laid out over the whole viewport (it centres itself
+    /// there), routed every input event, and swallowing every press. A
+    /// non-modal popup is laid out at its anchor, routed only the presses
+    /// and wheel notches that land on it — every one of which it swallows
+    /// — and dismissed by Escape or a press outside it.
+    fn is_modal(self) -> bool {
+        matches!(
+            self,
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog
+        )
+    }
+}
+
+/// One [`Overlay::Widget`] entry: the widget, which surface it is, and
+/// the point a popup is anchored to (unused by a modal dialog).
+struct WidgetOverlay {
+    kind: WidgetOverlayKind,
+    widget: Box<dyn DynWidget>,
+    anchor: Point,
+}
+
+impl WidgetOverlay {
+    fn new(kind: WidgetOverlayKind, widget: impl DynWidget, anchor: Point) -> Self {
+        Self {
+            kind,
+            widget: Box::new(widget),
+            anchor,
+        }
+    }
+
+    /// The widget's own id — every overlay widget carries one.
+    fn id(&self) -> WidgetId {
+        self.widget
+            .id()
+            .copied()
+            .unwrap_or_else(|| WidgetId::new("overlay"))
+    }
+
+    fn widget_as<T: 'static>(&self) -> Option<&T> {
+        self.widget.as_any().downcast_ref::<T>()
+    }
+
+    fn widget_as_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        let widget: &mut dyn std::any::Any = &mut *self.widget;
+        widget.downcast_mut::<T>()
+    }
+
+    /// Writes an event the widget reported back into its own descriptor
+    /// where the surface keeps that value on the descriptor rather than in
+    /// its interaction state: a completions list's selected row, a
+    /// rich-text popup's scroll offset, a form dialog's focused field.
+    /// Returns whether anything changed.
+    fn apply_event(&mut self, event: &UiEvent) -> bool {
+        match (self.kind, event) {
+            (
+                WidgetOverlayKind::Completions,
+                UiEvent::List(_, ListViewEvent::SelectionChanged { idx }),
+            ) => self
+                .widget_as_mut::<Completions>()
+                .map(|completions| completions.selected_idx = *idx)
+                .is_some(),
+            (WidgetOverlayKind::RichTextPopup, UiEvent::ScrollOffsetChanged { new_offset, .. }) => {
+                self.widget_as_mut::<RichTextPopup>()
+                    .map(|popup| popup.scroll_top = *new_offset)
+                    .is_some()
+            }
+            (WidgetOverlayKind::FormDialog, UiEvent::Form(_, FormEvent::FocusChanged { id })) => {
+                self.widget_as_mut::<FormDialog>()
+                    .and_then(|dialog| dialog.form.as_mut())
+                    .map(|form| form.focused_field = Some(*id))
+                    .is_some()
+            }
+            _ => false,
+        }
+    }
+}
+
+/// The event [`InteractionEngine::dyn_widget_dispatch_with_focus`] hands
+/// a widget: one its caller already routed, or a raw one to route against
+/// the widget's own layout.
+enum DispatchInput<'e> {
+    Routed(RoutedEvent),
+    Raw(&'e UiEvent),
+}
+
+/// How [`InteractionEngine::dyn_widget_dispatch_with_focus`] treats a
+/// widget's focus: whether it is part of the backend's focus tree, and so
+/// whether its `request_focus` moves real focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchFocus {
+    /// A layout-tree leaf: focus is the backend's, and a focus request
+    /// moves it.
+    Tree,
+    /// A popup floating over the focused editor: it never takes focus
+    /// from it, so its focus request is dropped.
+    Popup,
+    /// A modal dialog: the dialog is the whole world while it is open, so
+    /// every part of it holds focus.
+    Modal,
 }
 
 /// What a content-bearing [`Overlay::Float`] embeds in the float's own
@@ -1028,22 +1099,16 @@ pub struct InteractionEngine {
     /// binding's `AppLogic::extra_tab_stops` returns has no `Backend` to
     /// ask.
     painted_focus: RefCell<Option<WidgetId>>,
-    /// Framework-owned per-widget state store, keyed by `WidgetId`,
-    /// surviving across frames — see [`crate::widget_state::WidgetState`]'s
-    /// own module doc for its controlled/uncontrolled resolution and GC
-    /// policies. [`Self::set_hits`] sweeps it every frame. [`Self::handle`]'s own
-    /// `KeyPressed` routing writes a focused `Tree`'s cursor through it via
-    /// [`crate::host::apply_tree_nav_key`]; a binding's own `render` reads
-    /// it back (merged with whatever the descriptor pins) via
-    /// [`crate::host::resolve_tree_cursor`]. [`Self::handle`]'s final
-    /// dispatch also writes a divider drag's ratio, a clicked tab's active
-    /// index, and a toggled tree row's expand state through
-    /// [`crate::host::apply_split_divider_drag`]/[`crate::host::apply_tab_activated`]/
-    /// [`crate::host::apply_tree_toggle_expand`]; a binding's own `render`
-    /// reads each back the same way, via
-    /// [`crate::host::resolve_split_ratio`]/[`crate::host::resolve_tab_bar_active`]/
-    /// [`crate::host::resolve_tree_expansion`].
-    widget_state: WidgetState,
+    /// The typed values the binding host resolves for containers and the
+    /// fixed leaf kinds, keyed by `WidgetId` and surviving across frames
+    /// ([`quadraui::WidgetStateStore`]) — a `Tree`'s cursor, a
+    /// `Scroll`'s offset, a split's ratio, a tab strip's active index, a
+    /// tree's expansion. [`Self::handle`] writes those values through
+    /// [`crate::host`]'s `apply_*` helpers; a binding's own `render` reads
+    /// them back (merged with whatever the descriptor pins) through its
+    /// `resolve_*` helpers. [`Self::set_hits`] runs the store's frame
+    /// sweep every frame.
+    widget_state: RefCell<quadraui::WidgetStateStore>,
     /// This engine's claim on the thread's runtime
     /// [`quadraui::WidgetStateStore`], where it keeps every generic
     /// [`DynWidget`] leaf's `Interactive::State` — the store
@@ -1207,12 +1272,15 @@ struct DynWidgetEventHost<'a> {
     /// The focused leaf and sub-part when this call began — see
     /// [`InteractionEngine::dyn_widget_focus`].
     focused: Option<quadraui::FocusAddress>,
+    /// Every part of the widget holds focus — a modal dialog, which is
+    /// the whole world while it is open (see [`DispatchFocus::Modal`]).
+    whole_world: bool,
     intents: &'a mut DynWidgetIntents,
 }
 
 impl EventHost for DynWidgetEventHost<'_> {
     fn is_focused(&self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) -> bool {
-        self.focused == Some((*id, sub))
+        self.whole_world || self.focused == Some((*id, sub))
     }
 
     fn request_focus(&mut self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) {
@@ -1371,17 +1439,27 @@ impl InteractionEngine {
     /// painting a `Tree`) so the cursor [`Self::handle`]'s `KeyPressed`
     /// routing moved via [`crate::host::apply_tree_nav_key`] is what
     /// actually gets painted.
-    pub fn widget_state(&self) -> &WidgetState {
+    pub fn widget_state(&self) -> &RefCell<quadraui::WidgetStateStore> {
         &self.widget_state
+    }
+
+    /// Runs `f` against this engine's generic widget states: every
+    /// [`crate::layout::LeafDescriptor::Widget`] leaf's and open widget
+    /// overlay's `Interactive::State`, keyed by the widget's own id (else
+    /// its leaf id).
+    pub fn with_widget_states<R>(&self, f: impl FnOnce(&mut quadraui::WidgetStateStore) -> R) -> R {
+        self.widget_states.with(f)
     }
 
     /// Replaces this frame's painted hits. Call once per render, after the
     /// binding's own paint pass (`draw_bands`/`paint_layout`) has fully
     /// populated `hits`.
     ///
-    /// Also sweeps [`Self::widget_state`] via [`WidgetState::gc`] — its own
-    /// "seen this frame" marks, not `hits`, drive what survives; see that
-    /// type's own module doc.
+    /// Also runs [`Self::widget_state`]'s frame sweep
+    /// ([`quadraui::WidgetStateStore::gc`]), which keeps every value the
+    /// binding host resolved this frame, and drops the
+    /// [`Self::widget_states`] of every generic widget neither painted this
+    /// frame nor open as an overlay.
     pub fn set_hits(&self, hits: Vec<PaintedHit>) {
         // Same "painted this frame" retain for the windowed-leaf request
         // bookkeeping: a leaf that stops rendering (or stops sending an
@@ -1390,7 +1468,7 @@ impl InteractionEngine {
         self.rows_requested
             .borrow_mut()
             .retain(|id, _| windowed_leaf_extent(&hits, *id).is_some());
-        self.widget_state.gc();
+        self.widget_state.borrow_mut().gc();
         let live_dyn_widgets: Vec<WidgetId> = hits
             .iter()
             .filter_map(|hit| match hit {
@@ -1410,6 +1488,7 @@ impl InteractionEngine {
                 _ => None,
             }));
         }
+        live_dyn_widgets.extend(self.overlay_widget_ids());
         self.widget_states
             .with(|states| states.retain(|id| live_dyn_widgets.contains(id)));
         *self.hit_map.borrow_mut() = hits;
@@ -1463,13 +1542,6 @@ impl InteractionEngine {
             .take_while(|o| o.rank() <= rank)
             .count();
         self.overlays.insert(at, overlay);
-    }
-
-    /// Applies `f` to every open overlay: how the host writes a change an
-    /// imperative overlay's widget reported (a moved highlight, a scrolled
-    /// body) back onto the descriptor it owns.
-    fn update_overlay(&mut self, f: impl FnMut(&mut Overlay)) {
-        self.overlays.iter_mut().for_each(f);
     }
 
     /// Removes the first entry matching `pred` (there is at most one,
@@ -1575,9 +1647,8 @@ impl InteractionEngine {
     /// Whether a message dialog opened via [`Self::open_message_dialog`]
     /// is currently open.
     pub fn dialog_open(&self) -> bool {
-        self.overlays
-            .iter()
-            .any(|o| matches!(o, Overlay::Dialog(..)))
+        self.widget_overlay(WidgetOverlayKind::MessageDialog)
+            .is_some()
     }
 
     /// Opens an in-canvas message/alert/confirm dialog built from `opts`,
@@ -1586,7 +1657,7 @@ impl InteractionEngine {
     /// gets the same hit-test precedence an open context menu already has.
     /// Replaces (and pops) any dialog already open. Also closes an open
     /// `"menu_bar"` dropdown or context-menu popup, if either is open: the
-    /// dialog paints on top of both ([`Overlay::Dialog`]'s own
+    /// dialog paints on top of both (its [`Overlay::Widget`] entry's
     /// [`Overlay::rank`] is higher than [`Overlay::ContextMenu`]'s), and
     /// [`Self::handle`] now routes the dialog ahead of both, so a popup
     /// left open underneath would be unreachable input it still holds
@@ -1605,7 +1676,12 @@ impl InteractionEngine {
             .modal_stack_handle()
             .borrow_mut()
             .push(dialog.dialog.id, bounds);
-        self.push_overlay(Overlay::Dialog(dialog, MessageDialogState::default()));
+        self.widget_states.with(|states| states.remove(&dialog.dialog.id));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::MessageDialog,
+            dialog,
+            Point::default(),
+        )));
     }
 
     /// Closes the open message dialog (if any), popping its
@@ -1616,24 +1692,59 @@ impl InteractionEngine {
     /// all, or one the app wants to tear down from outside input, could
     /// never be cleared. A no-op (returns `false`) if nothing is open.
     pub fn close_message_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.remove_overlay(|o| matches!(o, Overlay::Dialog(..))) {
-            Some(Overlay::Dialog(open, _)) => {
-                backend
-                    .modal_stack_handle()
-                    .borrow_mut()
-                    .pop(&open.dialog.id);
+        self.close_modal_widget_overlay(WidgetOverlayKind::MessageDialog, backend)
+    }
+
+    /// Removes the open modal widget overlay of `kind`, popping its
+    /// [`quadraui::ModalStack`] entry and dropping its state. Returns
+    /// whether one was open.
+    fn close_modal_widget_overlay(
+        &mut self,
+        kind: WidgetOverlayKind,
+        backend: &mut dyn Backend,
+    ) -> bool {
+        match self.remove_overlay(|o| matches!(o, Overlay::Widget(entry) if entry.kind == kind)) {
+            Some(Overlay::Widget(open)) => {
+                let id = open.id();
+                backend.modal_stack_handle().borrow_mut().pop(&id);
+                self.widget_states.with(|states| states.remove(&id));
                 true
             }
             _ => false,
         }
     }
 
+    /// The open widget overlay of `kind`, if any.
+    fn widget_overlay(&self, kind: WidgetOverlayKind) -> Option<&WidgetOverlay> {
+        self.overlays.iter().find_map(|o| match o {
+            Overlay::Widget(entry) if entry.kind == kind => Some(entry),
+            _ => None,
+        })
+    }
+
+    fn widget_overlay_mut(&mut self, kind: WidgetOverlayKind) -> Option<&mut WidgetOverlay> {
+        self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::Widget(entry) if entry.kind == kind => Some(entry),
+            _ => None,
+        })
+    }
+
+    /// The ids of every open widget overlay, whose state
+    /// [`Self::set_hits`]'s frame sweep keeps while they stay open.
+    fn overlay_widget_ids(&self) -> Vec<WidgetId> {
+        self.overlays
+            .iter()
+            .filter_map(|o| match o {
+                Overlay::Widget(entry) => Some(entry.id()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether a form-hosting dialog opened via [`Self::open_form_dialog`]
     /// is currently open.
     pub fn form_dialog_open(&self) -> bool {
-        self.overlays
-            .iter()
-            .any(|o| matches!(o, Overlay::FormDialog(..)))
+        self.widget_overlay(WidgetOverlayKind::FormDialog).is_some()
     }
 
     /// Opens `dialog` — a [`FormDialog`] hosting a
@@ -1656,26 +1767,24 @@ impl InteractionEngine {
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
-        let state = FormDialogState::default();
-        let bounds = dialog.bounds(&state, backend);
+        let bounds = dialog.bounds(&FormDialogState::default(), backend);
         backend
             .modal_stack_handle()
             .borrow_mut()
             .push(dialog.id, bounds);
-        self.push_overlay(Overlay::FormDialog(dialog, state));
+        self.widget_states.with(|states| states.remove(&dialog.id));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::FormDialog,
+            dialog,
+            Point::default(),
+        )));
     }
 
     /// Closes the open form-dialog (if any), popping its
     /// [`quadraui::ModalStack`] entry. Returns whether one was open.
     /// Mirrors [`Self::close_message_dialog`]'s own doc.
     pub fn close_form_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.remove_overlay(|o| matches!(o, Overlay::FormDialog(..))) {
-            Some(Overlay::FormDialog(open, _)) => {
-                backend.modal_stack_handle().borrow_mut().pop(&open.id);
-                true
-            }
-            _ => false,
-        }
+        self.close_modal_widget_overlay(WidgetOverlayKind::FormDialog, backend)
     }
 
     /// Mutable access to the open form-dialog widget, if any — a
@@ -1683,10 +1792,8 @@ impl InteractionEngine {
     /// [`FormDialog::body`] every frame before painting: push fresh
     /// state, then render.
     pub fn form_dialog_mut(&mut self) -> Option<&mut FormDialog> {
-        self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(d, _) => Some(d),
-            _ => None,
-        })
+        self.widget_overlay_mut(WidgetOverlayKind::FormDialog)?
+            .widget_as_mut::<FormDialog>()
     }
 
     // ── Toast ────────────────────────────────────────────────────────
@@ -1811,26 +1918,37 @@ impl InteractionEngine {
     /// Shows `completions` anchored at `cursor` (the caret position in
     /// the backend's ABSOLUTE frame). Replaces any popup already open.
     pub fn show_completions(&mut self, completions: Completions, cursor: Point) {
-        self.push_overlay(Overlay::Completions(completions, cursor));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::Completions,
+            completions,
+            cursor,
+        )));
     }
 
     /// Closes the open completions popup (if any) without reporting a
     /// selection. Returns whether one was open.
     pub fn dismiss_completions(&mut self) -> bool {
-        self.remove_overlay(|o| matches!(o, Overlay::Completions(..)))
-            .is_some()
+        self.remove_widget_overlay(WidgetOverlayKind::Completions)
     }
 
     /// The open completions popup (if any) and the cursor position it was
-    /// anchored to, for [`Self::handle`]'s hit-test dispatch — cloned out
-    /// of [`Self::overlays`] so the caller can go on to call
-    /// [`Self::dismiss_completions`] (which needs `&mut self`) without a
-    /// borrow of the stack still outstanding.
+    /// anchored to.
+    #[cfg(test)]
     fn find_completions(&self) -> Option<(Completions, Point)> {
-        self.overlays.iter().find_map(|o| match o {
-            Overlay::Completions(c, p) => Some((c.clone(), *p)),
-            _ => None,
-        })
+        let entry = self.widget_overlay(WidgetOverlayKind::Completions)?;
+        Some((entry.widget_as::<Completions>()?.clone(), entry.anchor))
+    }
+
+    /// Removes the open widget overlay of `kind` and drops its state.
+    /// Returns whether one was open.
+    fn remove_widget_overlay(&mut self, kind: WidgetOverlayKind) -> bool {
+        match self.remove_overlay(|o| matches!(o, Overlay::Widget(entry) if entry.kind == kind)) {
+            Some(Overlay::Widget(open)) => {
+                self.widget_states.with(|states| states.remove(&open.id()));
+                true
+            }
+            _ => false,
+        }
     }
 
     fn completions_layout(
@@ -1856,7 +1974,7 @@ impl InteractionEngine {
     /// Opens `float` at `measure`'s size, pushing its resolved bounds
     /// onto the backend's [`quadraui::ModalStack`] via
     /// [`quadraui::ModalStack::push_float`] so other modal-aware code
-    /// gets the same hit-test precedence [`Overlay::Dialog`] already has.
+    /// gets the same hit-test precedence a modal dialog already has.
     /// Replaces (and pops) any float already open. **Content is not
     /// this call's concern** — same as [`quadraui::Backend::draw_float`]
     /// itself, the host paints whatever belongs in
@@ -2060,25 +2178,49 @@ impl InteractionEngine {
     /// editor cell it describes, in the backend's ABSOLUTE frame).
     /// Replaces any popup already open.
     pub fn show_rich_text_popup(&mut self, popup: RichTextPopup, anchor: Point) {
-        self.push_overlay(Overlay::RichTextPopup(popup, anchor));
+        self.push_overlay(Overlay::Widget(WidgetOverlay::new(
+            WidgetOverlayKind::RichTextPopup,
+            popup,
+            anchor,
+        )));
     }
 
     /// Closes the open rich-text popup (if any) without reporting a link
     /// click. Returns whether one was open.
     pub fn dismiss_rich_text_popup(&mut self) -> bool {
-        self.remove_overlay(|o| matches!(o, Overlay::RichTextPopup(..)))
-            .is_some()
+        self.remove_widget_overlay(WidgetOverlayKind::RichTextPopup)
     }
 
     /// The open rich-text popup (if any) and the anchor it was shown
-    /// against, for [`Self::handle`]'s hit-test dispatch — see
-    /// [`Self::find_completions`]'s own doc for why this clones out of
-    /// [`Self::overlays`] rather than borrowing it.
+    /// against.
+    #[cfg(test)]
     fn find_rich_text_popup(&self) -> Option<(RichTextPopup, Point)> {
-        self.overlays.iter().find_map(|o| match o {
-            Overlay::RichTextPopup(p, a) => Some((p.clone(), *a)),
-            _ => None,
-        })
+        let entry = self.widget_overlay(WidgetOverlayKind::RichTextPopup)?;
+        Some((entry.widget_as::<RichTextPopup>()?.clone(), entry.anchor))
+    }
+
+    /// Where `entry` is laid out this frame: the whole viewport for a
+    /// modal dialog, which centres itself there, and the box its anchor
+    /// resolves to for a popup.
+    fn widget_overlay_bounds(&self, backend: &dyn Backend, entry: &WidgetOverlay) -> Rect {
+        let anchored = match entry.kind {
+            WidgetOverlayKind::MessageDialog | WidgetOverlayKind::FormDialog => None,
+            WidgetOverlayKind::Completions => entry
+                .widget_as::<Completions>()
+                .map(|c| self.completions_layout(backend, c, entry.anchor).bounds),
+            WidgetOverlayKind::RichTextPopup => entry
+                .widget_as::<RichTextPopup>()
+                .map(|p| self.rich_text_popup_layout(backend, p, entry.anchor).bounds),
+        };
+        anchored.unwrap_or_else(|| viewport_rect(backend))
+    }
+
+    /// Paints `entry` into `rect` with the state [`Self::widget_states`]
+    /// holds for it, which is where a widget's paint reads its own state
+    /// from ([`quadraui::PaintEnv::widget_state`]).
+    fn paint_widget_overlay(&self, backend: &mut dyn Backend, rect: Rect, entry: &WidgetOverlay) {
+        self.widget_states.activate();
+        backend.draw_dyn(rect, entry.widget.as_ref(), &());
     }
 
     fn rich_text_popup_layout(
@@ -2120,19 +2262,9 @@ impl InteractionEngine {
                         content.render(backend, layout.content_bounds, &[]);
                     }
                 }
-                Overlay::RichTextPopup(popup, anchor) => {
-                    let layout = self.rich_text_popup_layout(backend, popup, *anchor);
-                    backend.draw_dyn(layout.bounds, popup, &());
-                }
-                Overlay::Completions(completions, cursor) => {
-                    let layout = self.completions_layout(backend, completions, *cursor);
-                    backend.draw_dyn(layout.bounds, completions, &());
-                }
-                Overlay::Dialog(dialog, _) => {
-                    backend.draw_dyn(backend.viewport().rect(), dialog, &());
-                }
-                Overlay::FormDialog(dialog, state) => {
-                    backend.draw_dyn(backend.viewport().rect(), &dialog.painted(state), &());
+                Overlay::Widget(entry) => {
+                    let rect = self.widget_overlay_bounds(backend, entry);
+                    self.paint_widget_overlay(backend, rect, entry);
                 }
                 Overlay::LayoutDialog(embedded) => embedded.render(backend),
                 Overlay::Tooltip(tooltip, anchor) => {
@@ -2161,13 +2293,12 @@ impl InteractionEngine {
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
     ///
-    /// Returns empty while an [`Overlay::FormDialog`] is open,
-    /// regardless of what the main tree itself painted this frame — it
-    /// traps Tab inside its own embedded form internally (see
-    /// [`FormDialog`]'s "Focus model" doc section), so the main tree must
-    /// report no stops at all while it is open, or the global cycle below
-    /// would reach straight through the modal to whatever the host
-    /// painted underneath it. A `Layout`-content overlay — a popover
+    /// Returns empty while a form dialog is open, regardless of what the
+    /// main tree itself painted this frame — it traps Tab inside its own
+    /// embedded form internally (see [`FormDialog`]'s "Focus model" doc
+    /// section), so the main tree must report no stops at all while it is
+    /// open, or the global cycle below would reach straight through the
+    /// modal to whatever the host painted underneath it. A `Layout`-content overlay — a popover
     /// opened via [`Self::show_popover_layout`], or a dialog opened via
     /// [`Self::open_layout_dialog`] — instead reports *its own* content's
     /// stops here (plus, for the dialog, its own buttons, so Tab reaches
@@ -2184,11 +2315,15 @@ impl InteractionEngine {
     /// itself, which walks its own children; past either end,
     /// [`Self::handle`] moves focus on to the next stop instead.
     pub fn tab_stops(&self) -> Vec<(WidgetId, Rect)> {
-        if self
-            .overlays
-            .iter()
-            .any(|o| matches!(o, Overlay::FormDialog(..)))
-        {
+        if self.overlays.iter().any(|o| {
+            matches!(
+                o,
+                Overlay::Widget(WidgetOverlay {
+                    kind: WidgetOverlayKind::FormDialog,
+                    ..
+                })
+            )
+        }) {
             return Vec::new();
         }
         let focused = *self.painted_focus.borrow();
@@ -2222,8 +2357,8 @@ impl InteractionEngine {
     /// [`Self::handle`] without going through this engine's click-to-focus
     /// code at all). Every other offset-changing path (wheel, page keys,
     /// thumb drag, track paging) dispatches this same event, in both
-    /// controlled and uncontrolled mode — see [`crate::widget_state`]'s own
-    /// module doc — and this is no exception, even though `id` landing
+    /// controlled and uncontrolled mode — see [`quadraui::WidgetStateStore`]'s
+    /// own doc — and this is no exception, even though `id` landing
     /// here is itself a side effect of a focus change rather than a direct
     /// scroll gesture. Returns `Reaction::Continue` when nothing scrolled,
     /// so a caller can fold the result into its own `Reaction` via `merge`
@@ -2319,6 +2454,104 @@ impl InteractionEngine {
         Some(UiEvent::CellGrid(id, event))
     }
 
+    /// Routes `event` into the open widget overlay of `kind`, if any,
+    /// through the widget's own [`DynWidget::handle`] — `None` when none is
+    /// open or it does not claim `event`, so routing carries on.
+    ///
+    /// A modal dialog is routed every input event, laid out over the
+    /// viewport; it claims whatever it handles and every press, and lets
+    /// what it ignores travel on. A popup is routed the presses,
+    /// double-clicks and wheel notches that land on it and claims every
+    /// one of them, so none reaches whatever is painted beneath it; Escape
+    /// or a press outside it dismisses it.
+    ///
+    /// The event the widget reports reaches `sink`; a dialog's answer
+    /// ([`UiEvent::MessageDialogResolved`]) closes it, as does a
+    /// completions list's activation or keyboard hand-back, and
+    /// [`WidgetOverlay::apply_event`] writes descriptor-held values back.
+    fn dispatch_widget_overlay(
+        &mut self,
+        kind: WidgetOverlayKind,
+        event: &UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> Option<quadraui::Reaction> {
+        use quadraui::Reaction;
+
+        let entry = self.widget_overlay(kind)?;
+        let id = entry.id();
+        let bounds = self.widget_overlay_bounds(backend, entry);
+        let modal = kind.is_modal();
+        if !modal {
+            if is_escape(event) {
+                self.remove_widget_overlay(kind);
+                return Some(Reaction::Redraw);
+            }
+            let position = match event {
+                UiEvent::MouseDown { position, .. }
+                | UiEvent::DoubleClick { position, .. }
+                | UiEvent::Scroll { position, .. } => *position,
+                _ => return None,
+            };
+            if !bounds.contains(position) {
+                if matches!(event, UiEvent::MouseDown { .. }) {
+                    self.remove_widget_overlay(kind);
+                    return Some(Reaction::Redraw);
+                }
+                return None;
+            }
+        }
+        let focus = if modal {
+            DispatchFocus::Modal
+        } else {
+            DispatchFocus::Popup
+        };
+        let outcome = self.dyn_widget_dispatch_with_focus(
+            id,
+            entry.widget.as_ref(),
+            bounds,
+            DispatchInput::Raw(event),
+            backend,
+            sink,
+            focus,
+        )?;
+        let mut reaction = outcome.reaction;
+        match outcome.event {
+            Some(resolved @ UiEvent::MessageDialogResolved(_)) => {
+                self.close_modal_widget_overlay(kind, backend);
+                reaction = reaction
+                    .merge(Reaction::Redraw)
+                    .merge(sink.dispatch(&resolved, None));
+            }
+            Some(activated @ UiEvent::CompletionItemActivated(..)) => {
+                self.remove_widget_overlay(kind);
+                reaction = reaction
+                    .merge(Reaction::Redraw)
+                    .merge(sink.dispatch(&activated, None));
+            }
+            Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. }))
+                if kind == WidgetOverlayKind::Completions =>
+            {
+                self.remove_widget_overlay(kind);
+                reaction = reaction.merge(Reaction::Redraw);
+            }
+            Some(reported) => {
+                let changed = self
+                    .widget_overlay_mut(kind)
+                    .is_some_and(|entry| entry.apply_event(&reported));
+                if changed || modal {
+                    reaction = reaction.merge(Reaction::Redraw);
+                }
+                reaction = reaction.merge(sink.dispatch(&reported, None));
+            }
+            None if outcome.consumed => {}
+            None if modal && !matches!(event, UiEvent::MouseDown { .. }) => return None,
+            None if modal => reaction = reaction.merge(Reaction::Redraw),
+            None => {}
+        }
+        Some(reaction)
+    }
+
     /// The single hit-test/dispatch pass over [`Self::overlays`],
     /// collapsing what used to be five hand-written per-kind blocks in
     /// [`Self::handle`] (menu-bar/context-menu routing stays separate —
@@ -2362,60 +2595,12 @@ impl InteractionEngine {
             }
         }
 
-        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::Dialog(d, s) => Some((d, s)),
-            _ => None,
-        }) {
-            match dialog.handle_event(state, event, &*backend) {
-                Handled::Event(choice) => {
-                    // The dialog is closing regardless of what `sink`
-                    // itself returns — force the repaint that takes it
-                    // off screen, same as the context-menu's own
-                    // `ContextMenuOutcome::Event` arm in `Self::handle`.
-                    self.close_message_dialog(backend);
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(choice), None)),
-                    );
-                }
-                Handled::Consumed => return Some(Reaction::Redraw),
-                Handled::Ignored => {}
-            }
-        }
-
-        // `FormDialog::handle_event` is also self-contained —
-        // typing a field, toggling a `FieldKind::Toggle`, Tab/Shift+Tab
-        // between fields and buttons, Enter/Escape on a button, and a
-        // click anywhere in the dialog are all resolved internally (see
-        // that type's own "Keyboard model" doc section). It returns
-        // `Handled::Ignored` for an event it has no use for — e.g. a
-        // `CharTyped`/arrow key while a button (not a field) holds
-        // keyboard focus — which falls through below, same pre-existing
-        // gap `Overlay::Dialog`'s own `MessageDialog` already has.
-        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(d, s) => Some((d, s)),
-            _ => None,
-        }) {
-            let dialog_id = dialog.id;
-            match dialog.handle_event(state, event, &*backend) {
-                Handled::Event(FormDialogAction::ButtonClicked(id)) => {
-                    // Closing regardless of what `sink` itself returns —
-                    // same "force the repaint" reasoning as the message
-                    // dialog's own `Handled::Event` arm above.
-                    self.close_form_dialog(backend);
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::MessageDialogResolved(id), None)),
-                    );
-                }
-                Handled::Event(FormDialogAction::FormAction(form_event)) => {
-                    return Some(
-                        Reaction::Redraw
-                            .merge(sink.dispatch(&UiEvent::Form(dialog_id, form_event), None)),
-                    );
-                }
-                Handled::Consumed => return Some(Reaction::Redraw),
-                Handled::Ignored => {}
+        for kind in [
+            WidgetOverlayKind::MessageDialog,
+            WidgetOverlayKind::FormDialog,
+        ] {
+            if let Some(reaction) = self.dispatch_widget_overlay(kind, event, backend, sink) {
+                return Some(reaction);
             }
         }
 
@@ -2450,93 +2635,12 @@ impl InteractionEngine {
             Some(LayoutDialogOutcome::Ignored) | None => {}
         }
 
-        if let Some((completions, cursor)) = self.find_completions() {
-            if is_escape(event) {
-                self.dismiss_completions();
-                return Some(Reaction::Redraw);
-            }
-            let bounds = self
-                .completions_layout(backend, &completions, cursor)
-                .bounds;
-            if let Some(routed) = overlay_pointer_event(event, bounds) {
-                let id = completions.id;
-                let widget: Rc<dyn DynWidget> = Rc::new(completions);
-                let outcome =
-                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
-                let mut reaction = outcome.reaction;
-                match outcome.event {
-                    Some(event @ UiEvent::CompletionItemActivated(..)) => {
-                        self.dismiss_completions();
-                        reaction = reaction
-                            .merge(Reaction::Redraw)
-                            .merge(sink.dispatch(&event, None));
-                    }
-                    Some(UiEvent::List(_, ListViewEvent::KeyPressed { .. })) => {
-                        self.dismiss_completions();
-                        reaction = reaction.merge(Reaction::Redraw);
-                    }
-                    Some(event) => {
-                        if let UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) = &event {
-                            self.update_overlay(|o| {
-                                if let Overlay::Completions(c, _) = o {
-                                    c.selected_idx = *idx;
-                                }
-                            });
-                            reaction = reaction.merge(Reaction::Redraw);
-                        }
-                        reaction = reaction.merge(sink.dispatch(&event, None));
-                    }
-                    None if outcome.consumed => {}
-                    None => {
-                        if matches!(event, UiEvent::MouseDown { .. }) {
-                            self.dismiss_completions();
-                            reaction = reaction.merge(Reaction::Redraw);
-                        } else {
-                            return None;
-                        }
-                    }
-                }
+        for kind in [
+            WidgetOverlayKind::Completions,
+            WidgetOverlayKind::RichTextPopup,
+        ] {
+            if let Some(reaction) = self.dispatch_widget_overlay(kind, event, backend, sink) {
                 return Some(reaction);
-            }
-            if let UiEvent::MouseDown { .. } = event {
-                self.dismiss_completions();
-                return Some(Reaction::Redraw);
-            }
-        }
-
-        if let Some((popup, anchor)) = self.find_rich_text_popup() {
-            if is_escape(event) {
-                self.dismiss_rich_text_popup();
-                return Some(Reaction::Redraw);
-            }
-            let bounds = self.rich_text_popup_layout(backend, &popup, anchor).bounds;
-            if let Some(routed) = overlay_pointer_event(event, bounds) {
-                let id = popup.id;
-                let widget: Rc<dyn DynWidget> = Rc::new(popup);
-                let outcome =
-                    self.overlay_widget_dispatch(id, &widget, bounds, routed, backend, sink);
-                let mut reaction = outcome.reaction;
-                match outcome.event {
-                    Some(event) => {
-                        if let UiEvent::ScrollOffsetChanged { new_offset, .. } = &event {
-                            self.update_overlay(|o| {
-                                if let Overlay::RichTextPopup(p, _) = o {
-                                    p.scroll_top = *new_offset;
-                                }
-                            });
-                            reaction = reaction.merge(Reaction::Redraw);
-                        }
-                        reaction = reaction.merge(sink.dispatch(&event, None));
-                    }
-                    None if outcome.consumed => {}
-                    None if matches!(event, UiEvent::MouseDown { .. }) => {}
-                    None => return None,
-                }
-                return Some(reaction);
-            }
-            if let UiEvent::MouseDown { .. } = event {
-                self.dismiss_rich_text_popup();
-                return Some(Reaction::Redraw);
             }
         }
 
@@ -2977,36 +3081,35 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
-        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, true)
+        self.dyn_widget_dispatch_with_focus(
+            id,
+            widget.as_ref(),
+            area,
+            DispatchInput::Routed(routed),
+            backend,
+            sink,
+            DispatchFocus::Tree,
+        )
+        .unwrap_or_default()
     }
 
-    /// [`Self::dyn_widget_dispatch`] for a widget that is not part of the
-    /// focus tree: an imperative overlay (completions, a rich-text popup)
-    /// floats over the focused editor and must not take focus from it, so
-    /// its `request_focus` intent is dropped.
-    fn overlay_widget_dispatch(
-        &self,
-        id: WidgetId,
-        widget: &Rc<dyn DynWidget>,
-        area: Rect,
-        routed: RoutedEvent,
-        backend: &mut dyn Backend,
-        sink: &mut dyn EventSink,
-    ) -> DynWidgetClickOutcome {
-        self.dyn_widget_dispatch_with_focus(id, widget, area, routed, backend, sink, false)
-    }
-
+    /// [`Self::dyn_widget_dispatch`]'s body, for any widget: `input` is
+    /// either an already-routed event or a raw one, which is routed here
+    /// against the widget's own layout and sub-regions
+    /// ([`quadraui::compose::routed_event`]) — `None` when a raw event is
+    /// one no widget handles. `focus` says how the widget relates to the
+    /// backend's focus (see [`DispatchFocus`]).
     #[allow(clippy::too_many_arguments)]
     fn dyn_widget_dispatch_with_focus(
         &self,
         id: WidgetId,
-        widget: &Rc<dyn DynWidget>,
+        widget: &dyn DynWidget,
         area: Rect,
-        routed: RoutedEvent,
+        input: DispatchInput<'_>,
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
-        take_focus: bool,
-    ) -> DynWidgetClickOutcome {
+        focus: DispatchFocus,
+    ) -> Option<DynWidgetClickOutcome> {
         // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
         // with at paint time (editor line height, the backend's text
         // measurer, its style and the paint state the widget painted
@@ -3033,14 +3136,21 @@ impl InteractionEngine {
                 .with_paint_state(&painted);
             (ctx.units(), widget.layout(&ctx, area))
         };
+        let routed = match input {
+            DispatchInput::Routed(routed) => routed,
+            DispatchInput::Raw(event) => {
+                quadraui::compose::routed_event(event, area, &widget.sub_regions(layout.as_ref()))?
+            }
+        };
 
         let mut intents = DynWidgetIntents::default();
         let focused = self.dyn_widget_focus(backend);
         let handled = self.widget_states.with(|states| {
-            let state = states.state_for(dyn_state_key(id, widget.as_ref()), widget.as_ref());
+            let state = states.state_for(dyn_state_key(id, widget), widget);
             let mut host = DynWidgetEventHost {
                 units,
                 focused,
+                whole_world: focus == DispatchFocus::Modal,
                 intents: &mut intents,
             };
             let mut cx = EventCx::new(id, &mut host);
@@ -3048,7 +3158,10 @@ impl InteractionEngine {
         });
 
         let mut outcome = DynWidgetClickOutcome::default();
-        if let Some((focus_id, sub)) = intents.focus_request.filter(|_| take_focus) {
+        if let Some((focus_id, sub)) = intents
+            .focus_request
+            .filter(|_| focus == DispatchFocus::Tree)
+        {
             *self.dyn_widget_focus_sub.borrow_mut() = Some((focus_id, sub));
             if backend.set_focus(Some(focus_id)) {
                 let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
@@ -3085,7 +3198,7 @@ impl InteractionEngine {
                 outcome.reaction = outcome.reaction.merge(reaction);
             }
         }
-        outcome
+        Some(outcome)
     }
 
     /// [`tab_past_child_stops`] against the main tree's hits, scrolling
@@ -3157,7 +3270,17 @@ impl InteractionEngine {
             let Some((_, area, widget)) = owners.iter().find(|(id, _, _)| *id == owner) else {
                 continue;
             };
-            let outcome = self.overlay_widget_dispatch(owner, widget, *area, routed, backend, sink);
+            let outcome = self
+                .dyn_widget_dispatch_with_focus(
+                    owner,
+                    widget.as_ref(),
+                    *area,
+                    DispatchInput::Routed(routed),
+                    backend,
+                    sink,
+                    DispatchFocus::Popup,
+                )
+                .unwrap_or_default();
             reaction = reaction.merge(outcome.reaction);
             if let Some(resolved) = outcome.event {
                 reaction = reaction
@@ -3213,20 +3336,18 @@ impl InteractionEngine {
         // through this function the event takes.
         let mut tooltip_dismissed = false;
 
-        // Set when a resolved `HitDetail::CanvasRegion` click or a focused
-        // key press reaches a script-defined widget's own `on_event` (via
-        // `scripted_region_click`/`scripted_key_press`) and it reports the
-        // event as consumed — merged into the final `Reaction` below, the
-        // same way `tooltip_dismissed` is, so the widget's own repainted
-        // state shows even when `sink.dispatch` itself leaves `event`
-        // unhandled (nothing in this crate's own dispatch recognizes a
-        // script-defined widget's id, so it never claims the event on the
-        // widget's behalf).
-        let mut scripted_reaction = Reaction::Continue;
+        // The reaction a focused generic widget produced for a key it let
+        // travel on (`Handled::Ignored`) while still asking for a repaint —
+        // a script-defined widget whose script consumed the key does this
+        // so the app sees the key press too. Merged into the final
+        // `Reaction` below, the same way `tooltip_dismissed` is, so the
+        // widget's repainted state shows even when `sink.dispatch` itself
+        // leaves `event` unhandled.
+        let mut widget_key_reaction = Reaction::Continue;
 
         // Set when an armed `Self::gesture_drag` ends (`MouseUp`) over a
         // valid drop target, below — merged into the final `Reaction` the
-        // same way `scripted_reaction` is. `drag_started_reaction`/
+        // same way `widget_key_reaction` is. `drag_started_reaction`/
         // `drag_over_reaction` are its arm/continue counterparts, set
         // further down once `hit`/the `MouseMoved` branch are reached.
         let mut gesture_reaction = Reaction::Continue;
@@ -3406,6 +3527,7 @@ impl InteractionEngine {
                     .reaction
                     .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             }
+            widget_key_reaction = outcome.reaction;
         }
 
         // A wheel `Scroll` over a [`crate::extra_paint::WIDGET_KINDS`]
@@ -3502,21 +3624,6 @@ impl InteractionEngine {
                                 &UiEvent::MouseLeft { widget: old_id },
                                 Some(&old_detail),
                             ));
-                        // A script-defined widget's region just stopped
-                        // being hovered — dispatched alongside (never instead of) the
-                        // generic `MouseLeft` just above, mirroring
-                        // `CanvasEvent::RegionHovered`'s own "`None` means
-                        // no region, including having left the canvas
-                        // entirely" doc.
-                        if matches!(old_detail, HitDetail::CanvasRegion { .. }) {
-                            hover_reaction = hover_reaction.merge(sink.dispatch(
-                                &UiEvent::Canvas(
-                                    old_id,
-                                    CanvasEvent::RegionHovered { region: None },
-                                ),
-                                None,
-                            ));
-                        }
                     }
                     if matches!(hover_reaction, Reaction::Exit) {
                         return hover_reaction;
@@ -3526,19 +3633,6 @@ impl InteractionEngine {
                             &UiEvent::MouseEntered { widget: *new_id },
                             Some(new_detail),
                         ));
-                        // The counterpart entering arm: a script-defined
-                        // widget's region just started being hovered.
-                        if let HitDetail::CanvasRegion { region } = new_detail {
-                            hover_reaction = hover_reaction.merge(sink.dispatch(
-                                &UiEvent::Canvas(
-                                    *new_id,
-                                    CanvasEvent::RegionHovered {
-                                        region: Some(region.as_str().to_string()),
-                                    },
-                                ),
-                                None,
-                            ));
-                        }
                     }
                     *self.hover.borrow_mut() = hit_now;
                     if matches!(hover_reaction, Reaction::Exit) {
@@ -3765,17 +3859,6 @@ impl InteractionEngine {
                 } else {
                     false
                 };
-                // Generic counterpart of the per-kind arms
-                // `focus_scoped_key_event` below has — forwards straight to the focused
-                // leaf's own `ScriptedExtra::scripted_key_pressed` when it
-                // has one, since that function's `UiEvent`-only return has
-                // no room for the `bool` a script's own `on_event` answers
-                // with. A no-op (`false`) for every other focused leaf.
-                // Computed before `event` is reassigned below, since `key`
-                // still borrows it here.
-                if scripted_key_press(&self.hit_map.borrow(), focused, key) {
-                    scripted_reaction = Reaction::Redraw;
-                }
                 event = focus_scoped_key_event(focused, key, *modifiers, &self.hit_map.borrow());
                 if nav_applied {
                     // A windowed leaf's cursor move can scroll past the
@@ -3986,19 +4069,15 @@ impl InteractionEngine {
                 // `ExtraBody` outcome in this one arm means two of them can
                 // never fire for the same click.
                 if !double_click && matches!(detail, HitDetail::ExtraBody) {
-                    if let Some(position) = event_position(&event) {
-                        if let Some(semantic) = semantic_event_for_hit(
-                            *id,
-                            detail,
-                            button,
-                            modifiers,
-                            double_click,
-                            &self.hit_map.borrow(),
-                            position,
-                        ) {
-                            event = semantic;
-                            attach_hit = false;
-                        }
+                    if let Some(semantic) = semantic_event_for_hit(
+                        *id,
+                        detail,
+                        modifiers,
+                        double_click,
+                        &self.hit_map.borrow(),
+                    ) {
+                        event = semantic;
+                        attach_hit = false;
                     }
                 } else if matches!(detail, HitDetail::WidgetBody) {
                     if let Some(position) = event_position(&event) {
@@ -4180,34 +4259,10 @@ impl InteractionEngine {
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
-                    button,
                     modifiers,
                     double_click,
                     &self.hit_map.borrow(),
-                    event_position(&event).unwrap_or_default(),
                 ) {
-                    // Generic counterpart of the `SplitDivider`/`SplitTreeDivider`/...
-                    // arms above: a `CanvasRegion` hit also reaches the
-                    // matched leaf's own `ScriptedExtra::scripted_click_region`,
-                    // when it has one, since `semantic_event_for_hit`'s own
-                    // `CanvasRegion` arm only builds the `UiEvent::Canvas`
-                    // an app's own handler sees -- a plain `Canvas`
-                    // descriptor has no `on_event` of its own for anything
-                    // to call, so this is a no-op (`false`) for one of
-                    // those, same as for every other hit kind.
-                    if let HitDetail::CanvasRegion { region } = detail {
-                        if scripted_region_click(
-                            &self.hit_map.borrow(),
-                            *id,
-                            *region,
-                            button,
-                            modifiers,
-                            double_click,
-                            event_position(&event).unwrap_or_default(),
-                        ) {
-                            scripted_reaction = Reaction::Redraw;
-                        }
-                    }
                     event = semantic;
                     attach_hit = false;
                 }
@@ -4279,7 +4334,7 @@ impl InteractionEngine {
             .merge(widget_click_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
-            .merge(scripted_reaction)
+            .merge(widget_key_reaction)
             .merge(gesture_reaction)
             .merge(popup_reaction)
             .merge(drag_started_reaction)
@@ -8291,7 +8346,7 @@ mod tests {
 
     /// Opening a message dialog while a context-menu popup is already
     /// open closes the popup: paint order puts the dialog on top
-    /// ([`Overlay::Dialog`]'s own [`Overlay::rank`] is higher than
+    /// (a dialog's [`Overlay::rank`] is higher than
     /// [`Overlay::ContextMenu`]'s), and [`InteractionEngine::handle`]
     /// checks the dialog first, so a popup left open underneath would be
     /// unreachable input it still held precedence over.
@@ -8641,6 +8696,105 @@ mod tests {
                 .map(|(p, _)| p.scroll_top),
             Some(new_offset)
         );
+    }
+
+    fn short_rich_text_popup() -> quadraui::RichTextPopup {
+        quadraui::RichTextPopup {
+            id: WidgetId::new("popup"),
+            line_text: vec!["short note".to_string()],
+            lines: vec![serde_json::from_value(serde_json::json!({
+                "spans": [{"text": "short note", "fg": null, "bg": null}]
+            }))
+            .expect("line decodes")],
+            line_scales: vec![],
+            scroll_top: 0,
+            max_visible_rows: 3,
+            has_focus: false,
+            selection: None,
+            links: vec![],
+            focused_link: None,
+            placement: Default::default(),
+            padding: 1.0,
+            fg: None,
+            bg: None,
+            font_role: Default::default(),
+        }
+    }
+
+    /// A double-click or a wheel notch on a rich-text popup's body — which
+    /// the popup itself ignores — is still swallowed by the popup, never
+    /// reaching the app or whatever is painted beneath it.
+    #[test]
+    fn input_the_rich_text_popup_ignores_still_never_clicks_through_it() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_rich_text_popup(short_rich_text_popup(), Point::new(2.0, 2.0));
+        driver.render();
+        let (x, y) = driver.find("short note").expect("the popup body paints");
+
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(x, y),
+        });
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+
+        assert_eq!(overlay_events(&driver), Vec::<UiEvent>::new());
+        assert!(
+            driver.app().engine.find_rich_text_popup().is_some(),
+            "a press on the popup itself keeps it open"
+        );
+    }
+
+    /// The same for a completions list: a wheel notch over a list too
+    /// short to scroll is swallowed rather than scrolling the content
+    /// behind it.
+    #[test]
+    fn a_wheel_notch_on_a_completions_list_never_scrolls_what_is_beneath_it() {
+        let mut driver = overlay_driver();
+        let (_backend, app) = driver.parts_mut();
+        app.engine
+            .show_completions(two_completions(), Point::new(2.0, 2.0));
+        driver.render();
+        let (x, y) = driver.find("filter").expect("the second item paints");
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: quadraui::ScrollDelta { x: 0.0, y: -1.0 },
+            position: Point::new(x, y),
+        });
+
+        assert!(
+            !overlay_events(&driver)
+                .iter()
+                .any(|e| matches!(e, UiEvent::Scroll { .. })),
+            "{:?}",
+            overlay_events(&driver)
+        );
+        assert!(driver.app().engine.find_completions().is_some());
+    }
+
+    /// A generic widget leaf's interaction state lives in the engine's own
+    /// widget-state store, which a third binding reads through
+    /// [`InteractionEngine::with_widget_states`]; the host-resolved
+    /// container values stay in [`InteractionEngine::widget_state`].
+    #[test]
+    fn generic_widget_state_lives_in_the_engines_widget_state_store() {
+        let mut driver = overlay_driver();
+        driver.render();
+        let (x, y) = driver.find("Go").expect("the button paints");
+        driver.click(x, y);
+        let engine = &driver.app().engine;
+        let id = WidgetId::new("go");
+        assert!(
+            engine.with_widget_states(|states| states.contains(&id)),
+            "the clicked button's own state is in the engine's store"
+        );
+        assert!(!engine.widget_state().borrow().contains(&id));
     }
 
     /// Dismissing one overlay by id, through the shared stack, leaves
@@ -12310,15 +12464,14 @@ mod tests {
         );
     }
 
-    // ─── Scripted-widget generic region-click/focused-key forwarding ───
+    // ─── Scripted widgets on the generic widget routing ───
     //
-    // Exercises the seam `crate::scripted::ScriptedExtra` adds: a
-    // `ScriptWidget` built directly in Rust test code (mirroring
+    // A `ScriptWidget` built directly in Rust test code (mirroring
     // `crate::scripted`'s own `Swatch` test widget — no real binding
-    // callback object anywhere in scope), spliced into a decoded leaf and
-    // driven through a real `InteractionEngine::handle`, proving a
-    // resolved region click and a focused key press both reach the
-    // script's own `on_event` generically, with no `W`-specific code in
+    // callback object anywhere in scope), placed in a generic widget leaf
+    // and driven through a real `InteractionEngine::handle`, proving a
+    // region click and a focused key press both reach the script's own
+    // `on_event` through `DynWidget::handle`, with no `W`-specific code in
     // `hit.rs`/`semantic.rs`/`engine.rs`.
 
     /// Records every call [`ScriptWidget::on_event`] receives into `log`,
@@ -12382,11 +12535,10 @@ mod tests {
 
     /// An [`AppLogic`] hosting exactly one `"widget"` leaf wrapping a
     /// [`crate::scripted::ScriptedPrimitive<RecordingScriptWidget>`] —
-    /// built directly (never through `crate::scripted::register_scripted_widget`'s
-    /// own wire-decode seam), the same way a binding's own render pass
-    /// would splice one in after a `"scripted_widget"` leaf decode.
+    /// built directly rather than decoded, the same way a binding's own
+    /// render pass splices one in.
     struct ScriptedWidgetLogic {
-        primitive: Rc<crate::scripted::ScriptedPrimitive<RecordingScriptWidget>>,
+        primitive: crate::scripted::ScriptedPrimitive<RecordingScriptWidget>,
         engine: InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
@@ -12399,9 +12551,10 @@ mod tests {
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let node = LayoutNode::Leaf(LayoutLeaf {
                 id: "widget".to_string(),
-                descriptor: LeafDescriptor::Extra(
-                    self.primitive.clone() as Rc<dyn crate::extra_paint::ExtraPaint>
-                ),
+                descriptor: LeafDescriptor::Widget {
+                    kind: crate::scripted::SCRIPTED_WIDGET_KIND,
+                    widget: Rc::new(self.primitive.clone()),
+                },
                 scroll_px: None,
             });
             let mut hits = Vec::new();
@@ -12420,22 +12573,19 @@ mod tests {
     }
 
     /// A `MouseDown` landing on the scripted widget's declared region
-    /// resolves (through `hit.rs`'s now-generic `CanvasHit::Region`
-    /// handling) to `HitDetail::CanvasRegion`, and
-    /// `crate::semantic::scripted_region_click`'s forwarding (called from
-    /// `InteractionEngine::handle` itself) reaches the widget's own
-    /// `on_event` — proving the whole `hit.rs` → `semantic.rs` →
-    /// `engine.rs` chain, not just one link of it in isolation. A focused
-    /// `KeyPressed` afterward proves the same for
-    /// `crate::semantic::scripted_key_press`.
+    /// reaches the script's own `on_event` through the generic widget
+    /// routing, and the app receives the same `UiEvent::Canvas` region
+    /// click a `Canvas` leaf reports. A focused `KeyPressed` afterward
+    /// reaches the script too, and — since the script lets keys travel on —
+    /// the app still receives the key press, with a repaint requested.
     #[test]
     fn scripted_widget_region_click_and_focused_key_both_forward_to_its_own_on_event() {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             WidgetId::new("widget"),
             RecordingScriptWidget { log: log.clone() },
             true,
-        ));
+        );
         let logic = ScriptedWidgetLogic {
             primitive,
             engine: InteractionEngine::new(),
@@ -12457,12 +12607,32 @@ mod tests {
             ["clicked"],
             "a region click must reach the script's own on_event exactly once"
         );
+        assert!(
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .iter()
+                .any(|(event, _)| *event
+                    == UiEvent::Canvas(
+                        WidgetId::new("widget"),
+                        quadraui::CanvasEvent::RegionClicked {
+                            region: WidgetId::new("widget:region"),
+                            button: MouseButton::Left,
+                            modifiers: Modifiers::default(),
+                            x: 8.0,
+                            y: 2.0,
+                        },
+                    )),
+            "{:?}",
+            driver.app().sink.borrow().dispatched
+        );
 
-        // The `MouseDown` above already click-to-focused the widget
-        // (`InteractionEngine::handle`'s own `is_focusable` check, since
-        // `ScriptedPrimitive::tab_stop` reports the `focusable: true` it
-        // was built with) — so this `KeyPressed` reaches it with no
-        // further focus bookkeeping needed.
+        // The `MouseDown` above already click-to-focused the widget (its
+        // `FocusSpec::Stop`, since it was built `focusable: true`) — so
+        // this `KeyPressed` reaches it with no further focus bookkeeping
+        // needed.
         {
             let (backend, _app) = driver.parts_mut();
             assert_eq!(
@@ -12471,32 +12641,42 @@ mod tests {
                 "the click above must have already focused the widget"
             );
         }
-        driver.dispatch(UiEvent::KeyPressed {
+        let key = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers::default(),
             repeat: false,
-        });
+        };
+        let reaction = driver.dispatch(key.clone());
         assert_eq!(
             log.borrow().as_slice(),
             ["clicked", "key"],
             "a key press while focused must also reach the script's own on_event"
         );
+        assert_eq!(
+            driver
+                .app()
+                .sink
+                .borrow()
+                .dispatched
+                .last()
+                .map(|(event, _)| event),
+            Some(&key)
+        );
+        assert_eq!(reaction, Reaction::Redraw);
     }
 
     /// A `MouseDown` landing OUTSIDE the scripted widget's declared
-    /// region (but still inside its own body) resolves to
-    /// `HitDetail::ExtraBody`, never `CanvasRegion` — so
-    /// `scripted_region_click` is never called at all, and the script's
-    /// `on_event` sees nothing, mirroring a real `Canvas` leaf's own
-    /// "outside every declared region" posture.
+    /// region (but still inside its own body) never reaches the script's
+    /// `on_event`, mirroring a real `Canvas` leaf's own "outside every
+    /// declared region" posture.
     #[test]
     fn a_click_outside_every_declared_region_never_reaches_on_event() {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             WidgetId::new("widget"),
             RecordingScriptWidget { log: log.clone() },
             true,
-        ));
+        );
         let logic = ScriptedWidgetLogic {
             primitive,
             engine: InteractionEngine::new(),
