@@ -1433,7 +1433,7 @@ test("canvas region double-click emits a typed RegionDoubleClicked event", () =>
   const [widgetId, canvasEvent] = received[0].Canvas;
   assert.equal(widgetId, "canvas:regions");
   assert.deepEqual(canvasEvent, {
-    RegionDoubleClicked: { region: "region:a", x: 1.0, y: 0.0 },
+    RegionDoubleClicked: { region: "region:a", button: "Left", x: 1.0, y: 0.0 },
   });
 });
 

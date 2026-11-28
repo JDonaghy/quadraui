@@ -2796,7 +2796,7 @@ def test_canvas_region_double_click_emits_a_typed_region_double_clicked_event():
     widget_id, canvas_event = received[0]["Canvas"]
     assert widget_id == "canvas:regions"
     assert canvas_event == {
-        "RegionDoubleClicked": {"region": "region:a", "x": 1.0, "y": 0.0}
+        "RegionDoubleClicked": {"region": "region:a", "button": "Left", "x": 1.0, "y": 0.0}
     }
 
 

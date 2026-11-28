@@ -24,8 +24,8 @@ function row(name: string) {
   return { cells: [{ spans: [{ text: name, fg: null, bg: null }] }] };
 }
 
-// A one-column table whose rows sit at y == 1 + idx (the header is row 0),
-// echoing `RowSelected`/`SelectionSet` back into its descriptor.
+// A one-column table whose rows sit at y == 1 + idx (the header is row 0;
+// a lone table slot is four cells tall, so rows 0-2 are on screen), echoing `RowSelected`/`SelectionSet` back into its descriptor.
 function tableApp(mode: "Single" | "Multi" = "Single") {
   const app = new QuiApp(24, 10);
   const state: { selected: number | null; set: number[] } = { selected: null, set: [] };
@@ -53,9 +53,11 @@ function tableApp(mode: "Single" | "Multi" = "Single") {
   return { app, received };
 }
 
-function press(app: any, y: number, button = "Left", modifiers = NO_MODS) {
-  app.pushEvent({ MouseDown: { button, position: { x: 2.0, y }, modifiers } });
-  app.pushEvent({ MouseUp: { button, position: { x: 2.0, y } } });
+// Consecutive presses less than 1.5 cells apart fold into a double-click,
+// so the multi-select test alternates `x`.
+function press(app: any, y: number, button = "Left", modifiers = NO_MODS, x = 2.0) {
+  app.pushEvent({ MouseDown: { button, position: { x, y }, modifiers } });
+  app.pushEvent({ MouseUp: { button, position: { x, y } } });
   app.run(2);
 }
 
@@ -70,14 +72,14 @@ function payloads(received: any[]) {
 
 test("two quick right-clicks on a row are two context-menu requests", () => {
   const { app, received } = tableApp();
-  press(app, 5, "Right");
-  press(app, 5, "Right");
+  press(app, 3, "Right");
+  press(app, 3, "Right");
   const menus = payloads(received).filter((p) => p.ContextMenuRequested);
   assert.deepEqual(
     menus.map((p) => p.ContextMenuRequested),
     [
-      { idx: 4, position: { x: 2.0, y: 5.0 } },
-      { idx: 4, position: { x: 2.0, y: 5.0 } },
+      { idx: 2, position: { x: 2.0, y: 3.0 } },
+      { idx: 2, position: { x: 2.0, y: 3.0 } },
     ],
   );
   assert.ok(!payloads(received).some((p) => p.RowDoubleClicked || p.RowSelected), JSON.stringify(received));
@@ -94,16 +96,16 @@ test("a middle-click on a row reports its button", () => {
 
 test("a Multi table grows a selection from clicks and keys", () => {
   const { app, received } = tableApp("Multi");
-  press(app, 2);
-  press(app, 4, "Left", SHIFT);
-  press(app, 3, "Left", CTRL);
+  press(app, 1);
+  press(app, 3, "Left", SHIFT, 6.0);
+  press(app, 2, "Left", CTRL);
   key(app, { Char: "a" }, CTRL);
   key(app, { Char: " " });
   key(app, { Char: " " }, CTRL);
   const sets = payloads(received)
     .filter((p) => p.SelectionSet)
     .map((p) => p.SelectionSet.indices);
-  assert.deepEqual(sets, [[1, 2, 3], [1, 3], [0, 1, 2, 3, 4], [0, 2, 3, 4]]);
+  assert.deepEqual(sets, [[0, 1, 2], [0, 2], [0, 1, 2, 3, 4], [1, 2, 3, 4]]);
 });
 
 test("two quick clicks on a Button call onClick twice", () => {

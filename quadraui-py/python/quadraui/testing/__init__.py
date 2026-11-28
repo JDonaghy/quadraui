@@ -273,7 +273,10 @@ def _by_index(row: Row) -> Dict[str, Any]:
 # (role, verb) -> the `UiEvent` variant the engine delivers for it.
 _ROW_EVENTS: Dict[str, Dict[str, Tuple[str, Callable[[Row], Dict[str, Any]]]]] = {
     "tree": {
-        "click": ("RowClicked", lambda row: {"path": row.path, "modifiers": _modifiers(False, False, False, False)}),
+        "click": (
+            "RowClicked",
+            lambda row: {"path": row.path, "button": "Left", "modifiers": _modifiers(False, False, False, False)},
+        ),
         "select": ("SelectionChanged", _by_path),
         "double_click": ("RowDoubleClicked", _by_path),
         "activate": ("RowDoubleClicked", _by_path),

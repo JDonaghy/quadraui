@@ -28,7 +28,8 @@ def _row(name):
 
 def _table_app(mode="Single", list_leaf=False):
     """A one-column table (or list) whose rows sit at y == 1.0 + idx (the
-    table header is row 0) and which echoes `RowSelected`/`SelectionSet`
+    table header is row 0; a lone table slot is four cells tall, so rows
+    0-2 are on screen) and which echoes `RowSelected`/`SelectionSet`
     back into its descriptor, as an app keeps it controlled."""
     app = QuiApp(24, 10)
     state = {"selected": None, "set": []}
@@ -64,11 +65,13 @@ def _table_app(mode="Single", list_leaf=False):
     return app, received
 
 
-def _press(app, y, button="Left", mods=_NO_MODS):
+def _press(app, y, button="Left", mods=_NO_MODS, x=2.0):
+    """Presses at (x, y). Consecutive presses less than 1.5 cells apart fold
+    into a double-click, so the multi-select tests alternate `x`."""
     app.push_event(
-        {"MouseDown": {"button": button, "position": {"x": 2.0, "y": float(y)}, "modifiers": mods}}
+        {"MouseDown": {"button": button, "position": {"x": x, "y": float(y)}, "modifiers": mods}}
     )
-    app.push_event({"MouseUp": {"button": button, "position": {"x": 2.0, "y": float(y)}}})
+    app.push_event({"MouseUp": {"button": button, "position": {"x": x, "y": float(y)}}})
     app.run(2)
 
 
@@ -83,10 +86,10 @@ def _payloads(received, kind="DataTable"):
 
 def test_a_right_click_on_a_table_row_requests_its_context_menu():
     app, received = _table_app()
-    _press(app, 5, button="Right")  # row 4
+    _press(app, 3, button="Right")  # row 2
 
     menus = [p["ContextMenuRequested"] for p in _payloads(received) if "ContextMenuRequested" in p]
-    assert menus == [{"idx": 4, "position": {"x": 2.0, "y": 5.0}}], received
+    assert menus == [{"idx": 2, "position": {"x": 2.0, "y": 3.0}}], received
     assert not any("RowSelected" in p for p in _payloads(received)), received
 
 
@@ -110,13 +113,13 @@ def test_a_middle_click_reports_its_button():
 
 def test_multi_table_grows_a_selection_from_clicks_and_keys():
     app, received = _table_app(mode="Multi")
-    _press(app, 2)  # row 1
-    _press(app, 4, mods=_SHIFT)  # row 3
-    _press(app, 3, mods=_CTRL)  # row 2
+    _press(app, 1)  # row 0
+    _press(app, 3, mods=_SHIFT, x=6.0)  # row 2
+    _press(app, 2, mods=_CTRL)  # row 1
     _key(app, {"Char": "a"}, _CTRL)
 
     sets = [p["SelectionSet"]["indices"] for p in _payloads(received) if "SelectionSet" in p]
-    assert sets == [[1, 2, 3], [1, 3], [0, 1, 2, 3, 4]], received
+    assert sets == [[0, 1, 2], [0, 2], [0, 1, 2, 3, 4]], received
 
 
 def test_ctrl_space_toggles_and_plain_space_does_not():
@@ -132,21 +135,21 @@ def test_ctrl_space_toggles_and_plain_space_does_not():
 
 def test_shift_down_extends_a_multi_selection():
     app, received = _table_app(mode="Multi")
-    _press(app, 2)  # row 1
+    _press(app, 1)  # row 0
     _key(app, {"Named": "Down"}, _SHIFT)
     _key(app, {"Named": "Down"}, _SHIFT)
 
     sets = [p["SelectionSet"]["indices"] for p in _payloads(received) if "SelectionSet" in p]
-    assert sets == [[1, 2], [1, 2, 3]], received
+    assert sets == [[0, 1], [0, 1, 2]], received
 
 
 def test_a_single_mode_table_treats_a_shift_click_as_a_plain_click():
     app, received = _table_app()
-    _press(app, 2)
-    _press(app, 4, mods=_SHIFT)
+    _press(app, 1)
+    _press(app, 3, mods=_SHIFT, x=6.0)
 
     payloads = _payloads(received)
-    assert {"RowSelected": {"idx": 3}} in payloads, received
+    assert {"RowSelected": {"idx": 2}} in payloads, received
     assert not any("SelectionSet" in p for p in payloads), received
 
 
