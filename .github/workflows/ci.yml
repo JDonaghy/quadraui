@@ -257,7 +257,7 @@ jobs:
     #
     # No `features:`/`feature-group:` input: left at the action's default,
     # which heuristically enables every non-unstable, non-internal feature
-    # (tui, gtk, win, terminal, layout, macos). That is a *larger* surface
+    # (tui, gtk, win, terminal, macos). That is a *larger* surface
     # than the `doc` job below documents — `doc` deliberately excludes
     # `macos` since `lib.rs` gates `mod macos` on `target_os = "macos"` (see
     # that job's own comment), so on this ubuntu runner `macos`'s public API
@@ -375,7 +375,7 @@ jobs:
           echo "::warning title=Public-API break accumulating for the next release::$MSG"
 
   doc:
-    # #797: docs.rs renders `tui`/`tui-images`/`gtk`/`win`/`terminal`/`layout` only if they
+    # #797: docs.rs renders `tui`/`tui-images`/`gtk`/`win`/`terminal` only if they
     # build clean under `cargo doc` — this is the local proxy for that, run with
     # the same `-D warnings` bar as every other CI step (via `RUSTDOCFLAGS`,
     # since `RUSTFLAGS` doesn't reach rustdoc). `macos` is excluded here:
@@ -409,7 +409,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, tui-images, gtk, win, terminal, layout, a11y, control)
+      - name: cargo doc --no-deps -D warnings (tui, tui-images, gtk, win, terminal, a11y, control)
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --no-deps -p quadraui --features tui,tui-images,gtk,win,terminal,a11y,control
@@ -1179,7 +1179,7 @@ jobs:
       # behind this feature, so the plain `--features tui`/`--features
       # gtk,tui` steps above never turn it on and `accesskit_convert` would
       # otherwise never compile or run under CI. Same "own feature, own
-      # steps, same job" shape as `layout` just above.
+      # steps, same job" shape as `tui-images` below.
       - name: Build (a11y feature)
         run: cargo build -p quadraui --features a11y
       - name: Test (a11y feature)
@@ -1208,7 +1208,7 @@ jobs:
       # standalone `--features control` build/test for the channel's own
       # unit tests, plus one `tui,control` run for the TUI runner wiring's
       # black-box driver test. Same "own feature, own steps, same job"
-      # shape as `layout`/`a11y`/`tui-images` above.
+      # shape as `a11y`/`tui-images` above.
       - name: Build (control feature)
         run: cargo build -p quadraui --features control
       - name: Test (control feature)

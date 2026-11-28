@@ -127,7 +127,12 @@ impl AppLogic for MarkdownWrapDemo {
         };
 
         let vp = backend.viewport();
-        backend.draw_list(quadraui::Rect::new(0.0, 0.0, vp.width, vp.height), &list);
+        let _ = quadraui::DrawsPrimitives::draw_dyn(
+            backend,
+            quadraui::Rect::new(0.0, 0.0, vp.width, vp.height),
+            &list,
+            &(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

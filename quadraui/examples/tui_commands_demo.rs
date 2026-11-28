@@ -95,9 +95,9 @@ impl quadraui::AppLogic for CommandsDemo {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::List {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 34.0, 10.0),
-            list: ListView {
+            widget: Box::new(ListView {
                 id: WidgetId::new("rows"),
                 title: Some(StyledText::plain("Level 2 commands — Up/Down, q to quit")),
                 items: self
@@ -118,7 +118,7 @@ impl quadraui::AppLogic for CommandsDemo {
                 max_content_width: None,
                 show_v_scrollbar: false,
                 striped: false,
-            },
+            }),
         });
         layout.draw(backend);
     }

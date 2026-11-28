@@ -27,9 +27,6 @@ use core_graphics::sys::CGContextRef;
 use crate::types::Color;
 
 extern "C" {
-    pub(crate) fn CGContextSaveGState(c: CGContextRef);
-    pub(crate) fn CGContextRestoreGState(c: CGContextRef);
-    pub(crate) fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
     pub(crate) fn CGContextSetRGBFillColor(
         c: CGContextRef,
         red: core_graphics::base::CGFloat,

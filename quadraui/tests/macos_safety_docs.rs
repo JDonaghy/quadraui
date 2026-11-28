@@ -113,10 +113,10 @@ fn every_exported_unsafe_fn_in_macos_has_a_safety_doc() {
     }
 
     // A bug in the scanner that silently matched nothing would make this
-    // test permanently green and useless; src/macos is full of
-    // `pub unsafe fn draw_*` rasterisers.
+    // test permanently green and useless; src/macos still exports a
+    // handful of `pub unsafe fn` Core Graphics and text helpers.
     assert!(
-        checked > 10,
+        checked > 3,
         "expected many `pub unsafe fn`s under src/macos, found {checked} — \
          is_exported_unsafe_fn() has probably stopped matching"
     );

@@ -8,18 +8,17 @@
 //! `table.bordered` draws a rounded frame around `area` and insets all
 //! content by 1 cell, matching the inset `DataTable::layout` reserves.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::prelude::Position;
-use ratatui::style::{Color as RatatuiColor, Modifier, Style};
 
+use crate::cell_surface::{solid_style, CellStyle, CellSurface};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataRow, DataTable, DataTableGlyphs, DataTableLayout,
     DataTablePaintState, ResolvedColumn, SortDirection,
 };
 use crate::primitives::row_stack::stack_rows_from;
 use crate::theme::Theme;
-use crate::tui::{align_offset, ratatui_color, set_cell, set_cell_wide};
+use crate::tui::align_offset;
+use crate::types::Color;
 
 /// Resolve the cell-grid layout [`draw_data_table_inner`] paints `table`
 /// at, without touching a buffer.
@@ -53,13 +52,13 @@ pub(crate) fn cell_data_table_layout(area: Rect, table: &DataTable) -> DataTable
 /// coordinates.
 #[cfg(test)]
 fn paint_hovered(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    paint_with_glyphs(buf, area, table, theme, hovered_idx, None, false)
+    paint_with_glyphs(surface, area, table, theme, hovered_idx, None, false)
 }
 
 /// [`paint_hovered`] with an optional app-supplied [`DataTableGlyphs`]
@@ -73,7 +72,7 @@ fn paint_hovered(
 /// defaults (`crate::codicon::SORT_ASCENDING`/`SORT_DESCENDING`).
 #[cfg(test)]
 fn paint_with_glyphs(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
@@ -82,7 +81,15 @@ fn paint_with_glyphs(
     nerd_fonts_enabled: bool,
 ) -> DataTableLayout {
     let state = DataTablePaintState::default().with_hovered_idx(hovered_idx);
-    draw_data_table_inner(buf, area, table, theme, &state, glyphs, nerd_fonts_enabled)
+    draw_data_table_inner(
+        surface,
+        area,
+        table,
+        theme,
+        &state,
+        glyphs,
+        nerd_fonts_enabled,
+    )
 }
 
 /// [`paint_hovered`], plus a pixel-precise scroll position via
@@ -97,13 +104,13 @@ fn paint_with_glyphs(
 /// carries) resolves to exactly the pre-existing whole-row behaviour.
 #[cfg(test)]
 fn paint_with_state(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
     state: &DataTablePaintState,
 ) -> DataTableLayout {
-    draw_data_table_inner(buf, area, table, theme, state, None, false)
+    draw_data_table_inner(surface, area, table, theme, state, None, false)
 }
 
 /// Shared paint context for [`draw_header`], [`draw_row`] and
@@ -152,18 +159,18 @@ fn usable_width(ctx: &RowPaintCtx<'_>, col_idx: usize, col_w: u16) -> u16 {
 /// divider glyph first — the header and body rows want it, the footer
 /// does not. The shared skeleton of all three bands.
 fn draw_band(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowPaintCtx<'_>,
     y: u16,
-    (fg, bg): (RatatuiColor, RatatuiColor),
+    (fg, bg): (Color, Color),
     separators: bool,
-    mut cell: impl FnMut(&mut Buffer, usize, i32, u16),
+    mut cell: impl FnMut(&mut dyn CellSurface, usize, i32, u16),
 ) {
     let (area, ox) = (ctx.area, ctx.ox());
     let (x0, x1) = ctx.bounds();
-    let sep_fg = ratatui_color(ctx.theme.separator);
+    let sep_fg = ctx.theme.separator;
     for x in ox..area.width.saturating_sub(ox) {
-        set_cell(buf, area.x + x, y, ' ', fg, bg);
+        surface.put_char(area.x + x, y, ' ', solid_style(fg, bg));
     }
     for (col_idx, rc) in ctx.layout.columns.iter().enumerate() {
         let Some((col_x, col_w)) = ctx.column(rc) else {
@@ -171,9 +178,9 @@ fn draw_band(
         };
         let sep_cx = col_x + col_w as i32 - 1;
         if separators && col_idx + 1 < ctx.table.columns.len() && sep_cx >= x0 && sep_cx < x1 {
-            set_cell(buf, sep_cx as u16, y, '│', sep_fg, bg);
+            surface.put_char(sep_cx as u16, y, '│', solid_style(sep_fg, bg));
         }
-        cell(buf, col_idx, col_x, col_w);
+        cell(surface, col_idx, col_x, col_w);
     }
 }
 
@@ -181,12 +188,12 @@ fn draw_band(
 /// with its own foreground, skipping cells left of `clip.0` and stopping
 /// at `clip.1`. Shared by the header titles and the footer spans.
 fn draw_bold_chars(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     x: i32,
     y: u16,
     clip: (i32, i32),
-    bg: RatatuiColor,
-    chars: impl Iterator<Item = (char, RatatuiColor)>,
+    bg: Color,
+    chars: impl Iterator<Item = (char, Color)>,
 ) {
     for (i, (ch, fg)) in chars.enumerate() {
         let cx = x + i as i32;
@@ -194,10 +201,11 @@ fn draw_bold_chars(
             break;
         }
         if cx >= clip.0 {
-            set_cell(buf, cx as u16, y, ch, fg, bg);
-            if let Some(cell) = buf.cell_mut(Position::new(cx as u16, y)) {
-                cell.set_style(Style::default().add_modifier(Modifier::BOLD));
-            }
+            let style = CellStyle {
+                bold: true,
+                ..solid_style(fg, bg)
+            };
+            surface.put_char(cx as u16, y, ch, style);
         }
     }
 }
@@ -205,15 +213,15 @@ fn draw_bold_chars(
 /// Header row: background fill, title + sort glyph per column,
 /// separators.
 pub(crate) fn draw_header(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     header_y: u16,
     ctx: &RowPaintCtx<'_>,
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
 ) {
     let table = ctx.table;
-    let fg = ratatui_color(ctx.theme.foreground);
-    let bg = ratatui_color(ctx.theme.tab_bar_bg);
+    let fg = ctx.theme.foreground;
+    let bg = ctx.theme.tab_bar_bg;
     let (x0, x1) = ctx.bounds();
     let sort = table.sort.map(|(si, dir)| {
         let (icon, plain) = match dir {
@@ -225,7 +233,7 @@ pub(crate) fn draw_header(
             icon.map_or(plain, |icon| icon.resolve(nerd_fonts_enabled)),
         )
     });
-    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+    let paint = |surface: &mut dyn CellSurface, col_idx: usize, col_x: i32, col_w: u16| {
         let Some(col) = table.columns.get(col_idx) else {
             return;
         };
@@ -237,9 +245,9 @@ pub(crate) fn draw_header(
         let start = align_offset(col.align, title.chars().count() as u16, usable_w) as i32;
         let clip = (x0, x1.min(col_x + usable_w as i32));
         let chars = title.chars().map(|ch| (ch, fg));
-        draw_bold_chars(buf, col_x + start, header_y, clip, bg, chars);
+        draw_bold_chars(surface, col_x + start, header_y, clip, bg, chars);
     };
-    draw_band(buf, ctx, header_y, (fg, bg), true, paint);
+    draw_band(surface, ctx, header_y, (fg, bg), true, paint);
 }
 
 /// Given a column index + visible (clipped) cell rect, paint it and
@@ -247,19 +255,19 @@ pub(crate) fn draw_header(
 /// The hook owns the whole visible column, separator cell included: the
 /// separator paints before the hook runs, so a hook that fills its rect
 /// erases it. The default [`draw_cell`] reserves it via [`usable_width`].
-pub(crate) type CellPaintHook<'a> = dyn FnMut(&mut Buffer, usize, Rect) -> bool + 'a;
+pub(crate) type CellPaintHook<'a> = dyn FnMut(&mut dyn CellSurface, usize, Rect) -> bool + 'a;
 
 /// Default body-cell text painter — ellipsis-truncated by display
 /// width, muted or per-span coloured — [`draw_row`]'s `cell_hook`
 /// stands in for.
 pub(crate) fn draw_cell(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowPaintCtx<'_>,
     row: &DataRow,
     col_idx: usize,
     (col_x_raw, col_w): (i32, u16),
     y: u16,
-    (row_fg, row_bg): (RatatuiColor, RatatuiColor),
+    (row_fg, row_bg): (Color, Color),
 ) {
     let styled = match row.cells.get(col_idx) {
         Some(c) if !c.spans.is_empty() => c,
@@ -286,16 +294,16 @@ pub(crate) fn draw_cell(
     let mut width_used = 0u16;
     'cell: for span in &styled.spans {
         let span_fg = if is_muted {
-            ratatui_color(ctx.theme.muted_fg)
+            ctx.theme.muted_fg
         } else {
-            span.fg.map(ratatui_color).unwrap_or(row_fg)
+            span.fg.unwrap_or(row_fg)
         };
         for ch in span.text.chars() {
             if chars_emitted == visible_chars {
                 if needs_ellipsis {
                     let cx = col_x_raw + start + width_used as i32;
                     if cx >= inner_x0 && cx < inner_x1 {
-                        set_cell(buf, cx as u16, y, '…', span_fg, row_bg);
+                        surface.put_char(cx as u16, y, '…', solid_style(span_fg, row_bg));
                     }
                 }
                 break 'cell;
@@ -307,9 +315,9 @@ pub(crate) fn draw_cell(
             let w = crate::text_util::char_cell_width(ch);
             if cx >= inner_x0 {
                 if w == 2 && cx + 1 < inner_x1 {
-                    set_cell_wide(buf, cx as u16, y, ch, span_fg, row_bg);
+                    surface.put_wide(cx as u16, y, ch, solid_style(span_fg, row_bg));
                 } else {
-                    set_cell(buf, cx as u16, y, ch, span_fg, row_bg);
+                    surface.put_char(cx as u16, y, ch, solid_style(span_fg, row_bg));
                 }
             }
             width_used += w;
@@ -336,12 +344,12 @@ pub(crate) fn resolve_row_colors(
     abs_idx: usize,
     hovered_idx: Option<usize>,
     striped: bool,
-) -> (RatatuiColor, RatatuiColor) {
+) -> (Color, Color) {
     let theme = ctx.theme;
     let is_selected = ctx.table.selected_idx == Some(abs_idx);
     let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
-    let row_fg = ratatui_color(theme.foreground);
-    let row_bg = ratatui_color(if is_selected {
+    let row_fg = theme.foreground;
+    let row_bg = if is_selected {
         theme.selection_bg
     } else if is_hovered {
         theme.tab_bar_bg
@@ -349,7 +357,7 @@ pub(crate) fn resolve_row_colors(
         theme.row_alt_bg(theme.background)
     } else {
         theme.background
-    });
+    };
     (row_fg, row_bg)
 }
 
@@ -357,7 +365,7 @@ pub(crate) fn resolve_row_colors(
 /// column's cell (via `cell_hook` when present, else [`draw_cell`]),
 /// then the column-divider separators.
 pub(crate) fn draw_row(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     y: u16,
     ctx: &RowPaintCtx<'_>,
     abs_idx: usize,
@@ -370,22 +378,30 @@ pub(crate) fn draw_row(
     let (row_fg, row_bg) = resolve_row_colors(ctx, abs_idx, hovered_idx, striped);
 
     let (x0, x1) = ctx.bounds();
-    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+    let paint = |surface: &mut dyn CellSurface, col_idx: usize, col_x: i32, col_w: u16| {
         if let Some(hook) = cell_hook.as_mut() {
             let vx0 = col_x.max(x0);
             let vx1 = (col_x + col_w as i32).min(x1);
             let cell_rect = Rect::new(vx0 as u16, y, (vx1 - vx0).max(0) as u16, 1);
-            if hook(buf, col_idx, cell_rect) {
+            if hook(surface, col_idx, cell_rect) {
                 return;
             }
         }
-        draw_cell(buf, ctx, row, col_idx, (col_x, col_w), y, (row_fg, row_bg));
+        draw_cell(
+            surface,
+            ctx,
+            row,
+            col_idx,
+            (col_x, col_w),
+            y,
+            (row_fg, row_bg),
+        );
     };
-    draw_band(buf, ctx, y, (row_fg, row_bg), true, paint);
+    draw_band(surface, ctx, y, (row_fg, row_bg), true, paint);
 }
 
 pub(crate) fn draw_data_table_inner(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
@@ -395,7 +411,7 @@ pub(crate) fn draw_data_table_inner(
 ) -> DataTableLayout {
     let layout = cell_data_table_layout(area, table);
     draw_data_table_body(
-        buf,
+        surface,
         area,
         table,
         theme,
@@ -403,12 +419,14 @@ pub(crate) fn draw_data_table_inner(
         glyphs,
         nerd_fonts_enabled,
         layout,
-        |buf, y, ctx, idx, hovered, striped| draw_row(buf, y, ctx, idx, hovered, striped, None),
+        |surface, y, ctx, idx, hovered, striped| {
+            draw_row(surface, y, ctx, idx, hovered, striped, None)
+        },
     )
 }
 
 /// [`draw_data_table_inner`]'s header/body/scrollbar/footer skeleton,
-/// generalised over how a body row paints: `body_row(buf, y, ctx, abs_idx,
+/// generalised over how a body row paints: `body_row(surface, y, ctx, abs_idx,
 /// hovered_idx, striped)` stands in for [`draw_row`]'s own default call,
 /// so a `TreeTable` can paint column 0 as a tree cell while reusing
 /// every other line of this function unchanged — header, scrollbars,
@@ -418,7 +436,7 @@ pub(crate) fn draw_data_table_inner(
 /// bounds) never resolves it twice.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_data_table_body(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
@@ -426,7 +444,7 @@ pub(crate) fn draw_data_table_body(
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
     layout: DataTableLayout,
-    mut body_row: impl FnMut(&mut Buffer, u16, &RowPaintCtx<'_>, usize, Option<usize>, bool),
+    mut body_row: impl FnMut(&mut dyn CellSurface, u16, &RowPaintCtx<'_>, usize, Option<usize>, bool),
 ) -> DataTableLayout {
     if area.width == 0 || area.height == 0 {
         return layout;
@@ -441,12 +459,12 @@ pub(crate) fn draw_data_table_body(
     let (ox, oy) = (ctx.ox(), ctx.ox());
     let (inner_x0, inner_x1) = ctx.bounds();
     if table.bordered {
-        draw_data_table_border(buf, area, theme);
+        draw_data_table_border(surface, area, theme);
     }
     let glyphs = glyphs.or(table.glyphs.as_ref());
 
     // ── Header row ────────────────────────────────────────────────────
-    draw_header(buf, area.y + oy, &ctx, glyphs, nerd_fonts_enabled);
+    draw_header(surface, area.y + oy, &ctx, glyphs, nerd_fonts_enabled);
 
     // ── Body rows ─────────────────────────────────────────────────────
     // `scroll_px` wins over `scroll_offset` when set, quantised to a
@@ -460,7 +478,7 @@ pub(crate) fn draw_data_table_body(
     let body_y = (area.y + oy + 1) as f32;
     let (hovered, striped) = (state.hovered_idx, state.striped || table.striped);
     for r in stack_rows_from(scroll_offset, 0.0, visible, 0.0, body_y, 0.0, |_| (1.0, ())) {
-        body_row(buf, r.bounds.y as u16, &ctx, r.idx, hovered, striped);
+        body_row(surface, r.bounds.y as u16, &ctx, r.idx, hovered, striped);
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
@@ -483,7 +501,12 @@ pub(crate) fn draw_data_table_body(
             1.0,
             layout.visible_rows as f32,
         );
-        crate::tui::draw_scrollbar(buf, &sb, theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&sb, sb.track),
+            surface,
+            theme,
+            theme.background,
+        );
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
@@ -500,7 +523,12 @@ pub(crate) fn draw_data_table_body(
             visible_w,
             1.0,
         );
-        crate::tui::draw_scrollbar(buf, &hsb, theme, theme.background);
+        crate::primitives::scrollbar::cell_paint::paint(
+            &crate::primitives::scrollbar::ScrollbarLayout::resolve(&hsb, hsb.track),
+            surface,
+            theme,
+            theme.background,
+        );
     }
 
     // ── Footer (pinned summary row) ────────────────────────────────────
@@ -512,18 +540,18 @@ pub(crate) fn draw_data_table_body(
     // `footer_height == row_height * 2.0` (see `DataTable::layout`), so
     // neither is ever painted over by a body row.
     let footer_y = (area.y + area.height).saturating_sub(1).saturating_sub(oy);
-    let bg = ratatui_color(theme.tab_bar_bg);
-    let fg = ratatui_color(theme.foreground);
+    let bg = theme.tab_bar_bg;
+    let fg = theme.foreground;
 
     // Divider rule directly above the footer row, never on the top border.
     if footer_y > area.y + oy {
-        let sep_fg = ratatui_color(theme.separator);
+        let sep_fg = theme.separator;
         for x in ox..area.width.saturating_sub(ox) {
-            set_cell(buf, area.x + x, footer_y - 1, '─', sep_fg, bg);
+            surface.put_char(area.x + x, footer_y - 1, '─', solid_style(sep_fg, bg));
         }
     }
 
-    let paint = |buf: &mut Buffer, col_idx: usize, col_x: i32, col_w: u16| {
+    let paint = |surface: &mut dyn CellSurface, col_idx: usize, col_x: i32, col_w: u16| {
         let Some(styled) = footer.cells.get(col_idx).filter(|c| !c.spans.is_empty()) else {
             return;
         };
@@ -531,16 +559,16 @@ pub(crate) fn draw_data_table_body(
             .spans
             .iter()
             .flat_map(|span| {
-                let span_fg = span.fg.map(ratatui_color).unwrap_or(fg);
+                let span_fg = span.fg.unwrap_or(fg);
                 span.text.chars().map(move |ch| (ch, span_fg))
             })
             .collect();
         let align = column_align(table, col_idx);
         let start = align_offset(align, chars.len() as u16, col_w) as i32;
         let (clip, chars) = ((inner_x0, inner_x1), chars.into_iter());
-        draw_bold_chars(buf, col_x + start, footer_y, clip, bg, chars);
+        draw_bold_chars(surface, col_x + start, footer_y, clip, bg, chars);
     };
-    draw_band(buf, &ctx, footer_y, (fg, bg), false, paint);
+    draw_band(surface, &ctx, footer_y, (fg, bg), false, paint);
 
     layout
 }
@@ -548,10 +576,10 @@ pub(crate) fn draw_data_table_body(
 /// Paint a rounded `╭─╮ │ ╰─╯` frame around `area` in `border_fg` and fill
 /// the interior with `(fg, bg)`, so a focus ring painted over the same
 /// `area` only recolours the frame glyphs, never the content inside it.
-fn draw_data_table_border(buf: &mut Buffer, area: Rect, theme: &Theme) {
-    let border_fg = ratatui_color(theme.border_fg);
-    let fg = ratatui_color(theme.foreground);
-    let bg = ratatui_color(theme.background);
+fn draw_data_table_border(surface: &mut dyn CellSurface, area: Rect, theme: &Theme) {
+    let border_fg = theme.border_fg;
+    let fg = theme.foreground;
+    let bg = theme.background;
     let (w, h) = (area.width, area.height);
     for row in 0..h {
         let (l, mid, r) = match row {
@@ -567,7 +595,7 @@ fn draw_data_table_border(buf: &mut Buffer, area: Rect, theme: &Theme) {
                 _ => mid,
             };
             let cfg = if edge || mid == '─' { border_fg } else { fg };
-            set_cell(buf, area.x + col, area.y + row, ch, cfg, bg);
+            surface.put_char(area.x + col, area.y + row, ch, solid_style(cfg, bg));
         }
     }
 }
@@ -584,7 +612,9 @@ fn column_align(table: &DataTable, col_idx: usize) -> ColumnAlign {
 mod tests {
     use super::*;
     use crate::primitives::data_table::{Column, ColumnWidth, DataRow, DataTable, DataTableHit};
+    use crate::tui::ratatui_color;
     use crate::types::{Decoration, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
 
     /// Char-cell index of `needle`'s first occurrence in `line` — unlike
     /// `str::find`, which returns a *byte* offset and desyncs from the
@@ -658,7 +688,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         // Header row at y=0 should contain "Name" somewhere
         let header: String = (0..40)
@@ -694,7 +730,15 @@ mod tests {
         // Default (no override): ascending sort shows '▲'.
         let table = make_table();
         let mut buf = Buffer::empty(area);
-        paint_with_glyphs(&mut buf, area, &table, &Theme::default(), None, None, false);
+        paint_with_glyphs(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            None,
+            false,
+        );
         let header: String = (0..40)
             .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
             .collect();
@@ -708,7 +752,7 @@ mod tests {
         let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("^");
         let mut buf = Buffer::empty(area);
         paint_with_glyphs(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &table,
             &Theme::default(),
@@ -733,7 +777,7 @@ mod tests {
         desc_table.sort = Some((0, SortDirection::Descending));
         let mut buf = Buffer::empty(area);
         paint_with_glyphs(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &desc_table,
             &Theme::default(),
@@ -754,7 +798,7 @@ mod tests {
         let desc_glyphs = DataTableGlyphs::new().with_sort_descending_glyph("v");
         let mut buf = Buffer::empty(area);
         paint_with_glyphs(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &desc_table,
             &Theme::default(),
@@ -780,7 +824,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         // Row 0 at y=1 should contain "pod-abc"
         let row0: String = (0..40)
@@ -802,7 +852,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let find_seps =
             |y: u16| -> Vec<u16> { (0..40).filter(|&x| buf[(x, y)].symbol() == "│").collect() };
@@ -837,7 +893,13 @@ mod tests {
         table.rows[0].cells[0] = StyledText::plain("x".repeat(22));
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let sep_x = (layout.columns[0].x.round() as i32 + layout.columns[0].width.round() as i32
             - 1) as u16;
@@ -893,7 +955,13 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let row: Vec<char> = (0..30)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -963,7 +1031,13 @@ mod tests {
         };
         let area = Rect::new(0, 0, 10, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let row: Vec<char> = (0..10)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -999,7 +1073,7 @@ mod tests {
         // holds '語'. A display-width budget fits only two whole glyphs
         // (日, 本 — 4 cells) before the ellipsis, leaving each glyph's
         // second cell as the wide-char continuation marker that
-        // `set_cell_wide` writes, so column 2 holds '本' and column 1 is
+        // `put_wide` writes, so column 2 holds '本' and column 1 is
         // the empty continuation of column 0's glyph.
         assert_eq!(
             row[2], '本',
@@ -1019,7 +1093,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         // Find "Status" in the header row
         let header: String = (0..40)
@@ -1045,7 +1125,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(7, 13, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let header: String = (area.x..area.x + 40)
             .map(|x| buf[(x, area.y)].symbol().chars().next().unwrap_or(' '))
@@ -1060,7 +1146,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         // Find "pod-xyz" in row 1 (y=2)
         let row1: String = (0..40)
@@ -1078,7 +1170,13 @@ mod tests {
         let table = make_table();
         let area = Rect::new(7, 13, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         // Row 1 paints on the *absolute* screen row `area.y + 2`.
         let row1: String = (area.x..area.x + 40)
@@ -1100,7 +1198,13 @@ mod tests {
         let cols_at = |origin_x: u16, origin_y: u16| {
             let area = Rect::new(origin_x, origin_y, 40, 10);
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
             layout
                 .columns
                 .iter()
@@ -1150,7 +1254,13 @@ mod tests {
         for scroll_offset in [0, 5, 30] {
             table.scroll_offset = scroll_offset;
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
             assert!(layout.footer_height > 0.0);
 
             // Footer text is always painted on the last row of the
@@ -1183,11 +1293,23 @@ mod tests {
         let theme = Theme::default();
 
         let mut unstriped = Buffer::empty(area);
-        paint_hovered(&mut unstriped, area, &table, &theme, None);
+        paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut unstriped),
+            area,
+            &table,
+            &theme,
+            None,
+        );
 
         let mut striped_buf = Buffer::empty(area);
         let state = DataTablePaintState::default().with_striped(true);
-        paint_with_state(&mut striped_buf, area, &table, &theme, &state);
+        paint_with_state(
+            &mut crate::tui::BufferCellSurface::new(&mut striped_buf),
+            area,
+            &table,
+            &theme,
+            &state,
+        );
 
         let body_bg = ratatui_color(theme.background);
         let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
@@ -1251,7 +1373,13 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         let state = DataTablePaintState::default().with_scroll_px(Some(10.7)); // 10.7 cells deep → row 10, floored
-        paint_with_state(&mut buf, area, &table, &Theme::default(), &state);
+        paint_with_state(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            &state,
+        );
 
         let first_body_row: String = (0..40)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -1267,7 +1395,13 @@ mod tests {
         let mut via_offset = make_scrolling_table(50);
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        paint_hovered(&mut buf2, area, &via_offset, &Theme::default(), None);
+        paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf2),
+            area,
+            &via_offset,
+            &Theme::default(),
+            None,
+        );
         let first_body_row_via_offset: String = (0..40)
             .map(|x| buf2[(x, 1)].symbol().chars().next().unwrap_or(' '))
             .collect();
@@ -1289,7 +1423,13 @@ mod tests {
         });
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
         let footer_y = area.height - 1;
 
         let footer_line: String = (0..40)
@@ -1322,10 +1462,14 @@ mod tests {
             decoration: Decoration::Normal,
         });
         let area = Rect::new(0, 0, 40, 10);
-        let layout = {
-            let mut buf = Buffer::empty(area);
-            paint_hovered(&mut buf, area, &table, &Theme::default(), None)
-        };
+        let mut buf = Buffer::empty(area);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         let hit = layout.hit_test(
             2.0,
@@ -1343,7 +1487,13 @@ mod tests {
         let table = make_scrolling_table(3);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
         assert_eq!(layout.footer_height, 0.0);
         let row2: String = (0..40)
             .map(|x| buf[(x, 3)].symbol().chars().next().unwrap_or(' '))
@@ -1406,7 +1556,13 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
 
             let header: String = (0..area.width)
                 .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
@@ -1446,7 +1602,13 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
 
             let row: String = (0..area.width)
                 .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -1535,7 +1697,13 @@ mod tests {
         let mut table = make_wide_hscroll_table();
         table.h_scroll = 15.6;
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         assert_eq!(
             layout.h_scroll, 16.0,
@@ -1579,7 +1747,13 @@ mod tests {
         let mut table = make_wide_hscroll_table();
         table.h_scroll = 15.6;
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
 
         assert_eq!(
             layout.hit_test(14.0, 1.0, 0, table.rows.len()),
@@ -1599,7 +1773,13 @@ mod tests {
             let mut table = make_wide_hscroll_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
             let h_off = h_scroll.round();
 
             for x in 0..60u16 {
@@ -1632,7 +1812,13 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &table,
+                &Theme::default(),
+                None,
+            );
 
             // The rasteriser paints '│' on the right edge cell of every
             // column but the last, i.e. one cell *before* the boundary
@@ -1680,7 +1866,13 @@ mod tests {
         });
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+        );
         assert_eq!(layout.footer_height, 2.0);
         assert_eq!(layout.visible_rows, 7);
 
@@ -1723,11 +1915,10 @@ mod tests {
         let layout = cell_data_table_layout(area, &table);
 
         let mut hook_calls: Vec<usize> = Vec::new();
-        let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
+        let mut hook = |surface: &mut dyn CellSurface, col_idx: usize, cell_rect: Rect| -> bool {
             hook_calls.push(col_idx);
-            let reset = RatatuiColor::Reset;
             for x in cell_rect.x..cell_rect.x + cell_rect.width * u16::from(col_idx == 0) {
-                set_cell(buf, x, cell_rect.y, '#', reset, reset);
+                surface.put_char(x, cell_rect.y, '#', CellStyle::default());
             }
             col_idx == 0
         };
@@ -1738,7 +1929,15 @@ mod tests {
             theme,
             area,
         };
-        draw_row(&mut buf, 1, &ctx, 0, None, false, Some(&mut hook));
+        draw_row(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            1,
+            &ctx,
+            0,
+            None,
+            false,
+            Some(&mut hook),
+        );
 
         assert_eq!(hook_calls, vec![0, 1, 2]);
         // Column 0 ("pod-abc") was painted by the hook's own '#' fill,
@@ -1750,6 +1949,113 @@ mod tests {
         // they fell through to the default `draw_cell` text painter.
         assert!(find_char_pos(&row, "Running").is_some());
         assert!(find_char_pos(&row, "3d").is_some());
+    }
+    /// The table painter over headers with both sort glyphs, styled and
+    /// wide cells, every decoration, hovered/pressed/striped rows, the
+    /// border, both scrollbars and the footer, cell for cell against the
+    /// golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+        use crate::types::{Icon, StyledSpan};
+
+        let theme = Theme::default();
+        let mut table = make_table();
+        table.rows.push(DataRow {
+            cells: vec![
+                StyledText {
+                    spans: vec![
+                        StyledSpan::with_fg("err", crate::Color::rgb(230, 20, 20)),
+                        StyledSpan::plain("-and-a-long-tail"),
+                    ],
+                },
+                StyledText::plain("\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}"),
+                StyledText::plain("12345678"),
+            ],
+            decoration: Decoration::Error,
+        });
+        for (i, dec) in [
+            Decoration::Muted,
+            Decoration::Header,
+            Decoration::Warning,
+            Decoration::Modified,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            table.rows.push(DataRow {
+                cells: vec![
+                    StyledText::plain(format!("row-{i}")),
+                    StyledText::plain("ok"),
+                    StyledText::plain(format!("{i}m")),
+                ],
+                decoration: dec,
+            });
+        }
+        let mut fancy = table.clone();
+        fancy.bordered = true;
+        fancy.show_scrollbar = true;
+        fancy.min_total_width = Some(50.0);
+        fancy.h_scroll = 4.0;
+        fancy.sort = Some((2, SortDirection::Descending));
+        fancy.footer = Some(DataRow {
+            cells: vec![
+                StyledText::plain("total"),
+                StyledText::plain(""),
+                StyledText::plain("9"),
+            ],
+            decoration: Decoration::Normal,
+        });
+        fancy.glyphs = Some(
+            DataTableGlyphs::new()
+                .with_sort_ascending_glyph(Icon::new("\u{f0de}", "^"))
+                .with_sort_descending_glyph(Icon::new("\u{f0dd}", "v")),
+        );
+        let mut unfocused = table.clone();
+        unfocused.has_focus = false;
+        unfocused.selected_idx = Some(2);
+        unfocused.scroll_offset = 1;
+        unfocused.column_overrides = vec![Some(6.0), None, None];
+
+        let hovered = DataTablePaintState::default()
+            .with_hovered_idx(Some(1))
+            .with_pressed_idx(Some(3));
+        let striped = DataTablePaintState::default().with_striped(true);
+        let paint = |t: &DataTable, area: Rect, st: &DataTablePaintState, nerd: bool, w, h| {
+            oracle::paint(w, h, |s| {
+                draw_data_table_inner(s, area, t, &theme, st, t.glyphs.as_ref(), nerd);
+            })
+        };
+        let rest = DataTablePaintState::default();
+        oracle::assert_golden(
+            "data_table",
+            &[
+                (
+                    "plain",
+                    &paint(&table, Rect::new(0, 0, 36, 9), &rest, false, 36, 9),
+                ),
+                (
+                    "hovered_offset",
+                    &paint(&table, Rect::new(2, 1, 30, 8), &hovered, false, 33, 10),
+                ),
+                (
+                    "striped",
+                    &paint(&table, Rect::new(0, 0, 36, 9), &striped, false, 36, 9),
+                ),
+                (
+                    "fancy_nerd",
+                    &paint(&fancy, Rect::new(0, 0, 30, 8), &hovered, true, 30, 8),
+                ),
+                (
+                    "fancy_fallback",
+                    &paint(&fancy, Rect::new(0, 0, 30, 8), &rest, false, 30, 8),
+                ),
+                (
+                    "unfocused",
+                    &paint(&unfocused, Rect::new(0, 0, 20, 5), &rest, false, 20, 5),
+                ),
+            ],
+        );
     }
 }
 

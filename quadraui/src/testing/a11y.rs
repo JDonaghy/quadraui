@@ -327,9 +327,9 @@ mod tests {
     }
 
     fn list_surface(id: &str, title: &str, items: &[&str], selected: usize) -> Surface {
-        Surface::List {
+        Surface::Widget {
             rect: Rect::new(0.0, 1.0, 30.0, 11.0),
-            list: list(id, title, items, selected),
+            widget: Box::new(list(id, title, items, selected)),
         }
     }
 

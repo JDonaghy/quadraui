@@ -256,18 +256,6 @@ impl PathPickerState {
         self.refilter();
     }
 
-    /// Append `c` to the query and refilter.
-    pub fn push_char(&mut self, c: char) {
-        self.query.push(c);
-        self.refilter();
-    }
-
-    /// Remove the last character from the query and refilter.
-    pub fn pop_char(&mut self) {
-        self.query.pop();
-        self.refilter();
-    }
-
     /// Re-compute `filtered` from `all_entries` and the current `query`.
     pub fn refilter(&mut self) {
         self.filtered = filter_entries(&self.all_entries, &self.query);

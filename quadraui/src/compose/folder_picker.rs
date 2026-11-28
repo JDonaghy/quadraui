@@ -207,18 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn push_and_pop_char_update_query() {
-        let dir = picker_root();
-        let tmp = dir.path().to_path_buf();
-        let mut picker = FolderPicker::rooted_at(tmp, vec![]);
-        picker.paths.push_char('s');
-        picker.paths.push_char('r');
-        assert_eq!(picker.paths.query, "sr");
-        picker.paths.pop_char();
-        assert_eq!(picker.paths.query, "s");
-    }
-
-    #[test]
     fn move_up_clamps_at_zero() {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
@@ -417,8 +405,7 @@ mod tests {
         let dir = picker_root();
         let tmp = dir.path().to_path_buf();
         let mut picker = FolderPicker::rooted_at(tmp, vec![]);
-        picker.paths.push_char('s');
-        picker.paths.push_char('r');
+        picker.paths.set_query("sr".into());
         let ev = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Backspace),
             modifiers: Modifiers::default(),

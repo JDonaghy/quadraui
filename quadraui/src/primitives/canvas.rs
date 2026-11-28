@@ -27,7 +27,7 @@
 //! `Canvas` is not GUI-only — `docs/decisions/DECISIONS.md` D-014 records
 //! the decision explicitly: TUI rasterises the same ops into cells
 //! rather than reporting `Unsupported`, using the sub-cell braille
-//! packing `tui::braille` already provides for [`crate::Chart`] and
+//! packing `cell_surface::braille` already provides for [`crate::Chart`] and
 //! [`crate::Minimap`]. The degrade is not uniform across every op kind —
 //! each op picks the coarsest fidelity that still answers the "did the
 //! user get the same information" bar D-014 sets, not a lower one:

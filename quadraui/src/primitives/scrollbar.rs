@@ -825,14 +825,8 @@ impl crate::primitive::Primitive for Scrollbar {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_scrollbar_layout`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
-    ///
-    /// Paints against [`crate::Theme::background`] — the cell background
-    /// a vertical bar in a reserved gutter sits on. A host that needs
-    /// the bar to blend into a differently-coloured row calls
-    /// [`crate::tui::draw_scrollbar`] with its own `cell_bg` instead.
+    /// [`cell_paint::paint`] against [`crate::Theme::background`] — the
+    /// cell background a vertical bar in a reserved gutter sits on.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -841,11 +835,7 @@ impl crate::primitive::Primitive for Scrollbar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        crate::tui::draw_scrollbar_layout(buf, layout, theme, theme.background);
+        cell_paint::paint(layout, cells, theme, theme.background);
     }
 }
 
@@ -1098,8 +1088,7 @@ pub(crate) mod cell_paint {
 // fully-opaque colour pre-blended against `theme.background`.
 //
 // `#[allow(dead_code)]`: only called when a real pixel backend is
-// compiled in, exercised by each backend's own `Backend::draw_scrollbar`
-// call site plus tests.
+// compiled in, exercised by `Scrollbar`'s `Primitive::paint` plus tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -2274,5 +2263,907 @@ mod interactive_tests {
             },
         );
         assert_eq!(fraction(&handled), 1.0);
+    }
+}
+
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::Rect as QRect;
+    use crate::gtk::GtkBackend;
+    use crate::primitives::scrollbar::Scrollbar;
+    use crate::types::WidgetId;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    const W: i32 = 80;
+    const H: i32 = 200;
+
+    fn vertical_bar(scroll: f32, total: f32, visible: f32) -> Scrollbar {
+        Scrollbar::vertical(
+            WidgetId::new("sb"),
+            QRect::new(0.0, 0.0, 8.0, H as f32),
+            scroll,
+            total,
+            visible,
+            20.0,
+        )
+    }
+
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Paint `sb` through the real `GtkBackend`'s `draw_dyn`, after
+    /// letting `configure` set up the backend's scroll-fade state. Mirrors
+    /// the macOS tests' `paint_via_backend_raw`.
+    fn paint_via_backend_raw(
+        sb: &Scrollbar,
+        configure: impl FnOnce(&mut GtkBackend),
+    ) -> ImageSurface {
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = GtkBackend::new();
+            configure(&mut backend);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                let _ = b.draw_dyn(sb.track, sb, &());
+            });
+        }
+        surface
+    }
+
+    /// Paint `sb` right after a fresh `GtkBackend::new()` — full opacity,
+    /// since `new()` seeds the fade clock with its own construction
+    /// instant (see that field's doc). These tests probe paint geometry,
+    /// not the idle fade curve itself — see the "Scroll-driven idle
+    /// fade" tests below for that.
+    fn paint_via_backend(sb: &Scrollbar) -> ImageSurface {
+        paint_via_backend_raw(sb, |_| {})
+    }
+
+    #[test]
+    fn track_paints_inside_bounds() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut surface = paint_via_backend(&sb);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Probe mid-track at a y the thumb does NOT cover (thumb is at
+        // top with thumb_len ≈ 50px when scroll=0).
+        let (r, _, _) = pixel(&data, stride, 4, 120);
+        assert!(
+            r < 255,
+            "expected track to darken white background, got r={r}"
+        );
+    }
+
+    #[test]
+    fn thumb_paints_brighter_than_track() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut surface = paint_via_backend(&sb);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Thumb at top: probe near (4, 5) — inside thumb_len.
+        let (tr, _, _) = pixel(&data, stride, 4, 5);
+        // Track only: probe well below thumb.
+        let (tk_r, _, _) = pixel(&data, stride, 4, 150);
+        assert!(
+            tr < tk_r,
+            "thumb should be darker (more opaque thumb_fg) than track-only zone, \
+             got thumb_r={tr}, track_r={tk_r}",
+        );
+    }
+
+    #[test]
+    fn dragging_makes_thumb_more_opaque() {
+        let mut sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut normal_surface = paint_via_backend(&sb);
+        let normal_stride = normal_surface.stride() as usize;
+        let (normal_r, _, _) = {
+            let data = normal_surface.data().expect("surface data");
+            pixel(&data, normal_stride, 4, 5)
+        };
+
+        sb.dragging = true;
+        let mut dragging_surface = paint_via_backend(&sb);
+        let dragging_stride = dragging_surface.stride() as usize;
+        let (dragging_r, _, _) = {
+            let data = dragging_surface.data().expect("surface data");
+            pixel(&data, dragging_stride, 4, 5)
+        };
+
+        assert!(
+            dragging_r < normal_r,
+            "dragging thumb should be more opaque, normal_r={normal_r}, dragging_r={dragging_r}",
+        );
+    }
+
+    #[test]
+    fn full_scroll_lands_thumb_at_track_bottom() {
+        // scroll = total - visible should align thumb's bottom edge to
+        // track end.
+        let sb = vertical_bar(150.0, 200.0, 50.0);
+        let mut surface = paint_via_backend(&sb);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Probe near the bottom of the track — should be thumb, not
+        // just track.
+        let (bottom_r, _, _) = pixel(&data, stride, 4, H - 4);
+        // Probe mid-track — should now be track-only (thumb has moved
+        // off the middle).
+        let (mid_r, _, _) = pixel(&data, stride, 4, 80);
+        assert!(
+            bottom_r < mid_r,
+            "full-scroll: thumb should be at bottom, got bottom_r={bottom_r}, mid_r={mid_r}",
+        );
+    }
+
+    #[test]
+    fn horizontal_orientation_uses_width() {
+        let track = QRect::new(0.0, 50.0, W as f32, 8.0);
+        let sb = Scrollbar::horizontal(WidgetId::new("h"), track, 0.0, 200.0, 40.0, 10.0);
+        let mut surface = paint_via_backend(&sb);
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        // Thumb at left: x ∈ [0, thumb_len) should show thumb;
+        // x past thumb should show only track.
+        let (left_r, _, _) = pixel(&data, stride, 2, 54);
+        let (right_r, _, _) = pixel(&data, stride, W - 4, 54);
+        assert!(
+            left_r < right_r,
+            "horizontal: thumb should be at left, got left_r={left_r}, right_r={right_r}",
+        );
+    }
+
+    // ── Scroll-driven idle fade ─────────────────────────────────────
+
+    #[test]
+    fn scrollbar_visible_immediately_after_backend_construction() {
+        // `GtkBackend::new` seeds the fade clock with its own
+        // construction instant, so a scrollbar painted right away — a
+        // live app's first frame, a gallery capture, this test — still
+        // shows, rather than starting pre-faded before anything has had
+        // a chance to interact with it.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut surface = paint_via_backend_raw(&sb, |_| {});
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should be visible right after construction, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_if_never_scrolled_once_idle_interval_elapses() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        // No real scroll ever arrived, but enough time has passed since
+        // construction that the fade has fully run its course — same
+        // terminal state `scrollbar_fades_back_out_after_the_idle_interval`
+        // below reaches after a real scroll.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut surface = paint_via_backend_raw(&sb, |b| {
+            let last = b
+                .scroll_last_interaction()
+                .expect("new() seeds a timestamp");
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded once idle, even if never scrolled, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_when_explicitly_marked_never_interacted() {
+        // Test seam: `set_scroll_last_interaction(None)` simulates
+        // "never interacted, already fully faded" directly, without
+        // needing to fast-forward the clock.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let mut surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(None);
+        });
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded when explicitly marked never-interacted, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_appears_at_full_opacity_right_after_a_scroll_event() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let now = std::time::Instant::now();
+        let mut surface = paint_via_backend_raw(&sb, |b| {
+            // Mirrors what `super::run`'s scroll controller does on a
+            // real wheel/trackpad delta: `note_scroll_activity` stamps
+            // "now". The clock override pins that "now" to a fixed
+            // instant so the probe below is deterministic.
+            b.set_fade_clock_override(Some(now));
+            b.note_scroll_activity();
+        });
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should be visible right after a scroll event, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_fades_back_out_after_the_idle_interval() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let last = std::time::Instant::now();
+        let mut surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded after the idle interval, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_still_full_opacity_during_the_hold_window() {
+        use crate::primitives::scrollbar::SCROLLBAR_FADE_HOLD;
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let last = std::time::Instant::now();
+        let mut surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD));
+        });
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, _, _) = pixel(&data, stride, 4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should still be visible at the end of the hold window, got r={r}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::scrollbar::Scrollbar;
+    use crate::types::WidgetId;
+    use crate::Backend;
+
+    const W: u32 = 80;
+    const H: u32 = 200;
+
+    fn paint_via_backend(scrollbar: &Scrollbar) -> BitmapSurface {
+        let surface = BitmapSurface::new(W, H);
+        // Fill with opaque white so alpha blending of the track lands on
+        // a known background — makes probes deterministic.
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        // These tests probe paint geometry, not the idle fade, so pin
+        // the scrollbar to full opacity (just-interacted) rather than
+        // the default "never scrolled" zero opacity — the fade curve
+        // itself is covered by the "Scroll-driven idle fade" tests below.
+        backend.set_scroll_last_interaction(Some(std::time::Instant::now()));
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _ = b.draw_dyn(scrollbar.track, scrollbar, &());
+        });
+        backend.end_frame();
+        surface
+    }
+
+    fn vertical_bar(scroll: f32, total: f32, visible: f32) -> Scrollbar {
+        Scrollbar::vertical(
+            WidgetId::new("sb"),
+            QRect::new(0.0, 0.0, 8.0, H as f32),
+            scroll,
+            total,
+            visible,
+            20.0,
+        )
+    }
+
+    #[test]
+    fn track_paints_inside_bounds() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint_via_backend(&sb);
+        // Probe mid-track at a y the thumb does NOT cover (thumb is at
+        // top with thumb_len ≈ 50px when scroll=0).
+        let (r, _g, _b, _) = surface.pixel(4, 120);
+        // White (255) blended with scrollbar_track at 0.2 alpha:
+        // result.r < 255 (track has a non-white component).
+        assert!(
+            r < 255,
+            "expected track to darken white background, got r={}",
+            r,
+        );
+    }
+
+    #[test]
+    fn thumb_paints_brighter_than_track() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint_via_backend(&sb);
+        // Thumb at top: probe near (4, 5) — inside thumb_len.
+        let (tr, _, _, _) = surface.pixel(4, 5);
+        // Track only: probe well below thumb.
+        let (tk_r, _, _, _) = surface.pixel(4, 150);
+        assert!(
+            tr < tk_r,
+            "thumb should be darker (more opaque thumb_fg) than track-only zone, got thumb_r={}, track_r={}",
+            tr,
+            tk_r,
+        );
+    }
+
+    #[test]
+    fn dragging_makes_thumb_more_opaque() {
+        let mut sb = vertical_bar(0.0, 200.0, 50.0);
+        let normal = paint_via_backend(&sb).pixel(4, 5);
+        sb.dragging = true;
+        let dragging = paint_via_backend(&sb).pixel(4, 5);
+        // Higher alpha → r drops further from white toward thumb fg.
+        assert!(
+            dragging.0 < normal.0,
+            "dragging thumb should be more opaque, normal_r={}, dragging_r={}",
+            normal.0,
+            dragging.0,
+        );
+    }
+
+    #[test]
+    fn full_scroll_lands_thumb_at_track_bottom() {
+        // scroll = total - visible should align thumb's bottom edge to
+        // track end.
+        let sb = vertical_bar(150.0, 200.0, 50.0);
+        let surface = paint_via_backend(&sb);
+        // Probe near the bottom of the track — should be thumb, not
+        // just track.
+        let (bottom_r, _, _, _) = surface.pixel(4, H - 4);
+        // Probe mid-track — should now be track-only (thumb has moved
+        // off the middle).
+        let (mid_r, _, _, _) = surface.pixel(4, 80);
+        assert!(
+            bottom_r < mid_r,
+            "full-scroll: thumb should be at bottom, got bottom_r={}, mid_r={}",
+            bottom_r,
+            mid_r,
+        );
+    }
+
+    #[test]
+    fn horizontal_orientation_uses_width() {
+        let track = QRect::new(0.0, 50.0, W as f32, 8.0);
+        let sb = Scrollbar::horizontal(WidgetId::new("h"), track, 0.0, 200.0, 40.0, 10.0);
+        let surface = paint_via_backend(&sb);
+        // Thumb at left: x ∈ [0, thumb_len) should show thumb;
+        // x past thumb should show only track.
+        let (left_r, _, _, _) = surface.pixel(2, 54);
+        let (right_r, _, _, _) = surface.pixel(W - 4, 54);
+        assert!(
+            left_r < right_r,
+            "horizontal: thumb should be at left, got left_r={}, right_r={}",
+            left_r,
+            right_r,
+        );
+    }
+
+    // ── Scroll-driven idle fade ─────────────────────────────────────
+
+    /// Builds a fresh backend + white surface, paints `sb` once, and
+    /// returns the surface — doesn't touch `set_scroll_last_interaction`
+    /// so each fade test controls the backend's interaction/clock state
+    /// itself rather than inheriting `paint_via_backend`'s "just
+    /// interacted" default.
+    fn paint_via_backend_raw(
+        sb: &Scrollbar,
+        configure: impl FnOnce(&mut MacBackend),
+    ) -> BitmapSurface {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(1.0, 1.0, 1.0, 1.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        configure(&mut backend);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let _ = b.draw_dyn(sb.track, sb, &());
+        });
+        backend.end_frame();
+        surface
+    }
+
+    #[test]
+    fn scrollbar_visible_immediately_after_backend_construction() {
+        // `MacBackend::new` seeds the fade clock with its own
+        // construction instant, so a scrollbar painted right away — a
+        // live app's first frame, a gallery capture, this test — still
+        // shows, rather than starting pre-faded before anything has had
+        // a chance to interact with it.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint_via_backend_raw(&sb, |_| {});
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should be visible right after construction, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_if_never_scrolled_once_idle_interval_elapses() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        // No real scroll ever arrived, but enough time has passed since
+        // construction that the fade has fully run its course — same
+        // terminal state `scrollbar_fades_back_out_after_the_idle_interval`
+        // below reaches after a real scroll.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint_via_backend_raw(&sb, |b| {
+            let last = b
+                .scroll_last_interaction()
+                .expect("new() seeds a timestamp");
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded once idle, even if never scrolled, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_when_explicitly_marked_never_interacted() {
+        // Test seam: `set_scroll_last_interaction(None)` simulates
+        // "never interacted, already fully faded" directly, without
+        // needing to fast-forward the clock.
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(None);
+        });
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded when explicitly marked never-interacted, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_appears_at_full_opacity_right_after_a_scroll_event() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let now = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            // Mirrors what `super::run`'s `scrollWheel:` handler does on
+            // a real trackpad delta: `note_scroll_activity` stamps "now".
+            // The clock override pins that "now" to a fixed instant so
+            // the probe below is deterministic.
+            b.set_fade_clock_override(Some(now));
+            b.note_scroll_activity();
+        });
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should be visible right after a scroll event, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_fades_back_out_after_the_idle_interval() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert_eq!(
+            r, 255,
+            "scrollbar should be fully faded after the idle interval, got r={r}"
+        );
+    }
+
+    #[test]
+    fn scrollbar_still_full_opacity_during_the_hold_window() {
+        use crate::primitives::scrollbar::SCROLLBAR_FADE_HOLD;
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD));
+        });
+        let (r, _, _, _) = surface.pixel(4, 5);
+        assert!(
+            r < 255,
+            "scrollbar should still be visible at the end of the hold window, got r={r}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "win", target_os = "windows"))]
+mod win_tests {
+    use crate::event::Rect;
+    use crate::primitives::scrollbar::Scrollbar;
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::win::testing::HeadlessSurface;
+
+    const W: u32 = 80;
+    const H: u32 = 200;
+
+    /// Paint `scrollbar` via the shared
+    /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
+    /// through a [`crate::win::surface::D2dSurface`] over `surface`'s
+    /// headless target, exercised here directly.
+    fn paint(scrollbar: &Scrollbar) -> HeadlessSurface {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        // Fill with a known background so blended track/thumb colours
+        // are deterministic to probe.
+        surface
+            .fill_rect(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                Theme::default().background,
+            )
+            .expect("fill bg");
+        surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
+                crate::primitives::scrollbar::native_surface_paint::paint(
+                    scrollbar,
+                    &mut raw,
+                    &Theme::default(),
+                );
+            })
+            .expect("paint scrollbar");
+        surface
+    }
+
+    fn vertical_bar(scroll: f32, total: f32, visible: f32) -> Scrollbar {
+        Scrollbar::vertical(
+            WidgetId::new("sb"),
+            Rect::new(0.0, 0.0, 8.0, H as f32),
+            scroll,
+            total,
+            visible,
+            20.0,
+        )
+    }
+
+    /// Reference alpha blend, independent of production code, for
+    /// computing the expected pixel colour in
+    /// [`track_blends_with_real_background_not_theme_background`].
+    fn expected_alpha_blend(base: Color, over: Color, alpha: f32) -> Color {
+        let mix =
+            |b: u8, o: u8| -> u8 { (b as f32 * (1.0 - alpha) + o as f32 * alpha).round() as u8 };
+        Color::rgb(
+            mix(base.r, over.r),
+            mix(base.g, over.g),
+            mix(base.b, over.b),
+        )
+    }
+
+    /// The scrollbar track blends correctly with the actual background
+    /// beneath it, not with the theme background. This ensures the track
+    /// color is alpha-blended with whatever content is actually underneath
+    /// (editor, terminal, panel header, etc.), not with a premixed theme
+    /// background color.
+    #[test]
+    fn track_blends_with_real_background_not_theme_background() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let real_bg = Color::rgb(200, 30, 30);
+        assert_ne!(
+            (real_bg.r, real_bg.g, real_bg.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "test fixture must differ from theme.background to be a meaningful probe",
+        );
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), real_bg)
+            .expect("fill bg");
+        surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: None,
+                };
+                crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut raw, &theme);
+            })
+            .expect("paint scrollbar");
+
+        // Not hovered/dragging: track_alpha = 0.20 (see the shared `paint`).
+        let track_alpha = 0.20;
+        let expected = expected_alpha_blend(real_bg, theme.scrollbar_track, track_alpha);
+        let old_halo = expected_alpha_blend(theme.background, theme.scrollbar_track, track_alpha);
+
+        // Probe mid-track, below the thumb (thumb_len ≈ 50px at scroll=0).
+        let c = surface.pixel_at(4, 120);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (expected.r, expected.g, expected.b),
+            "track should alpha-blend with the real background beneath it",
+        );
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (old_halo.r, old_halo.g, old_halo.b),
+            "track must not premix against theme.background regardless of what's painted underneath",
+        );
+    }
+
+    #[test]
+    fn track_paints_over_background() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint(&sb);
+        let theme = Theme::default();
+        // Probe mid-track at a y the thumb does NOT cover (thumb sits
+        // at the top with thumb_len ≈ 50px when scroll=0).
+        let c = surface.pixel_at(4, 120);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "track should paint something other than plain background",
+        );
+    }
+
+    #[test]
+    fn thumb_paints_differently_than_track_only_zone() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let surface = paint(&sb);
+        // Thumb at top: probe inside thumb_len.
+        let thumb_px = surface.pixel_at(4, 5);
+        // Track only: probe well below the thumb.
+        let track_px = surface.pixel_at(4, 150);
+        assert_ne!(
+            (thumb_px.r, thumb_px.g, thumb_px.b),
+            (track_px.r, track_px.g, track_px.b),
+            "thumb zone should differ from a track-only zone",
+        );
+    }
+
+    #[test]
+    fn dragging_makes_thumb_more_opaque() {
+        let mut sb = vertical_bar(0.0, 200.0, 50.0);
+        let normal = paint(&sb).pixel_at(4, 5);
+        sb.dragging = true;
+        let dragging = paint(&sb).pixel_at(4, 5);
+        assert_ne!(
+            (normal.r, normal.g, normal.b),
+            (dragging.r, dragging.g, dragging.b),
+            "dragging should change the thumb's blended colour",
+        );
+    }
+
+    #[test]
+    fn full_scroll_lands_thumb_at_track_bottom() {
+        // scroll = total - visible should align the thumb's bottom edge
+        // to the track end.
+        let sb = vertical_bar(150.0, 200.0, 50.0);
+        let surface = paint(&sb);
+        let bottom = surface.pixel_at(4, H - 4);
+        let mid = surface.pixel_at(4, 80);
+        assert_ne!(
+            (bottom.r, bottom.g, bottom.b),
+            (mid.r, mid.g, mid.b),
+            "full-scroll: the bottom probe (now inside the thumb) should differ from mid-track",
+        );
+    }
+
+    #[test]
+    fn horizontal_orientation_uses_width() {
+        let track = Rect::new(0.0, 50.0, W as f32, 8.0);
+        let sb = Scrollbar::horizontal(WidgetId::new("h"), track, 0.0, 200.0, 40.0, 10.0);
+        let surface = paint(&sb);
+        // Thumb at left: x ∈ [0, thumb_len) should show thumb;
+        // x past thumb should show track only.
+        let left = surface.pixel_at(2, 54);
+        let right = surface.pixel_at(W - 4, 54);
+        assert_ne!(
+            (left.r, left.g, left.b),
+            (right.r, right.g, right.b),
+            "horizontal: thumb zone (left) should differ from track-only zone (right)",
+        );
+    }
+
+    #[test]
+    fn zero_size_track_is_a_no_op() {
+        let sb = Scrollbar::vertical(
+            WidgetId::new("sb"),
+            Rect::new(0.0, 0.0, 0.0, 0.0),
+            0.0,
+            200.0,
+            50.0,
+            20.0,
+        );
+        // Must not panic (a zero-size fill_rect is a no-op D2D call), and
+        // must genuinely paint nothing: probe a few points across the
+        // surface and confirm they're all still the plain background
+        // `paint()` filled before invoking the scrollbar rasteriser.
+        let surface = paint(&sb);
+        let theme = Theme::default();
+        for (x, y) in [(4, 4), (4, H / 2), (4, H - 4)] {
+            let c = surface.pixel_at(x, y);
+            assert_eq!(
+                (c.r, c.g, c.b),
+                (theme.background.r, theme.background.g, theme.background.b),
+                "a zero-size track should paint nothing, leaving the background untouched at ({x}, {y})",
+            );
+        }
+    }
+
+    // ── Scroll-driven idle fade ─────────────────────────────────────
+    //
+    // Unlike `paint` above (which exercises `native_surface_paint::paint`
+    // directly, always at full opacity), these tests go through
+    // `WinBackend`'s `draw_dyn` itself, so they also exercise
+    // `WinBackend::scrollbar_fade_opacity` — the render-side half of the
+    // overlay idle-fade seam `super::run`'s `WM_MOUSEWHEEL`/
+    // `WM_MOUSEHWHEEL` handler drives via `note_scroll_activity`. Mirrors
+    // `macos::scrollbar`'s own "Scroll-driven idle fade" section.
+
+    fn paint_via_backend_raw(
+        sb: &Scrollbar,
+        configure: impl FnOnce(&mut crate::win::backend::WinBackend),
+    ) -> HeadlessSurface {
+        use crate::backend::DrawsPrimitives;
+        use crate::event::Viewport;
+        use crate::win::backend::WinBackend;
+        use crate::Backend;
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        surface
+            .fill_rect(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                Theme::default().background,
+            )
+            .expect("fill bg");
+        let mut backend = WinBackend::new();
+        backend
+            .attach_headless(surface.target().clone(), W, H)
+            .expect("attach headless surface");
+        configure(&mut backend);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let _ = backend.draw_dyn(sb.track, sb, &());
+        backend.end_frame();
+        surface
+    }
+
+    /// `WinBackend::new` seeds the fade clock with its own construction
+    /// instant, so a scrollbar painted right away — a live app's first
+    /// frame, a gallery capture, this test — still shows, rather than
+    /// starting pre-faded before anything has had a chance to interact
+    /// with it.
+    #[test]
+    fn scrollbar_visible_immediately_after_backend_construction() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |_| {});
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be visible right after construction"
+        );
+    }
+
+    #[test]
+    fn scrollbar_absent_if_never_scrolled_once_idle_interval_elapses() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            let last = b
+                .scroll_last_interaction()
+                .expect("new() seeds a timestamp");
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded once idle, even if never scrolled"
+        );
+    }
+
+    /// Test seam: `set_scroll_last_interaction(None)` simulates "never
+    /// interacted, already fully faded" directly, without needing to
+    /// fast-forward the clock.
+    #[test]
+    fn scrollbar_absent_when_explicitly_marked_never_interacted() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(None);
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded when explicitly marked never-interacted"
+        );
+    }
+
+    #[test]
+    fn scrollbar_appears_at_full_opacity_right_after_a_scroll_event() {
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let now = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            // Mirrors what `super::run`'s `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
+            // handler does on a real wheel delta: `note_scroll_activity`
+            // stamps "now". The clock override pins that "now" to a
+            // fixed instant so the probe below is deterministic.
+            b.set_fade_clock_override(Some(now));
+            b.note_scroll_activity();
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be visible right after a scroll event"
+        );
+    }
+
+    #[test]
+    fn scrollbar_fades_back_out_after_the_idle_interval() {
+        use crate::primitives::scrollbar::{SCROLLBAR_FADE_HOLD, SCROLLBAR_FADE_OUT};
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD + SCROLLBAR_FADE_OUT));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_eq!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should be fully faded after the idle interval"
+        );
+    }
+
+    #[test]
+    fn scrollbar_still_full_opacity_during_the_hold_window() {
+        use crate::primitives::scrollbar::SCROLLBAR_FADE_HOLD;
+
+        let sb = vertical_bar(0.0, 200.0, 50.0);
+        let theme = Theme::default();
+        let last = std::time::Instant::now();
+        let surface = paint_via_backend_raw(&sb, |b| {
+            b.set_scroll_last_interaction(Some(last));
+            b.set_fade_clock_override(Some(last + SCROLLBAR_FADE_HOLD));
+        });
+        let c = surface.pixel_at(4, 5);
+        assert_ne!(
+            (c.r, c.g, c.b),
+            (theme.background.r, theme.background.g, theme.background.b),
+            "scrollbar should still be visible at the end of the hold window"
+        );
     }
 }

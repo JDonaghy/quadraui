@@ -826,14 +826,11 @@ pub fn block_sample_indices(start: usize, end: usize, cap: usize) -> Vec<usize> 
 /// every coverage-to-boolean decision this crate makes across a minimap
 /// strip (issue #1012 pt. 2). [`sample_blocks`] uses it (via
 /// [`dither_threshold_met`]) to decide whether a *block*'s column reads
-/// back non-blank; [`crate::tui::braille::dither_threshold_met`] (issue
-/// #1007) re-exports this exact matrix to make the same decision one
-/// granularity finer, per *dot*. A single shared matrix means the two
-/// compositions are provably the same dither policy applied twice, not
-/// two independently-tuned ones that happen to agree today — before
-/// #1012 they were exactly that: this matrix lived only in
-/// `tui::braille`, and vimcode#1085 had already grown its own copy for
-/// the block-level decision.
+/// back non-blank, and the braille cell painter
+/// (`crate::cell_surface::braille`) re-exports the same function to make
+/// the same decision one granularity finer, per *dot*. A single shared
+/// matrix means the two compositions are provably the same dither policy
+/// applied twice, not two independently-tuned ones.
 pub const BAYER4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
 /// Threshold `covered` of `total` sampled units (a block's sampled lines,
@@ -2068,7 +2065,7 @@ mod tests {
 
     // dither_threshold_met uses the BAYER4 matrix (shared by every coverage-
     // to-boolean decision in this crate) — per-block via [`dither_threshold_met`]
-    // and per-dot via `tui::braille::dither_threshold_met`
+    // and per-dot via `cell_surface::braille::dither_threshold_met`
 
     #[test]
     fn dither_threshold_met_zero_total_never_fires() {

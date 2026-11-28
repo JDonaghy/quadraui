@@ -376,9 +376,7 @@ mod tests {
     fn save_mode_enter_confirms_typed_name_even_if_absent() {
         let tmp = scratch_dir_with(&["existing.txt"], &[]);
         let mut picker = FilePicker::new(FilePickerMode::Save, tmp.path(), vec![]);
-        picker.paths.push_char('n');
-        picker.paths.push_char('e');
-        picker.paths.push_char('w');
+        picker.paths.set_query("new".into());
         let result = confirm_applied(&mut picker);
         assert_eq!(
             result,
@@ -427,7 +425,7 @@ mod tests {
     fn save_mode_enter_on_dir_navigates_not_confirms() {
         let tmp = scratch_dir_with(&[], &["sub"]);
         let mut picker = FilePicker::new(FilePickerMode::Save, tmp.path(), vec![]);
-        picker.paths.push_char('x'); // non-empty query — would confirm if not for the dir row
+        picker.paths.set_query("x".into()); // non-empty query — would confirm if not for the dir row
         let idx = picker
             .paths
             .all_entries
@@ -451,18 +449,6 @@ mod tests {
         let picker = FilePicker::new(FilePickerMode::Save, tmp.path(), vec![])
             .with_initial_filename("untitled.txt");
         assert_eq!(picker.paths.query, "untitled.txt");
-    }
-
-    #[test]
-    fn push_and_pop_char_no_vim_key_hijack() {
-        // Unlike `FolderPicker`, '-'/'j'/'k' must reach the
-        // query unchanged — filenames routinely contain them.
-        let tmp = scratch_dir_with(&[], &[]);
-        let mut picker = FilePicker::new(FilePickerMode::Save, tmp.path(), vec![]);
-        for c in "my-journal.md".chars() {
-            picker.paths.push_char(c);
-        }
-        assert_eq!(picker.paths.query, "my-journal.md");
     }
 
     #[test]
@@ -562,7 +548,7 @@ mod tests {
     // ── Save mode: vim shortcuts disabled, typing wins ──────────────────
 
     /// In `Save` mode, `-`/`j`/`k` must reach the query through the full
-    /// `handle()` path (not just `push_char` directly) — Save's query is
+    /// `handle()` path — Save's query is
     /// the destination filename, so routing them as navigation would make
     /// `journal.md`, `my-notes.txt`, and `Makefile-k8s` untypeable and
     /// `-` actively destructive (it would call `navigate_up`, which
@@ -609,9 +595,7 @@ mod tests {
         // via `path_picker::filter_entries`.
         let tmp = scratch_dir_with(&[], &["kube-system"]);
         let mut picker = FilePicker::new(FilePickerMode::Open, tmp.path(), vec![]);
-        picker.paths.push_char('k');
-        picker.paths.push_char('b');
-        picker.paths.push_char('s');
+        picker.paths.set_query("kbs".into());
         assert!(
             picker
                 .paths
@@ -626,7 +610,7 @@ mod tests {
     fn build_palette_open_mode_has_no_create_label() {
         let tmp = scratch_dir_with(&["a.rs"], &[]);
         let mut picker = FilePicker::new(FilePickerMode::Open, tmp.path(), vec![]);
-        picker.paths.push_char('a');
+        picker.paths.set_query("a".into());
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         assert!(picker
             .palette(rect.width, picker.paths.query.len())
@@ -638,7 +622,7 @@ mod tests {
     fn build_palette_save_mode_has_create_label_when_query_nonempty() {
         let tmp = scratch_dir_with(&[], &[]);
         let mut picker = FilePicker::new(FilePickerMode::Save, tmp.path(), vec![]);
-        picker.paths.push_char('x');
+        picker.paths.set_query("x".into());
         let rect = Rect::new(0.0, 0.0, 80.0, 24.0);
         let label = picker
             .palette(rect.width, picker.paths.query.len())

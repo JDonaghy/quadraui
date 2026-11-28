@@ -1,135 +1,55 @@
-//! Public macOS (AppKit + Core Graphics + Core Text) rasterisers for
-//! `quadraui` primitives.
+//! macOS backend: AppKit windows, Core Graphics painting and Core Text.
 //!
-//! Enabled via the `macos` Cargo feature on a macOS host. Apps depend
-//! on `quadraui` with `features = ["macos"]` and call into this module
-//! to open an AppKit window and paint primitives onto a `CGContextRef`
-//! that the runner sets up inside the view's `drawRect:` override.
+//! Enabled via the `macos` Cargo feature on a macOS host. A `run` entry
+//! point owns window and run-loop bootstrap; every widget paints through
+//! its widget contract (`Backend::draw_dyn`) on `MacBackend`'s
+//! `PaintSurface` over the `CGContextRef` the runner sets up inside the
+//! view's `drawRect:` override. This module carries only the platform
+//! plumbing (window, events, text, services, tray, the test driver).
 //!
-//! Mirrors the layout of [`crate::gtk`] and [`crate::tui`]: a `run`
-//! entry point owns window + run-loop bootstrap, and per-primitive
-//! rasterisers live as sibling modules.
-//!
-//! The per-primitive rasteriser submodules, and most of the free functions
-//! re-exported at the bottom of this module, are painter internals, not a
-//! documented API: **unstable, not covered by semver** — they can move,
-//! split, or disappear between any two 0.1.x releases with no version
-//! bump. `backend`/`events`/`services`/`shell_runner`/`testing`/`text` and
-//! the handful of re-exports with doc comments on this page (`MacBackend`,
-//! `run`, …) are the stable, consumer-depended-on subset; everything else
-//! is `#[doc(hidden)]`.
-
-// Per-primitive rasteriser modules below stay `pub mod` (not `pub(crate)`)
-// so every existing `crate::macos::<module>::<item>` path keeps compiling —
-// narrowing to `pub(crate)` is a breaking visibility change this crate's
-// pre-1.0 semver convention (and `cargo-semver-checks`) treats like any
-// other removal. Each one is `#[doc(hidden)]` instead: unstable, not
-// covered by semver, and excluded from rustdoc's module index — a painter
-// internal splitting (or its functions moving between sibling modules) is
-// free to happen without a version bump. The handful of items a consumer
-// actually needs stay documented at their flat `crate::macos::<item>`
-// re-export path in the `pub use` block below, which is unaffected by the
-// `#[doc(hidden)]` on its source module. `Cargo.toml`'s
-// `[package.metadata.cargo-semver-checks.lints]` downgrades the
-// `*_now_doc_hidden` lint family to `allow` so marking one of these hidden
-// for the first time doesn't itself register as a breaking change.
-//
-// `backend`/`events`/`services`/`shell_runner`/`testing`/`text` are the
-// exception: those six are the real, module-qualified stable surface
-// (`crate::macos::testing::MacDriver`, `crate::macos::shell_runner::
-// run_with_shell`, `crate::macos::text::system_monospace_font`, …) that
-// `vimcode` and `coord-tui` already depend on by module path, not just
-// through a flat re-export — mirrors the set `crate::gtk`/`crate::tui`/
-// `crate::win` already keep `pub` (undecorated) for the same reason.
+//! `backend`/`events`/`services`/`shell_runner`/`text` and the re-exports
+//! with doc comments on this page (`MacBackend`, `run`, …) are the stable,
+//! consumer-depended-on subset — `vimcode` and `coord-tui` reach the first
+//! five by module path (`crate::macos::shell_runner::run_with_shell`,
+//! `crate::macos::text::system_monospace_font`, …). Everything else is
+//! `#[doc(hidden)]`: **unstable, not covered by semver**.
 pub mod backend;
 pub(crate) mod caret_blink;
 // Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
-#[doc(hidden)]
-pub mod command_line;
-#[doc(hidden)]
-pub mod completions;
-#[doc(hidden)]
-pub mod date_picker;
-#[doc(hidden)]
-pub mod dialog;
 pub mod events;
 #[doc(hidden)]
 pub mod headless;
-#[doc(hidden)]
-pub mod list;
 pub(crate) mod menu_bar_install;
-#[doc(hidden)]
-pub mod progress;
-#[doc(hidden)]
-pub mod rich_text_popup;
 mod run;
-#[doc(hidden)]
-pub mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-#[doc(hidden)]
-pub mod spinner;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
 pub mod testing;
 pub mod text;
-#[doc(hidden)]
-pub mod text_display;
-#[doc(hidden)]
-pub mod text_input;
 // Text-selection highlight painting — the CoreGraphics twin of
 // `gtk::backend`'s Cairo `fill()` / `win::backend`'s Direct2D
 // `FillRectangle` call. `pub(crate)`, not `pub`: only `MacBackend::
 // apply_selection_highlight` calls into it, mirroring `menu_bar_install`'s
 // visibility above.
 pub(crate) mod text_selection;
-#[doc(hidden)]
-pub mod toast;
-#[doc(hidden)]
-pub mod tooltip;
 // Tray / status-bar icon control — `NSStatusBar`/`NSStatusItem`
 // glue for `Backend::tray`. `pub(crate)`, not `pub`: only
 // `impl TrayService for MacBackend` (`backend.rs`) calls into it,
 // mirroring `menu_bar_install`'s visibility above.
 pub(crate) mod tray;
 
-// The flat re-exports below split into two groups, verified by grepping
-// `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
-// (`quadraui/examples`, `quadraui/benches`, `quadraui/tests`, `kubeui*`) for
-// `quadraui::macos::<name>` / `crate::macos::<name>`: the handful a real
-// caller reaches by this exact flat path stay documented; everything else
-// is a painter internal duplicating what `Backend::draw_*` already
-// exposes, with zero reachers, so it is `#[doc(hidden)]` — unstable, not
-// covered by semver, free to move or disappear without a version bump
-// (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+// The flat re-exports below a real caller reaches by this exact path stay
+// documented; the rest are `#[doc(hidden)]` — unstable, not covered by
+// semver (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::MacBackend;
-#[doc(hidden)]
-pub use command_line::draw_command_line;
-#[doc(hidden)]
-pub use completions::draw_completions;
-#[doc(hidden)]
-pub use dialog::draw_dialog;
-#[doc(hidden)]
-pub use list::{draw_list, mac_list_layout};
-#[doc(hidden)]
-pub use progress::mac_progress_layout;
-#[doc(hidden)]
-pub use rich_text_popup::draw_rich_text_popup;
 #[doc(hidden)]
 pub use run::run_with;
 pub use run::{run, MacRunner, RunConfig, StepOutcome};
 #[doc(hidden)]
 pub use services::MacPlatformServices;
-#[doc(hidden)]
-pub use spinner::mac_spinner_layout;
-#[doc(hidden)]
-pub use text_display::mac_text_display_layout;
-#[doc(hidden)]
-pub use toast::mac_toast_stack_layout;
-#[doc(hidden)]
-pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide `NSPasteboard`**.

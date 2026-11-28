@@ -1,85 +1,34 @@
-//! Win-GUI backend: Direct2D + DirectWrite rasterisers.
+//! Win-GUI backend: Direct2D + DirectWrite.
 //!
 //! The Win32 window + Direct2D render-target bootstrap
 //! (`run.rs`'s message loop, `backend.rs`'s `begin_frame`/`end_frame`)
 //! uses real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
-//! `win` feature comment). Chrome strips (menu, status and
-//! activity bars) paint through their widget contracts; content-area
-//! rasterisers include `list`/`form`/`data_table`/`editor`/`chart`;
-//! overlay/popup rasterisers include `tooltip`/`dialog`/
-//! `palette`/`completions`/`rich_text_popup`; container/
-//! indicator rasterisers include `split`/`toast`/`progress`/
-//! `spinner`; text-heavy rasterisers include `text_display`/
-//! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a
-//! `todo!()` stub; implement each one against Direct2D / DirectWrite and
-//! the compiler will tell you when you're done.
+//! `win` feature comment). Every widget paints through its widget
+//! contract on `WinBackend`'s `PaintSurface`; this module carries only the
+//! platform plumbing (window, events, text, services, tray).
 //!
 //! See `quadraui/docs/NATIVE_GUI_LESSONS.md` for pitfalls discovered
 //! during Win-GUI work. See the GTK backend (`quadraui/src/gtk/`)
 //! as the reference implementation for a pixel-based backend.
 //!
-//! Most of the free functions re-exported at the bottom of this module are
-//! painter internals, not a documented API: **unstable, not covered by
-//! semver** — they can move, split, or disappear between any two 0.1.x
-//! releases with no version bump. The few re-exports with doc comments on
-//! this page (`WinBackend`, `run`, …) are the stable, consumer-depended-on
-//! subset; everything else is `#[doc(hidden)]`.
+//! The re-exports with doc comments on this page (`WinBackend`, `run`, …)
+//! are the stable, consumer-depended-on subset; everything else is
+//! `#[doc(hidden)]`: **unstable, not covered by semver**.
 
 pub mod backend;
-/// Windows tests for [`crate::ComboBox`]. All painting delegates to
-/// [`crate::primitives::combo_box::native_surface_paint`] via
-/// [`crate::DrawsPrimitives::draw_dyn`], so this module carries no
-/// production code of its own — see its module docs.
-mod combo_box;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::command_line::CommandLine`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod command_line;
-/// Direct2D / DirectWrite rasteriser for [`crate::Completions`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod completions;
-/// Windows rasteriser for [`crate::DatePicker`]. All painting delegates
-/// to [`crate::primitives::date_picker::native_surface_paint::paint`] via
-/// [`crate::Backend::draw_date_picker`], so this module carries no
-/// production code of its own — see its module docs.
-mod date_picker;
-/// Direct2D / DirectWrite rasteriser for [`crate::Dialog`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod dialog;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
 /// focus). Pure free functions, host-independent and unit-tested off
 /// Windows — mirrors `crate::gtk::events` / `crate::macos::events`. See
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// is handled in `msg` + `run` — see this module's docs.
 pub mod events;
-/// Direct2D / DirectWrite rasteriser for [`crate::ListView`].
-/// [`list::win_list_layout`] is pure geometry and compiles/runs
-/// everywhere; only [`list::draw_list`] is Windows-only — see that
-/// module's docs.
-mod list;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
 /// unit-tested off Windows. See its module docs.
 pub(crate) mod msg;
-/// Windows rasteriser for [`crate::NumberInput`]. All painting delegates
-/// to [`crate::primitives::number_input::native_surface_paint::paint`]
-/// via [`crate::Backend::draw_number_input`], so this module carries no
-/// production code of its own — see its module docs.
-mod number_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::ProgressBar`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod progress;
-/// Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod rich_text_popup;
 // `gtk`/`tui`/`macos` keep this submodule crate-private (`mod run;`) and
 // surface only the flat re-exports below; `win` is the one backend where
 // it is `pub mod` instead. No caller in `~/src/vimcode/src`,
@@ -90,10 +39,6 @@ mod rich_text_popup;
 // surface to parity with the other three backends.
 #[doc(hidden)]
 pub mod run;
-/// Direct2D rasteriser for [`crate::Scrollbar`]. Windows-only in
-/// full — see its module docs.
-#[cfg(target_os = "windows")]
-mod scrollbar;
 pub mod services;
 /// `run_with_shell()`: composes a [`crate::ShellApp`] into a `ShellView`
 /// and drives it through the Win32 message loop — the Windows
@@ -102,14 +47,11 @@ pub mod services;
 /// "compiles everywhere, only *works* on Windows" reason as `run`/`mod
 /// run` above — see this module's own doc.
 pub mod shell_runner;
-/// Direct2D / DirectWrite rasteriser for [`crate::Spinner`]. Issue
-/// Only its paint fn is Windows-only — see its module docs.
-mod spinner;
 /// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
-/// Windows-only — same gating as the per-primitive
-/// rasteriser modules above that consume it.
+/// Windows-only. `pub(crate)` so the widgets' own Windows paint tests
+/// can paint through it.
 #[cfg(target_os = "windows")]
-mod surface;
+pub(crate) mod surface;
 /// Headless Direct2D test surface: an offscreen `ID2D1DCRenderTarget`
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.
@@ -142,24 +84,6 @@ pub mod testing;
 /// and `DWrite`'s public surface in step with the rasterisers that take it.
 #[cfg(target_os = "windows")]
 pub mod text;
-/// Direct2D / DirectWrite rasteriser for [`crate::TextDisplay`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod text_display;
-/// Backend-specific layout for
-/// [`crate::primitives::text_input::TextInput`]; painting itself is the
-/// shared `primitives::text_input::native_surface_paint::paint`.
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod text_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::ToastOverlay`]. Issue
-/// Only its deprecated paint shim is Windows-only — see its
-/// module docs.
-mod toast;
-/// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod tooltip;
 /// Tray/status-bar icon control (`Shell_NotifyIconW`) for `Backend::tray`.
 /// `pub(crate)` (not target-gated) for the same "compiles
 /// everywhere via internal `cfg(target_os = "windows")`, only *works* on
@@ -177,26 +101,6 @@ pub(crate) mod tray;
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::WinBackend;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use completions::draw_completions;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use dialog::draw_dialog;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use list::draw_list;
-#[doc(hidden)]
-pub use list::win_list_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use progress::win_progress_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome};
 // `WinRunner` needs a real `HWND`/`WindowState<A>` (built inside
 // `run::win32`), unlike `RunConfig`/`run`/`run_with`/`StepOutcome` above,
@@ -206,19 +110,6 @@ pub use run::{run, run_with, RunConfig, StepOutcome};
 pub use run::WinRunner;
 #[doc(hidden)]
 pub use services::WinPlatformServices;
-#[doc(hidden)]
-pub use spinner::win_spinner_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use text_display::win_text_display_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use text_input::win_text_input_layout;
-#[doc(hidden)]
-pub use toast::win_toast_stack_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide Windows clipboard**.

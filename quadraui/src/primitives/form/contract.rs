@@ -585,13 +585,9 @@ impl Primitive for Form {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let painted = self.with_painted_edit(env);
-        super::cell_paint::draw_form(buf, area, &painted, theme);
+        super::cell_paint::draw_form(cells, area, &painted, theme);
     }
 }
 

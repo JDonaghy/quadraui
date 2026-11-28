@@ -41,10 +41,10 @@
 //!   positional `hovered_idx: Option<usize>`)
 //! - [`crate::Chart::hovered_point`] (`Option<(usize, usize)>`, a
 //!   descriptor field the app owns)
-//! - [`crate::Backend::draw_list_with_state`] and a tree's paint state
-//!   (`&ListPaintState` / `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
-//!   / `pressed_idx: Option<usize>` plus an optional pixel-precise
-//!   `scroll_px`)
+//! - A list's or tree's paint state (`&ListPaintState` /
+//!   `&TreePaintState`, each carrying a positional
+//!   `hovered_idx: Option<usize>` / `pressed_idx: Option<usize>` plus an
+//!   optional pixel-precise `scroll_px`)
 //!
 //! These would need stable ids for their items before moving into
 //! `InteractionState`. `ListView`/`TreeView` rows join this group rather
@@ -52,9 +52,8 @@
 //! hover does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
 //! minting one per row index on the fly would permanently intern a new
 //! string per distinct (list id, row index) pair ever shown — an
-//! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
-//! tracks the hovered row index
-//! instead.
+//! unbounded leak for a growing log pane. The row-family widgets report
+//! the hovered row as a sub-part of their own id instead.
 //!
 //! ## Ownership
 //!

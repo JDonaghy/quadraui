@@ -210,7 +210,8 @@ impl AppLogic for SidebarPanelBodyDemo {
                 visible,
                 line_h,
             );
-            backend.draw_scrollbar(sb_rect, &sb);
+            let _ = backend.draw_dyn(sb.track, &sb, &());
+            backend.register_zone(sb.id, sb.track);
         }
 
         let _ = backend.draw_dyn(status, &self.build_status_bar(), &());

@@ -6,22 +6,22 @@ name: quadraui-py wheels
 # `maturin build` exited zero.
 #
 # Each OS gets the native-window feature it can actually ship as a clean
-# abi3 wheel with no extra runtime dependency:
+# abi3 wheel:
 #   - macOS: `macos` (Core Graphics/AppKit via `objc2`) links against system
 #     frameworks every Mac already has -- no bundling problem.
 #   - Windows: `win` (Direct2D/DirectWrite) links against system DLLs every
 #     Windows install already has -- same story.
-#   - Linux: **no** native feature. `gtk` needs a real libgtk-4 (plus its
-#     own transitive GLib/Pango/Cairo stack) at both link and run time, and
-#     there is no manylinux-blessed way to vendor that into a portable
-#     wheel the way `auditwheel`/`manylinux` do for a handful of common C
-#     libraries -- GTK is explicitly outside that set. So the Linux wheel
-#     stays TUI-only (`QuiApp.run_native` is undefined on it, same as
-#     today); a Linux user who wants `run_native` installs system GTK and
-#     builds from source with `maturin develop --features gtk` instead, or
-#     runs `run_tui()` which the wheel already supports unchanged. See
-#     `quadraui-py/README.md`'s *Wheels* section for the user-facing
-#     writeup of this tradeoff.
+#   - Linux: two wheels. The `build` job's `manylinux: auto` wheel carries
+#     no native feature and covers every glibc >= 2.17 host for `run_tui`
+#     and the headless driver. The `linux-gtk` job builds a second,
+#     `manylinux_2_39` wheel that carries the same GTK-free extension plus
+#     a GTK-enabled variant (`_quadraui_gtk`) linking the system GTK 4
+#     stack dynamically; `python/quadraui/_ext.py` loads the GTK variant
+#     when the host can, and falls back to the GTK-free one when it can't.
+#     pip prefers the `manylinux_2_39` wheel wherever glibc is new enough.
+#     `linux-smoke` installs both wheels into clean distro containers and
+#     checks which one pip picks and what it does there. See
+#     `quadraui-py/docs/LINUX_NATIVE_WHEELS.md` for the design.
 #
 # `abi3-py38` (set on the `pyo3` dependency itself, not a maturin flag) is
 # what makes one wheel per OS/arch work across every CPython >= 3.8, so
@@ -138,9 +138,9 @@ jobs:
       # because the `Build wheel` step passes `--features` on the CLI to let
       # the macOS/Windows legs add their native feature on top, and relying
       # on maturin to merge that with `pyproject.toml`'s own `features` list
-      # (rather than override it) is an assumption not worth making. Linux
-      # has no native feature (see the header comment for why GTK can't ship
-      # in a manylinux wheel), so `run_native` stays undefined on that wheel.
+      # (rather than override it) is an assumption not worth making. This
+      # job's Linux wheel has no native feature; the GTK-enabled Linux wheel
+      # comes from the `linux-gtk` job below.
       CARGO_FEATURES: ${{ matrix.os == 'macos-latest' && 'pyo3/extension-module,macos' || (matrix.os == 'windows-latest' && 'pyo3/extension-module,win' || 'pyo3/extension-module') }}
       HAS_RUN_NATIVE: ${{ matrix.os != 'ubuntu-latest' }}
     runs-on: ${{ matrix.os }}
@@ -211,14 +211,194 @@ jobs:
           "$PYTHON" -c "
           import quadraui
           print(quadraui.QuiApp)
-          has_run_native = hasattr(quadraui.QuiApp, 'run_native')
+          has_native = quadraui._quadraui._NATIVE_BACKEND is not None
           expected = '${HAS_RUN_NATIVE}' == 'true'
-          assert has_run_native == expected, (
-              f'QuiApp.run_native presence {has_run_native} != expected {expected}'
+          assert has_native == expected, (
+              f'native backend presence {has_native} != expected {expected}'
           )
+          if not has_native:
+              try:
+                  quadraui.QuiApp(10, 3).run_native()
+              except quadraui.UnsupportedError as exc:
+                  print(f'run_native: {exc}')
+              else:
+                  raise AssertionError('run_native did not raise UnsupportedError')
           "
       - uses: actions/upload-artifact@v4
         with:
           name: quadraui-py-wheel-${{ matrix.os }}
           path: quadraui-py/dist/*.whl
           if-no-files-found: error
+
+  linux-gtk:
+    # The GTK-enabled Linux wheel. Built on Ubuntu 24.04 (glibc 2.39, GTK
+    # 4.14) rather than in a manylinux image: `quadraui`'s `gtk4` dependency
+    # enables `v4_10` (it calls `GtkFileDialog`/`GtkAlertDialog`), so the
+    # build needs GTK >= 4.10 headers and pkg-config metadata, which no
+    # manylinux image's package repositories carry. glibc 2.39 is then the
+    # wheel's floor, and it is tagged `manylinux_2_39` to match.
+    name: wheel (linux, gtk)
+    needs: bump-shape
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      # The GTK variant's `DT_NEEDED` system libraries. `auditwheel repair`
+      # would otherwise copy them (and everything they load) into the
+      # wheel; they must come from the host so they match its GTK, display
+      # server and fonts. `Check the wheel's layout` fails the job if a new
+      # dependency shows up that is not listed here.
+      GTK_SYSTEM_LIBS: >-
+        libgtk-4.so.1 libgdk_pixbuf-2.0.so.0 libpango-1.0.so.0
+        libpangocairo-1.0.so.0 libpangoft2-1.0.so.0 libcairo.so.2
+        libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
+        libfontconfig.so.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install GTK 4 development files and wheel tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev
+          python -m pip install "maturin>=1.5,<2.0" "auditwheel>=6.1" patchelf
+      - name: Build the GTK extension variant
+        run: |
+          cargo build --release -p quadraui-py --lib \
+            --features pyo3/extension-module,gtk-ext
+          cp target/release/libquadraui_py.so \
+            quadraui-py/python/quadraui/_quadraui_gtk.abi3.so
+      - name: Build the wheel around both extensions
+        working-directory: quadraui-py
+        run: |
+          maturin build --release --auditwheel skip --out raw \
+            --features pyo3/extension-module
+          excludes=""
+          for lib in $GTK_SYSTEM_LIBS; do excludes="$excludes --exclude $lib"; done
+          auditwheel repair --plat manylinux_2_39_x86_64 $excludes -w dist raw/*.whl
+      - name: Check the wheel's layout
+        working-directory: quadraui-py
+        run: |
+          python - <<'PY'
+          import glob
+          import subprocess
+          import sys
+          import tempfile
+          import zipfile
+
+          wheels = glob.glob("dist/*manylinux_2_39_x86_64.whl")
+          if len(wheels) != 1:
+              sys.exit(f"::error::expected one manylinux_2_39 wheel, found {wheels}")
+          with zipfile.ZipFile(wheels[0]) as zf:
+              names = zf.namelist()
+              vendored = [n for n in names if n.startswith("quadraui.libs/")]
+              if vendored:
+                  sys.exit(f"::error::auditwheel vendored system libraries: {vendored}")
+              with tempfile.TemporaryDirectory() as tmp:
+                  for module, must_link_gtk in (("_quadraui", False), ("_quadraui_gtk", True)):
+                      member = f"quadraui/{module}.abi3.so"
+                      if member not in names:
+                          sys.exit(f"::error::{member} missing from {wheels[0]}")
+                      path = zf.extract(member, tmp)
+                      dynamic = subprocess.run(
+                          ["readelf", "-d", path], capture_output=True, text=True, check=True
+                      ).stdout
+                      links_gtk = "libgtk-4.so.1" in dynamic
+                      print(f"{member}: links libgtk-4.so.1 = {links_gtk}")
+                      if links_gtk != must_link_gtk:
+                          sys.exit(f"::error::{member} links libgtk-4.so.1 = {links_gtk}")
+                      if not must_link_gtk and "libglib-2.0" in dynamic:
+                          sys.exit(f"::error::{member} must not need GLib")
+          print(f"{wheels[0]} ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quadraui-py-wheel-linux-gtk
+          path: quadraui-py/dist/*.whl
+          if-no-files-found: error
+
+  linux-smoke:
+    # Installs from a directory holding both Linux wheels into clean distro
+    # containers, so pip's own tag choice is under test as well as what the
+    # chosen wheel does on that host (see `quadraui-py/ci/linux_wheel_smoke.py`).
+    name: linux smoke (${{ matrix.name }})
+    needs: [bump-shape, build, linux-gtk]
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' && needs.build.result == 'success' && needs.linux-gtk.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-24.04 + gtk4
+            image: ubuntu:24.04
+            mode: gtk
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv libgtk-4-1 xvfb dbus fonts-dejavu-core
+          - name: fedora-40 + gtk4
+            image: fedora:40
+            mode: gtk
+            # Fedora 40 is end-of-life: its packages live only on the archive
+            # host, which the image's metalinks no longer point at.
+            install: >-
+              sed -i -e 's|^metalink=|#metalink=|'
+              -e 's|^#baseurl=http://download.example/pub/fedora/linux|baseurl=https://archives.fedoraproject.org/pub/archive/fedora/linux|'
+              /etc/yum.repos.d/fedora.repo /etc/yum.repos.d/fedora-updates.repo &&
+              dnf install -y --disablerepo='*cisco*' python3 gtk4 xorg-x11-server-Xvfb
+              dbus-daemon dejavu-sans-fonts
+          - name: fedora-42 + gtk4
+            image: fedora:42
+            mode: gtk
+            install: >-
+              dnf install -y python3 gtk4 xorg-x11-server-Xvfb dbus-daemon
+              dejavu-sans-fonts
+          - name: ubuntu-24.04 without gtk4
+            image: ubuntu:24.04
+            mode: missing-gtk
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv
+          - name: fedora-42 without gtk4
+            image: fedora:42
+            mode: missing-gtk
+            install: dnf install -y python3
+          - name: debian-12 (glibc 2.36)
+            image: debian:12
+            mode: tui-only
+            install: >-
+              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y
+              python3 python3-venv
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install distro packages
+        run: ${{ matrix.install }}
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: quadraui-py-wheel-ubuntu-latest
+          path: wheels
+      - uses: actions/download-artifact@v4
+        with:
+          name: quadraui-py-wheel-linux-gtk
+          path: wheels
+      - name: Install and check
+        shell: bash
+        env:
+          # A container has no GPU device for GTK's GL renderer; the Cairo
+          # renderer paints through the same widget tree without one.
+          GSK_RENDERER: cairo
+        run: |
+          ls wheels
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --no-index --find-links wheels quadraui
+          if [ "${{ matrix.mode }}" = gtk ]; then
+            Xvfb :99 -screen 0 1280x800x24 &
+            export DISPLAY=:99
+            sleep 2
+            dbus-run-session -- /tmp/venv/bin/python quadraui-py/ci/linux_wheel_smoke.py gtk
+          else
+            /tmp/venv/bin/python quadraui-py/ci/linux_wheel_smoke.py "${{ matrix.mode }}"
+          fi

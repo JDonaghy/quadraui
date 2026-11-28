@@ -18,6 +18,7 @@
 //!   so repeated sub-row scrolling eventually crosses a row boundary.
 
 use quadraui::tui::testing::TuiDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     scroll_by_clamped_f32, scroll_rows, wheel_delta, AppLogic, Backend, Decoration, ListItem,
     ListView, Reaction, Rect, StyledText, UiEvent, WidgetId,
@@ -89,9 +90,8 @@ impl ListApp {
 impl AppLogic for ListApp {
     type AreaId = ();
 
-    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_list(VIEWPORT, &self.list);
+        let _ = backend.draw_dyn(VIEWPORT, &self.list, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

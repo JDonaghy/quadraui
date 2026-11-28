@@ -15,14 +15,11 @@
 //! [`crate::primitive::Primitive::paint_cells`] and an embedded form
 //! body (a `MultiSectionView` section) paint through the same code.
 //!
-//! Takes `&mut ratatui::buffer::Buffer` rather than a quadraui-local
-//! cell-surface abstraction, for the reason
-//! [`crate::primitive::Primitive::paint_cells`] documents at length: a
-//! terminal rasteriser picks individual glyphs (`[`, `]`, `●`, `▾`,
-//! `█`) and reckons in whole columns, neither of which a pixel-shaped
-//! [`crate::paint_surface::PaintSurface`] verb can express.
+//! Paints through [`crate::CellSurface`] rather than a
+//! [`crate::paint_surface::PaintSurface`]: a terminal rasteriser picks
+//! individual glyphs (`[`, `]`, `●`, `▾`, `█`) and reckons in whole
+//! columns, neither of which a pixel-shaped verb can express.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::cell_layout::{
@@ -30,13 +27,11 @@ use super::cell_layout::{
     resolved_control_width_cells, track_cells_within, tui_form_layout_with_label_width,
 };
 use super::{FieldKind, Form, LabelAlign, LabelPosition, ValidationState};
-use ratatui::style::Color as RatatuiColor;
 
-use crate::backend::ColorDepth;
+use crate::cell_surface::{solid_style, CellSurface};
 use crate::primitives::text_field::cell_paint as text_field_cell_paint;
 use crate::theme::Theme;
-use crate::tui::cell_surface::TuiCellSurface;
-use crate::tui::{draw_styled_text, ratatui_color, set_cell};
+use crate::tui::draw_styled_text;
 use crate::types::{Color, Decoration};
 
 /// A row's horizontal content span within `area`, in cells — `offset`
@@ -62,11 +57,11 @@ struct RowX {
 struct RowCtx<'a> {
     area: Rect,
     y: u16,
-    default_fg: ratatui::style::Color,
-    row_bg: ratatui::style::Color,
-    field_fg: ratatui::style::Color,
-    dim_fg: ratatui::style::Color,
-    accent_fg: ratatui::style::Color,
+    default_fg: Color,
+    row_bg: Color,
+    field_fg: Color,
+    dim_fg: Color,
+    accent_fg: Color,
     is_focused: bool,
     theme: &'a Theme,
     /// Whether this field has no reserved label column — an empty
@@ -94,8 +89,8 @@ struct RowCtx<'a> {
     control_width: usize,
 }
 
-/// Draw a [`Form`] into `area` on `buf`.
-pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
+/// Draw a [`Form`] into `area` on `surface`.
+pub fn draw_form(surface: &mut dyn CellSurface, area: Rect, form: &Form, theme: &Theme) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -128,7 +123,7 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             width: visible_field.bounds.width.round() as usize,
         };
         let ctx = build_row_ctx(
-            buf,
+            surface,
             area,
             label_y,
             if input_fits { input_y } else { label_y },
@@ -148,15 +143,22 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             FieldKind::Label => {
                 // No separate input — label spans the row.
             }
-            FieldKind::Toggle { value } => draw_field_toggle(buf, &ctx, *value),
+            FieldKind::Toggle { value } => draw_field_toggle(surface, &ctx, *value),
             FieldKind::TextInput {
                 value,
                 placeholder,
                 cursor,
                 selection_anchor,
-            } => draw_field_text_input(buf, &ctx, value, placeholder, *cursor, *selection_anchor),
-            FieldKind::Button => draw_field_button(buf, &ctx, field),
-            FieldKind::ReadOnly { value } => draw_field_read_only(buf, &ctx, value),
+            } => draw_field_text_input(
+                surface,
+                &ctx,
+                value,
+                placeholder,
+                *cursor,
+                *selection_anchor,
+            ),
+            FieldKind::Button => draw_field_button(surface, &ctx, field),
+            FieldKind::ReadOnly { value } => draw_field_read_only(surface, &ctx, value),
             FieldKind::Slider {
                 value, min, max, ..
             } => {
@@ -164,45 +166,57 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
                     .item_bounds
                     .first()
                     .map(|(_, r)| (r.x.round() as usize, r.width.round() as usize));
-                draw_field_slider(buf, &ctx, track, *value, *min, *max)
+                draw_field_slider(surface, &ctx, track, *value, *min, *max)
             }
-            FieldKind::ColorPicker { value } => draw_field_color_picker(buf, &ctx, *value),
+            FieldKind::ColorPicker { value } => draw_field_color_picker(surface, &ctx, *value),
             FieldKind::Dropdown {
                 options,
                 selected_idx,
-            } => draw_field_dropdown(buf, &ctx, options, *selected_idx),
+            } => draw_field_dropdown(surface, &ctx, options, *selected_idx),
             FieldKind::ToggleGroup { toggles } => {
-                draw_field_toggle_group(buf, &ctx, visible_field, field, toggles)
+                draw_field_toggle_group(surface, &ctx, visible_field, field, toggles)
             }
             FieldKind::ButtonRow { buttons } => {
-                draw_field_button_row(buf, &ctx, visible_field, field, buttons)
+                draw_field_button_row(surface, &ctx, visible_field, field, buttons)
             }
-            FieldKind::Toolbar(toolbar) => draw_field_toolbar(buf, &ctx, visible_field, toolbar),
-            FieldKind::DatePicker(picker) => draw_field_date_picker(buf, &ctx, picker),
-            FieldKind::ComboBox(combo) => draw_field_combo_box(buf, &ctx, combo),
+            FieldKind::Toolbar(toolbar) => {
+                draw_field_toolbar(surface, &ctx, visible_field, toolbar)
+            }
+            FieldKind::DatePicker(picker) => draw_field_date_picker(surface, &ctx, picker),
+            FieldKind::ComboBox(combo) => draw_field_combo_box(surface, &ctx, combo),
             FieldKind::TextArea {
                 value,
                 placeholder,
                 cursor,
                 visible_rows,
-            } => draw_field_text_area(buf, &ctx, value, placeholder, *cursor, *visible_rows),
+            } => draw_field_text_area(surface, &ctx, value, placeholder, *cursor, *visible_rows),
             FieldKind::PasswordInput {
                 value,
                 placeholder,
                 cursor,
                 mask_char,
-            } => draw_field_password_input(buf, &ctx, value, placeholder, *cursor, *mask_char),
+            } => draw_field_password_input(surface, &ctx, value, placeholder, *cursor, *mask_char),
             FieldKind::SegmentedControl {
                 options,
                 selected_idx,
-            } => draw_field_segmented_control(buf, &ctx, visible_field, options, *selected_idx),
+            } => draw_field_segmented_control(surface, &ctx, visible_field, options, *selected_idx),
             FieldKind::NumberInput(number) => {
-                draw_field_number_input(buf, &ctx, visible_field, number)
+                draw_field_number_input(surface, &ctx, visible_field, number)
             }
-            FieldKind::RadioGroup(group) => draw_field_radio_group(buf, &ctx, visible_field, group),
+            FieldKind::RadioGroup(group) => {
+                draw_field_radio_group(surface, &ctx, visible_field, group)
+            }
         }
 
-        paint_validation_indicator(buf, area, row_x.offset, input_y, ctx.row_bg, field, theme);
+        paint_validation_indicator(
+            surface,
+            area,
+            row_x.offset,
+            input_y,
+            ctx.row_bg,
+            field,
+            theme,
+        );
     }
 }
 
@@ -240,7 +254,7 @@ const BARE_CONTROL_START: usize = 1;
 /// slider track's `(start column, cells)` relative to `area.x`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_bare_field(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     kind: &FieldKind,
     disabled: bool,
@@ -254,7 +268,7 @@ pub(crate) fn paint_bare_field(
     let colors = FormColors::from_theme(theme);
     let (default_fg, row_bg) = colors.row(false, focused);
     for x in area.x..area.x + area.width {
-        set_cell(buf, x, area.y, ' ', default_fg, row_bg);
+        surface.put_char(x, area.y, ' ', solid_style(default_fg, row_bg));
     }
     let ctx = RowCtx {
         area,
@@ -273,32 +287,39 @@ pub(crate) fn paint_bare_field(
             .max(1),
     };
     match kind {
-        FieldKind::Toggle { value } => draw_field_toggle(buf, &ctx, *value),
+        FieldKind::Toggle { value } => draw_field_toggle(surface, &ctx, *value),
         FieldKind::Slider {
             value, min, max, ..
-        } => draw_field_slider(buf, &ctx, slider_track, *value, *min, *max),
+        } => draw_field_slider(surface, &ctx, slider_track, *value, *min, *max),
         FieldKind::Dropdown {
             options,
             selected_idx,
-        } => draw_field_dropdown(buf, &ctx, options, *selected_idx),
+        } => draw_field_dropdown(surface, &ctx, options, *selected_idx),
         FieldKind::TextInput {
             value,
             placeholder,
             cursor,
             selection_anchor,
-        } => draw_field_text_input(buf, &ctx, value, placeholder, *cursor, *selection_anchor),
+        } => draw_field_text_input(
+            surface,
+            &ctx,
+            value,
+            placeholder,
+            *cursor,
+            *selection_anchor,
+        ),
         FieldKind::PasswordInput {
             value,
             placeholder,
             cursor,
             mask_char,
-        } => draw_field_password_input(buf, &ctx, value, placeholder, *cursor, *mask_char),
+        } => draw_field_password_input(surface, &ctx, value, placeholder, *cursor, *mask_char),
         FieldKind::TextArea {
             value,
             placeholder,
             cursor,
             visible_rows,
-        } => draw_field_text_area(buf, &ctx, value, placeholder, *cursor, *visible_rows),
+        } => draw_field_text_area(surface, &ctx, value, placeholder, *cursor, *visible_rows),
         _ => {}
     }
 }
@@ -307,20 +328,20 @@ pub(crate) fn paint_bare_field(
 /// every row via [`build_row_ctx`] — kept as a small struct rather than
 /// nine positional args.
 struct FormColors {
-    bg: ratatui::style::Color,
-    fg: ratatui::style::Color,
-    hdr_fg: ratatui::style::Color,
-    hdr_bg: ratatui::style::Color,
-    sel_bg: ratatui::style::Color,
-    dim_fg: ratatui::style::Color,
-    accent_fg: ratatui::style::Color,
+    bg: Color,
+    fg: Color,
+    hdr_fg: Color,
+    hdr_bg: Color,
+    sel_bg: Color,
+    dim_fg: Color,
+    accent_fg: Color,
 }
 
 impl FormColors {
     /// A row's `(foreground, background)`: the selection wash when
     /// focused, the header pair for a bare `Label` row, else the body
     /// pair.
-    fn row(&self, is_header: bool, is_focused: bool) -> (RatatuiColor, RatatuiColor) {
+    fn row(&self, is_header: bool, is_focused: bool) -> (Color, Color) {
         match (is_header, is_focused) {
             // `fg` (`theme.foreground`, the editor-body text colour) has
             // no guaranteed contrast against `selected_bg` — on
@@ -337,13 +358,13 @@ impl FormColors {
 
     fn from_theme(theme: &Theme) -> Self {
         Self {
-            bg: ratatui_color(theme.tab_bar_bg),
-            fg: ratatui_color(theme.foreground),
-            hdr_fg: ratatui_color(theme.header_fg),
-            hdr_bg: ratatui_color(theme.header_bg),
-            sel_bg: ratatui_color(theme.selected_bg),
-            dim_fg: ratatui_color(theme.muted_fg),
-            accent_fg: ratatui_color(theme.accent_fg),
+            bg: theme.tab_bar_bg,
+            fg: theme.foreground,
+            hdr_fg: theme.header_fg,
+            hdr_bg: theme.header_bg,
+            sel_bg: theme.selected_bg,
+            dim_fg: theme.muted_fg,
+            accent_fg: theme.accent_fg,
         }
     }
 }
@@ -358,7 +379,7 @@ impl FormColors {
 /// on `input_y` (one row below) via [`RowCtx::y`].
 #[allow(clippy::too_many_arguments)]
 fn build_row_ctx<'a>(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     label_y: u16,
     input_y: u16,
@@ -381,11 +402,11 @@ fn build_row_ctx<'a>(
     let row_left = area.x + row_x_offset as u16;
     let row_right = row_left + row_width as u16;
     for x in row_left..row_right {
-        set_cell(buf, x, input_y, ' ', default_fg, row_bg);
+        surface.put_char(x, input_y, ' ', solid_style(default_fg, row_bg));
     }
     if label_y != input_y {
         for x in row_left..row_right {
-            set_cell(buf, x, label_y, ' ', default_fg, row_bg);
+            surface.put_char(x, label_y, ' ', solid_style(default_fg, row_bg));
         }
     }
 
@@ -411,7 +432,7 @@ fn build_row_ctx<'a>(
             LabelPosition::Hidden => (0usize, true),
             LabelPosition::Top => {
                 draw_styled_text(
-                    buf,
+                    surface,
                     area,
                     label_y,
                     row_x_offset + 1,
@@ -432,7 +453,7 @@ fn build_row_ctx<'a>(
                     LabelAlign::End => col_width.saturating_sub(label_w),
                 };
                 draw_styled_text(
-                    buf,
+                    surface,
                     area,
                     input_y,
                     row_x_offset + 1 + align_offset,
@@ -448,7 +469,7 @@ fn build_row_ctx<'a>(
             }
             LabelPosition::Inline => {
                 let end = draw_styled_text(
-                    buf,
+                    surface,
                     area,
                     input_y,
                     row_x_offset + 1,
@@ -507,11 +528,11 @@ fn build_row_ctx<'a>(
 /// row when validation is set. This avoids adding extra rows that
 /// would break TUI layout (all non-`TextArea` fields are 1 cell tall).
 fn paint_validation_indicator(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     row_x_offset: usize,
     y: u16,
-    row_bg: ratatui::style::Color,
+    row_bg: Color,
     field: &crate::primitives::form::FormField,
     theme: &Theme,
 ) {
@@ -519,20 +540,18 @@ fn paint_validation_indicator(
         return;
     };
     let (indicator, v_fg) = match vs {
-        ValidationState::Error(_) => ('!', ratatui_color(theme.error_fg)),
-        ValidationState::Warning(_) => ('\u{26A0}', ratatui_color(theme.warning_fg)),
+        ValidationState::Error(_) => ('!', theme.error_fg),
+        ValidationState::Warning(_) => ('\u{26A0}', theme.warning_fg),
     };
-    set_cell(
-        buf,
+    surface.put_char(
         area.x + row_x_offset as u16,
         y,
         indicator,
-        v_fg,
-        row_bg,
+        solid_style(v_fg, row_bg),
     );
 }
 
-fn draw_field_toggle(buf: &mut Buffer, ctx: &RowCtx, value: bool) {
+fn draw_field_toggle(surface: &mut dyn CellSurface, ctx: &RowCtx, value: bool) {
     let RowCtx {
         area,
         y,
@@ -550,13 +569,13 @@ fn draw_field_toggle(buf: &mut Buffer, ctx: &RowCtx, value: bool) {
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(input_fg, row_bg));
         }
     }
 }
 
 fn draw_field_text_input(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     value: &str,
     placeholder: &str,
@@ -588,7 +607,12 @@ fn draw_field_text_input(
 
     if control_start < area.width as usize {
         if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
+            surface.put_char(
+                area.x + bracket_col as u16,
+                y,
+                '[',
+                solid_style(dim_fg, row_bg),
+            );
         }
         // Draw the closing bracket *before* the text/caret cells below:
         // a cursor sitting at the truncation edge paints its caret in
@@ -596,10 +620,15 @@ fn draw_field_text_input(
         // stays visible.
         let closing_col =
             (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
-        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
+        surface.put_char(
+            area.x + closing_col as u16,
+            y,
+            ']',
+            solid_style(dim_fg, row_bg),
+        );
         let max_cols = control_width.saturating_sub(2);
         draw_text_row_cells(
-            buf,
+            surface,
             y,
             area.x + text_col as u16,
             area.x + area.width,
@@ -616,24 +645,13 @@ fn draw_field_text_input(
     }
 }
 
-fn from_ratatui(c: RatatuiColor) -> Option<Color> {
-    match c {
-        RatatuiColor::Rgb(r, g, b) => Some(Color::rgb(r, g, b)),
-        _ => None,
-    }
-}
-
 /// Paint the inside-the-brackets text content of a
 /// `FieldKind::TextInput` row — a thin delegate onto
 /// [`crate::primitives::text_field::cell_paint::put_text_row`], which
 /// documents the selection highlight and caret placement.
-///
-/// Takes the ratatui colours the form painter already holds rather than
-/// quadraui [`Color`]s, so the row's own colour resolution stays in one
-/// place.
 #[allow(clippy::too_many_arguments)]
 fn draw_text_row_cells(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     y: u16,
     text_col: u16,
     right_bound: u16,
@@ -643,15 +661,12 @@ fn draw_text_row_cells(
     placeholder: &str,
     cursor: Option<usize>,
     selection_anchor: Option<usize>,
-    field_fg: RatatuiColor,
-    dim_fg: RatatuiColor,
-    row_bg: RatatuiColor,
+    field_fg: Color,
+    dim_fg: Color,
+    row_bg: Color,
 ) {
-    let fallback = Color::rgb(0, 0, 0);
-    let mut cursor_sink = None;
-    let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
     text_field_cell_paint::put_text_row(
-        &mut surface,
+        surface,
         y,
         text_col,
         right_bound,
@@ -661,13 +676,17 @@ fn draw_text_row_cells(
         placeholder,
         cursor,
         selection_anchor,
-        from_ratatui(field_fg).unwrap_or(fallback),
-        from_ratatui(dim_fg).unwrap_or(fallback),
-        from_ratatui(row_bg).unwrap_or(fallback),
+        field_fg,
+        dim_fg,
+        row_bg,
     );
 }
 
-fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::form::FormField) {
+fn draw_field_button(
+    surface: &mut dyn CellSurface,
+    ctx: &RowCtx,
+    field: &crate::primitives::form::FormField,
+) {
     let RowCtx {
         area,
         y,
@@ -689,7 +708,7 @@ fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::
     // row's edge.
     let label_end = if no_label { 0 } else { control_start - 1 };
     for x in area.x..area.x + (label_end as u16).min(area.width) {
-        set_cell(buf, x, y, ' ', default_fg, row_bg);
+        surface.put_char(x, y, ' ', solid_style(default_fg, row_bg));
     }
     let width = field.label.visible_width() + 4;
     let start_col = if no_label {
@@ -700,9 +719,14 @@ fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::
     if start_col < area.width as usize {
         let brk_fg = if is_focused { accent_fg } else { dim_fg };
         let text_fg = if field.disabled { dim_fg } else { field_fg };
-        set_cell(buf, area.x + start_col as u16, y, '<', brk_fg, row_bg);
+        surface.put_char(
+            area.x + start_col as u16,
+            y,
+            '<',
+            solid_style(brk_fg, row_bg),
+        );
         let after_lt = draw_styled_text(
-            buf,
+            surface,
             area,
             y,
             start_col + 2,
@@ -713,15 +737,29 @@ fn draw_field_button(buf: &mut Buffer, ctx: &RowCtx, field: &crate::primitives::
             dim_fg,
         );
         if after_lt < area.width as usize {
-            set_cell(buf, area.x + after_lt as u16, y, ' ', brk_fg, row_bg);
+            surface.put_char(
+                area.x + after_lt as u16,
+                y,
+                ' ',
+                solid_style(brk_fg, row_bg),
+            );
         }
         if after_lt + 1 < area.width as usize {
-            set_cell(buf, area.x + (after_lt + 1) as u16, y, '>', brk_fg, row_bg);
+            surface.put_char(
+                area.x + (after_lt + 1) as u16,
+                y,
+                '>',
+                solid_style(brk_fg, row_bg),
+            );
         }
     }
 }
 
-fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::StyledText) {
+fn draw_field_read_only(
+    surface: &mut dyn CellSurface,
+    ctx: &RowCtx,
+    value: &crate::types::StyledText,
+) {
     let RowCtx {
         area,
         y,
@@ -739,7 +777,7 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
         // every other field kind here does. Mirrors the
         // `native_surface_paint::paint` fix.
         draw_styled_text(
-            buf,
+            surface,
             area,
             y,
             control_start,
@@ -756,7 +794,7 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
 /// cells)`, the rect click routing maps across) when the caller resolved
 /// one, else [`track_cells_within`] the control column.
 fn draw_field_slider(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     track: Option<(usize, usize)>,
     value: f32,
@@ -784,7 +822,7 @@ fn draw_field_slider(
 
     if track_start.saturating_sub(1) < area.width as usize {
         let mut col = track_start.saturating_sub(1);
-        set_cell(buf, area.x + col as u16, y, '[', dim_fg, row_bg);
+        surface.put_char(area.x + col as u16, y, '[', solid_style(dim_fg, row_bg));
         col += 1;
         for i in 0..track_cells {
             if col >= area.width as usize {
@@ -792,24 +830,28 @@ fn draw_field_slider(
             }
             let ch = if i < filled { '=' } else { '-' };
             let fg = if i < filled { accent_fg } else { dim_fg };
-            set_cell(buf, area.x + col as u16, y, ch, fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(fg, row_bg));
             col += 1;
         }
         if col < area.width as usize {
-            set_cell(buf, area.x + col as u16, y, ']', dim_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ']', solid_style(dim_fg, row_bg));
         }
         col += 3;
         for ch in value_str.chars() {
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(field_fg, row_bg));
             col += 1;
         }
     }
 }
 
-fn draw_field_color_picker(buf: &mut Buffer, ctx: &RowCtx, value: crate::types::Color) {
+fn draw_field_color_picker(
+    surface: &mut dyn CellSurface,
+    ctx: &RowCtx,
+    value: crate::types::Color,
+) {
     let RowCtx {
         area,
         y,
@@ -821,26 +863,24 @@ fn draw_field_color_picker(buf: &mut Buffer, ctx: &RowCtx, value: crate::types::
 
     let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
     if control_start < area.width as usize {
-        let swatch_fg = ratatui::style::Color::Rgb(value.r, value.g, value.b);
-        set_cell(
-            buf,
+        let swatch_fg = Color::rgb(value.r, value.g, value.b);
+        surface.put_char(
             area.x + control_start as u16,
             y,
             '\u{25A0}',
-            swatch_fg,
-            row_bg,
+            solid_style(swatch_fg, row_bg),
         );
         for (col, ch) in (control_start + 2..).zip(hex.chars()) {
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(field_fg, row_bg));
         }
     }
 }
 
 fn draw_field_dropdown(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     options: &[crate::types::StyledText],
     selected_idx: usize,
@@ -860,7 +900,7 @@ fn draw_field_dropdown(
     let chosen = options.get(selected_idx).cloned().unwrap_or_default();
     if control_start < area.width as usize {
         draw_styled_text(
-            buf,
+            surface,
             area,
             y,
             control_start,
@@ -872,12 +912,17 @@ fn draw_field_dropdown(
         );
         let chev_col = control_start + chosen.visible_width() + 1;
         if chev_col < area.width as usize {
-            set_cell(buf, area.x + chev_col as u16, y, '\u{25BE}', dim_fg, row_bg);
+            surface.put_char(
+                area.x + chev_col as u16,
+                y,
+                '\u{25BE}',
+                solid_style(dim_fg, row_bg),
+            );
         }
     }
 
     if is_focused && !options.is_empty() {
-        draw_dropdown_popup(buf, area, y, options, selected_idx, theme);
+        draw_dropdown_popup(surface, area, y, options, selected_idx, theme);
     }
 }
 
@@ -893,7 +938,7 @@ fn draw_field_dropdown(
 /// `compose::form_controller::FormController::handle_key`'s Dropdown
 /// block), so the highlighted row is always exactly `selected_idx`.
 fn draw_dropdown_popup(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     y: u16,
     options: &[crate::types::StyledText],
@@ -903,10 +948,10 @@ fn draw_dropdown_popup(
     if area.width < 3 {
         return;
     }
-    let pop_bg = ratatui_color(theme.completion_bg);
-    let sel_bg = ratatui_color(theme.completion_selected_bg);
-    let pop_fg = ratatui_color(theme.completion_fg);
-    let border = ratatui_color(theme.completion_border);
+    let pop_bg = theme.completion_bg;
+    let sel_bg = theme.completion_selected_bg;
+    let pop_fg = theme.completion_fg;
+    let border = theme.completion_border;
 
     for (idx, option) in options.iter().enumerate() {
         let row_y = y + 1 + idx as u16;
@@ -915,19 +960,17 @@ fn draw_dropdown_popup(
         }
         let row_bg = if idx == selected_idx { sel_bg } else { pop_bg };
         for col in area.x..area.x + area.width {
-            set_cell(buf, col, row_y, ' ', pop_fg, row_bg);
+            surface.put_char(col, row_y, ' ', solid_style(pop_fg, row_bg));
         }
-        set_cell(buf, area.x, row_y, '\u{2502}', border, row_bg);
-        set_cell(
-            buf,
+        surface.put_char(area.x, row_y, '\u{2502}', solid_style(border, row_bg));
+        surface.put_char(
             area.x + area.width - 1,
             row_y,
             '\u{2502}',
-            border,
-            row_bg,
+            solid_style(border, row_bg),
         );
         draw_styled_text(
-            buf,
+            surface,
             area,
             row_y,
             2,
@@ -941,7 +984,7 @@ fn draw_dropdown_popup(
 }
 
 fn draw_field_toggle_group(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     field: &crate::primitives::form::FormField,
@@ -968,7 +1011,7 @@ fn draw_field_toggle_group(
             for (i, ch) in toggle.label.chars().enumerate() {
                 let cx = col as u16 + i as u16;
                 if cx < area.x + area.width {
-                    set_cell(buf, cx, y, ch, toggle_fg, row_bg);
+                    surface.put_char(cx, y, ch, solid_style(toggle_fg, row_bg));
                 }
             }
         }
@@ -976,7 +1019,7 @@ fn draw_field_toggle_group(
 }
 
 fn draw_field_button_row(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     field: &crate::primitives::form::FormField,
@@ -1014,43 +1057,43 @@ fn draw_field_button_row(
             let btn_fg = if button.disabled || field.disabled {
                 dim_fg
             } else if let Some(intent) = intent_fg {
-                ratatui_color(intent)
+                intent
             } else {
                 field_fg
             };
             let brk_fg = if button.disabled || field.disabled {
                 dim_fg
             } else if let Some(intent) = intent_fg {
-                ratatui_color(intent)
+                intent
             } else {
                 accent_fg
             };
             let mut cx = col as u16;
             if cx < area.x + area.width {
-                set_cell(buf, cx, y, '[', brk_fg, row_bg);
+                surface.put_char(cx, y, '[', solid_style(brk_fg, row_bg));
             }
             cx += 1;
             if let Some(ref icon) = button.icon {
                 let glyph = icon.fallback.as_str();
                 for ch in glyph.chars() {
                     if cx < area.x + area.width {
-                        set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                        surface.put_char(cx, y, ch, solid_style(btn_fg, row_bg));
                     }
                     cx += 1;
                 }
                 if cx < area.x + area.width && !button.label.is_empty() {
-                    set_cell(buf, cx, y, ' ', btn_fg, row_bg);
+                    surface.put_char(cx, y, ' ', solid_style(btn_fg, row_bg));
                     cx += 1;
                 }
             }
             for ch in button.label.chars() {
                 if cx < area.x + area.width {
-                    set_cell(buf, cx, y, ch, btn_fg, row_bg);
+                    surface.put_char(cx, y, ch, solid_style(btn_fg, row_bg));
                 }
                 cx += 1;
             }
             if cx < area.x + area.width {
-                set_cell(buf, cx, y, ']', brk_fg, row_bg);
+                surface.put_char(cx, y, ']', solid_style(brk_fg, row_bg));
             }
         }
     }
@@ -1063,7 +1106,7 @@ fn draw_field_button_row(
 /// they're just not visualized inline (see `FormController`, which drives
 /// the picker's own `navigate` and emits `FormEvent::DateChanged`).
 fn draw_field_date_picker(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     picker: &crate::primitives::date_picker::DatePicker,
 ) {
@@ -1093,7 +1136,7 @@ fn draw_field_date_picker(
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(field_fg, row_bg));
         }
     }
 }
@@ -1107,7 +1150,7 @@ fn draw_field_date_picker(
 /// `ComboBoxCommitted`). Painting the open dropdown itself is the app's
 /// job, mirroring `FieldKind::ColorPicker`'s popup contract.
 fn draw_field_combo_box(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     combo: &crate::primitives::combo_box::ComboBox,
 ) {
@@ -1127,12 +1170,17 @@ fn draw_field_combo_box(
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, field_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(field_fg, row_bg));
             col += 1;
         }
         col += 1;
         if col < area.width as usize {
-            set_cell(buf, area.x + col as u16, y, '\u{25BE}', dim_fg, row_bg);
+            surface.put_char(
+                area.x + col as u16,
+                y,
+                '\u{25BE}',
+                solid_style(dim_fg, row_bg),
+            );
         }
     }
 }
@@ -1147,7 +1195,7 @@ fn draw_field_combo_box(
 /// the control's on-screen rect — the same lookup `FormController`'s click
 /// routing uses, so paint and click always agree.
 fn draw_field_number_input(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     number: &crate::primitives::number_input::NumberInput,
@@ -1186,17 +1234,14 @@ fn draw_field_number_input(
             break;
         }
         for x in area.x..area.x + area.width {
-            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+            surface.put_char(x, row_y, ' ', solid_style(default_fg, row_bg));
         }
     }
 
     let abs_x = area.x as f32 + item_rect.x;
     let rect = crate::event::Rect::new(abs_x, y as f32, item_rect.width, rows as f32);
     let layout = number.layout(rect);
-    // The painter never moves the cursor, so the sink is never read.
-    let mut cursor_sink = None;
-    let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
-    crate::primitives::number_input::cell_paint::paint(number, &layout, &mut surface, theme);
+    crate::primitives::number_input::cell_paint::paint(number, &layout, surface, theme);
 }
 
 /// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
@@ -1209,7 +1254,7 @@ fn draw_field_number_input(
 /// control's on-screen rect via its first entry; `FormController`'s click
 /// routing resolves a click straight to the clicked option's own entry.
 fn draw_field_radio_group(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     group: &crate::primitives::radio_group::RadioGroup,
@@ -1244,7 +1289,7 @@ fn draw_field_radio_group(
             break;
         }
         for x in area.x..area.x + area.width {
-            set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+            surface.put_char(x, row_y, ' ', solid_style(default_fg, row_bg));
         }
     }
 
@@ -1270,18 +1315,11 @@ fn draw_field_radio_group(
             radio_area.height as f32,
         ),
     );
-    // The painter never moves the cursor, so the sink is never read.
-    let mut cursor_sink = None;
-    let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
-        buf,
-        crate::backend::ColorDepth::TrueColor,
-        &mut cursor_sink,
-    );
-    crate::primitives::radio_group::cell_paint::paint(&group, &layout, &mut surface, theme);
+    crate::primitives::radio_group::cell_paint::paint(&group, &layout, surface, theme);
 }
 
 fn draw_field_toolbar(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     toolbar: &crate::primitives::toolbar::Toolbar,
@@ -1304,7 +1342,7 @@ fn draw_field_toolbar(
         1,
     );
     crate::primitives::toolbar::cell_paint::draw_toolbar(
-        buf,
+        surface,
         toolbar_area,
         toolbar,
         theme,
@@ -1314,7 +1352,7 @@ fn draw_field_toolbar(
 }
 
 fn draw_field_text_area(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     value: &str,
     placeholder: &str,
@@ -1360,7 +1398,7 @@ fn draw_field_text_area(
         // the initial row-clear above).
         if row > 0 {
             for x in area.x..area.x + area.width {
-                set_cell(buf, x, row_y, ' ', default_fg, row_bg);
+                surface.put_char(x, row_y, ' ', solid_style(default_fg, row_bg));
             }
         }
 
@@ -1369,7 +1407,12 @@ fn draw_field_text_area(
         }
 
         if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, row_y, '[', dim_fg, row_bg);
+            surface.put_char(
+                area.x + bracket_col as u16,
+                row_y,
+                '[',
+                solid_style(dim_fg, row_bg),
+            );
         }
 
         // Content characters for this row.
@@ -1377,7 +1420,12 @@ fn draw_field_text_area(
         for _ in 0..avail_w {
             if let Some(ch) = chars_iter.next() {
                 if col < area.width as usize {
-                    set_cell(buf, area.x + col as u16, row_y, ch, input_fg, row_bg);
+                    surface.put_char(
+                        area.x + col as u16,
+                        row_y,
+                        ch,
+                        solid_style(input_fg, row_bg),
+                    );
                 }
                 col += 1;
             } else {
@@ -1386,7 +1434,12 @@ fn draw_field_text_area(
         }
 
         if closing_col < area.width as usize {
-            set_cell(buf, area.x + closing_col as u16, row_y, ']', dim_fg, row_bg);
+            surface.put_char(
+                area.x + closing_col as u16,
+                row_y,
+                ']',
+                solid_style(dim_fg, row_bg),
+            );
         }
     }
 
@@ -1405,14 +1458,19 @@ fn draw_field_text_area(
             let cursor_col = text_col + char_idx;
             if cursor_col < area.width as usize {
                 let ch = value.chars().nth(char_idx).unwrap_or(' ');
-                set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
+                surface.put_char(
+                    area.x + cursor_col as u16,
+                    y,
+                    ch,
+                    solid_style(row_bg, field_fg),
+                );
             }
         }
     }
 }
 
 fn draw_field_password_input(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     value: &str,
     placeholder: &str,
@@ -1452,17 +1510,27 @@ fn draw_field_password_input(
 
     if control_start < area.width as usize {
         if bracket_col < area.width as usize {
-            set_cell(buf, area.x + bracket_col as u16, y, '[', dim_fg, row_bg);
+            surface.put_char(
+                area.x + bracket_col as u16,
+                y,
+                '[',
+                solid_style(dim_fg, row_bg),
+            );
         }
         for (col, ch) in (text_col..).zip(shown.chars().take(desired)) {
             if col >= area.width as usize {
                 break;
             }
-            set_cell(buf, area.x + col as u16, y, ch, input_fg, row_bg);
+            surface.put_char(area.x + col as u16, y, ch, solid_style(input_fg, row_bg));
         }
         let closing_col =
             (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
-        set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
+        surface.put_char(
+            area.x + closing_col as u16,
+            y,
+            ']',
+            solid_style(dim_fg, row_bg),
+        );
 
         // Cursor (byte offset into original value, rendered at
         // the masked character position).
@@ -1480,7 +1548,12 @@ fn draw_field_password_input(
                 let cursor_col = text_col + char_idx;
                 if cursor_col < area.width as usize {
                     let ch = masked.chars().nth(char_idx).unwrap_or(' ');
-                    set_cell(buf, area.x + cursor_col as u16, y, ch, row_bg, field_fg);
+                    surface.put_char(
+                        area.x + cursor_col as u16,
+                        y,
+                        ch,
+                        solid_style(row_bg, field_fg),
+                    );
                 }
             }
         }
@@ -1488,7 +1561,7 @@ fn draw_field_password_input(
 }
 
 fn draw_field_segmented_control(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     ctx: &RowCtx,
     visible_field: &crate::primitives::form::VisibleFormField,
     options: &[String],
@@ -1511,7 +1584,7 @@ fn draw_field_segmented_control(
         let first_x = visible_field.item_bounds[0].1.x;
         let bracket_x = (area.x as f32 + first_x - 1.0).max(area.x as f32);
         if (bracket_x as u16) < area.x + area.width {
-            set_cell(buf, bracket_x as u16, y, '[', dim_fg, row_bg);
+            surface.put_char(bracket_x as u16, y, '[', solid_style(dim_fg, row_bg));
         }
 
         for (i, (_item_id, item_rect)) in visible_field.item_bounds.iter().enumerate() {
@@ -1521,7 +1594,7 @@ fn draw_field_segmented_control(
             for (j, ch) in opt.chars().enumerate() {
                 let cx = col as u16 + j as u16;
                 if cx < area.x + area.width {
-                    set_cell(buf, cx, y, ch, opt_fg, row_bg);
+                    surface.put_char(cx, y, ch, solid_style(opt_fg, row_bg));
                 }
             }
 
@@ -1529,7 +1602,7 @@ fn draw_field_segmented_control(
             if i + 1 < options.len() {
                 let sep_x = col as u16 + opt.chars().count() as u16;
                 if sep_x < area.x + area.width {
-                    set_cell(buf, sep_x, y, '|', dim_fg, row_bg);
+                    surface.put_char(sep_x, y, '|', solid_style(dim_fg, row_bg));
                 }
             }
         }
@@ -1539,7 +1612,7 @@ fn draw_field_segmented_control(
             let last_opt_len = options.last().map(|s| s.chars().count()).unwrap_or(0);
             let close_x = area.x as f32 + last_rect.x + last_opt_len as f32;
             if (close_x as u16) < area.x + area.width {
-                set_cell(buf, close_x as u16, y, ']', dim_fg, row_bg);
+                surface.put_char(close_x as u16, y, ']', solid_style(dim_fg, row_bg));
             }
         }
     }
@@ -1550,7 +1623,9 @@ mod tests {
     use super::super::cell_layout::tui_form_layout;
     use super::*;
     use crate::primitives::form::{ControlWidth, FieldKind, Form, FormField, FormFieldMeasure};
+    use crate::tui::ratatui_color;
     use crate::types::{StyledSpan, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
 
     fn label(text: &str) -> StyledText {
         StyledText {
@@ -1613,7 +1688,12 @@ mod tests {
     fn paints_label_and_toggle_glyph() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let f = make_form();
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 5),
+            &f,
+            &Theme::default(),
+        );
 
         // Header row: "Editor" starts at col 1 (label_col).
         let row0: String = (1..7).map(|x| cell_char(&buf, x, 0)).collect();
@@ -1640,7 +1720,12 @@ mod tests {
             selected_bg: crate::types::Color::rgb(99, 0, 0),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 5),
+            &f,
+            &theme,
+        );
         // Row 1 ("wrap", focused) bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
@@ -1705,7 +1790,12 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
         let f = make_dropdown_form(true);
         let theme = Theme::default();
-        draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 6),
+            &f,
+            &theme,
+        );
 
         // Compact row (y=1) still shows the selected option ("beta"),
         // same as an unfocused Dropdown — this field's label is empty
@@ -1737,7 +1827,12 @@ mod tests {
     fn unfocused_dropdown_paints_no_popup() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 6));
         let f = make_dropdown_form(false);
-        draw_form(&mut buf, Rect::new(0, 0, 30, 6), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 6),
+            &f,
+            &Theme::default(),
+        );
 
         // Compact row still shows the selected option, starting at
         // column 1 (this field's label is empty).
@@ -1807,7 +1902,12 @@ mod tests {
             ..Theme::default()
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
-        draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 3),
+            &f,
+            &theme,
+        );
 
         let hdr_fg = ratatui_color(theme.header_fg);
 
@@ -1850,7 +1950,12 @@ mod tests {
             muted_fg: crate::types::Color::rgb(50, 50, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 30, 5), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 5),
+            &f,
+            &theme,
+        );
         // 'w' of "wrap" should be in muted_fg.
         let fg = buf[(1u16, 1u16)].fg;
         assert_eq!(fg, ratatui::style::Color::Rgb(50, 50, 50));
@@ -1860,7 +1965,12 @@ mod tests {
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let f = make_form();
-        draw_form(&mut buf, Rect::new(0, 0, 0, 5), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 0, 5),
+            &f,
+            &Theme::default(),
+        );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -1899,7 +2009,12 @@ mod tests {
             spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 3));
-        draw_form(&mut buf, Rect::new(0, 0, 30, 3), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 30, 3),
+            &f,
+            &Theme::default(),
+        );
 
         // No label to reserve a column for: '[' at col 0, text at col
         // 1 (so the value lines up with a `Top` label's own column one
@@ -1952,7 +2067,12 @@ mod tests {
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         let theme = Theme::default();
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &theme,
+        );
 
         // label "Q" (width 1) -> control_start = 3; control_width = 10
         // -> closing_col = control_start + control_width - 1 = 12. The
@@ -2024,7 +2144,12 @@ mod tests {
     fn toggle_group_paints_labels() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         let f = make_toggle_group_form();
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &Theme::default(),
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("Aa"), "expected 'Aa' in row: {row:?}");
@@ -2042,7 +2167,12 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_toggle_group_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let layout = f.layout(area.width as f32, area.height as f32, |i| {
             let field = &f.fields[i];
@@ -2184,7 +2314,12 @@ mod tests {
     fn button_row_paints_bracketed_labels() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
         let f = make_button_row_form();
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &Theme::default(),
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("[Next]"), "expected '[Next]' in row: {row:?}");
@@ -2214,7 +2349,12 @@ mod tests {
         let theme = Theme::default();
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 3));
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &theme,
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         let bracket_col = row.find('[').expect("'[Next]' must be painted") as u16;
@@ -2232,7 +2372,12 @@ mod tests {
         let area = Rect::new(origin_x, origin_y, 40, 3);
         let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 40, origin_y + 3));
         let f = make_button_row_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let layout = f.layout(area.width as f32, area.height as f32, |i| {
             let field = &f.fields[i];
@@ -2323,7 +2468,12 @@ mod tests {
             accent_fg: crate::types::Color::rgb(200, 100, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &theme,
+        );
 
         // "Aa" (value=true) should be in accent_fg.
         let mut aa_col = None;
@@ -2347,7 +2497,12 @@ mod tests {
             accent_fg: crate::types::Color::rgb(200, 100, 50),
             ..Theme::default()
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &f, &theme);
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &f,
+            &theme,
+        );
 
         // "[All]" (disabled=true) bracket should be in muted_fg.
         let mut all_col = None;
@@ -2401,7 +2556,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             row.contains("••••••"),
@@ -2448,7 +2608,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             row.contains("Enter key"),
@@ -2491,7 +2656,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+        );
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(row.contains("Ws"), "should paint 'Ws', got: {row:?}");
         assert!(row.contains("File"), "should paint 'File', got: {row:?}");
@@ -2580,7 +2750,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 6), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 6),
+            &form,
+            &Theme::default(),
+        );
         let layout = tui_form_layout(&form, Rect::new(0, 0, 40, 6));
         assert_eq!(
             layout.visible_fields[0].bounds.height, 3.0,
@@ -2623,7 +2798,12 @@ mod tests {
             spacing: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
-        draw_form(&mut buf, Rect::new(0, 0, 40, 5), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 5),
+            &form,
+            &Theme::default(),
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
@@ -2680,7 +2860,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+        );
         let col0 = cell_char(&buf, 0, 0);
         assert_eq!(col0, '!', "error validation should paint '!' at col 0");
     }
@@ -2720,7 +2905,12 @@ mod tests {
             min_control_width: None,
             spacing: Default::default(),
         };
-        draw_form(&mut buf, Rect::new(0, 0, 40, 3), &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            Rect::new(0, 0, 40, 3),
+            &form,
+            &Theme::default(),
+        );
         let col0 = cell_char(&buf, 0, 0);
         assert_eq!(
             col0, '\u{26A0}',
@@ -2795,7 +2985,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
@@ -2817,7 +3012,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let layout = tui_form_layout(&f, area);
 
@@ -2847,7 +3047,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_toolbar_form();
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let layout = tui_form_layout(&f, area);
 
@@ -2954,7 +3159,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
         let f = make_combo_box_form("rust");
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let row: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
@@ -3042,7 +3252,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
         let f = make_number_input_form(number);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let rows: Vec<String> = (0..3)
             .map(|y| (0..40).map(|x| cell_char(&buf, x, y)).collect())
@@ -3083,7 +3298,12 @@ mod tests {
         // Row 0: label. Rows 1-3: the 3-row control. Row 4: the next field.
         let area = Rect::new(0, 0, 30, 5);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let layout = tui_form_layout(&f, area);
         let vis = &layout.visible_fields[0];
@@ -3150,7 +3370,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 2);
         let mut buf = Buffer::empty(area);
         let f = make_radio_group_form(group);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
@@ -3186,7 +3411,12 @@ mod tests {
         f.fields[0].label_position = Some(LabelPosition::Top);
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let row0: String = (0..40).map(|x| cell_char(&buf, x, 0)).collect();
         let row1: String = (0..40).map(|x| cell_char(&buf, x, 1)).collect();
@@ -3271,7 +3501,12 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let label_visible_width = f.fields[0].label.visible_width();
         assert_eq!(label_visible_width, 7);
@@ -3350,7 +3585,12 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         let label_visible_width = f.fields[0].label.visible_width();
         assert_eq!(label_visible_width, 5); // 2 + 2 + 1
@@ -3411,7 +3651,12 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 4);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &f, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &f,
+            &Theme::default(),
+        );
 
         // Row 0: the label on its own line.
         let row0: String = (1..5).map(|x| cell_char(&buf, x, 0)).collect();
@@ -3459,7 +3704,12 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &form,
+            &Theme::default(),
+        );
 
         // "Description" (11 cells) right-aligned in a 15-wide column
         // starts at column 1 + (15 - 11) = 5.
@@ -3498,7 +3748,12 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 2);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &form,
+            &Theme::default(),
+        );
 
         let row0: String = (0..30).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
@@ -3542,7 +3797,12 @@ mod tests {
         };
         let area = Rect::new(0, 0, 40, 3);
         let mut buf = Buffer::empty(area);
-        draw_form(&mut buf, area, &form, &Theme::default());
+        draw_form(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &form,
+            &Theme::default(),
+        );
 
         // Short label's item starts right after its own 1-cell label
         // ("A"), not pushed out to match the long label's width.
@@ -3560,6 +3820,264 @@ mod tests {
         assert!(
             long_item_col > short_item_col,
             "expected the long-label row's item further right than the short-label row's"
+        );
+    }
+    /// The form painter over every field kind, focused and not, with
+    /// validation, disabled rows and each label placement, plus the bare
+    /// single-control painter — cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::combo_box::ComboBox;
+        use crate::primitives::date_picker::{CalendarDate, DatePicker};
+        use crate::primitives::form::{
+            ButtonRowItem, LabelPosition, ToggleGroupItem, ValidationState,
+        };
+        use crate::primitives::number_input::NumberInput;
+        use crate::primitives::radio_group::{RadioGroup, RadioOption};
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::tui::cell_surface::oracle;
+
+        fn fld(id: &str, text: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: label(text),
+                kind,
+                disabled: false,
+                validation: None,
+                hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }
+        }
+        let theme = Theme::default();
+        let mut fields = vec![
+            fld("hdr", "Section", FieldKind::Label),
+            fld("tog", "toggle", FieldKind::Toggle { value: false }),
+            fld(
+                "txt",
+                "name",
+                FieldKind::TextInput {
+                    value: "hello \u{4e2d}".into(),
+                    placeholder: "type".into(),
+                    cursor: Some(2),
+                    selection_anchor: Some(4),
+                },
+            ),
+            fld(
+                "empty",
+                "empty",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: "placeholder".into(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            ),
+            fld("btn", "Apply", FieldKind::Button),
+            fld(
+                "ro",
+                "read",
+                FieldKind::ReadOnly {
+                    value: StyledText {
+                        spans: vec![
+                            StyledSpan::with_fg("red", crate::Color::rgb(220, 10, 10)),
+                            StyledSpan::plain(" value"),
+                        ],
+                    },
+                },
+            ),
+            fld(
+                "sl",
+                "slider",
+                FieldKind::Slider {
+                    value: 0.4,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.1,
+                },
+            ),
+            fld(
+                "col",
+                "colour",
+                FieldKind::ColorPicker {
+                    value: crate::Color::rgb(10, 120, 200),
+                },
+            ),
+            fld(
+                "dd",
+                "drop",
+                FieldKind::Dropdown {
+                    options: vec![label("one"), label("two"), label("three")],
+                    selected_idx: 1,
+                },
+            ),
+            fld(
+                "ta",
+                "area",
+                FieldKind::TextArea {
+                    value: "line one\nline two that is long".into(),
+                    placeholder: String::new(),
+                    cursor: Some(3),
+                    visible_rows: 2,
+                },
+            ),
+            fld(
+                "pw",
+                "pass",
+                FieldKind::PasswordInput {
+                    value: "secret".into(),
+                    placeholder: String::new(),
+                    cursor: Some(6),
+                    mask_char: '*',
+                },
+            ),
+            fld(
+                "seg",
+                "mode",
+                FieldKind::SegmentedControl {
+                    options: vec!["A".into(), "Bee".into(), "C".into()],
+                    selected_idx: 1,
+                },
+            ),
+            fld(
+                "tg",
+                "",
+                FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("aa"),
+                            label: "Aa".into(),
+                            value: true,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("re"),
+                            label: ".*".into(),
+                            value: false,
+                        },
+                    ],
+                },
+            ),
+            fld(
+                "br",
+                "",
+                FieldKind::ButtonRow {
+                    buttons: vec![
+                        ButtonRowItem {
+                            spec: None,
+                            id: WidgetId::new("ok"),
+                            label: "OK".into(),
+                            disabled: false,
+                            icon: None,
+                        },
+                        ButtonRowItem {
+                            spec: None,
+                            id: WidgetId::new("no"),
+                            label: "No".into(),
+                            disabled: true,
+                            icon: None,
+                        },
+                    ],
+                },
+            ),
+            fld(
+                "tb",
+                "tools",
+                FieldKind::Toolbar(Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+                    ToolbarButton::Separator,
+                    ToolbarButton::Label {
+                        text: "x".into(),
+                        fg: None,
+                    },
+                ])),
+            ),
+            fld(
+                "date",
+                "date",
+                FieldKind::DatePicker(DatePicker::new(
+                    WidgetId::new("date"),
+                    CalendarDate::new(2026, 11, 27),
+                )),
+            ),
+            fld(
+                "combo",
+                "combo",
+                FieldKind::ComboBox(ComboBox::new(
+                    WidgetId::new("combo"),
+                    vec!["apple".into(), "banana".into()],
+                )),
+            ),
+            fld(
+                "num",
+                "num",
+                FieldKind::NumberInput(NumberInput::new(WidgetId::new("num"), 0.0, 10.0)),
+            ),
+            fld(
+                "radio",
+                "radio",
+                FieldKind::RadioGroup(RadioGroup::new(
+                    WidgetId::new("radio"),
+                    vec![
+                        RadioOption::new(WidgetId::new("r1"), "first"),
+                        RadioOption::new(WidgetId::new("r2"), "second"),
+                    ],
+                )),
+            ),
+        ];
+        fields[1].validation = Some(ValidationState::Error("bad".into()));
+        fields[4].validation = Some(ValidationState::Warning("hmm".into()));
+        fields[5].disabled = true;
+        fields[6].label_position = Some(LabelPosition::Top);
+        fields[7].label_position = Some(LabelPosition::Inline);
+        let mut form = make_form();
+        form.fields = fields;
+        form.focused_field = Some(WidgetId::new("txt"));
+        let mut dd_focus = form.clone();
+        dd_focus.focused_field = Some(WidgetId::new("dd"));
+        dd_focus.scroll_offset = 6;
+        let mut top = form.clone();
+        top.label_position = LabelPosition::Top;
+        top.has_focus = false;
+
+        let paint =
+            |f: &Form, area: Rect, w, h| oracle::paint(w, h, |s| draw_form(s, area, f, &theme));
+        let bare = |kind: &FieldKind, disabled, focused| {
+            oracle::paint(16, 2, |s| {
+                paint_bare_field(
+                    s,
+                    Rect::new(0, 0, 16, 2),
+                    kind,
+                    disabled,
+                    focused,
+                    None,
+                    &theme,
+                )
+            })
+        };
+        oracle::assert_golden(
+            "form",
+            &[
+                ("all_kinds", &paint(&form, Rect::new(0, 0, 40, 40), 40, 40)),
+                ("offset", &paint(&form, Rect::new(2, 1, 30, 20), 33, 22)),
+                (
+                    "dropdown_open",
+                    &paint(&dd_focus, Rect::new(0, 0, 36, 14), 36, 14),
+                ),
+                (
+                    "labels_on_top",
+                    &paint(&top, Rect::new(0, 0, 28, 30), 28, 30),
+                ),
+                ("bare_toggle", &bare(&form.fields[1].kind, false, true)),
+                ("bare_text", &bare(&form.fields[2].kind, false, true)),
+                ("bare_slider", &bare(&form.fields[6].kind, true, false)),
+                ("bare_dropdown", &bare(&form.fields[8].kind, false, true)),
+                ("bare_password", &bare(&form.fields[10].kind, false, false)),
+                ("bare_area", &bare(&form.fields[9].kind, false, true)),
+            ],
         );
     }
 }

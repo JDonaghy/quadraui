@@ -25,7 +25,6 @@ use crate::primitives::data_table::{ColumnMeasure, DataTable, DataTableLayout};
 use crate::primitives::form::{
     FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
 };
-use crate::primitives::list::{ListView, ListViewLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
@@ -150,10 +149,10 @@ pub mod pixel {
     /// The shared [`crate::primitives::tree::native_surface_paint::paint`]
     /// / [`crate::primitives::list::native_surface_paint::paint`] functions
     /// read [`crate::style::Style::scrollbar_width`] instead of this
-    /// constant (which equals its default, `10.0`). Each backend's own
-    /// `Backend::list_vscrollbar` hit-testing implementation passes that
-    /// same live `self.current_style.scrollbar_width`, so paint and
-    /// hit-test can't drift apart at a non-default style.
+    /// constant (which equals its default, `10.0`). The row widgets'
+    /// `Primitive::layout` reads that same live style for the vertical
+    /// scrollbar it reports, so paint and hit-test can't drift apart at a
+    /// non-default style.
     pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
 
     /// [`crate::Form`] horizontal padding (both sides combined) reserved
@@ -407,47 +406,6 @@ pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
         .map(|h| h as f64)
         .unwrap_or(line_height * 1.4)
         .round()
-}
-
-// ── List ─────────────────────────────────────────────────────────────
-
-/// Compute the pixel-unit layout for a [`ListView`], including the
-/// horizontal-scrollbar row reservation. Every pixel backend
-/// (`gtk_list_layout`, `mac_list_layout`, and any future Direct2D
-/// equivalent) calls this one function so [`crate::Backend::list_layout`]
-/// and the layout a backend actually paints can never disagree about
-/// whether a row is reserved for the h-scrollbar.
-///
-/// `char_width` is used only for the h-scrollbar-overflow threshold
-/// check (`ListView::max_content_width` is in character columns); pass
-/// [`crate::Backend::char_width`]'s cached value when no live text
-/// measurer is available — the same approximation
-/// `GtkBackend::list_hscrollbar` / `MacBackend::list_hscrollbar` already
-/// use for this exact check.
-///
-/// `border_inset` is the pixel border a backend reserves around a
-/// `bordered` list: `1.0` for GTK's `bordered` lists, `0.0` for
-/// backends — like macOS today — that don't yet paint a list border
-/// (see `macos::list`'s module doc "Scope omissions").
-///
-/// Coordinate frame: **LOCAL** — relative to `(0, 0)`, matching every
-/// other layout_metrics fn.
-pub fn list_layout(
-    list: &ListView,
-    w: f64,
-    h: f64,
-    line_height: f64,
-    char_width: f64,
-    border_inset: f64,
-) -> ListViewLayout {
-    list.resolve_layout(
-        crate::primitive::Units::Pixels,
-        (w as f32, h as f32),
-        line_height as f32,
-        char_width as f32,
-        border_inset as f32,
-        None,
-    )
 }
 
 // ── Form ─────────────────────────────────────────────────────────────
@@ -1257,6 +1215,7 @@ pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::list::{ListView, ListViewLayout};
 
     /// Fixed-width stand-in for a real font: `6.0` px per char. Lets
     /// `form_field_measure` (only exercised for real by macOS's
@@ -1636,6 +1595,25 @@ mod tests {
 
     // ── List ─────────────────────────────────────────────────────────
 
+    /// The pixel-unit [`ListView`] layout at no sub-row scroll.
+    fn pixel_list_layout(
+        list: &ListView,
+        w: f64,
+        h: f64,
+        line_height: f64,
+        char_width: f64,
+        border_inset: f64,
+    ) -> ListViewLayout {
+        list.resolve_layout(
+            crate::primitive::Units::Pixels,
+            (w as f32, h as f32),
+            line_height as f32,
+            char_width as f32,
+            border_inset as f32,
+            None,
+        )
+    }
+
     fn list_with_max_content_width(n_items: usize, max_content_width: Option<usize>) -> ListView {
         use crate::primitives::list::ListItem;
         use crate::types::StyledText;
@@ -1665,11 +1643,9 @@ mod tests {
     /// When `max_content_width` (in chars) exceeds the visible width
     /// (chars × `char_width`, in pixels), the bottom `line_height` row is
     /// reserved for the h-scrollbar and is not available to items — one
-    /// fewer row fits than when no overflow is signalled. Every pixel
-    /// backend shares this exact function, so proving it here proves it for
-    /// all of them at once.
+    /// fewer row fits than when no overflow is signalled.
     #[test]
-    fn list_layout_reserves_hscrollbar_row_when_content_overflows() {
+    fn pixel_list_layout_reserves_hscrollbar_row_when_content_overflows() {
         const LINE_HEIGHT: f64 = 10.0;
         const CHAR_WIDTH: f64 = 8.0;
         const W: f64 = 200.0; // 25 chars visible at CHAR_WIDTH.
@@ -1678,8 +1654,8 @@ mod tests {
         let overflowing = list_with_max_content_width(12, Some(1000));
         let fitting = list_with_max_content_width(12, None);
 
-        let with_reservation = list_layout(&overflowing, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
-        let without_reservation = list_layout(&fitting, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+        let with_reservation = pixel_list_layout(&overflowing, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+        let without_reservation = pixel_list_layout(&fitting, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
 
         assert_eq!(
             without_reservation.visible_items.len(),
@@ -1702,7 +1678,7 @@ mod tests {
     }
 
     #[test]
-    fn list_layout_border_inset_reduces_visible_width_for_overflow_check() {
+    fn pixel_list_layout_border_inset_reduces_visible_width_for_overflow_check() {
         // A `max_content_width` that only overflows once the border
         // inset narrows the visible width must still trigger the
         // reservation — mirrors GTK's `bordered` lists.
@@ -1717,8 +1693,8 @@ mod tests {
         // side... so pick a value that straddles exactly that gap.
         let list = list_with_max_content_width(12, Some(25)); // 25*8=200 > 198
 
-        let with_border = list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, BORDER_INSET);
-        let without_border = list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
+        let with_border = pixel_list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, BORDER_INSET);
+        let without_border = pixel_list_layout(&list, W, H, LINE_HEIGHT, CHAR_WIDTH, 0.0);
 
         assert_eq!(
             without_border.visible_items.len(),

@@ -70,7 +70,12 @@ fn slider_track_cells_match_the_item_bounds_click_routing_reads() {
     let f = make_slider_form("Font size", 20.0);
     let area = Rect::new(0, 0, 44, 1);
     let mut buf = Buffer::empty(area);
-    draw_form(&mut buf, area, &f, &Theme::default());
+    draw_form(
+        &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+        area,
+        &f,
+        &Theme::default(),
+    );
 
     let layout = tui_form_layout(&f, area);
     let vis = &layout.visible_fields[0];
@@ -141,7 +146,12 @@ fn a_fill_width_sliders_track_and_item_bounds_grow_together() {
     );
 
     let mut buf = Buffer::empty(area);
-    draw_form(&mut buf, area, &filled, &Theme::default());
+    draw_form(
+        &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+        area,
+        &filled,
+        &Theme::default(),
+    );
     let row: String = (0..60).map(|x| cell_char(&buf, x, 0)).collect();
     let open = row.find('[').expect("track is bracketed");
     let close = row.find(']').expect("track is bracketed");

@@ -179,9 +179,12 @@ A malformed descriptor fails when the engine decodes it, with
 
 - `app.run_tui()`: takes over the terminal. Works on every wheel.
 - `app.run_native(...)`: a real native window. It's built into the macOS
-  (AppKit) and Windows (Direct2D) wheels. **The Linux wheel is TUI-only**:
-  check `hasattr(quadraui.QuiApp, "run_native")` and fall back to
-  `run_tui()`.
+  (AppKit) and Windows (Direct2D) wheels. **On Linux it needs the system
+  GTK 4.10+** and the x86_64 glibc-2.39 wheel (Ubuntu 24.04+, Fedora 40+);
+  elsewhere `run_native` exists but raises `quadraui.UnsupportedError`
+  naming what is missing. `hasattr(quadraui.QuiApp, "run_native")` is
+  always true, so do not use it as a check: catch `UnsupportedError` and
+  fall back to `run_tui()`.
 - Headless: `app.step()` processes pending events and renders, and
   `app.screen()` returns the frame as text. This is what tests use.
 

@@ -2650,13 +2650,9 @@ impl crate::primitive::Primitive for DataTable {
         env: &crate::PaintEnv,
     ) {
         let state = self.row_paint_state(env);
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         paint_cells::draw_data_table_inner(
-            buf,
+            cells,
             area,
             self,
             env.theme(),

@@ -255,8 +255,8 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     if let Some(list) = refs.list {
         if let Some(rect) = band(4.0) {
             let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
-            backend.draw_list_with_state(rect, list, &state, false);
-            let layout = backend.list_layout(rect, list);
+            let _ = backend.draw_dyn(rect, list, &state);
+            let layout = backend.layout_primitive(rect, list).layout;
             let viewport_rows = list_viewport_rows(backend, rect, list);
             hits.push(PaintedHit::List {
                 id: list.id,
@@ -777,11 +777,10 @@ fn pop_styled_scope(backend: &mut dyn Backend, pushes: Vec<StyledPush>) {
 /// chrome overflowing by a sub-unit rounding — [`scroll_content_slots`]'s
 /// own per-slot culling already keeps a fully-invisible slot from being
 /// painted, hence from getting a [`PaintedHit`], at all), and paints the
-/// shared scrollbar ([`quadraui::ScrollView::scrollbar`] +
-/// `Backend::draw_scrollbar`, the same geometry
-/// a standalone `"scroll_view"` leaf paints into its own fixed
-/// `line_height`-wide track). `scroll_node.offset` is read as-is —
-/// already resolved against [`quadraui::WidgetStateStore`] by
+/// shared scrollbar ([`quadraui::ScrollView::scrollbar`] painted through
+/// `draw_dyn`, the same geometry a standalone `"scroll_view"` leaf paints
+/// into its own fixed `line_height`-wide track). `scroll_node.offset` is
+/// read as-is — already resolved against [`quadraui::WidgetStateStore`] by
 /// [`crate::host::resolve_layout_node`], which must run on this tree before
 /// this function does (same ordering [`crate::layout`]'s own `Split`/
 /// `Tabs` resolution already requires).
@@ -927,7 +926,8 @@ fn paint_scroll(
     backend.pop_clip();
 
     if let Some(scrollbar) = &scrollbar {
-        backend.draw_scrollbar(track, scrollbar);
+        let _ = backend.draw_dyn(scrollbar.track, scrollbar, &());
+        backend.register_zone(scrollbar.id, scrollbar.track);
     }
 }
 
@@ -1603,13 +1603,16 @@ pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView
 /// viewport's true row capacity, mirroring [`tree_viewport_rows`] for the
 /// identical reason: `ListViewLayout::visible_items.len()` at `list`'s
 /// ACTUAL offset can be shorter near the end of a long list. Paints into
-/// no backend at all — only queries `Backend::list_layout` against a
-/// scratch clone — so computing this never disturbs the real paint.
-#[allow(deprecated)]
+/// no backend at all — only lays out a scratch clone — so computing this
+/// never disturbs the real paint.
 pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView) -> usize {
     let mut shadow = list.clone();
     shadow.scroll_offset = 0;
-    backend.list_layout(rect, &shadow).visible_items.len()
+    backend
+        .layout_primitive(rect, &shadow)
+        .layout
+        .visible_items
+        .len()
 }
 
 /// How many rows of `table` fit in `rect` at a zero scroll offset,
@@ -2044,7 +2047,7 @@ fn band_relative(idx: Option<usize>, band: WindowedBand) -> Option<usize> {
     idx?.checked_sub(band.start).filter(|rel| *rel < band.len)
 }
 
-/// Shifts every row index [`Backend::list_layout`] resolved against a
+/// Shifts every row index a list's `Primitive::layout` resolved against a
 /// windowed list's band back into the collection's own absolute indexing,
 /// so a hit test or a selection read downstream of paint never sees a
 /// band-relative index — see [`WindowedLeaf`]'s own doc.
@@ -2350,9 +2353,8 @@ pub fn paint_leaf_windowed(
             let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
             let painted_list = painted.as_ref();
             let state = quadraui::ListPaintState::default().with_scroll_px(scroll_px);
-            backend.draw_list_with_state(area, painted_list, &state, false);
-            #[allow(deprecated)]
-            let mut layout = backend.list_layout(area, painted_list);
+            let _ = backend.draw_dyn(area, painted_list, &state);
+            let mut layout = backend.layout_primitive(area, painted_list).layout;
             let viewport_rows = list_viewport_rows(backend, area, painted_list);
             // The collection's own numbers, not the painted band's — see
             // [`WindowedLeaf`]'s own doc.

@@ -304,7 +304,8 @@ impl FormController {
                 lh,
                 sb_rect,
             );
-            backend.draw_scrollbar(sb_rect, &sb);
+            let _ = crate::backend::DrawsPrimitives::draw_dyn(backend, sb.track, &sb, &());
+            backend.register_zone(sb.id, sb.track);
         }
     }
 

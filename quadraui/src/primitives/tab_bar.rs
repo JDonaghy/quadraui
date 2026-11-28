@@ -2634,9 +2634,7 @@ pub(crate) mod native_surface_paint {
 #[cfg(feature = "tui")]
 #[doc(hidden)]
 pub mod cell_paint {
-    use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Modifier;
 
     #[allow(deprecated)]
     use super::TabBarHits;
@@ -2644,12 +2642,10 @@ pub mod cell_paint {
         fit_tab_label, tab_icon_at, tab_icon_cols, TabBar, TabBarGlyphs, TabBarLayout, TabChrome,
         TabFrame, TabIcon, TabSeparator, TAB_CLOSE_CHAR, TAB_SEPARATOR_CHAR,
     };
+    use crate::cell_surface::{solid_style, CellStyle, CellSurface};
     use crate::text_util::char_cell_width;
     use crate::theme::Theme;
-    use crate::tui::{
-        ratatui_color, set_cell, set_cell_styled, set_cell_wide, set_cell_wide_styled,
-    };
-    use crate::types::Icon;
+    use crate::types::{Color, Icon};
 
     /// Resolve a [`TabBarGlyphs`] slot (the close or dirty override) to the
     /// single `char` this rasteriser paints, falling back to `default` when
@@ -2669,7 +2665,7 @@ pub mod cell_paint {
         pub pressed_tab: Option<usize>,
     }
 
-    /// Paint `bar` into `area` on `buf` from the already-resolved `layout`,
+    /// Paint `bar` into `area` on `surface` from the already-resolved `layout`,
     /// and return its hit geometry.
     ///
     /// Per D6 this consumes a pre-computed [`TabBarLayout`] (built by the
@@ -2685,10 +2681,10 @@ pub mod cell_paint {
     /// - **Active tab:** `tab_active_fg` + `tab_active_bg`. When
     ///   [`TabBar::active_accent`] is `Some`, the filename portion (chars
     ///   after the last `": "` in `tab.label`) gets a
-    ///   [`Modifier::UNDERLINED`] with that accent colour.
+    ///   an underline in that accent colour.
     /// - **Dirty tab:** the close cell shows `●` in `theme.foreground`
     ///   instead of `×`.
-    /// - **Preview tab:** `*_preview_*_fg` and [`Modifier::ITALIC`]; combines
+    /// - **Preview tab:** `*_preview_*_fg` in italics; combines
     ///   with the underline accent when active.
     /// - **Right segments:** painted in `tab_inactive_fg` (or
     ///   `seg.is_active`'s `tab_active_fg`). Double-width glyphs (per
@@ -2735,7 +2731,7 @@ pub mod cell_paint {
     #[allow(deprecated)] // returns the deprecated `TabBarHits`
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
-        buf: &mut Buffer,
+        surface: &mut dyn CellSurface,
         area: Rect,
         bar: &TabBar,
         icons: &[Option<TabIcon>],
@@ -2750,14 +2746,14 @@ pub mod cell_paint {
             return TabBarHits::default();
         }
 
-        let bar_bg = ratatui_color(theme.tab_bar_bg);
-        let btn_fg = ratatui_color(theme.tab_inactive_fg);
-        let btn_fg_active = ratatui_color(theme.tab_active_fg);
-        let foreground = ratatui_color(theme.foreground);
+        let bar_bg = theme.tab_bar_bg;
+        let btn_fg = theme.tab_inactive_fg;
+        let btn_fg_active = theme.tab_active_fg;
+        let foreground = theme.foreground;
 
         // Fill bar background.
         for x in area.x..area.x + area.width {
-            set_cell(buf, x, area.y, ' ', bar_bg, bar_bg);
+            surface.put_char(x, area.y, ' ', solid_style(bar_bg, bar_bg));
         }
 
         // Hit geometry comes straight from the shared `TabBarLayout` via the
@@ -2791,26 +2787,26 @@ pub mod cell_paint {
                 let w = char_cell_width(ch);
                 if w == 2 {
                     if cx + 1 < seg_end + 1 {
-                        set_cell_wide(buf, cx, area.y, ch, fg, bar_bg);
+                        surface.put_wide(cx, area.y, ch, solid_style(fg, bar_bg));
                         cx += 2;
                     } else {
                         cx += 1;
                     }
                 } else {
-                    set_cell(buf, cx, area.y, ch, fg, bar_bg);
+                    surface.put_char(cx, area.y, ch, solid_style(fg, bar_bg));
                     cx += 1;
                 }
             }
         }
 
         // ── Tabs (from layout) ─────────────────────────────────────────────
-        let accent = bar.active_accent.map(ratatui_color);
-        let active_fg = ratatui_color(theme.tab_active_fg);
-        let active_bg = ratatui_color(theme.tab_active_bg);
-        let preview_active_fg = ratatui_color(theme.tab_preview_active_fg);
-        let inactive_fg = ratatui_color(theme.tab_inactive_fg);
-        let preview_inactive_fg = ratatui_color(theme.tab_preview_inactive_fg);
-        let separator = ratatui_color(theme.separator);
+        let accent = bar.active_accent;
+        let active_fg = theme.tab_active_fg;
+        let active_bg = theme.tab_active_bg;
+        let preview_active_fg = theme.tab_preview_active_fg;
+        let inactive_fg = theme.tab_inactive_fg;
+        let preview_inactive_fg = theme.tab_preview_inactive_fg;
+        let separator = theme.separator;
 
         for vt in &layout.visible_tabs {
             let tab = &bar.tabs[vt.tab_idx];
@@ -2828,9 +2824,9 @@ pub mod cell_paint {
                 theme.tab_bar_bg
             };
             let bg = if pointer.pressed_tab == Some(vt.tab_idx) {
-                ratatui_color(theme.list_pressed_bg(resting_bg))
+                theme.list_pressed_bg(resting_bg)
             } else if pointer.hovered_tab == Some(vt.tab_idx) {
-                ratatui_color(theme.list_hover_bg(resting_bg))
+                theme.list_hover_bg(resting_bg)
             } else {
                 bg
             };
@@ -2850,15 +2846,14 @@ pub mod cell_paint {
             let is_focused = chrome.focused_index == Some(vt.tab_idx);
             let base_bg = bg;
             let (fg, bg) = if is_focused { (bg, fg) } else { (fg, bg) };
-            let swap_against = |glyph_fg: ratatui::style::Color, base: ratatui::style::Color| {
+            let swap_against = |glyph_fg: Color, base: Color| {
                 if is_focused {
                     (base, glyph_fg)
                 } else {
                     (glyph_fg, base)
                 }
             };
-            let swap_against_base =
-                |glyph_fg: ratatui::style::Color| swap_against(glyph_fg, base_bg);
+            let swap_against_base = |glyph_fg: Color| swap_against(glyph_fg, base_bg);
 
             // When chrome requests bracket framing, the active tab's
             // full content — icon, label, close glyph — is enclosed in `[` /
@@ -2869,7 +2864,7 @@ pub mod cell_paint {
             let bracket_active = matches!(chrome.active_frame, TabFrame::Brackets) && tab.is_active;
             let lead: u16 = if bracket_active { 1 } else { 0 };
             if bracket_active {
-                set_cell(buf, tab_x, area.y, '[', fg, bg);
+                surface.put_char(tab_x, area.y, '[', solid_style(fg, bg));
             }
 
             // Icon glyph, if this tab has one — painted before the label in
@@ -2880,7 +2875,7 @@ pub mod cell_paint {
             // the reservation.
             let icon_cols = tab_icon_cols(icons, vt.tab_idx);
             if let Some(icon) = tab_icon_at(icons, vt.tab_idx) {
-                let (icon_fg, icon_bg) = swap_against_base(ratatui_color(icon.color));
+                let (icon_fg, icon_bg) = swap_against_base(icon.color);
                 let icon_end = tab_x + lead + icon_cols;
                 let mut cx = tab_x + lead;
                 for ch in icon.glyph.chars() {
@@ -2889,27 +2884,14 @@ pub mod cell_paint {
                     }
                     let w = char_cell_width(ch);
                     if w == 2 {
-                        set_cell_wide(buf, cx, area.y, ch, icon_fg, icon_bg);
+                        surface.put_wide(cx, area.y, ch, solid_style(icon_fg, icon_bg));
                         cx += 2;
                     } else {
-                        set_cell(buf, cx, area.y, ch, icon_fg, icon_bg);
+                        surface.put_char(cx, area.y, ch, solid_style(icon_fg, icon_bg));
                         cx += 1;
                     }
                 }
             }
-
-            let mut modifier = Modifier::empty();
-            if tab.is_preview {
-                modifier |= Modifier::ITALIC;
-            }
-            if tab.is_active && accent.is_some() {
-                modifier |= Modifier::UNDERLINED;
-            }
-            let prefix_mod = if tab.is_preview {
-                Modifier::ITALIC
-            } else {
-                Modifier::empty()
-            };
 
             // Layout carries total tab width; close_bounds (when present)
             // covers the close-glyph cells (already positioned before any
@@ -2967,16 +2949,19 @@ pub mod cell_paint {
                     break;
                 }
                 let in_filename = ci >= prefix_len;
-                let cell_mod = if in_filename { modifier } else { prefix_mod };
-                let ul = if in_filename && tab.is_active {
-                    accent
-                } else {
-                    None
+                let style = CellStyle {
+                    italic: tab.is_preview,
+                    underline: if in_filename && tab.is_active {
+                        accent
+                    } else {
+                        None
+                    },
+                    ..solid_style(fg, bg)
                 };
                 let w = char_cell_width(ch);
                 if w == 2 {
                     if x + 1 < label_end + 1 {
-                        set_cell_wide_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                        surface.put_wide(x, area.y, ch, style);
                         x += 2;
                     } else {
                         // Not enough budget left for the glyph's second column
@@ -2984,7 +2969,7 @@ pub mod cell_paint {
                         x += 1;
                     }
                 } else {
-                    set_cell_styled(buf, x, area.y, ch, fg, bg, cell_mod, ul);
+                    surface.put_char(x, area.y, ch, style);
                     x += 1;
                 }
             }
@@ -3009,7 +2994,7 @@ pub mod cell_paint {
                     (ch, fg)
                 };
                 let (close_fg, close_bg) = swap_against_base(close_fg);
-                set_cell(buf, x, area.y, close_ch, close_fg, close_bg);
+                surface.put_char(x, area.y, close_ch, solid_style(close_fg, close_bg));
                 x += 1;
             }
             // The closing bracket lands right after the close glyph
@@ -3018,7 +3003,7 @@ pub mod cell_paint {
             // separator cell a non-bracket tab paints here.
             if bracket_active {
                 if x < tab_end {
-                    set_cell(buf, x, area.y, ']', fg, bg);
+                    surface.put_char(x, area.y, ']', solid_style(fg, bg));
                 }
             } else if x < tab_end {
                 if vt.close_bounds.is_none() && chrome.separator == TabSeparator::Rule {
@@ -3028,14 +3013,14 @@ pub mod cell_paint {
                     // otherwise adjacent labels read as one run of text with
                     // only bold-vs-not telling them apart.
                     let (sep_fg, sep_bg) = swap_against(separator, bar_bg);
-                    set_cell(buf, x, area.y, TAB_SEPARATOR_CHAR, sep_fg, sep_bg);
+                    surface.put_char(x, area.y, TAB_SEPARATOR_CHAR, solid_style(sep_fg, sep_bg));
                 } else {
                     // Trailing separator space (within tab bounds, normally
                     // bar bg; tracks the already-swapped `bg` instead when
                     // focused, so a focused tab's reverse-video band reaches
                     // its right edge rather than stopping one column short).
                     let trailing_bg = if is_focused { bg } else { bar_bg };
-                    set_cell(buf, x, area.y, ' ', trailing_bg, trailing_bg);
+                    surface.put_char(x, area.y, ' ', solid_style(trailing_bg, trailing_bg));
                 }
             }
         }
@@ -3431,14 +3416,10 @@ impl crate::primitive::Primitive for TabBar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let pointer = TabPointer::from_env(self, env);
         let _ = cell_paint::paint(
-            buf,
+            cells,
             area,
             self,
             &self.icons,
@@ -4199,6 +4180,99 @@ mod interactive_tests {
             0,
         );
         assert_eq!(other_tab, crate::tui::ratatui_color(theme.tab_active_bg));
+    }
+
+    /// The tab-strip cell painter, over every tab decoration and pointer
+    /// state, cell-for-cell against the golden.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = crate::theme::Theme::default();
+        let style = crate::Style::default();
+        let mut b = bar(
+            &["src: main.rs", "lib.rs", "\u{4e2d}\u{6587}.txt", "notes"],
+            0,
+        );
+        b.active_accent = Some(crate::Color::rgb(0, 140, 255));
+        b.tabs[1].is_dirty = true;
+        b.tabs[2].is_preview = true;
+        b.tabs[3].is_closable = false;
+        b.icons = vec![
+            Some(TabIcon {
+                glyph: "\u{e7a8}".into(),
+                color: crate::Color::rgb(220, 100, 30),
+            }),
+            None,
+            Some(TabIcon {
+                glyph: "\u{4e2d}".into(),
+                color: crate::Color::rgb(30, 200, 90),
+            }),
+        ];
+        b.right_segments = vec![
+            TabBarSegment {
+                text: " \u{2026} ".into(),
+                width_cells: 3,
+                id: Some(WidgetId::new("more")),
+                is_active: false,
+            },
+            TabBarSegment {
+                text: "\u{21c5}".into(),
+                width_cells: 1,
+                id: None,
+                is_active: true,
+            },
+        ];
+        let mut framed = b.clone();
+        framed.chrome.active_frame = TabFrame::Brackets;
+        framed.chrome.focused_index = Some(1);
+        framed.glyphs = TabBarGlyphs::new().with_close_glyph(Icon::new("\u{f00d}", "x"));
+        let mut ruled = b.clone();
+        ruled.chrome.separator = TabSeparator::None;
+        ruled.tabs[0].is_active = false;
+        ruled.tabs[2].is_active = true;
+
+        let paint = |bar: &TabBar, width: f32, origin: (f32, f32), interaction| {
+            let ctx = LayoutCtx::new(1.0, 1.0, false);
+            let layout = Primitive::layout(bar, &ctx, Rect::new(origin.0, origin.1, width, 1.0));
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+                0,
+                0,
+                width as u16 + origin.0 as u16,
+                1 + origin.1 as u16,
+            ));
+            Primitive::paint_cells(
+                bar,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let hover = |tab: usize, pressed: bool| {
+            let target = (b.id, Some(TabBarSubPart::Tab(tab).sub_target()));
+            crate::InteractionState::from_targets(Some(target), pressed.then_some(target))
+        };
+        let none = crate::InteractionState::new;
+
+        let plain = paint(&b, 70.0, (0.0, 0.0), none());
+        let hovered = paint(&b, 70.0, (0.0, 0.0), hover(1, false));
+        let pressed = paint(&b, 70.0, (2.0, 1.0), hover(2, true));
+        let narrow = paint(&b, 22.0, (0.0, 0.0), none());
+        let framed_cells = paint(&framed, 70.0, (0.0, 0.0), hover(0, false));
+        let ruled_cells = paint(&ruled, 70.0, (0.0, 0.0), none());
+        oracle::assert_golden(
+            "tab_bar",
+            &[
+                ("plain", &plain),
+                ("hovered", &hovered),
+                ("pressed_offset", &pressed),
+                ("narrow", &narrow),
+                ("framed", &framed_cells),
+                ("ruled", &ruled_cells),
+            ],
+        );
     }
 }
 

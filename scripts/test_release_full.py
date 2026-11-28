@@ -548,8 +548,10 @@ class WithPyFlagTests(unittest.TestCase):
         self.assertIn("--no-with-py", result.stdout)
 
 
+# `needs:` may name `bump-shape` alone or first in a flow list
+# (`needs: [bump-shape, build]`) for a job that also waits on other jobs.
 GATE_RE = re.compile(
-    r"needs:\s*bump-shape\b.*?if:\s*\$\{\{\s*!cancelled\(\)\s*&&[^}]*"
+    r"needs:\s*(?:\[\s*)?bump-shape\b.*?if:\s*\$\{\{\s*!cancelled\(\)\s*&&[^}]*"
     r"needs\.bump-shape\.outputs\.is_bump\s*!=\s*'true'",
     re.DOTALL,
 )
@@ -622,7 +624,7 @@ class BumpShapeWorkflowGatingTests(unittest.TestCase):
                 continue  # the detector job itself -- obviously mentions its own name
             if name in always_on:
                 self.assertNotRegex(
-                    block, r"needs:\s*bump-shape\b",
+                    block, r"needs:\s*(?:\[\s*)?bump-shape\b",
                     f"{workflow_path}: always-on job {name!r} must not "
                     "`needs: bump-shape` -- that would silently gut the "
                     "reduced check set",

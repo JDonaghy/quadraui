@@ -1,15 +1,15 @@
 //! The cell painter for every [`Chart`] kind.
 //!
 //! Sparklines use Unicode block elements (`▁▂▃▄▅▆▇█`). Line charts use
-//! braille dots for sub-cell resolution ([`crate::tui::braille`]), with a
+//! braille dots for sub-cell resolution ([`crate::cell_surface::braille`]), with a
 //! [`crate::primitives::chart::Series::fill`] series lighting every dot
 //! below its line. Bar charts stack whole block cells. The grid is painted
 //! right after the plot is cleared, so data and axes sit on top of it.
 
 use super::{Chart, ChartKind, ChartLayout};
+use crate::cell_surface::braille::{interpolate_dots, pack_braille_cell};
 use crate::cell_surface::{solid_style, CellSurface};
 use crate::theme::Theme;
-use crate::tui::braille::{interpolate_dots, pack_braille_cell};
 
 const SPARK_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 

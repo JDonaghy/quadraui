@@ -6,27 +6,21 @@
 //! stays out of that trait entirely: a terminal paints a cell grid, not a
 //! pixel canvas, so there is no sub-cell `Rect`, no fractional stroke
 //! width, and glyph selection (box-drawing corners, double-width CJK) has
-//! no pixel-shaped equivalent. [`crate::tui::backend::TuiBackend`] still
-//! needs *some* shared drawing seam though — today it has only an
-//! informal one: `set_cell`/`set_cell_wide`/`set_cell_styled`/
-//! `draw_styled_text` in `crate::tui` plus `truncate_to_width`/
-//! `truncate_to_width_ellipsis` in `crate::tui::text`, called directly by
-//! each of the ~52 `tui/<widget>.rs` rasterisers against a raw
-//! `&mut ratatui::buffer::Buffer`.
+//! no pixel-shaped equivalent. A cell painter still needs a shared drawing
+//! seam, and `CellSurface` is it, the same way `PaintSurface` is the
+//! pixel backends' one: a widget's cell painter takes
+//! `&mut dyn CellSurface` rather than a concrete ratatui type, and lives
+//! in the widget's own module.
 //!
-//! `CellSurface` formalises that informal API into a trait, the same way
-//! `PaintSurface` formalised each pixel backend's private fill/stroke/text
-//! helpers. A widget's cell painter can then take `&mut dyn CellSurface`
-//! instead of a concrete ratatui type, living in the widget's own module
-//! rather than reaching into `crate::tui` for free functions.
+//! # Scope
 //!
-//! # Scope — additive only
-//!
-//! This module adds the trait and `crate::tui::TuiCellSurface`'s
-//! implementation of it. Nothing in this crate paints through it yet;
-//! every `tui/<widget>.rs` rasteriser keeps calling `crate::tui::set_cell`
-//! and friends directly. Moving them onto `CellSurface` is later, per-widget
-//! work.
+//! Every cell painter writes through this trait's verbs alone: glyphs
+//! ([`CellSurface::put_char`] and friends), fills and borders, and the
+//! in-place decorations ([`CellSurface::tint_bg`],
+//! [`CellSurface::set_bg`], [`CellSurface::add_modifier`]) that recolour
+//! or mark a cell another painter already wrote.
+//! `crate::tui::BufferCellSurface` is the one implementor, over a ratatui
+//! buffer.
 //!
 //! # Why this stays unconditional
 //!
@@ -35,8 +29,7 @@
 //! already compiled unconditionally, so the trait itself needs no `tui`
 //! feature gate — mirroring [`crate::PaintSurface`], which is also
 //! compiled unconditionally despite having no in-crate implementor on a
-//! `tui`-only build. Only [`CellSurface::ratatui_buffer`] — the one method
-//! that names a `ratatui` type directly — is gated on `feature = "tui"`.
+//! `tui`-only build.
 
 use crate::backend::ColorDepth;
 use crate::{Color, Image, Rect};
@@ -79,10 +72,8 @@ pub struct CellStyle {
 pub enum BorderSet {
     /// `┌─┐│└─┘` — sharp corners.
     Square,
-    /// `╭─╮│╰─╯` — the rounded corners every existing TUI dialog/board/
-    /// tree-rename border already paints via its own direct `set_cell`
-    /// calls (`crate::tui::dialog`, `crate::tui::board`,
-    /// `crate::tui::focus_ring`).
+    /// `╭─╮│╰─╯` — the rounded corners the TUI dialog, board, tree and
+    /// focus-ring borders paint.
     Rounded,
     /// `╔═╗║╚═╝` — double-line.
     Double,
@@ -110,7 +101,7 @@ pub trait CellSurface {
 
     /// Write a single-width `char` at `(x, y)` in `style`. Out-of-bounds
     /// coordinates are silently ignored — matches
-    /// `crate::tui::set_cell`'s own bounds check, so a caller painting
+    /// `crate::tui::set_cell_styled`'s own bounds check, so a caller painting
     /// right up to a surface's edge never has to clamp first.
     fn put_char(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
@@ -118,7 +109,7 @@ pub trait CellSurface {
     /// `(x, y)`, and blank `(x + 1, y)` — the continuation cell every
     /// double-width glyph occupies on a terminal grid — so the renderer's
     /// diff doesn't paint a stray character on top of the wide glyph's
-    /// second column. Mirrors `crate::tui::set_cell_wide`.
+    /// second column. Mirrors `crate::tui::set_cell_wide_styled`.
     fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
     /// Write one grapheme cluster — a base character plus any combining
@@ -216,21 +207,56 @@ pub trait CellSurface {
     /// itself.
     fn color_depth(&self) -> ColorDepth;
 
-    /// In-crate migration hatch: while a `tui/<widget>.rs` rasteriser
-    /// still takes `&mut ratatui::buffer::Buffer` directly (every one of
-    /// them does today — see the module doc's "Scope" section), a caller
-    /// that only holds `&mut dyn CellSurface` can recover the real buffer
-    /// through this method and hand it to the old-style rasteriser
-    /// unchanged. Deleted once every rasteriser has migrated onto
-    /// [`CellSurface`] itself; never use it in new code.
+    /// Replace the background of the cell at `(x, y)` with `color`,
+    /// leaving its glyph, foreground and modifiers as they are — the
+    /// opaque counterpart of [`Self::tint_bg`], for an overlay that
+    /// recolours cells another painter already filled. Out-of-bounds
+    /// coordinates are ignored.
     ///
-    /// Default: `None` — correct for a surface with no backing
-    /// `ratatui::buffer::Buffer` at all.
-    #[doc(hidden)]
-    #[cfg(feature = "tui")]
-    fn ratatui_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
-        None
+    /// Default: read the cell back through [`Self::get`] and rewrite it
+    /// with [`Self::put_char`], which keeps only the cell's first char.
+    fn set_bg(&mut self, x: u16, y: u16, color: Color) {
+        let Some((ch, mut style)) = self.get(x, y) else {
+            return;
+        };
+        style.bg = Some(color);
+        self.put_char(x, y, ch, style);
     }
+
+    /// Add `modifier` to the cell at `(x, y)`, leaving its glyph, colours
+    /// and other modifiers as they are — decoration over content another
+    /// painter already wrote, such as a boundary underline across a row
+    /// or a reverse-video selection. Writing the cell afresh instead
+    /// would split a double-width glyph's continuation cell from its
+    /// glyph. Out-of-bounds coordinates are ignored.
+    ///
+    /// Default: read the cell back through [`Self::get`] and rewrite it
+    /// with [`Self::put_char`], which keeps only the cell's first char; an
+    /// [`CellModifier::Underline`] with no colour underlines in the
+    /// cell's foreground.
+    fn add_modifier(&mut self, x: u16, y: u16, modifier: CellModifier) {
+        let Some((ch, mut style)) = self.get(x, y) else {
+            return;
+        };
+        match modifier {
+            CellModifier::Reverse => style.reverse = true,
+            CellModifier::Underline { color } => {
+                style.underline = color.or(style.underline).or(style.fg);
+            }
+        }
+        self.put_char(x, y, ch, style);
+    }
+}
+
+/// A modifier [`CellSurface::add_modifier`] adds to an already-painted
+/// cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CellModifier {
+    /// Reverse video: the cell's foreground and background swap.
+    Reverse,
+    /// An underline. `Some(color)` recolours it; `None` keeps whatever
+    /// underline colour the cell already carries.
+    Underline { color: Option<Color> },
 }
 
 /// A [`CellStyle`] that names both colours and no modifiers — the style
@@ -315,15 +341,219 @@ pub(crate) fn stroke_square_frame(surface: &mut dyn CellSurface, rect: Rect, sty
     }
 }
 
+/// Shared `U+2800`-block braille dot packing, used by every cell painter
+/// that needs sub-cell resolution: [`crate::Chart`]'s line charts,
+/// [`crate::Canvas`]'s shape degrade and [`crate::Minimap`]'s density view.
+///
+/// There must be exactly one copy of this bit-order logic: getting it wrong
+/// transposes the whole image in a way that still looks plausible.
+#[cfg(feature = "tui")]
+pub(crate) mod braille {
+
+    /// Braille dot offsets: `(row_in_cell, col_in_cell) -> bit index`.
+    /// Standard Unicode braille ordering — a terminal cell is 2 dots wide
+    /// (`col_in_cell` in `0..2`) by 4 dots tall (`row_in_cell` in `0..4`).
+    pub(crate) const BRAILLE_OFFSETS: [(usize, usize); 8] = [
+        (0, 0), // bit 0
+        (1, 0), // bit 1
+        (2, 0), // bit 2
+        (0, 1), // bit 3
+        (1, 1), // bit 4
+        (2, 1), // bit 5
+        (3, 0), // bit 6
+        (3, 1), // bit 7
+    ];
+
+    /// Pack one 2x4 dot cell into its `U+2800`-block braille codepoint.
+    /// `dot_at(row, col)` is queried for every one of the 8 dots
+    /// (`row` in `0..4`, `col` in `0..2`) and should return whether that dot
+    /// is set. An all-`false` cell packs to `U+2800` itself (blank braille),
+    /// not a space — callers that want to skip painting an empty cell decide
+    /// that themselves by comparing the result to `'\u{2800}'`.
+    pub(crate) fn pack_braille_cell(mut dot_at: impl FnMut(usize, usize) -> bool) -> char {
+        let mut code: u32 = 0x2800;
+        for (bit, &(row, col)) in BRAILLE_OFFSETS.iter().enumerate() {
+            if dot_at(row, col) {
+                code |= 1 << bit;
+            }
+        }
+        char::from_u32(code).unwrap_or(' ')
+    }
+
+    /// Threshold a dot's coverage (`covered` non-whitespace source columns out
+    /// of `bucket_width` total) against a 4x4 ordered-dither (Bayer) matrix,
+    /// indexed by the dot's own `(row, col)` position within the whole
+    /// rendered grid (not just within its cell) so that the dither pattern
+    /// tiles consistently across the entire minimap strip rather than
+    /// repeating identically inside every cell.
+    ///
+    /// [`crate::Minimap`]'s density view decides "is this dot set?" with a
+    /// boolean OR over the dot's source-column bucket (`any(|c|
+    /// !c.is_whitespace())`), which saturates every dot from the end of a
+    /// line's indent onward as soon as the bucket widens past one column —
+    /// every row of real code runs to the strip's right edge with no
+    /// line-length signal at all. An ordered dither spreads that "is there
+    /// *any* code here" boolean across many dots' worth of threshold instead:
+    /// a sparsely-covered bucket only lights up the small subset of dot
+    /// positions whose threshold value happens to be low, while a
+    /// fully-covered bucket lights up every position — which is what produces
+    /// a raggedy, VS-Code-like right edge instead of a solid wall.
+    ///
+    /// Pure integer arithmetic — one multiply and one compare, no floating
+    /// point, no lookahead, no per-call allocation. A fully-covered bucket
+    /// (`covered == bucket_width`) always returns `true` and an
+    /// all-whitespace bucket (`covered == 0`) always returns `false` —
+    /// dithering only has any effect strictly *between* those two extremes.
+    ///
+    /// Re-exported from [`crate::primitives::minimap`] rather than defined
+    /// here: that module's `sample_blocks` uses the exact same matrix and
+    /// threshold formula to make an analogous decision one granularity
+    /// coarser — whether a *block*'s per-column coverage (several real
+    /// buffer lines folded into one output row) reads back non-blank. A
+    /// single shared definition makes both compositions provably the same
+    /// dither policy applied twice, not two that happen to agree today.
+    pub(crate) use crate::primitives::minimap::dither_threshold_met;
+
+    /// Set every dot on the straight line between `(x0, y0)` and `(x1, y1)`
+    /// in `grid` (indexed `grid[row][col]`, i.e. `grid[y][x]`), including
+    /// both endpoints. Shared by every rasteriser in this crate that needs to
+    /// connect two dot-grid coordinates with a solid stroke — [`crate::Chart`]'s
+    /// line charts and [`crate::Canvas`]'s `DrawOp::Line`/`DrawOp::Path`
+    /// degrade both call this rather than keeping their own,
+    /// independently-tuned copy of a line-rasterisation loop, which is
+    /// exactly the kind of drift this module's own doc comment already warns
+    /// about for the bit-packing table above.
+    ///
+    /// Out-of-bounds coordinates (`iy >= grid.len()` or `ix >= grid[0].len()`)
+    /// are silently skipped rather than panicking — a caller that clamps its
+    /// own endpoints to the grid never hits this, but the interpolated path
+    /// between two in-bounds endpoints cannot itself leave the grid (each
+    /// step is a convex combination of two in-bounds points), so this guard
+    /// is defensive rather than load-bearing.
+    ///
+    /// **`(x0, y0) == (x1, y1)` is a no-op** — every caller already sets a
+    /// coincident single point's own dot itself before calling this for the
+    /// *connecting* segment, so a caller that wants a lone point rendered
+    /// when both endpoints coincide must set it separately; see
+    /// [`crate::Canvas`]'s `DrawOp::Line` handling for an example.
+    pub(crate) fn interpolate_dots(
+        grid: &mut [Vec<bool>],
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+    ) {
+        let dx = (x1 as isize - x0 as isize).abs();
+        let dy = (y1 as isize - y0 as isize).abs();
+        let steps = dx.max(dy);
+        if steps == 0 {
+            return;
+        }
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let ix = (x0 as f64 + t * (x1 as f64 - x0 as f64)).round() as usize;
+            let iy = (y0 as f64 + t * (y1 as f64 - y0 as f64)).round() as usize;
+            if iy < grid.len() && ix < grid[0].len() {
+                grid[iy][ix] = true;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn all_dots_off_packs_to_blank_braille() {
+            assert_eq!(pack_braille_cell(|_, _| false), '\u{2800}');
+        }
+
+        #[test]
+        fn all_dots_on_packs_to_full_braille_block() {
+            assert_eq!(pack_braille_cell(|_, _| true), '\u{28FF}');
+        }
+
+        #[test]
+        fn single_dot_sets_the_documented_bit() {
+            // bit 0 -> (row 0, col 0)
+            assert_eq!(pack_braille_cell(|r, c| (r, c) == (0, 0)), '\u{2801}');
+            // bit 3 -> (row 0, col 1)
+            assert_eq!(pack_braille_cell(|r, c| (r, c) == (0, 1)), '\u{2808}');
+            // bit 6 -> (row 3, col 0)
+            assert_eq!(pack_braille_cell(|r, c| (r, c) == (3, 0)), '\u{2840}');
+            // bit 7 -> (row 3, col 1)
+            assert_eq!(pack_braille_cell(|r, c| (r, c) == (3, 1)), '\u{2880}');
+        }
+
+        // ── dither_threshold_met ───────────────────────────────────────────
+
+        #[test]
+        fn zero_coverage_never_meets_the_threshold() {
+            for row in 0..4 {
+                for col in 0..4 {
+                    assert!(!dither_threshold_met(0, 6, row, col));
+                }
+            }
+        }
+
+        #[test]
+        fn zero_width_bucket_never_meets_the_threshold() {
+            assert!(!dither_threshold_met(0, 0, 0, 0));
+            assert!(!dither_threshold_met(5, 0, 0, 0));
+        }
+
+        #[test]
+        fn full_coverage_always_meets_the_threshold() {
+            // A fully-covered bucket must light up at every dot position,
+            // including the matrix's own largest threshold (15) -- otherwise
+            // a solid run of non-whitespace would still leave holes.
+            for row in 0..4 {
+                for col in 0..4 {
+                    assert!(
+                        dither_threshold_met(6, 6, row, col),
+                        "full coverage must always set the dot at ({row}, {col})"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn partial_coverage_sets_only_some_dot_positions() {
+            // 1-of-6 covered: only the positions whose Bayer threshold is low
+            // enough should light up, and it must not be all-or-nothing across
+            // the matrix -- that's the whole point of dithering a partially
+            // covered bucket instead of booleans-OR-ing it.
+            let set_count = (0..4)
+                .flat_map(|row| (0..4).map(move |col| (row, col)))
+                .filter(|&(row, col)| dither_threshold_met(1, 6, row, col))
+                .count();
+            assert!(
+                set_count > 0 && set_count < 16,
+                "expected a strict subset of the 16 dot positions to light up, got {set_count}/16"
+            );
+        }
+
+        #[test]
+        fn threshold_is_indexed_by_absolute_position_not_just_local_position() {
+            // Position (0, 0) and (4, 4) share the same `& 3` fold, so they
+            // must resolve identically -- confirms the matrix tiles rather
+            // than being looked up some other way.
+            assert_eq!(
+                dither_threshold_met(3, 6, 0, 0),
+                dither_threshold_met(3, 6, 4, 4)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Implements every required method as a no-op/empty-answer, so the
-    /// two defaults (`emit_graphics`, `ratatui_buffer`) run their real
-    /// trait body rather than an override — proving what a surface with
-    /// no out-of-band graphics channel and no backing `ratatui::Buffer`
-    /// reports by default.
+    /// `emit_graphics` default runs its real trait body rather than an
+    /// override — proving what a surface with no out-of-band graphics
+    /// channel reports by default.
     #[derive(Default)]
     struct DummySurface;
 
@@ -368,12 +598,5 @@ mod tests {
     fn emit_graphics_default_reports_unsupported() {
         let mut surface = DummySurface;
         assert!(!surface.emit_graphics(Rect::new(0.0, 0.0, 4.0, 4.0), &test_image()));
-    }
-
-    #[cfg(feature = "tui")]
-    #[test]
-    fn ratatui_buffer_default_is_none() {
-        let mut surface = DummySurface;
-        assert!(surface.ratatui_buffer().is_none());
     }
 }

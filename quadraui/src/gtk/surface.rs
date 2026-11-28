@@ -36,28 +36,6 @@ use crate::backend::ImagePaintResult;
 use crate::paint_surface::{AlphaSheet, PaintSurface, TextRunStyle};
 use crate::{Color, Image, Point, Rect, Viewport};
 
-/// Adapts a live `pango::Layout` (falling back to a `char_width`-based
-/// estimate when none is available, e.g. from a layout-only call between
-/// paint frames) to the shared
-/// [`crate::primitives::layout_metrics::TextMeasure`] trait, so a shared
-/// layout formula never has to name a Pango type and every GTK caller
-/// measures through the exact same adapter its paint uses.
-pub(crate) struct PangoMeasure<'a> {
-    pub(crate) pango_layout: Option<&'a pango::Layout>,
-    pub(crate) char_width: f64,
-}
-
-impl crate::primitives::layout_metrics::TextMeasure for PangoMeasure<'_> {
-    fn width_of(&self, text: &str) -> f32 {
-        if let Some(pl) = self.pango_layout {
-            pl.set_text(text);
-            pl.pixel_size().0.max(0) as f32
-        } else {
-            (text.chars().count() as f64 * self.char_width).ceil() as f32
-        }
-    }
-}
-
 /// See the module doc for the two fields that carry genuine
 /// per-call-site behaviour ([`Self::layout`], [`Self::translucent_fill`]);
 /// every other [`PaintSurface`] verb below is one shared implementation.
@@ -1205,11 +1183,20 @@ mod terminal_paint_tests {
 
 #[cfg(test)]
 mod form_paint_tests {
-    use super::PangoMeasure;
     use crate::primitives::form::{FieldKind, Form, FormField, LabelAlign, LabelPosition};
     use crate::theme::Theme;
     use crate::types::{StyledText, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    /// Measures text through the test's own Pango layout.
+    struct PangoMeasure<'a>(&'a pangocairo::pango::Layout);
+
+    impl crate::primitives::layout_metrics::TextMeasure for PangoMeasure<'_> {
+        fn width_of(&self, text: &str) -> f32 {
+            self.0.set_text(text);
+            self.0.pixel_size().0.max(0) as f32
+        }
+    }
 
     /// Paint `form` via the shared [`crate::primitives::form::paint`]
     /// through a [`crate::gtk::surface::CairoSurface`] over a fresh in-memory
@@ -1224,10 +1211,7 @@ mod form_paint_tests {
         let pango_layout = pangocairo::functions::create_layout(&cr);
         let theme = Theme::default();
         let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
-        let measure = PangoMeasure {
-            pango_layout: Some(&pango_layout),
-            char_width: 8.0,
-        };
+        let measure = PangoMeasure(&pango_layout);
         let flayout = form.layout(320.0, 160.0, |i| {
             crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
         });
@@ -1316,10 +1300,7 @@ mod form_paint_tests {
             let pango_layout = pangocairo::functions::create_layout(&cr);
             let theme = Theme::default();
             let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
-            let measure = PangoMeasure {
-                pango_layout: Some(&pango_layout),
-                char_width: 8.0,
-            };
+            let measure = PangoMeasure(&pango_layout);
             let flayout = form.layout(320.0, 160.0, |i| {
                 crate::primitives::layout_metrics::form_field_measure(
                     &form.fields[i],
