@@ -3070,9 +3070,9 @@ test keeps `ratatui_buffer` out.
 
 ## D-033 — binding-core: one generic widget leaf, a runtime kind registry, one widget-state model (issues #2976–#2979)
 
-**Status:** Decided and shipped 2026-11-27. The list-shaped kinds
-(`text_display`, `list`, `tree`, `data_table`) still decode to fixed
-leaf slots, which #2977 tracks.
+**Status:** Decided and shipped 2026-11-27. Five kinds
+(`text_display`, `list`, `tree`, `data_table`, `tab_bar`) still decode
+to their own fixed leaf slots (`LEAF_KIND_KEYS`), which #2977 tracks.
 
 **Date:** 2026-11-27.
 

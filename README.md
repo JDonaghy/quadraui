@@ -186,10 +186,6 @@ npm install @quadraui/node
   `Interactive` (focus, input, popups). The same code paints on all four
   backends; a backend supplies drawing verbs and platform services and
   holds no per-widget code.
-  <!-- TODO(0.12 final pass): true once W6-W9 land. After W5 two
-  primitive modules have no Primitive impl and paint through legacy
-  Backend methods (multi_section_view and find_replace), and the backends
-  still hold their rasterisers. After W9 confirm both. -->
 - **Paint and click share one layout.** A widget's `layout(...)` result
   is what it paints from and what its event handler hit-tests against.
   Mouse clicks cannot drift from what is on screen, because both read the
@@ -291,9 +287,12 @@ under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
 Node). Each has a five-minute quick start on the docs site:
 [Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
 [Node](https://jdonaghy.github.io/quadraui/quick-start/node.html).
-<!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979), check
-this paragraph against the final py/node wire surface and say which widget
-kinds the bindings can build. -->
+A binding builds the same widgets a Rust app does: a layout leaf names a
+widget kind (`button`, `form`, `editor`, `tree_table`, `chart` and the
+rest of binding-core's `WIDGET_KINDS`, plus the `text_display`, `list`,
+`tree`, `data_table` and `tab_bar` leaves) and is decoded into that
+widget's own `Primitive` and `Interactive` implementation, so it paints
+and handles input exactly as it does from Rust.
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in
@@ -447,13 +446,6 @@ The exceptions are the two shared-math modules `layout_metrics` and
 `row_stack`, which hold arithmetic several widgets reuse rather than a
 widget of their own. Among them:
 
-<!-- TODO(0.12 final pass): the claim above that every module except
-layout_metrics and row_stack implements Primitive and Interactive holds once
-W6 (#2971 MultiSectionView, and FindReplace split off F5) lands. Today
-these lack it: multi_section_view and find_replace. After W9 re-run
-`git grep -n "Primitive for"` over src/primitives and confirm none is missing;
-recount the modules against readme_truth. -->
-
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
@@ -474,11 +466,6 @@ or a whole app-level flow (a shell, a menu system, a form dialog), so an
 app matches on semantic events (`AppMenuEvent::Activated`,
 `SidebarEvent::RowSelected`) instead of raw mouse coordinates. A single
 widget's own input handling lives in its `Interactive` impl, not here:
-<!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
-re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
-(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
-readme_truth's readme_compose_table_names_every_compose_controller checks
-the table against the module list. -->
 
 | Controller | What it handles |
 |---|---|

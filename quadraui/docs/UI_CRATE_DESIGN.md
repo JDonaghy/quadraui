@@ -280,8 +280,8 @@ bindings possible; breaking one would break them.
    Python and Node.js packages share, decodes a widget leaf into a
    generic `LeafDescriptor::Widget` and paints, hit-tests and routes it
    through the widget's own `Primitive` and `Interactive` impls, with no
-   per-kind paint or event code. (The list-shaped kinds — text display,
-   list, tree and data table — still decode to fixed leaf slots.) A kind
+   per-kind paint or event code. (Five kinds — text display, list, tree,
+   data table and tab bar — still decode to their own fixed leaf slots.) A kind
    is either in the static `WIDGET_KINDS` table or registered at runtime
    with `register_widget_kind`, so a binding or a crate linking
    binding-core adds a kind with no table edit. Each widget's

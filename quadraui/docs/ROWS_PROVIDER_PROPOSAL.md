@@ -68,10 +68,9 @@ arithmetic over `len` and the scroll offset. It never dereferences a row, so it
 does not care how rows are stored, and the app resolving an index back to its
 own data is already the established pattern.
 
-The same holds for the `*_layout` trait methods: `data_table_layout(&self,
-rect, table) -> DataTableLayout` (`backend.rs:1297`), `list_layout`
-(`backend.rs:1330`), `tree_layout` (`backend.rs:1929`). Each needs `len` and
-per-row height, not the rows.
+The same holds for each widget's `Primitive::layout`, which resolves its
+`DataTableLayout`, `ListViewLayout` or `TreeViewLayout` from `len` and
+per-row height, not from the rows.
 
 ## 4. Where it works
 

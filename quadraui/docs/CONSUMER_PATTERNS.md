@@ -1,11 +1,5 @@
 # Consumer Patterns
 
-<!-- TODO(0.12 final pass): these recipes route clicks by hand through legacy
-Backend layout methods (`msv_layout`, `tree_layout`), which W6 (#2971 ports
-MultiSectionView) and W9 (#2981) remove. After W9, rewrite each recipe onto
-frame_tree routing or delete the doc, and drop its entry from
-docs/AGENT_REFERENCE.md. GUIDE.md, README.md and INSTALL.md no longer link here. -->
-
 Recipes for shaping common consumer integrations onto quadraui
 primitives. Each pattern lives next to a runnable example AND a
 consumer-state round-trip harness; new patterns are added here once
@@ -25,16 +19,19 @@ Breakpoints) and any "N collapsible tree panes" host wants.
 - **Section sizing.** All sections `EqualShare`, `ScrollMode::PerSection`,
   `Axis::Vertical`. Headers without chevrons (`show_chevron: false`)
   match VSCode's Debug-sidebar styling.
-- **Click routing.** Use the layout that paint produced — either
-  via `backend.msv_layout(&view, area)` (if inputs are guaranteed
-  identical to paint) or by caching the layout paint returned (if
-  paint and click run in different contexts — see LESSONS.md "What
-  NOT to do" for the two safe patterns). On `Body { section }`, fetch
-  `layout.sections[section].body_bounds`, call
-  `backend.tree_layout(&tree, body_area)` (or the cached tree
-  layout), hit_test at `(x - body_b.x, y - body_b.y)`. Header
-  click -> activate without selecting; body row -> activate AND
-  select; empty body -> activate only.
+- **Click routing.** Drive the `Sidebar` compose controller with
+  `Sidebar::handle_event(&mut state, &event, backend, rect)` and apply
+  each `SidebarAction` it returns; it resolves the same
+  `MultiSectionViewLayout` the widget paints from and routes headers,
+  body rows and scrollbars. When the host routes clicks itself (the SC
+  panel shape below), hit-test the layout paint used —
+  `cell_msv_layout(&view, area)` on the cell grid — never a layout
+  rebuilt from different inputs. On `Body { section }`, take
+  `layout.sections[section].body_bounds`, lay the section's tree out in
+  that rect (`tui_tree_layout(&tree, body_area)` on the cell grid), and
+  hit-test at `(x - body_b.x, y - body_b.y)`. Header click -> activate
+  without selecting; body row -> activate AND select; empty body ->
+  activate only.
 - **Scrollbar routing.** The layout splits each gutter into three
   hit regions based on inner body scroll state:
   - `Scrollbar { kind: Thumb }` — capture `(section, origin_y,
@@ -54,14 +51,14 @@ Breakpoints) and any "N collapsible tree panes" host wants.
   inner `TreeView::scroll_offset` keeps advancing — yielding states
   where only the trailing row is visible. The natural-max clamp
   makes that mode unreachable. Tested in
-  `tui::multi_section_view::tests::consumer_drag_past_natural_max_clamps_to_keep_viewport_full`.
+  `primitives::multi_section_view::paint_cells::tests::consumer_drag_past_natural_max_clamps_to_keep_viewport_full`.
 
-Runnable: `quadraui/examples/msv_multi_tree.rs` (TUI) +
-`quadraui/examples/gtk_multi_tree.rs` (GTK). Both are ~25-line
-runner shells; the canonical `AppLogic` impl + state shape live in
+Runnable: `quadraui/examples/msv_multi_tree.rs` (TUI),
+`gtk_multi_tree.rs`, `macos_multi_tree.rs` and `win_multi_tree.rs`. Each
+is a short runner shell; the canonical `AppLogic` impl + state shape live in
 `quadraui/examples/common/multi_tree.rs`. Harness:
-`quadraui/src/tui/multi_section_view.rs::tests` ("Consumer-state
-round-trip harness" block). All three must be updated together when
+`quadraui/src/primitives/multi_section_view/paint_cells.rs` tests
+("Consumer-state round-trip harness" block). All three must be updated together when
 changing the pattern.
 
 ## MSV with aux=Input + N collapsible TreeView sections (SC panel shape)
@@ -109,8 +106,9 @@ input editor, sections are collapsible, and section count is dynamic.
   (tested 1..=8). Build a fresh `MultiSectionView` with the current
   sections every frame — primitives are declarative.
 
-Runnable: `quadraui/examples/msv_sc_panel.rs`. Harness:
-`quadraui/src/tui/multi_section_view.rs::tests` ("SC panel" sub-block
+Runnable: `quadraui/examples/msv_sc_panel.rs`, which routes by hand
+through `cell_msv_layout` + `tui_tree_layout`. Harness:
+`quadraui/src/primitives/multi_section_view/paint_cells.rs` tests ("SC panel" sub-block
 within "Consumer-state round-trip harness").
 
 ## Known limit — every-frame rebuild scales with collection size
@@ -121,7 +119,7 @@ around it.
 
 Five descriptors own their whole row collection by value — `DataTable.rows`,
 `ListView.items`, `TreeView.rows`, `TextDisplay.lines`, `Editor.lines`. A
-rebuild allocates and populates the entire `Vec` each frame, while the backend
+rebuild allocates and populates the entire `Vec` each frame, while the widget
 paints only the visible window. At a few thousand rows this does not show up
 against paint cost. At a million it is the frame.
 
