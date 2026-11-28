@@ -487,49 +487,6 @@ impl TabBar {
         }
         best_offset
     }
-
-    /// Keyboard navigation for [`TabChrome::focused_index`]: `Left`/
-    /// `ArrowLeft` and `Right`/`ArrowRight` move the focused tab one
-    /// position (clamped to `0..tab_count`, starting from tab `0` when
-    /// nothing was focused yet); `Enter` and `Space`/`" "` activate the
-    /// currently focused tab.
-    ///
-    /// A pure, static helper rather than a `&mut self` method — like
-    /// [`Self::fit_active_scroll_offset`] — because the focused index
-    /// lives in [`TabChrome`], not on `TabBar` itself (see that field's
-    /// doc for why). The caller supplies the current focus (`None` if no
-    /// tab is focused yet) and gets back either the new focus to store
-    /// for next frame (`FocusMoved`) or the tab to activate
-    /// (`TabActivated`); every other key returns `None` so the caller's
-    /// own [`TabBarEvent::KeyPressed`] fallback still fires.
-    ///
-    /// `tab_count == 0` always returns `None` — there is nothing to
-    /// focus or activate.
-    pub fn handle_focus_key(
-        focused: Option<usize>,
-        tab_count: usize,
-        key: &str,
-    ) -> Option<TabBarEvent> {
-        if tab_count == 0 {
-            return None;
-        }
-        match key {
-            "ArrowLeft" | "Left" => {
-                let cur = focused.unwrap_or(0);
-                Some(TabBarEvent::FocusMoved {
-                    index: cur.saturating_sub(1),
-                })
-            }
-            "ArrowRight" | "Right" => {
-                let cur = focused.unwrap_or(0);
-                Some(TabBarEvent::FocusMoved {
-                    index: (cur + 1).min(tab_count - 1),
-                })
-            }
-            "Enter" | "Space" | " " => focused.map(|index| TabBarEvent::TabActivated { index }),
-            _ => None,
-        }
-    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -1446,7 +1403,7 @@ pub enum TabBarEvent {
     /// Left/Right moved the keyboard-focused tab to this new index. The
     /// app is responsible for storing it and threading it back as
     /// [`TabChrome::focused_index`] (with focus-visible composition) on
-    /// the next render — see [`TabBar::handle_focus_key`].
+    /// the next render.
     FocusMoved { index: usize },
 }
 
@@ -3100,8 +3057,7 @@ pub mod cell_paint {
 // `Backend::measure_text`, so the shared layout places tabs at the same
 // glyph widths the painter draws them at). `paint`/`paint_cells` call
 // this module's two shared painters — `native_surface_paint::paint` /
-// `cell_paint::paint`. `Interactive::handle` folds
-// `TabBar::handle_focus_key`'s keyboard model in directly.
+// `cell_paint::paint`. `Interactive::handle` owns the keyboard model.
 //
 // Chrome, icons and glyph overrides reach this seam as the descriptor
 // fields `TabBar::chrome`, `TabBar::icons` and `TabBar::glyphs`, since
@@ -3501,10 +3457,11 @@ impl crate::primitive::Primitive for TabBar {
 
 // ── Interactive: keyboard nav + mouse click ─────────────────────────
 //
-// `TabBar::handle_focus_key`'s model folds in directly: `state.focused_index`
-// is the live counterpart of the caller-threaded `Option<usize>` that
-// free function took, moved by Left/Right and activated by Enter/Space,
-// exactly as that function's own doc describes.
+// `state.focused_index` is the keyboard-focused tab, moved by Left/Right
+// (clamped into the bar, starting from tab `0` when nothing is focused)
+// and activated by Enter/Space. While the state names no tab, the
+// descriptor's own [`TabChrome::focused_index`] is the current one, so a
+// host that threads focus through the descriptor keeps its place.
 
 impl WidgetAction for TabBarEvent {
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
@@ -3541,10 +3498,7 @@ fn tab_bar_key_to_event_string(key: &Key) -> String {
 }
 
 impl TabBar {
-    /// Dispatch one keystroke against live [`TabBarState`] — the
-    /// `Interactive::handle` counterpart of the static
-    /// [`Self::handle_focus_key`] this crate's own backends called
-    /// directly before this seam existed. Left/Right move
+    /// Dispatch one keystroke against live [`TabBarState`]. Left/Right move
     /// `state.focused_index` (clamped into `0..tabs.len()`, starting
     /// from tab `0` when nothing was focused yet); Enter/Space activate
     /// the currently focused tab; every other key is reported via
@@ -3562,20 +3516,21 @@ impl TabBar {
         if self.tabs.is_empty() {
             return Handled::Ignored;
         }
+        let focused = state.focused_index.or(self.chrome.focused_index);
         match key {
             Key::Named(NamedKey::Left) => {
-                let cur = state.focused_index.unwrap_or(0);
+                let cur = focused.unwrap_or(0);
                 let next = cur.saturating_sub(1);
                 state.focused_index = Some(next);
                 Handled::Event(TabBarEvent::FocusMoved { index: next })
             }
             Key::Named(NamedKey::Right) => {
-                let cur = state.focused_index.unwrap_or(0);
+                let cur = focused.unwrap_or(0);
                 let next = (cur + 1).min(self.tabs.len() - 1);
                 state.focused_index = Some(next);
                 Handled::Event(TabBarEvent::FocusMoved { index: next })
             }
-            Key::Named(NamedKey::Enter) | Key::Char(' ') => match state.focused_index {
+            Key::Named(NamedKey::Enter) | Key::Char(' ') => match focused {
                 Some(index) => Handled::Event(TabBarEvent::TabActivated { index }),
                 None => Handled::Ignored,
             },
@@ -4021,6 +3976,31 @@ mod interactive_tests {
 
         let outcome = b.handle(&mut state, &key(NamedKey::Enter), &layout, &mut cx);
         assert_eq!(outcome, Handled::Ignored);
+    }
+
+    /// With no tab focused in the state, the descriptor's own
+    /// `chrome.focused_index` is the current tab: Right moves on from it
+    /// and Enter activates it.
+    #[test]
+    fn keys_start_from_the_chromes_focused_index_when_the_state_has_none() {
+        let b = TabBar {
+            chrome: TabChrome::default().with_focused_index(Some(1)),
+            ..bar(&["a", "b", "c"], 0)
+        };
+        let layout = layout_for(&b);
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+
+        let mut state = TabBarState::default();
+        let moved = b.handle(&mut state, &key(NamedKey::Right), &layout, &mut cx);
+        assert_eq!(moved, Handled::Event(TabBarEvent::FocusMoved { index: 2 }));
+
+        let mut state = TabBarState::default();
+        let activated = b.handle(&mut state, &key(NamedKey::Enter), &layout, &mut cx);
+        assert_eq!(
+            activated,
+            Handled::Event(TabBarEvent::TabActivated { index: 1 })
+        );
     }
 
     #[test]
@@ -5168,59 +5148,6 @@ mod tests {
     }
 
     // ── Keyboard-focusable seam ───────────────────────────────────────────
-
-    #[test]
-    fn handle_focus_key_left_right_move_and_clamp() {
-        // Nothing focused yet: treated as if tab 0 were current, matching
-        // `PipelineView::handle_key`'s identical `unwrap_or(0)` convention.
-        assert_eq!(
-            TabBar::handle_focus_key(None, 3, "ArrowRight"),
-            Some(TabBarEvent::FocusMoved { index: 1 })
-        );
-        assert_eq!(
-            TabBar::handle_focus_key(Some(0), 3, "Right"),
-            Some(TabBarEvent::FocusMoved { index: 1 })
-        );
-        // Clamps at the last tab rather than wrapping or going out of range.
-        assert_eq!(
-            TabBar::handle_focus_key(Some(2), 3, "ArrowRight"),
-            Some(TabBarEvent::FocusMoved { index: 2 })
-        );
-        // Clamps at 0 going left.
-        assert_eq!(
-            TabBar::handle_focus_key(Some(0), 3, "ArrowLeft"),
-            Some(TabBarEvent::FocusMoved { index: 0 })
-        );
-        assert_eq!(
-            TabBar::handle_focus_key(Some(2), 3, "Left"),
-            Some(TabBarEvent::FocusMoved { index: 1 })
-        );
-    }
-
-    #[test]
-    fn handle_focus_key_enter_and_space_activate_the_focused_tab() {
-        assert_eq!(
-            TabBar::handle_focus_key(Some(1), 3, "Enter"),
-            Some(TabBarEvent::TabActivated { index: 1 })
-        );
-        assert_eq!(
-            TabBar::handle_focus_key(Some(1), 3, "Space"),
-            Some(TabBarEvent::TabActivated { index: 1 })
-        );
-        assert_eq!(
-            TabBar::handle_focus_key(Some(1), 3, " "),
-            Some(TabBarEvent::TabActivated { index: 1 })
-        );
-        // No tab focused yet: Enter/Space have nothing to activate.
-        assert_eq!(TabBar::handle_focus_key(None, 3, "Enter"), None);
-    }
-
-    #[test]
-    fn handle_focus_key_ignores_unrelated_keys_and_empty_bars() {
-        assert_eq!(TabBar::handle_focus_key(Some(0), 3, "Tab"), None);
-        assert_eq!(TabBar::handle_focus_key(Some(0), 0, "ArrowRight"), None);
-        assert_eq!(TabBar::handle_focus_key(Some(0), 0, "Enter"), None);
-    }
 
     #[test]
     fn tab_chrome_with_focused_index_round_trips_through_builder_and_serde() {

@@ -22,18 +22,21 @@
 //!
 //! The demo also composes [`TabChrome::focused_index`] with its own
 //! keyboard-vs-pointer focus-visible state, the way that field's doc asks
-//! every caller to: `Left`/`Right` move keyboard focus one tab via
-//! [`TabBar::handle_focus_key`] and the ring stays visible (reverse-video
+//! every caller to: `Left`/`Right` move keyboard focus one tab through
+//! the bar's own [`quadraui::Interactive`] impl (driven by
+//! [`quadraui::drive_ui_event`]) and the ring stays visible (reverse-video
 //! paints on `chrome()`'s composed index); `Enter`/`Space` activate the
 //! focused tab; a click focuses+activates a tab without showing the ring
 //! — [`Self::chrome`] passes `None` instead of `self.focused` whenever
 //! [`Self::focus_visible`] is `false`, the same click-suppresses-the-ring
 //! convention [`quadraui::focus::FocusTree::set_focus`] documents.
 
+use quadraui::compose::Handled;
+use quadraui::primitives::tab_bar::TabBarState;
 use quadraui::{
-    AppLogic, Backend, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TabBar, TabBarEvent, TabBarHit, TabChrome, TabFrame, TabItem, UiEvent,
-    WidgetId,
+    drive_ui_event, AppLogic, Backend, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, TabBar, TabBarEvent, TabBarHit, TabChrome, TabFrame, TabItem,
+    UiEvent, WidgetId,
 };
 
 /// Tab labels, index-stable across activation (only `is_active` /
@@ -45,7 +48,7 @@ pub struct TabChromeDemo {
     last_action: String,
     /// Keyboard-focused tab, independent of [`Self::active`] until
     /// `Enter`/`Space` activates it. `None` until the first `Left`/`Right`
-    /// — [`TabBar::handle_focus_key`]'s own "nothing focused yet" state.
+    /// — [`TabBarState::focused_index`]'s own "nothing focused yet" state.
     focused: Option<usize>,
     /// Whether [`Self::focused`] should paint — true after a keyboard
     /// move, false after a click. See the module doc.
@@ -187,27 +190,26 @@ impl AppLogic for TabChromeDemo {
                 Reaction::Redraw
             }
             // `Left`/`Right` move keyboard focus; `Enter`/`Space` activate
-            // it — [`TabBar::handle_focus_key`] decides which, the same
-            // helper `quadraui-binding-core`'s `focus_scoped_key_event`
-            // calls for a py/node app's `"tabs"` node.
+            // it — the bar's own `Interactive::handle` decides which,
+            // against a state seeded with this demo's focused tab.
             UiEvent::KeyPressed {
-                key: Key::Named(named),
+                key: Key::Named(NamedKey::Left | NamedKey::Right | NamedKey::Enter),
                 ..
-            } if matches!(named, NamedKey::Left | NamedKey::Right | NamedKey::Enter) => {
-                let key_str = match named {
-                    NamedKey::Left => "Left",
-                    NamedKey::Right => "Right",
-                    NamedKey::Enter => "Enter",
-                    _ => unreachable!(),
-                };
-                match TabBar::handle_focus_key(self.focused, LABELS.len(), key_str) {
-                    Some(TabBarEvent::FocusMoved { index }) => {
+            } => {
+                let viewport = backend.viewport();
+                let strip = Rect::new(0.0, 0.0, viewport.width, backend.line_height());
+                let mut state = TabBarState::default();
+                state.focused_index = self.focused;
+                let handled = drive_ui_event(&self.bar(), &mut state, &event, &*backend, strip)
+                    .map(|driven| driven.handled);
+                match handled {
+                    Some(Handled::Event(TabBarEvent::FocusMoved { index })) => {
                         self.focused = Some(index);
                         self.focus_visible = true;
                         self.last_action = format!("focus {}", LABELS[index]);
                         Reaction::Redraw
                     }
-                    Some(TabBarEvent::TabActivated { index }) => {
+                    Some(Handled::Event(TabBarEvent::TabActivated { index })) => {
                         self.active = index;
                         self.focus_visible = true;
                         self.last_action = format!("activated {}", LABELS[index]);

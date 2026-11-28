@@ -9,8 +9,8 @@ use std::rc::Rc;
 
 use quadraui::{
     DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point, PressZone, Rect, ScrollAxis,
-    Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit,
-    TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TextDisplayHit, TextDisplayLayout, TreePath,
+    TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use quadraui::primitive::DynWidget;
@@ -60,7 +60,7 @@ pub fn loaded_row_path(
 /// position into the primitive (and sub-region) under it.
 pub enum PaintedHit {
     /// `area` is the absolute rect this tree was painted into, and the
-    /// frame `layout` is relative to (like `List`/`DataTable`/`TabBar`'s
+    /// frame `layout` is relative to (like `List`/`DataTable`'s
     /// own layout) — a hit-test must translate a click into it via
     /// `area`'s origin before calling `layout.hit_test`, and `area` is
     /// never narrowed by [`clip_hits_to_viewport`] for exactly that
@@ -178,24 +178,6 @@ pub enum PaintedHit {
         viewport_rows: usize,
         /// `Some` only for a windowed table — see [`LoadedRows`]'s own doc.
         loaded_rows: Option<LoadedRows>,
-    },
-    TabBar {
-        id: WidgetId,
-        area: Rect,
-        /// See [`Self::Tree`]'s own doc.
-        clip: Rect,
-        layout: TabBarLayout,
-        /// The bar's own tab count and keyboard-focused tab, as painted —
-        /// read by [`crate::semantic::focus_scoped_key_event`] so an arrow
-        /// key or Enter on a focused `TabBar` resolves through
-        /// [`quadraui::TabBar::handle_focus_key`] the same way
-        /// [`Self::List`]'s `selected_idx`/`total_items` feed
-        /// [`crate::semantic::list_key_event`]. `focused_index` is `None`
-        /// for a bare `TabBar` leaf (no [`quadraui::TabChrome`] involved)
-        /// and for a `"tabs"` layout node whose `focused_index` wasn't set;
-        /// `tab_count` is `TabBar::tabs.len()` regardless.
-        focused_index: Option<usize>,
-        tab_count: usize,
     },
     /// `area` is the absolute rect this display was painted into;
     /// `layout` is in a frame relative to `area`'s origin **shifted down by
@@ -340,7 +322,7 @@ pub struct ScrollChildHit {
 /// Only the hit kinds whose containment test lives in a plain field this
 /// module can reach are narrowed, via [`primary_bounds_mut`]:
 /// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
-/// [`PaintedHit::DataTable`]/[`PaintedHit::TabBar`]/
+/// [`PaintedHit::DataTable`]/
 /// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
 /// [`PaintedHit::Tree`]'s own doc for why moving a local-frame kind's
 /// `area` instead would desync it from the layout `area`'s origin
@@ -396,7 +378,6 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         PaintedHit::Tree { clip, .. }
         | PaintedHit::List { clip, .. }
         | PaintedHit::DataTable { clip, .. }
-        | PaintedHit::TabBar { clip, .. }
         | PaintedHit::TextDisplay { clip, .. } => Some(clip),
         PaintedHit::Widget { area, .. } => Some(area),
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
@@ -464,15 +445,6 @@ pub enum HitDetail {
         row: usize,
     },
     DataTableFooter,
-    TabBarTab {
-        tab: usize,
-    },
-    TabBarTabClose {
-        tab: usize,
-    },
-    TabBarScrollLeft,
-    TabBarScrollRight,
-    TabBarRightSegment,
     TextDisplayLine {
         line: usize,
     },
@@ -619,29 +591,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     }
                     DataTableHit::Footer => return Some((*id, HitDetail::DataTableFooter)),
                     DataTableHit::Scrollbar | DataTableHit::Empty => {}
-                }
-            }
-            PaintedHit::TabBar {
-                id,
-                area,
-                clip,
-                layout,
-                ..
-            } => {
-                if !clip.contains(point) {
-                    continue;
-                }
-                match layout.hit_test(point.x - area.x, point.y - area.y) {
-                    TabBarHit::Tab(tab) => return Some((*id, HitDetail::TabBarTab { tab })),
-                    TabBarHit::TabClose(tab) => {
-                        return Some((*id, HitDetail::TabBarTabClose { tab }))
-                    }
-                    TabBarHit::ScrollLeft => return Some((*id, HitDetail::TabBarScrollLeft)),
-                    TabBarHit::ScrollRight => return Some((*id, HitDetail::TabBarScrollRight)),
-                    TabBarHit::RightSegment(right_id) => {
-                        return Some((right_id, HitDetail::TabBarRightSegment))
-                    }
-                    TabBarHit::Empty => {}
                 }
             }
             PaintedHit::TextDisplay {

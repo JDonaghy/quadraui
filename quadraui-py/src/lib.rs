@@ -8660,8 +8660,8 @@ def handle(event):
     }
 
     /// A `tabs` leaf nested in a `Split`'s `second` pane paints its strip at
-    /// a non-zero origin, exercising the same LOCAL-frame translation in
-    /// `hit_test_painted`'s `PaintedHit::TabBar` arm as the tree test above.
+    /// a non-zero origin, exercising the strip's own widget-local
+    /// translation the way the tree test above exercises the tree's.
     /// A `MouseDown` landing on a non-first tab must be replaced by the
     /// semantic `UiEvent::TabBar(TabActivated)` it stands for, carrying that
     /// tab's own index.

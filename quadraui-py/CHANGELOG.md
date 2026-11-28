@@ -68,6 +68,23 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
+  is a generic widget routed through the core `TabBar`'s own input
+  handling (#2977), with these visible changes:
+  - A press on a tab bar carries the `"widget_body"` hit detail; the
+    `"tab_bar_tab"`, `"tab_bar_tab_close"`, `"tab_bar_scroll_left"`,
+    `"tab_bar_scroll_right"` and `"tab_bar_right_segment"` hit details are
+    gone.
+  - Keyboard focus walks: each Left/Right moves on from the tab the last
+    press reached (before, a bare tab bar started from tab 0 on every
+    press), and Enter/Space activate it. While the bar has not moved focus
+    yet, a `"tabs"` node's `focused_index` is the starting tab.
+  - A key the bar has no use for reaches the handler as the bar's
+    `TabBar` `KeyPressed` event and then as the raw `KeyPressed` (before,
+    only the former).
+  - A double-click on a tab reaches the handler as the raw `DoubleClick`
+    (before, a second `TabActivated`).
+
 - The four text-entry leaf kinds, `"text_input"`, `"text_field"`,
   `"password"` and `"textarea"`, are the core widgets painted and edited
   through their own state (#2977/#2978), with these visible changes:

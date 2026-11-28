@@ -273,7 +273,7 @@ pub use deferred::{
     decode_overlay, overlay_anchor_from_value, ContextMenuOverlayDescriptor,
     MessageDialogOverlayDescriptor, OVERLAY_KINDS,
 };
-pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
+pub use drag::{find_split_layout, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,

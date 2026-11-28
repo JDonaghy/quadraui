@@ -321,7 +321,6 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             PaintedHit::Tree { id, area, .. }
             | PaintedHit::List { id, area, .. }
             | PaintedHit::DataTable { id, area, .. }
-            | PaintedHit::TabBar { id, area, .. }
             | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
             PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
             // A `Scroll` is chrome around its own content, like
@@ -2815,6 +2814,47 @@ impl InteractionEngine {
         }
     }
 
+    /// Persists the handful of events [`Self::widget_state`] tracks
+    /// uncontrolled-by-default, regardless of what `sink` goes on to do
+    /// with them: a divider drag's resolved ratio
+    /// ([`crate::host::resolve_split_ratio`]'s own counterpart), a
+    /// clicked tab becoming active or a closed tab shifting whichever
+    /// index was active ([`crate::host::resolve_tab_bar_active`]'s), or
+    /// a toggled tree row's expand state
+    /// ([`crate::host::resolve_tree_expansion`]'s). Never changes `event`
+    /// itself — a controlled app's own handling of the same event is
+    /// unaffected. Returns [`Reaction::Redraw`] when it stored something:
+    /// a binding with no render callback of its own (so
+    /// `host::callback_reaction_for_render`'s render-triggered redraw
+    /// never kicks in) still needs the frame that paints the persisted
+    /// change, even when the sink leaves the event itself unhandled.
+    fn persist_widget_state(&self, event: &UiEvent) -> quadraui::Reaction {
+        use quadraui::Reaction;
+        match event {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } => {
+                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
+                Reaction::Redraw
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
+                apply_tab_activated(&self.widget_state, *id, *index);
+                Reaction::Redraw
+            }
+            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
+                apply_tab_closed(&self.widget_state, *id, *index);
+                Reaction::Redraw
+            }
+            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
+                apply_tree_toggle_expand(&self.widget_state, *id, path);
+                Reaction::Redraw
+            }
+            _ => Reaction::Continue,
+        }
+    }
+
     /// Routes a non-double-click-aware `MouseDown`/`DoubleClick` landing
     /// on `HitDetail::WidgetBody` through the matched
     /// [`crate::layout::LeafDescriptor::Widget`]'s own
@@ -3505,9 +3545,11 @@ impl InteractionEngine {
                 return outcome.reaction;
             }
             if let Some(replacement) = outcome.event {
+                let persisted = self.persist_widget_state(&replacement);
                 let reaction = sink.dispatch(&replacement, Some(&HitDetail::WidgetBody));
                 return outcome
                     .reaction
+                    .merge(persisted)
                     .merge(reaction)
                     .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             } else if outcome.consumed {
@@ -4242,46 +4284,7 @@ impl InteractionEngine {
             }
         }
 
-        // Persists the handful of events `Self::widget_state` tracks
-        // uncontrolled-by-default, regardless of what `sink` goes on to do
-        // with them: a divider drag's resolved ratio
-        // ([`crate::host::resolve_split_ratio`]'s own counterpart), a
-        // clicked tab becoming active or a closed tab shifting whichever
-        // index was active ([`crate::host::resolve_tab_bar_active`]'s), or
-        // a toggled tree row's expand state
-        // ([`crate::host::resolve_tree_expansion`]'s). Never changes
-        // `event` itself — a controlled app's own handling of the same
-        // event is unaffected. `persisted_state` mirrors the Tree-cursor
-        // hook above (`nav_applied`'s own `Reaction::Redraw.merge`): a
-        // binding with no render callback of its own (so
-        // `host::callback_reaction_for_render`'s render-triggered redraw
-        // never kicks in) still needs the frame that paints the persisted
-        // change forced here, even when `sink.dispatch` below leaves the
-        // event itself unhandled.
-        let mut persisted_state = Reaction::Continue;
-        match &event {
-            UiEvent::SplitDividerDragged {
-                tree,
-                split_index,
-                new_ratio,
-            } => {
-                apply_split_divider_drag(&self.widget_state, *tree, *split_index, *new_ratio);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::TabBar(id, TabBarEvent::TabActivated { index }) => {
-                apply_tab_activated(&self.widget_state, *id, *index);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::TabBar(id, TabBarEvent::TabClosed { index }) => {
-                apply_tab_closed(&self.widget_state, *id, *index);
-                persisted_state = Reaction::Redraw;
-            }
-            UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) => {
-                apply_tree_toggle_expand(&self.widget_state, *id, path);
-                persisted_state = Reaction::Redraw;
-            }
-            _ => {}
-        }
+        let persisted_state = self.persist_widget_state(&event);
 
         let hit_detail = if attach_hit {
             hit.as_ref().map(|(_, detail)| detail)
@@ -4412,8 +4415,8 @@ mod tests {
     use quadraui::{
         AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, DataTable, Key, ListView,
         Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScrollAxis, ScrollDelta, Split,
-        StyledSpan, StyledText, TabBar, TabBarEvent, TabBarHit, TextDisplay, TextDisplayLine,
-        TextInput, ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
+        StyledSpan, StyledText, TabBar, TabBarEvent, TextDisplay, TextDisplayLine, TextInput,
+        ToolbarEvent, TreeEvent, TreeView, UiEvent, WidgetId,
     };
 
     use super::{style_token, theme_token, viewport_rect, EventSink, InteractionEngine};
@@ -10853,29 +10856,8 @@ mod tests {
             )));
         }
 
-        let (strip_area, strip_layout) = {
-            let hits = driver.app().engine.hit_map();
-            hits.iter()
-                .find_map(|hit| match hit {
-                    crate::hit::PaintedHit::TabBar { area, layout, .. } => {
-                        Some((*area, layout.clone()))
-                    }
-                    _ => None,
-                })
-                .expect("the tab strip should have painted")
-        };
-        let tab1_rect = strip_layout
-            .hit_regions
-            .iter()
-            .find_map(|(rect, hit)| match hit {
-                TabBarHit::Tab(1) => Some(*rect),
-                _ => None,
-            })
-            .expect("tab 1 should have its own hit region");
-        let click_point = Point::new(
-            strip_area.x + tab1_rect.x + tab1_rect.width / 2.0,
-            strip_area.y + tab1_rect.y + tab1_rect.height / 2.0,
-        );
+        let (x, y) = driver.find("Tab 1").expect("tab 1 paints its label");
+        let click_point = Point::new(x, y);
 
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -10908,12 +10890,50 @@ mod tests {
             )),
             "tab 0's own content must stop painting once tab 1 is active"
         );
+    }
+
+    /// A `LayoutTabs` strip keeps its keyboard focus in the tab bar's own
+    /// widget state: each Right press moves on from the tab the last one
+    /// reached, with nothing echoed back by the app, and Enter activates
+    /// that tab and switches the content pane to it.
+    #[test]
+    fn a_layout_tabs_strip_walks_its_keyboard_focus_and_activates_with_enter() {
+        let logic = TabsLogic {
+            tab_count: 3,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 10);
+        driver.render();
+        let (x, y) = driver.find("Tab 0").expect("tab 0 paints its label");
+        driver.click(x, y);
+        driver.render();
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Right);
+        let moved: Vec<usize> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .filter_map(|(event, _)| match event {
+                UiEvent::TabBar(_, TabBarEvent::FocusMoved { index }) => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(moved, vec![1, 2]);
+
+        driver.press_named(NamedKey::Enter);
+        driver.render();
+        let hits = driver.app().engine.hit_map();
         assert!(
-            strip_layout
-                .hit_regions
-                .iter()
-                .any(|(_, hit)| matches!(hit, TabBarHit::Tab(1))),
-            "sanity: tab 1 must have been clickable in the first place"
+            hits.iter().any(|hit| matches!(
+                hit,
+                crate::hit::PaintedHit::Widget { id, .. } if *id == WidgetId::new("content-2-btn")
+            )),
+            "Enter activates the focused tab and its content paints"
         );
     }
 

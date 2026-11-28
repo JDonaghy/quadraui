@@ -829,7 +829,7 @@ export type HeaderHit = ("Chevron" | "TitleArea") | _HeaderHitDict;
 export type HelpOverlayAction = "Opened" | "Closed";
 
 /** The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself. */
-export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 /** `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first. */
 export type Icon = _Icon1 | _Icon2;
@@ -2852,28 +2852,6 @@ export interface _HitDetailSplitSecondPane {
 export interface _HitDetailSplitTreeDivider {
   kind: "split_tree_divider";
   split_index: number;
-}
-
-export interface _HitDetailTabBarRightSegment {
-  kind: "tab_bar_right_segment";
-}
-
-export interface _HitDetailTabBarScrollLeft {
-  kind: "tab_bar_scroll_left";
-}
-
-export interface _HitDetailTabBarScrollRight {
-  kind: "tab_bar_scroll_right";
-}
-
-export interface _HitDetailTabBarTab {
-  kind: "tab_bar_tab";
-  tab: number;
-}
-
-export interface _HitDetailTabBarTabClose {
-  kind: "tab_bar_tab_close";
-  tab: number;
 }
 
 export interface _HitDetailTextDisplayLine {

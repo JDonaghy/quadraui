@@ -13,13 +13,12 @@ use serde::{Deserialize, Deserializer};
 use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
     ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
-    Style, StyledText, TabBar, TabBarLayout, TabChrome, TextDisplay, TextDisplayHit,
-    TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeView,
-    TreeViewHit, TreeViewLayout, WidgetId,
+    Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout,
+    TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout,
+    WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
-use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::DrawsPrimitives;
 
 use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit};
@@ -45,16 +44,9 @@ pub struct RenderFrame {
     pub list: Option<ListView>,
     pub tree: Option<TreeView>,
     pub data_table: Option<DataTable>,
-    // TODO(#2977): fold this slot, its [`draw_bands`] paint arm, `host.rs`'s
-    // `SLOT_TAB_BAR` arms and `semantic.rs`'s per-kind routing into the
-    // generic `widgets` map below, with every other fixed slot. The paint
-    // already goes through the widget contract ([`paint_tab_bar`]); what
-    // the fixed slot still carries that the generic arm cannot is the
-    // *hit*: it records [`PaintedHit::TabBar`] with the resolved
-    // [`TabBarLayout`], so a click resolves to a tab index or a close
-    // glyph, where the `widgets` arm records [`PaintedHit::Widget`] with
-    // an area and no sub-region detail. Folding needs a hit seam on
-    // [`DynWidget`] first, which is that issue's own first deliverable.
+    /// Painted and routed as a generic widget (see [`paint_tab_bar`]);
+    /// the slot itself stays so the host can resolve its uncontrolled
+    /// active tab before painting.
     pub tab_bar: Option<TabBar>,
     /// Generic-widget ([`crate::widget_kinds::widget_leaf_kinds`]) slots
     /// present in this frame, keyed by kind name.
@@ -149,37 +141,26 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
     NO_WIDGETS.with(|map| *map)
 }
 
-/// Paint `tab_bar` into `rect` through the widget contract —
-/// [`quadraui::DrawsPrimitives::draw_dyn`], since [`TabBar`] is a
-/// [`quadraui::primitive::Primitive`] — and return the **bar-relative**
-/// [`quadraui::TabBarLayout`] it resolved, the space
-/// [`PaintedHit::TabBar`]'s own hit test subtracts `area`'s origin from.
-///
-/// All three tab-bar paint paths here (the fixed `"tab_bar"` slot in
-/// [`draw_bands`], [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
-/// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share this one call, so
-/// none reaches for a per-backend tab-bar rasteriser of its own.
-///
-/// An empty layout is the fallback when `draw_dyn` hands back a layout of
-/// some other concrete type, which means nothing measured a tab bar: the
-/// hit test then classifies every click in `rect` as
-/// [`quadraui::TabBarHit::Empty`], the only coherent answer when the bar
-/// was never measured.
-fn paint_tab_bar(backend: &mut dyn Backend, rect: Rect, tab_bar: &TabBar) -> TabBarLayout {
-    backend
-        .draw_dyn(rect, tab_bar, &())
-        .downcast_ref::<TabBarPrimitiveLayout>()
-        .map(|resolved| resolved.layout.clone())
-        .unwrap_or_else(|| TabBarLayout {
-            bar_width: rect.width,
-            bar_height: rect.height,
-            visible_tabs: Vec::new(),
-            visible_segments: Vec::new(),
-            scroll_left: None,
-            scroll_right: None,
-            hit_regions: Vec::new(),
-            resolved_scroll_offset: 0,
-        })
+/// Paints `tab_bar` into `rect` through the widget contract and records
+/// it as a [`PaintedHit::Widget`], so a click or key on it routes through
+/// [`TabBar`]'s own [`quadraui::Interactive`] impl. Every tab-bar paint
+/// path here (the fixed `"tab_bar"` slot in [`draw_bands`],
+/// [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
+/// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) shares this one call.
+fn paint_tab_bar(
+    backend: &mut dyn Backend,
+    rect: Rect,
+    tab_bar: TabBar,
+    hits: &mut Vec<PaintedHit>,
+) {
+    let id = tab_bar.id;
+    let widget: Rc<dyn DynWidget> = Rc::new(tab_bar);
+    let _ = backend.draw_dyn(rect, widget.as_ref(), &());
+    hits.push(PaintedHit::Widget {
+        id,
+        area: rect,
+        widget,
+    });
 }
 
 /// Paints `panel`'s header through the widget contract and records it as
@@ -340,15 +321,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
     if let Some(tab_bar) = refs.tab_bar {
         if let Some(rect) = band(3.0) {
-            let layout = paint_tab_bar(backend, rect, tab_bar);
-            hits.push(PaintedHit::TabBar {
-                id: tab_bar.id,
-                area: rect,
-                clip: rect,
-                layout,
-                focused_index: None,
-                tab_count: tab_bar.tabs.len(),
-            });
+            paint_tab_bar(backend, rect, tab_bar.clone(), hits);
         }
     }
     // Generic-widget slots, painted last in canonical order so the output
@@ -643,15 +616,7 @@ pub fn paint_layout_windowed(
                 chrome: TabChrome::default().with_focused_index(tabs.focused_index),
                 ..tabs.tab_bar.clone()
             };
-            let layout = paint_tab_bar(backend, strip_rect, &bar);
-            hits.push(PaintedHit::TabBar {
-                id: tabs.tab_bar.id,
-                area: strip_rect,
-                clip: strip_rect,
-                layout,
-                focused_index: tabs.focused_index,
-                tab_count: tabs.tab_bar.tabs.len(),
-            });
+            paint_tab_bar(backend, strip_rect, bar, hits);
             let content_rect = Rect::new(
                 area.x,
                 area.y + strip_height,
@@ -2509,15 +2474,7 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
-            let layout = paint_tab_bar(backend, area, tab_bar);
-            hits.push(PaintedHit::TabBar {
-                id,
-                area,
-                clip: area,
-                layout,
-                focused_index: None,
-                tab_count: tab_bar.tabs.len(),
-            });
+            paint_tab_bar(backend, area, tab_bar.clone(), hits);
         }
         LeafDescriptor::Widget { widget, .. } => {
             if paint_widget_leaf(backend, area, widget.as_ref()) {

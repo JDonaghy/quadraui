@@ -796,11 +796,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitFirstPane`](#wire-_hitdetailsplitfirstpane)
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailTabBarRightSegment`](#wire-_hitdetailtabbarrightsegment)
-- [`_HitDetailTabBarScrollLeft`](#wire-_hitdetailtabbarscrollleft)
-- [`_HitDetailTabBarScrollRight`](#wire-_hitdetailtabbarscrollright)
-- [`_HitDetailTabBarTab`](#wire-_hitdetailtabbartab)
-- [`_HitDetailTabBarTabClose`](#wire-_hitdetailtabbartabclose)
 - [`_HitDetailTextDisplayLine`](#wire-_hitdetailtextdisplayline)
 - [`_HitDetailTextDisplayScrollbarThumb`](#wire-_hitdetailtextdisplayscrollbarthumb)
 - [`_HitDetailTextDisplayScrollbarTrackAfter`](#wire-_hitdetailtextdisplayscrollbartrackafter)
@@ -2378,7 +2373,7 @@ Alias for `"Opened" | "Closed"`.
 
 The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-icon"></a>
 #### `Icon`
@@ -5770,43 +5765,6 @@ Landed on a `quadraui::SplitTree` divider — `split_index` is the pre-order ind
 | --- | --- | --- | --- |
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
-
-<a id="wire-_hitdetailtabbarrightsegment"></a>
-#### `_HitDetailTabBarRightSegment`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_right_segment"` | yes |  |
-
-<a id="wire-_hitdetailtabbarscrollleft"></a>
-#### `_HitDetailTabBarScrollLeft`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_scroll_left"` | yes |  |
-
-<a id="wire-_hitdetailtabbarscrollright"></a>
-#### `_HitDetailTabBarScrollRight`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_scroll_right"` | yes |  |
-
-<a id="wire-_hitdetailtabbartab"></a>
-#### `_HitDetailTabBarTab`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_tab"` | yes |  |
-| `tab` | `number` | yes |  |
-
-<a id="wire-_hitdetailtabbartabclose"></a>
-#### `_HitDetailTabBarTabClose`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tab_bar_tab_close"` | yes |  |
-| `tab` | `number` | yes |  |
 
 <a id="wire-_hitdetailtextdisplayline"></a>
 #### `_HitDetailTextDisplayLine`
