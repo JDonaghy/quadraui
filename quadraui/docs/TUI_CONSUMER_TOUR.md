@@ -29,15 +29,14 @@ A **widget** is one Rust type with three parts:
    `RoutedEvent` (`handle`), what it remembers between events (`State`),
    and which popups it has open (`popups`).
 
-<!-- TODO(0.12 final pass): after W9 (#2981), confirm src/tui/ holds no
-per-widget file and TuiBackend no draw_<widget> method (today: tui/tree.rs,
-tui/list.rs, tui/data_table.rs, tui/split.rs and others, plus the legacy
-Backend widget methods). -->
-Backends hold no widget code. The TUI backend hands a widget a
-`CellSurface` (a cell grid with glyph, style, border and cursor verbs);
-the pixel backends hand it a `PaintSurface` (fill, stroke, text and image
-verbs). Paint and hit-testing both read the same `Layout`, so a click
-cannot land somewhere other than where the widget painted.
+Backends hold no widget code: `src/tui/` has no per-widget file, and the
+`Backend` trait is platform services only (windowing, input, fonts and
+metrics, focus, clipping, capture and the two paint seams). The TUI
+backend hands a widget a `CellSurface` (a cell grid with glyph, style,
+border and cursor verbs; a widget never touches the terminal library's
+own buffer); the pixel backends hand it a `PaintSurface` (fill, stroke,
+text and image verbs). Paint and hit-testing both read the same `Layout`,
+so a click cannot land somewhere other than where the widget painted.
 
 The trait definitions, with their full contracts, are in
 [`src/primitive.rs`](../src/primitive.rs) and
@@ -88,7 +87,10 @@ An app paints widgets by pushing them into a `ScreenLayout` and drawing
 the frame. [`examples/hello.rs`](../examples/hello.rs) is the smallest
 complete case: its `render_content` builds a `StatusBar` from
 `self.keys_pressed`, pushes it as a `Surface::Widget` at the rect the
-shell computed, and calls `frame.draw(backend)`.
+shell computed, and calls `frame.draw(backend)`. `Surface` has two
+variants: `Widget`, for every widget there is, and `Opaque`, the
+paintless placeholder a captured frame replays for content it could not
+capture.
 
 `Surface::Widget` paints through `DrawsPrimitives::draw_dyn`
 ([`src/backend.rs`](../src/backend.rs)), which for each widget:
