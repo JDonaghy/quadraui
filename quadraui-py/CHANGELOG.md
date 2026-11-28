@@ -53,7 +53,7 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   with its own `measure`/`paint`/`on_event`/`a11y` -- for a widget that
   can't be built by composing existing nodes. Builds on the `Canvas`
   `DrawOp`/`CanvasRegion` display-list vocabulary (`paint` returns the
-  same `{"ops": [...], "regions": [...]}` shape `quadraui.wire.CanvasDescriptor`
+  same `{"ops": [...], "regions": [...]}` shape `quadraui.wire.Canvas`
   documents) and routes through `quadraui_binding_core::ScriptedPrimitive`.
   See `quadraui-py/examples/rating.py` (a 5-star rating control) for a
   worked example.
@@ -74,6 +74,118 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   may itself carry colour/metric/font tokens but may not nest a further
   `"hover"`/`"pressed"`/`"focus"` branch. `wire.pyi`'s `StyleValue`
   carries the six new keys.
+
+- `App.confirm(title, body, buttons, severity=None, *, on_resolve=None)` /
+  `App.alert(title, body, *, id="ok", label="OK", severity=None,
+  on_resolve=None)`: wrap `show_overlay("message_dialog", ...)` +
+  `MessageDialogResolved` into a single call that reports the clicked
+  button's id back to the caller -- through a sync or `async def`
+  `on_resolve` callback, or, with `on_resolve` omitted, an `asyncio.Future`
+  an `async def` handler can `await` directly under `quadraui.aio`. Plus
+  `quadraui.aio.schedule_callback(waker, func, *args)`, factored out of
+  `async_handler`'s own task-scheduling so `on_resolve` can share it.
+- `quadraui.app.Form(fields=, id=, ...)` plus six typed field builders --
+  `ToggleField`, `TextInputField`, `SliderField`, `PasswordField`,
+  `TextAreaField`, `SelectField` -- each with its own `on_change` (and
+  `on_submit` on `TextInputField`/`PasswordField`), routed by the field's
+  own id rather than the wrapping `Form`'s. Plus `Checkbox`, `Slider`,
+  `Select`, `Password`, `TextArea`: the same five controls as standalone,
+  `Form`-less leaves. No raw wire dict or `"Form"` branch in `on_event`
+  needed to build a settings-page-style field stack.
+- `quadraui.app.List(items, selected=, title=, has_focus=, bordered=,
+  on_select=, on_activate=, id=)`: a typed node for a `ListView`
+  leaf, routing `SelectionChanged` to `on_select` and either
+  `ItemDoubleClicked` or `ItemActivated` to `on_activate` -- no raw wire
+  dict or `"List"` branch in `on_event` needed to build a selectable list.
+- `quadraui.app.App`'s typed layer now stamps a `"wire_version"` sibling
+  key onto every tree its `view()` renders (`quadraui.app.runtime.
+  WIRE_VERSION`, mirroring `quadraui_binding_core::wire_schema::
+  WIRE_VERSION`), unless `view()` already set one itself (the raw-dict
+  escape hatch). The native extension's own version gate
+  (`VersionMismatchError`) now applies to a typed-layer tree exactly the
+  way it already did to a hand-built wire dict passed to `QuiApp.
+  set_render` directly.
+- `quadraui.app.App.run_async(fallback_interval=None)`: the app-layer
+  `App` (`quadraui.app.App`) now has its own `run_async`, delegating to
+  the wrapped `QuiApp.run_async`/`quadraui.aio.run` the same way
+  `run_tui`/`run_native` already delegate — `await app.run_async()` on an
+  app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
+  documents, previously raised `AttributeError`.
+- Every `InvalidDescriptorError` subclass (`MissingFieldError`,
+  `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
+  `VersionMismatchError`, `DecodeFailedError`) now carries a `path`
+  instance attribute mirroring `DecodeError::path` verbatim (e.g.
+  `"render › split#body › list#files"`), alongside the existing `code`
+  class attribute, so a caller can locate the offending node
+  programmatically instead of parsing it back out of the exception
+  message.
+
+- New leaf kinds: `"icon_grid"` (a grid of icon-and-label tiles; a tab
+  stop that reports no events of its own), `"context_menu"` (the
+  context menu as an inline leaf), `"text_field"` (a single-line field
+  that commits on Enter), `"tree_table"`, `"tree_table_controller"`,
+  `"cell_grid"` and `"scripted_widget"`. `quadraui.wire.WidgetKind` lists
+  every leaf kind the decoder accepts.
+- New `UiEvent` tags for the widgets that now report their own events:
+  `{"SwitchToggled": {"widget", "value"}}`,
+  `{"RadioGroupSelectionChanged": {"widget", "index"}}`,
+  `{"ButtonActivated": {"widget"}}`,
+  `{"CommandCenterActivated": {"widget", "target"}}` (`target` is
+  `"Back"`, `"Forward"` or `"Search"`),
+  `{"ScrollbarMoved": {"widget", "fraction"}}` (a fraction of the thumb's
+  travel), and the widget-wrapped `(id, event)` tags `AppMenu`, `Board`,
+  `Canvas`, `CellGrid`, `DiffView`, `Editor`, `FindReplace`,
+  `MessageList`, `Minimap`, `MultiSectionView`, `PipelineView`,
+  `ScrollView`, `ShellView` (from `run_shell`'s chrome), `TreeTable` and
+  `TreeTableController`. `wire.pyi`'s `_UiEventDict` also names the Rust
+  runtime's `BottomPanel`, `Chat`, `DualModePalette`, `HelpOverlay`,
+  `PathPicker`, `Sidebar`, `TabGroup` and `Workspace` tags, which no
+  binding leaf emits.
+- New variants on existing widget events: `Tree` gains `RowActivated`
+  (Enter on the selected row), `ScrollChanged` and
+  `ContextMenuRequested` (a right-click on a row); `DataTable` gains
+  `ScrollChanged`, `ColumnFocused` (Left/Right move a column cursor) and
+  `ContextMenuRequested`; `Chart` gains `DataPointHovered`; `Toolbar`
+  gains `GroupSelected`, `FieldChanged`, `FieldCommitted`,
+  `FieldCleared`, `MenuRequested` and `OverflowRequested`; `Form` gains
+  `DateFocusMoved` and `DateOpenChanged`.
+- New descriptor keys, all optional:
+  - `"tab_bar"`: `chrome`, `icons` and `glyphs` (the active-tab chrome,
+    per-tab icons and close/dirty glyph overrides).
+  - `"context_menu"`: `glyphs`, `{"checked": icon, "submenu_arrow": icon}`,
+    the check mark and submenu arrow the menu paints. A nested submenu
+    uses the root menu's set.
+  - `"toolbar"`: `orientation`, `valign` and
+    `pin_trailing_overflow_to_origin`, beside `overflow`/
+    `overflow_priorities`; a toolbar item may be a `Group` (a bordered
+    cluster of actions; an `exclusive` group reports `GroupSelected`), a
+    `Field` (an embedded search box) or a `MenuButton`.
+  - `"date_picker"`: `dropdown` (paint a one-row date field) and `open`
+    (show its calendar as a popup; the picker asks with
+    `DateOpenChanged`).
+  - `"chart"`: `hovered_point` and `crosshair_x`. `"canvas"`: `regions`
+    (named hit-testable areas, reported as `{"Canvas": (id, {"RegionClicked"
+    | "RegionDoubleClicked" | "RegionHovered": ...})}`) and `focusable`.
+  - `"list"` and `"data_table"`: `striped`; `"data_table"`: `glyphs`; a
+    column width may be `{"Native": n}` (n cells on TUI, n pixels
+    elsewhere). A tree's `style` takes `show_scrollbar` and `vim_keys`.
+  - `"activity_bar"`: `style`. `"minimap"`: `scale` and `sizing`.
+    `"editor"`: `paint_options`. `"command_line"`: `selection`.
+    `"find_replace"`: `id`. `"float"` overlays: `transparent`.
+  - Every leaf: `"a11y"`, `{"label", "description", "live"}`, which
+    binding-core decodes and records against the leaf's id as its
+    accessibility override; and `"draggable"`/`"drop_target"`, which arm
+    binding-core's drag gesture over the leaf. Neither binding delivers
+    the drag-gesture events (`DragGestureWireEvent`) to its handler.
+- A `"row"`/`"column"` node takes `"wrap": True`: children that would
+  overflow the main axis flow onto a new line, and each line resolves
+  its own `justify`/`align`.
+- A `"style"` dict takes every `Theme` colour and `Style` metric under
+  its own name (`StyleValue` lists them all), plus
+  `"status_bar_cell_gap"`, `"status_bar_cell_overflow"` and
+  `"list_cell_overflow"` (`"ellipsis"` or `"clip"`) for cell-grid
+  status bars and lists.
+- `quadraui.__version__` reports the installed distribution's version.
 
 ### Changed
 
@@ -260,55 +372,49 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
   requires a `"buttons"` key: a content-bearing dialog may rely on its
   own subtree (a form's Cancel/Save row, a close icon) instead of the
-  chrome's button row. `DialogChromeDescriptor.buttons` is now
-  `NotRequired[List[DialogButtonDescriptor]]` in `wire.pyi`.
+  chrome's button row. `DialogChromeWire.buttons` is
+  `NotRequired[List[DialogButton]]` in `wire.pyi`.
 
-### Added
-
-- `App.confirm(title, body, buttons, severity=None, *, on_resolve=None)` /
-  `App.alert(title, body, *, id="ok", label="OK", severity=None,
-  on_resolve=None)`: wrap `show_overlay("message_dialog", ...)` +
-  `MessageDialogResolved` into a single call that reports the clicked
-  button's id back to the caller -- through a sync or `async def`
-  `on_resolve` callback, or, with `on_resolve` omitted, an `asyncio.Future`
-  an `async def` handler can `await` directly under `quadraui.aio`. Plus
-  `quadraui.aio.schedule_callback(waker, func, *args)`, factored out of
-  `async_handler`'s own task-scheduling so `on_resolve` can share it.
-- `quadraui.app.Form(fields=, id=, ...)` plus six typed field builders --
-  `ToggleField`, `TextInputField`, `SliderField`, `PasswordField`,
-  `TextAreaField`, `SelectField` -- each with its own `on_change` (and
-  `on_submit` on `TextInputField`/`PasswordField`), routed by the field's
-  own id rather than the wrapping `Form`'s. Plus `Checkbox`, `Slider`,
-  `Select`, `Password`, `TextArea`: the same five controls as standalone,
-  `Form`-less leaves. No raw wire dict or `"Form"` branch in `on_event`
-  needed to build a settings-page-style field stack.
-- `quadraui.app.List(items, selected=, title=, has_focus=, bordered=,
-  on_select=, on_activate=, id=)`: a typed node for a `ListViewDescriptor`
-  leaf, routing `SelectionChanged` to `on_select` and either
-  `ItemDoubleClicked` or `ItemActivated` to `on_activate` -- no raw wire
-  dict or `"List"` branch in `on_event` needed to build a selectable list.
-- `quadraui.app.App`'s typed layer now stamps a `"wire_version"` sibling
-  key onto every tree its `view()` renders (`quadraui.app.runtime.
-  WIRE_VERSION`, mirroring `quadraui_binding_core::wire_schema::
-  WIRE_VERSION`), unless `view()` already set one itself (the raw-dict
-  escape hatch). The native extension's own version gate
-  (`VersionMismatchError`) now applies to a typed-layer tree exactly the
-  way it already did to a hand-built wire dict passed to `QuiApp.
-  set_render` directly.
-- `quadraui.app.App.run_async(fallback_interval=None)`: the app-layer
-  `App` (`quadraui.app.App`) now has its own `run_async`, delegating to
-  the wrapped `QuiApp.run_async`/`quadraui.aio.run` the same way
-  `run_tui`/`run_native` already delegate — `await app.run_async()` on an
-  app-layer `App`, as `quadraui/AGENTS.md`'s "Running it" section
-  documents, previously raised `AttributeError`.
-- Every `InvalidDescriptorError` subclass (`MissingFieldError`,
-  `UnknownVariantError`, `TypeMismatchError`, `UnknownKeyError`,
-  `VersionMismatchError`, `DecodeFailedError`) now carries a `path`
-  instance attribute mirroring `DecodeError::path` verbatim (e.g.
-  `"render › split#body › panel#chrome"`), alongside the existing `code`
-  class attribute, so a caller can locate the offending node
-  programmatically instead of parsing it back out of the exception
-  message.
+- Widgets that used to report through `Form` now report their own
+  events. A standalone `"switch"` click or Enter/Space reports
+  `{"SwitchToggled": {"widget": id, "value": v}}` instead of
+  `{"Form": (id, {"ToggleChanged": ...})}`. A `"radio_group"` arrow key
+  reports `{"RadioGroupSelectionChanged": {"widget": id, "index": i}}`
+  instead of `{"Form": (id, {"SegmentedControlChanged": ...})}`, and a
+  click now selects the option under the pointer. A `"button"` click or
+  Enter/Space reports `{"ButtonActivated": {"widget": id}}` instead of a
+  `MouseDown` with a `"button_body"` hit followed by
+  `{"Form": (id, {"ButtonClicked": ...})}`; `quadraui.app`'s `Button`
+  dispatches `on_click` from it. A `Form`'s own fields keep their
+  `Form` events.
+- A click on these leaves now reaches the handler as the widget's own
+  typed event instead of a raw `MouseDown`: `"palette"` (a row reports
+  `{"Palette": (id, {"SelectionChanged": ...})}`), `"terminal"`
+  (`SelectStart`, then `SelectExtend` while dragging and `SelectEnd` on
+  release, and a wheel notch `Scroll`), `"editor"` (`{"Editor": (id,
+  {"Pointer": ...})}`), `"minimap"` (`Seek`), `"chart"`
+  (`DataPointClicked`/`LegendClicked`/`Clicked`), `"canvas"` regions,
+  `"scroll_view"` (`Scrolled`), `"board"`, `"pipeline_view"`,
+  `"diff_view"`, `"message_list"` (a wheel notch reports `Scrolled`),
+  `"command_center"` (`CommandCenterActivated`) and `"scrollbar"`
+  (`ScrollbarMoved` for a thumb drag, a track click or a wheel notch).
+  A `"status_bar"` segment reports `SegmentClicked` on release over the
+  segment it was pressed on, and a click on an `"activity_bar"` may be
+  preceded by a `FocusChanged` onto the rail.
+- Hover and press tint toolbar buttons, menu items, palette rows, tabs,
+  buttons, switches and radio options from the pointer itself; no
+  descriptor key carries hover state. Every generic leaf gets
+  `MouseEntered`/`MouseLeft` as the pointer crosses it, and a `"chart"`
+  or `"canvas"` also gets the moves inside it, so `DataPointHovered` and
+  `RegionHovered` follow the pointer.
+- A `"combo_box"` list opens as a popup above every other leaf: a press
+  on a row commits it, a press elsewhere or Escape cancels the edit, and
+  the press never reaches the leaf the list covers. A standalone
+  `"slider"` press maps across its painted track rather than the whole
+  leaf width.
+- A `"tab_bar"` leaf, a `"tabs"` node's strip and the fixed `"tab_bar"`
+  slot paint through the core `TabBar` (#2985), so `chrome`, `icons` and
+  `glyphs` on the descriptor paint on every backend.
 
 ### Removed
 
@@ -406,6 +512,15 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   | `show_rich_text_popup(popup, anchor)` | `show_overlay("rich_text_popup", popup, (*anchor, 0.0, 0.0))` | n/a (`QuiAppActions` never had one) |
   | `dismiss_rich_text_popup()` | `dismiss_overlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
+- The `"panel"` layout node, with its `"panel_title_bar"` and
+  `"panel_action"` hit details. Use a `"sidebar_panel"` node whose
+  header `Toolbar` carries a `Label` title, a `Spacer` and the action
+  buttons.
+- The `"sidebar_panel_toolbar_button"` hit detail: a `"sidebar_panel"`
+  header button click still reports the same `Toolbar` event.
+- The `"button_body"` hit detail: a button reports `ButtonActivated`
+  (see *Changed*).
+
 ### Fixed
 
 - While a modal overlay (`show_overlay("message_dialog", ...)` and the
@@ -457,6 +572,8 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   masked this: each ran the `ReentrantCallError` guard itself before
   forwarding to the shared overlay logic, so the gap was unreachable until
   `show_overlay`/`dismiss_overlay` became the only way in.
+- Enter or Space on a focused `"button"` leaf inside a popover or a
+  layout dialog activates it.
 
 ## [0.11.0] - 2026-11-14
 

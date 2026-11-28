@@ -72,13 +72,13 @@ fragment step for this package (that mechanism, and
   both `js/index.ts` and `js/index.d.ts`) instead of `unknown`, so no
   `as any` cast is needed to call a method on it.
 - `List(items, options)` (and the `<list>` JSX intrinsic): a typed node for
-  a `ListViewDescriptor` leaf, routing `SelectionChanged` to `onSelect` and
+  a `ListView` leaf, routing `SelectionChanged` to `onSelect` and
   either `ItemDoubleClicked` or `ItemActivated` to `onActivate` -- no raw
   wire object or `"List"` branch in `onEvent` needed to build a selectable
   list.
 - `Form(fields, options)` (and the `<form>` JSX intrinsic) plus
   `TextInputField`/`DropdownField`/`ToggleField`/`SliderField`/
-  `PasswordField`/`TextAreaField`: typed `FormFieldDescriptor` builders,
+  `PasswordField`/`TextAreaField`: typed `FormField` builders,
   each with its own `onChange` (and `onSubmit` where the field supports a
   commit) registered under that field's own resolved id, so a detail form
   needs no raw wire object and no `"Form"` branch in `onEvent`.
@@ -98,6 +98,81 @@ fragment step for this package (that mechanism, and
   `js/testing.ts`'s `Widget.press()` now drives a focused scripted
   widget's own key handling directly. See `examples/rating.ts` for a
   runnable 5-star rating control.
+
+- New leaf kinds: `"icon_grid"` (a grid of icon-and-label tiles; a tab
+  stop that reports no events of its own), `"context_menu"` (the
+  context menu as an inline leaf), `"text_field"` (a single-line field
+  that commits on Enter), `"tree_table"`, `"tree_table_controller"`,
+  `"cell_grid"` and `"scripted_widget"`. `WidgetKind` in `wire.d.ts`
+  lists every leaf kind the decoder accepts.
+- New `UiEvent` tags for the widgets that now report their own events:
+  `{ SwitchToggled: { widget, value } }`,
+  `{ RadioGroupSelectionChanged: { widget, index } }`,
+  `{ ButtonActivated: { widget } }`,
+  `{ CommandCenterActivated: { widget, target } }` (`target` is
+  `"Back"`, `"Forward"` or `"Search"`),
+  `{ ScrollbarMoved: { widget, fraction } }` (a fraction of the thumb's
+  travel), and the widget-wrapped `[id, event]` tags `AppMenu`, `Board`,
+  `Canvas`, `CellGrid`, `DiffView`, `Editor`, `FindReplace`,
+  `MessageList`, `Minimap`, `MultiSectionView`, `PipelineView`,
+  `ScrollView`, `ShellView` (from `runShell`'s chrome), `TreeTable` and
+  `TreeTableController`. `wire.d.ts`'s `UiEvent` also names the Rust
+  runtime's `BottomPanel`, `Chat`, `DualModePalette`, `HelpOverlay`,
+  `PathPicker`, `Sidebar`, `TabGroup` and `Workspace` tags, which no
+  binding leaf emits.
+- New variants on existing widget events: `Tree` gains `RowActivated`
+  (Enter on the selected row), `ScrollChanged` and
+  `ContextMenuRequested` (a right-click on a row); `DataTable` gains
+  `ScrollChanged`, `ColumnFocused` (Left/Right move a column cursor) and
+  `ContextMenuRequested`; `Chart` gains `DataPointHovered`; `Toolbar`
+  gains `GroupSelected`, `FieldChanged`, `FieldCommitted`,
+  `FieldCleared`, `MenuRequested` and `OverflowRequested`; `Form` gains
+  `DateFocusMoved` and `DateOpenChanged`.
+- New descriptor keys, all optional:
+  - `"tab_bar"`: `chrome`, `icons` and `glyphs` (the active-tab chrome,
+    per-tab icons and close/dirty glyph overrides).
+  - `"context_menu"`: `glyphs`, `{ checked: icon, submenu_arrow: icon }`,
+    the check mark and submenu arrow the menu paints. A nested submenu
+    uses the root menu's set.
+  - `"toolbar"`: `orientation`, `valign` and
+    `pin_trailing_overflow_to_origin`, beside `overflow`/
+    `overflow_priorities`; a toolbar item may be a `Group` (a bordered
+    cluster of actions; an `exclusive` group reports `GroupSelected`), a
+    `Field` (an embedded search box) or a `MenuButton`.
+  - `"date_picker"`: `dropdown` (paint a one-row date field) and `open`
+    (show its calendar as a popup; the picker asks with
+    `DateOpenChanged`).
+  - `"chart"`: `hovered_point` and `crosshair_x`. `"canvas"`: `regions`
+    (named hit-testable areas, reported as `{ Canvas: [id, { RegionClicked
+    | RegionDoubleClicked | RegionHovered: ... }] }`) and `focusable`.
+  - `"list"` and `"data_table"`: `striped`; `"data_table"`: `glyphs`; a
+    column width may be `{ Native: n }` (n cells on TUI, n pixels
+    elsewhere). A tree's `style` takes `show_scrollbar` and `vim_keys`.
+  - `"activity_bar"`: `style`. `"minimap"`: `scale` and `sizing`.
+    `"editor"`: `paint_options`. `"command_line"`: `selection`.
+    `"find_replace"`: `id`. `"float"` overlays: `transparent`.
+  - Every leaf: `a11y`, `{ label, description, live }`, which
+    binding-core decodes and records against the leaf's id as its
+    accessibility override; and `draggable`/`drop_target`, which arm
+    binding-core's drag gesture over the leaf. Neither binding delivers
+    the drag-gesture events (`DragGestureWireEvent`) to its handler.
+- A `"row"`/`"column"` node takes `wrap: true`: children that would
+  overflow the main axis flow onto a new line, and each line resolves
+  its own `justify`/`align`.
+- A `"style"` object takes every `Theme` colour and `Style` metric under
+  its own name (`StyleValue` lists them all), plus
+  `status_bar_cell_gap`, `status_bar_cell_overflow` and
+  `list_cell_overflow` (`"ellipsis"` or `"clip"`) for cell-grid status
+  bars and lists.
+- `AppOptions` takes `strict` and `onUnknownKey({ key, path })`, passed
+  through to `QuiApp.setStrict`/`setOnUnknownKey`.
+- The typed `App` layer stamps `wire_version` (`WIRE_VERSION`, exported
+  from the app layer) on every tree its view renders, unless the view
+  set one itself, so the native version check (`VersionMismatchError`)
+  applies to a typed-layer tree too.
+- Every `InvalidDescriptorError` subclass carries a `path` property, the
+  decoder's location of the offending node (for example
+  `"render › split#body › list#files"`).
 
 ### Changed
 
@@ -281,6 +356,47 @@ fragment step for this package (that mechanism, and
   measure, so its box matches the one every other host paints (on a cell
   grid, one column narrower than before).
 
+- Widgets that used to report through `Form` now report their own
+  events. A standalone `"switch"` click or Enter/Space reports
+  `{ SwitchToggled: { widget: id, value } }` instead of
+  `{ Form: [id, { ToggleChanged: ... }] }`. A `"radio_group"` arrow key
+  reports `{ RadioGroupSelectionChanged: { widget: id, index } }` instead
+  of `{ Form: [id, { SegmentedControlChanged: ... }] }`, and a click now
+  selects the option under the pointer. A `"button"` click or
+  Enter/Space reports `{ ButtonActivated: { widget: id } }` instead of a
+  `MouseDown` with a `"button_body"` hit followed by
+  `{ Form: [id, { ButtonClicked: ... }] }`; the app layer's `Button`
+  dispatches `onClick` from it. A `Form`'s own fields keep their `Form`
+  events.
+- A click on these leaves now reaches the handler as the widget's own
+  typed event instead of a raw `MouseDown`: `"palette"` (a row reports
+  `{ Palette: [id, { SelectionChanged: ... }] }`), `"terminal"`
+  (`SelectStart`, then `SelectExtend` while dragging and `SelectEnd` on
+  release, and a wheel notch `Scroll`), `"editor"` (`{ Editor: [id,
+  { Pointer: ... }] }`), `"minimap"` (`Seek`), `"chart"`
+  (`DataPointClicked`/`LegendClicked`/`Clicked`), `"canvas"` regions,
+  `"scroll_view"` (`Scrolled`), `"board"`, `"pipeline_view"`,
+  `"diff_view"`, `"message_list"` (a wheel notch reports `Scrolled`),
+  `"command_center"` (`CommandCenterActivated`) and `"scrollbar"`
+  (`ScrollbarMoved` for a thumb drag, a track click or a wheel notch).
+  A `"status_bar"` segment reports `SegmentClicked` on release over the
+  segment it was pressed on, and a click on an `"activity_bar"` may be
+  preceded by a `FocusChanged` onto the rail.
+- Hover and press tint toolbar buttons, menu items, palette rows, tabs,
+  buttons, switches and radio options from the pointer itself; no
+  descriptor key carries hover state. Every generic leaf gets
+  `MouseEntered`/`MouseLeft` as the pointer crosses it, and a `"chart"`
+  or `"canvas"` also gets the moves inside it, so `DataPointHovered` and
+  `RegionHovered` follow the pointer.
+- A `"combo_box"` list opens as a popup above every other leaf: a press
+  on a row commits it, a press elsewhere or Escape cancels the edit, and
+  the press never reaches the leaf the list covers. A standalone
+  `"slider"` press maps across its painted track rather than the whole
+  leaf width.
+- A `"tab_bar"` leaf, a `"tabs"` node's strip and the fixed `"tab_bar"`
+  slot paint through the core `TabBar` (#2985), so `chrome`, `icons` and
+  `glyphs` on the descriptor paint on every backend.
+
 ### Removed
 
 - The `"extra_body"` hit detail (#2977). Every widget leaf is a generic
@@ -376,6 +492,15 @@ fragment step for this package (that mechanism, and
   | `showRichTextPopup(popup, anchor)` | `showOverlay("rich_text_popup", popup, anchor)` | n/a (`QuiAppActions` never had one) |
   | `dismissRichTextPopup()` | `dismissOverlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
+- The `"panel"` layout node, with its `"panel_title_bar"` and
+  `"panel_action"` hit details. Use a `"sidebar_panel"` node whose
+  header `Toolbar` carries a `Label` title, a `Spacer` and the action
+  buttons.
+- The `"sidebar_panel_toolbar_button"` hit detail: a `"sidebar_panel"`
+  header button click still reports the same `Toolbar` event.
+- The `"button_body"` hit detail: a button reports `ButtonActivated`
+  (see *Changed*).
+
 ### Fixed
 
 - While a modal overlay (`showOverlay("message_dialog", ...)` and the
@@ -412,3 +537,5 @@ fragment step for this package (that mechanism, and
   `"context_menu"` and `"message_dialog"` descriptors are now typed in
   `wire.d.ts` (`ContextMenuOverlayDescriptor`,
   `MessageDialogOverlayDescriptor`).
+- Enter or Space on a focused `"button"` leaf inside a popover or a
+  layout dialog activates it.
