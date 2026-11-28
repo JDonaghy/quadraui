@@ -3252,7 +3252,49 @@ impl crate::primitive::Primitive for TabBar {
         crate::frame::OwnedContent::TabBar(self.clone())
     }
 
+    /// The bar lays out as its resolved descriptor ([`TabBar::live`]).
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let live = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            let state = state.and_then(|s| s.downcast_ref::<TabBarState>());
+            match self.live(state) {
+                std::borrow::Cow::Owned(live) => Some(live),
+                std::borrow::Cow::Borrowed(_) => None,
+            }
+        });
+        match &live {
+            Some(live) => live.primitive_layout(ctx, rect),
+            None => self.primitive_layout(ctx, rect),
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        self.live(env.widget_state_as::<TabBarState>())
+            .paint_at(layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        self.live(env.widget_state_as::<TabBarState>())
+            .paint_cells_at(layout, cells, env);
+    }
+}
+
+impl TabBar {
+    fn primitive_layout(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+    ) -> TabBarPrimitiveLayout {
         // Same TUI-vs-pixel-backend discriminator `ListView`/`DataTable`'s
         // own `Primitive::layout` use — see `LayoutCtx::units`'s own doc
         // for why `ctx.units()` is reliable even when both features are
@@ -3349,9 +3391,9 @@ impl crate::primitive::Primitive for TabBar {
         }
     }
 
-    fn paint(
+    fn paint_at(
         &self,
-        layout: &Self::Layout,
+        layout: &TabBarPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
         env: &crate::PaintEnv,
     ) {
@@ -3409,9 +3451,9 @@ impl crate::primitive::Primitive for TabBar {
     /// cell-grid tab-strip painter this crate has.
     #[cfg(feature = "tui")]
     #[allow(deprecated)] // `cell_paint::paint` returns the deprecated `TabBarHits`
-    fn paint_cells(
+    fn paint_cells_at(
         &self,
-        layout: &Self::Layout,
+        layout: &TabBarPrimitiveLayout,
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
@@ -3465,6 +3507,59 @@ pub struct TabBarState {
     /// composition — see that field's doc) to paint the reverse-video
     /// treatment.
     pub focused_index: Option<usize>,
+    /// The tab the last activation landed on, against the descriptor's
+    /// active tab (the first `is_active` tab) — see
+    /// [`crate::behaviour::row_window::HostLatch`]. An app that never
+    /// echoes [`TabBarEvent::TabActivated`] still sees the click.
+    pub active: crate::behaviour::row_window::HostLatch<Option<usize>>,
+}
+
+impl TabBarState {
+    /// Record an activation of tab `index` on `bar`.
+    pub fn activate(&mut self, bar: &TabBar, index: usize) {
+        self.active.set(&bar.descriptor_active(), Some(index));
+    }
+
+    /// Renumber after tab `closed` closes: later tabs shift down by one,
+    /// and the closed tab itself, if active, leaves nothing active.
+    pub fn close(&mut self, closed: usize) {
+        self.active.map(|idx| match *idx {
+            Some(i) if i == closed => None,
+            Some(i) if i > closed => Some(i - 1),
+            other => other,
+        });
+    }
+}
+
+impl TabBar {
+    /// The active tab the descriptor marks: the first `is_active` tab.
+    pub fn descriptor_active(&self) -> Option<usize> {
+        self.tabs.iter().position(|t| t.is_active)
+    }
+
+    /// The active tab `state` resolves this bar to — the widget's own
+    /// last activation while the descriptor still marks what it marked
+    /// then, the descriptor's otherwise. Out-of-range resolves to `None`.
+    pub fn resolved_active(&self, state: Option<&TabBarState>) -> Option<usize> {
+        let desc = self.descriptor_active();
+        state
+            .map_or(desc, |s| s.active.get(&desc))
+            .filter(|&i| i < self.tabs.len())
+    }
+
+    /// This bar with `state`'s resolved active tab marked `is_active` —
+    /// the descriptor it lays out and paints as.
+    pub fn live(&self, state: Option<&TabBarState>) -> std::borrow::Cow<'_, Self> {
+        let active = self.resolved_active(state);
+        if active == self.descriptor_active() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut live = self.clone();
+        for (i, tab) in live.tabs.iter_mut().enumerate() {
+            tab.is_active = Some(i) == active;
+        }
+        std::borrow::Cow::Owned(live)
+    }
 }
 
 /// Canonical key string for [`TabBarEvent::KeyPressed`] — the same
@@ -3512,7 +3607,10 @@ impl TabBar {
                 Handled::Event(TabBarEvent::FocusMoved { index: next })
             }
             Key::Named(NamedKey::Enter) | Key::Char(' ') => match focused {
-                Some(index) => Handled::Event(TabBarEvent::TabActivated { index }),
+                Some(index) => {
+                    state.activate(self, index);
+                    Handled::Event(TabBarEvent::TabActivated { index })
+                }
                 None => Handled::Ignored,
             },
             _ => {
@@ -3574,10 +3672,12 @@ impl Interactive for TabBar {
                 TabBarHit::Tab(index) => {
                     cx.request_focus(None);
                     state.focused_index = Some(index);
+                    state.activate(self, index);
                     Handled::Event(TabBarEvent::TabActivated { index })
                 }
                 TabBarHit::TabClose(index) => {
                     cx.request_focus(None);
+                    state.close(index);
                     Handled::Event(TabBarEvent::TabClosed { index })
                 }
                 TabBarHit::RightSegment(id) => {
@@ -3604,14 +3704,21 @@ impl Interactive for TabBar {
                 let index = state
                     .focused_index
                     .filter(|&i| i < self.tabs.len())
-                    .or_else(|| self.tabs.iter().position(|t| t.is_active));
+                    .or_else(|| self.resolved_active(Some(state)));
                 match index {
-                    Some(index) => Handled::Event(TabBarEvent::TabActivated { index }),
+                    Some(index) => {
+                        state.activate(self, index);
+                        Handled::Event(TabBarEvent::TabActivated { index })
+                    }
                     None => Handled::Ignored,
                 }
             }
             _ => Handled::Ignored,
         }
+    }
+
+    fn state_summary(&self, state: &TabBarState) -> crate::interactive::StateSummary {
+        crate::interactive::StateSummary::default().with_active_tab(self.resolved_active(Some(state)))
     }
 }
 
@@ -3990,6 +4097,7 @@ mod interactive_tests {
         let layout = layout_for(&b);
         let mut state = TabBarState {
             focused_index: Some(1),
+            ..TabBarState::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(b.id, &mut host);

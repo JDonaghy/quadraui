@@ -1661,7 +1661,68 @@ impl crate::primitive::Primitive for CellGrid {
         crate::frame::OwnedContent::CellGrid(self.clone())
     }
 
+    /// The grid lays out at its resolved scroll ([`CellGrid::live`]).
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let scroll = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state
+                .and_then(|s| s.downcast_ref::<CellGridState>())
+                .map(|s| s.navigated.get(&(self.row_scroll, self.col_scroll)))
+        });
+        self.live_at(scroll).layout_at(ctx, rect)
+    }
+
+    /// Paints through [`native_surface_paint::paint`] on every pixel
+    /// backend (GTK/macOS/Win); a `tui`-only build has no
+    /// [`crate::paint_surface::PaintSurface`] to paint into at all, so
+    /// `self` reaching the screen there goes through [`Self::paint_cells`]
+    /// below instead.
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        self.live(env.widget_state_as::<CellGridState>())
+            .paint_at(layout, surface, env);
+    }
+
+    /// The cell painter in [`paint_cells`], against the layout
+    /// [`Self::layout`] resolved.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        let live = self.live(env.widget_state_as::<CellGridState>());
+        paint_cells::paint(&live, layout.area, &layout.layout, cells, env.theme());
+    }
+}
+
+impl CellGrid {
+    /// This grid at `state`'s resolved scroll — the scroll its last
+    /// [`CellGridEvent::Navigated`] moved to, while the descriptor still
+    /// says what it said then (see
+    /// [`crate::behaviour::row_window::HostLatch`]).
+    pub fn live(&self, state: Option<&CellGridState>) -> std::borrow::Cow<'_, Self> {
+        self.live_at(state.map(|s| s.navigated.get(&(self.row_scroll, self.col_scroll))))
+    }
+
+    fn live_at(&self, scroll: Option<(usize, usize)>) -> std::borrow::Cow<'_, Self> {
+        match scroll {
+            Some((row_scroll, col_scroll)) if (row_scroll, col_scroll) != (self.row_scroll, self.col_scroll) => {
+                std::borrow::Cow::Owned(Self {
+                    row_scroll,
+                    col_scroll,
+                    ..self.clone()
+                })
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
+
+    fn layout_at(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> CellGridPrimitiveLayout {
         // Same runtime discriminator `ListView`/`IconGrid`'s own
         // `Primitive::layout` use — see `LayoutCtx::units`'s own doc for
         // why `ctx.units()` (TUI's whole-cell `line_height` convention vs.
@@ -1729,9 +1790,9 @@ impl crate::primitive::Primitive for CellGrid {
     /// `self` — [`native_surface_paint::paint`] reads them straight off
     /// `grid`, not off any per-frame state a caller threads in. There is
     /// nothing for a `PaintState` impl to add on top of that.
-    fn paint(
+    fn paint_at(
         &self,
-        layout: &Self::Layout,
+        layout: &CellGridPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
         env: &crate::PaintEnv,
     ) {
@@ -1753,18 +1814,6 @@ impl crate::primitive::Primitive for CellGrid {
         {
             let _ = (layout, surface, theme, style);
         }
-    }
-
-    /// The cell painter in [`paint_cells`], against the layout
-    /// [`Self::layout`] resolved.
-    #[cfg(feature = "tui")]
-    fn paint_cells(
-        &self,
-        layout: &Self::Layout,
-        cells: &mut dyn crate::CellSurface,
-        env: &crate::PaintEnv,
-    ) {
-        paint_cells::paint(self, layout.area, &layout.layout, cells, env.theme());
     }
 }
 
@@ -1792,12 +1841,18 @@ impl WidgetAction for CellGridEvent {
 
 /// [`Interactive::State`] for [`CellGrid`] — see this section's module
 /// doc for why it carries only the in-progress drag anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CellGridState {
     /// The selection's fixed corner for an in-progress mouse drag, set on
     /// a press and cleared on release — `None` whenever no drag is
     /// active.
     pub drag_anchor: Option<(usize, usize)>,
+    /// The `(row_scroll, col_scroll)` the last
+    /// [`CellGridEvent::Navigated`] moved to, against the descriptor's —
+    /// the scroll the grid lays out at until the app answers, so
+    /// [`Interactive::data_requested`] asks for the cells the move
+    /// brings into view.
+    pub navigated: crate::behaviour::row_window::HostLatch<(usize, usize)>,
 }
 
 impl CellGrid {
@@ -2281,11 +2336,50 @@ impl Interactive for CellGrid {
         }
     }
 
+    /// Handles `event`, latching the scroll a
+    /// [`CellGridEvent::Navigated`] moves to.
     fn handle(
         &self,
         state: &mut CellGridState,
         event: &RoutedEvent,
         layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<CellGridEvent> {
+        let out = self.handle_event(state, event, layout, cx);
+        if let Handled::Event(CellGridEvent::Navigated {
+            row_scroll,
+            col_scroll,
+            ..
+        }) = &out
+        {
+            state
+                .navigated
+                .set(&(self.row_scroll, self.col_scroll), (*row_scroll, *col_scroll));
+        }
+        out
+    }
+
+    /// The cells the visible range needs that the descriptor has not
+    /// loaded — [`CellGrid::cells_requested`] against the layout at the
+    /// grid's resolved scroll. No repeat suppression: a covered range
+    /// answers `None`.
+    fn data_requested(
+        &self,
+        state: &mut CellGridState,
+        layout: &CellGridPrimitiveLayout,
+    ) -> Option<UiEvent> {
+        let _ = state;
+        self.cells_requested(&layout.layout)
+            .map(|event| UiEvent::CellGrid(self.id, event))
+    }
+}
+
+impl CellGrid {
+    fn handle_event(
+        &self,
+        state: &mut CellGridState,
+        event: &RoutedEvent,
+        layout: &CellGridPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<CellGridEvent> {
         if let Some(edit) = &self.editing {
@@ -3348,6 +3442,7 @@ mod interactive_tests {
         let layout = layout_for(&g);
         let mut state = CellGridState {
             drag_anchor: Some((0, 0)),
+            ..CellGridState::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(g.id, &mut host);
@@ -3638,6 +3733,7 @@ mod interactive_tests {
         // for the idle path.
         let mut state = CellGridState {
             drag_anchor: Some((1, 1)),
+            ..CellGridState::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(g.id, &mut host);

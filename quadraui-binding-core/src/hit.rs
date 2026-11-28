@@ -160,8 +160,6 @@ pub enum PaintedHit {
         /// ABSOLUTE, an index into `total_rows` — see [`Self::Tree`]'s own
         /// `scroll_offset`.
         scroll_offset: usize,
-        items_window: None,
-        scroll_px: None,
         total_rows: usize,
         /// The table's current row selection, as painted — read by
         /// [`crate::semantic::focus_scoped_key_event`] to compute the next

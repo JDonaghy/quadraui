@@ -2825,6 +2825,12 @@ impl crate::primitive::Primitive for ListView {
 /// list (with the band's first absolute row, to rebase hover and press
 /// onto it) or `live` itself, and the paint state carrying the sub-row
 /// scroll it paints at.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 fn list_paint_target<'a>(
     live: &'a ListView,
     layout: &'a ListViewPrimitiveLayout,
@@ -3905,6 +3911,7 @@ mod interactive_tests {
             },
             cursor: Some(0),
             cursor_echo: Some(0),
+            ..ListViewState::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(l.id, &mut host);

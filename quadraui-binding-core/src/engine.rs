@@ -21,7 +21,7 @@ use quadraui::primitive::DynWidget;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    wheel_row_delta, Backend, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
+    wheel_row_delta, Backend,
     CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
     ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
     FloatMeasure, FormEvent, Key, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
@@ -481,6 +481,35 @@ fn focused_leaf_claims_page_keys(hit_map: &[PaintedHit], focused: WidgetId) -> b
         PaintedHit::TextDisplay { id, .. } => *id == focused,
         _ => false,
     })
+}
+
+/// `widget`'s layout in `area` with the same ctx
+/// `DrawsPrimitives::draw_dyn` lays it out with at paint time (editor line
+/// height, the backend's text measurer, its style and the paint state the
+/// widget painted with), so an input resolves against the geometry that
+/// was actually painted. The caller activates the engine's state store
+/// first: a widget's layout reads its own state.
+fn dyn_widget_layout(
+    id: WidgetId,
+    widget: &dyn DynWidget,
+    area: Rect,
+    backend: &mut dyn Backend,
+) -> (quadraui::primitive::Units, Box<dyn quadraui::primitive::PrimitiveLayout>) {
+    let style = backend.style();
+    let painted = quadraui::primitive::painted_state(&id);
+    let backend_ref: &dyn Backend = backend;
+    let measurer = |text: &str, role: quadraui::FontRole| backend_ref.measure_text(text, role).0;
+    let ctx = quadraui::primitive::LayoutCtx::new(
+        quadraui::primitive::LayoutCtx::resolve_row_height(backend_ref.chrome_line_height(), &style),
+        backend_ref.char_width(),
+        backend_ref.nerd_fonts_enabled(),
+    )
+    .with_editor_line_height(backend_ref.line_height());
+    let ctx = ctx
+        .with_measurer(&measurer)
+        .with_style(&style)
+        .with_paint_state(&painted);
+    (ctx.units(), widget.layout(&ctx, area))
 }
 
 /// The key a generic leaf's persistent state is stored under: the
@@ -2351,70 +2380,6 @@ impl InteractionEngine {
         ))
     }
 
-    /// Whether the `"cell_grid"` [`PaintedHit::Widget`] painted under `id`
-    /// this frame needs a fresh window of cell text —
-    /// [`quadraui::CellGrid::cells_requested`] run against the SAME real
-    /// widget [`dyn_widget_hit`] already resolved for dispatch, downcast
-    /// back via [`quadraui::primitive::DynWidget::as_any`]. Unlike the
-    /// deleted [`CellGridController`]-based version of this check, no
-    /// throwaway probe is needed: that controller exposed no getter for
-    /// the frozen/loaded-window fields a probe would have to reconstruct,
-    /// but the real, just-decoded [`CellGrid`] already has every one of
-    /// them. `None` for anything that isn't a `CellGrid` (including every
-    /// other [`crate::widget_kinds::WIDGET_KINDS`] member, and an `id` not
-    /// painted this frame at all), and for a `CellGrid` whose loaded
-    /// window already covers the resolved viewport.
-    /// `pending` is the semantic event [`Self::dyn_widget_dispatch`] is
-    /// about to route back to the host for the same `id`, if any — the
-    /// hit-tested widget it reads via [`dyn_widget_hit`] is still this
-    /// frame's painted snapshot, from *before* that event's effect (e.g.
-    /// a `PageDown`'s [`CellGridEvent::Navigated`]) lands, since the real
-    /// state only updates once the host re-renders. When `pending`
-    /// carries a `Navigated` for this `id`, it is applied to a clone
-    /// before laying out, so the loaded-window check below sees the
-    /// scroll position the host is about to adopt rather than the one it
-    /// is about to leave.
-    fn dyn_widget_cells_requested(
-        &self,
-        id: WidgetId,
-        pending: Option<&UiEvent>,
-        backend: &mut dyn Backend,
-    ) -> Option<UiEvent> {
-        let (area, widget) = dyn_widget_hit(&self.hit_map.borrow(), id)?;
-        let mut grid = widget.as_ref().downcast_ref::<CellGrid>()?.clone();
-        if let Some(UiEvent::CellGrid(
-            event_id,
-            CellGridEvent::Navigated {
-                cursor,
-                selection_anchor,
-                row_scroll,
-                col_scroll,
-            },
-        )) = pending
-        {
-            if *event_id == id {
-                grid.cursor = *cursor;
-                grid.selection_anchor = *selection_anchor;
-                grid.row_scroll = *row_scroll;
-                grid.col_scroll = *col_scroll;
-            }
-        }
-        let style = backend.style();
-        let ctx = quadraui::primitive::LayoutCtx::new(
-            quadraui::primitive::LayoutCtx::resolve_row_height(
-                backend.chrome_line_height(),
-                &style,
-            ),
-            backend.char_width(),
-            backend.nerd_fonts_enabled(),
-        );
-        let widget: Rc<dyn DynWidget> = Rc::new(grid.clone());
-        let layout = widget.layout(&ctx, area);
-        let layout = layout.downcast_ref::<CellGridPrimitiveLayout>()?;
-        let event = grid.cells_requested(&layout.layout)?;
-        Some(UiEvent::CellGrid(id, event))
-    }
-
     /// Routes `event` into the open widget overlay of `kind`, if any,
     /// through the widget's own [`DynWidget::handle`] — `None` when none is
     /// open or it does not claim `event`, so routing carries on.
@@ -3114,32 +3079,10 @@ impl InteractionEngine {
         sink: &mut dyn EventSink,
         focus: DispatchFocus,
     ) -> Option<DynWidgetClickOutcome> {
-        // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
-        // with at paint time (editor line height, the backend's text
-        // measurer, its style and the paint state the widget painted
-        // with), so a click resolves against the geometry that was
-        // actually painted.
-        let style = backend.style();
-        let painted = quadraui::primitive::painted_state(&id);
-        let (units, layout) = {
-            let backend_ref: &dyn Backend = backend;
-            let measurer =
-                |text: &str, role: quadraui::FontRole| backend_ref.measure_text(text, role).0;
-            let ctx = quadraui::primitive::LayoutCtx::new(
-                quadraui::primitive::LayoutCtx::resolve_row_height(
-                    backend_ref.chrome_line_height(),
-                    &style,
-                ),
-                backend_ref.char_width(),
-                backend_ref.nerd_fonts_enabled(),
-            )
-            .with_editor_line_height(backend_ref.line_height());
-            let ctx = ctx
-                .with_measurer(&measurer)
-                .with_style(&style)
-                .with_paint_state(&painted);
-            (ctx.units(), widget.layout(&ctx, area))
-        };
+        // A widget's layout reads its own state from the runtime store, so
+        // this engine's store is the one active while it lays out.
+        self.widget_states.activate();
+        let (units, layout) = dyn_widget_layout(id, widget, area, backend);
         let routed = match input {
             DispatchInput::Routed(routed) => routed,
             DispatchInput::Raw(event) => {
@@ -3207,10 +3150,15 @@ impl InteractionEngine {
         }
 
         if outcome.event.is_some() || outcome.consumed {
-            if let Some(cells_requested) =
-                self.dyn_widget_cells_requested(id, outcome.event.as_ref(), backend)
-            {
-                let reaction = sink.dispatch(&cells_requested, Some(&HitDetail::WidgetBody));
+            // The content the input just brought into view, asked of the
+            // widget against a layout of the state `handle` wrote.
+            let (_, after) = dyn_widget_layout(id, widget, area, backend);
+            let requested = self.widget_states.with(|states| {
+                let state = states.state_for(dyn_state_key(id, widget), widget);
+                widget.data_requested(state, after.as_ref())
+            });
+            if let Some(requested) = requested {
+                let reaction = sink.dispatch(&requested, Some(&HitDetail::WidgetBody));
                 outcome.reaction = outcome.reaction.merge(reaction);
             }
         }

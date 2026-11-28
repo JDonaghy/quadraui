@@ -14,7 +14,7 @@ use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
     ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
     Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout,
-    TextDisplayLine, TextRegion, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout,
+    TextDisplayLine, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout,
     WidgetId,
 };
 
@@ -311,8 +311,6 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 clip: rect,
                 layout,
                 scroll_offset: data_table.scroll_offset,
-                items_window: None,
-                scroll_px: None,
                 total_rows: data_table.rows.len(),
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
@@ -414,11 +412,6 @@ fn draw_text_display_hit(
     } else {
         0.0
     };
-    // Register a selectable text region every frame so drag-select
-    // (`TextSelectionChanged`) and Ctrl-C copy (`TextCopied`) work against
-    // this `TextDisplay`. `lines` is left empty — see `text_display_region`'s
-    // doc for why a flattened `td.lines` can't stand in for it.
-    backend.register_text_region(text_display_region(id, area, body_offset, &layout));
     PaintedHit::TextDisplay {
         id,
         area,
@@ -431,47 +424,6 @@ fn draw_text_display_hit(
         // is right for every other caller (`draw_bands`, an unwindowed
         // layout-tree leaf).
         loaded_rows: None,
-    }
-}
-
-/// Builds the [`TextRegion`] registered for a painted `TextDisplay`'s body.
-///
-/// `bounds` is `area` shifted down by `body_offset` (the title row, when
-/// present) and narrowed to exclude the scrollbar gutter `layout`
-/// reserves inside `area` (when `show_scrollbar` is set) — the rect
-/// actually holding painted text, matching how every other caller
-/// registers a region (`examples/common/panel_app.rs`,
-/// `examples/common/selection_app.rs`, `quadraui-gallery`'s own
-/// `text_selection` demo all register the rendered content rect, not the
-/// whole slot). Without this, a drag that reaches the right edge of a
-/// `show_scrollbar` display inverts the gutter's track/thumb glyphs too.
-///
-/// `lines` is always empty: TUI reads its live cell buffer on Ctrl-C and
-/// never touches it, and there is no backend-portable flattening of
-/// `td.lines` to hand pixel backends (GTK/macOS/win) instead. A wrapped
-/// logical line occupies a different number of display rows under each
-/// backend's own wrap width, and `layout.resolved_scroll_offset` shifts
-/// which logical line is on top, so a flattening built against one
-/// backend's wrap/scroll state would misalign the rows another backend
-/// actually painted. Leaving `lines` empty (the documented
-/// [`TextRegion::lines`] escape hatch) makes a pixel backend's Ctrl-C copy
-/// nothing for this region instead of copying the wrong text.
-fn text_display_region(
-    id: WidgetId,
-    area: Rect,
-    body_offset: f32,
-    layout: &TextDisplayLayout,
-) -> TextRegion {
-    let gutter_width = layout.scrollbar_bounds.map(|g| g.width).unwrap_or(0.0);
-    TextRegion {
-        id,
-        bounds: Rect::new(
-            area.x,
-            area.y + body_offset,
-            (area.width - gutter_width).max(0.0),
-            (area.height - body_offset).max(0.0),
-        ),
-        lines: Vec::new(),
     }
 }
 
@@ -1631,20 +1583,8 @@ pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &D
 
 /// A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/
 /// `"data_table"`/`"text_display"` leaf's own descriptor dict by
-/// [`items_window_from_value`] — `start` is the index, into the widget's
-/// true row/item/line count `total`, that this frame's `items`/`rows`/
-/// `lines` payload begins at. Like [`crate::scroll_px_from_value`], this is
-/// **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay`
-/// declares: a render callback that never sets `"items_window"` is
-/// completely unaffected, and one that does only sends the slice of rows
-/// currently visible (plus whatever prefetch margin it chooses) instead of
-/// every row up front.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct ItemsWindow {
-    pub start: usize,
-    pub total: usize,
-}
+/// [`items_window_from_value`] — core's own [`quadraui::ItemsWindow`].
+pub use quadraui::ItemsWindow;
 
 /// Lifts an optional `"items_window": {"start": ..., "total": ...}` object
 /// out of a `list`/`tree`/`data_table`/`text_display` leaf's own descriptor
@@ -1721,31 +1661,14 @@ pub fn rows_requested_for_window(
     scroll_offset: usize,
     viewport_rows: usize,
 ) -> Option<RowsRequestedEvent> {
-    let visible_start = scroll_offset.min(window.total);
-    let visible_end = visible_start
-        .saturating_add(viewport_rows)
-        .min(window.total);
-    let loaded_end = window.start.saturating_add(loaded_len);
-    let covers = window.start <= visible_start && loaded_end >= visible_end;
-    if covers {
-        return None;
-    }
-    let margin = viewport_rows.max(1);
-    let start = visible_start.saturating_sub(margin);
-    let end = visible_end.saturating_add(margin).min(window.total);
-    let count = end.saturating_sub(start);
-    if count == 0 {
-        return None;
-    }
-    Some(RowsRequestedEvent { id, start, count })
+    quadraui::behaviour::row_window::rows_requested(
+        window,
+        loaded_len,
+        scroll_offset,
+        viewport_rows,
+    )
+    .map(|(start, count)| RowsRequestedEvent { id, start, count })
 }
-
-/// Rows a windowed leaf's band materialises beyond its viewport's own
-/// measured capacity (see [`windowed_band_rows`]) — a small margin so a
-/// partially-visible last row, a title/header row the capacity probe
-/// resolves differently, or a backend's own sub-row pixel shift always
-/// still has a row to land on.
-const WINDOWED_BAND_PAD_ROWS: usize = 8;
 
 /// The contiguous slice of a windowed collection that one frame actually
 /// materialises for painting: `len` rows starting at absolute index
@@ -1761,28 +1684,15 @@ const WINDOWED_BAND_PAD_ROWS: usize = 8;
 /// through [`crate::hit::PaintedHit`]'s own `total_rows`/`total_items`/
 /// `total_lines` + [`crate::hit::LoadedRows`] fields instead, never through
 /// the materialised `Vec`'s own `len()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WindowedBand {
-    start: usize,
-    len: usize,
-}
+type WindowedBand = quadraui::behaviour::row_window::Band;
 
 /// How many rows a leaf painted into `area` needs materialised: an upper
 /// bound on the viewport's own row capacity (`area.height` over
 /// [`Backend::line_height`], which is what every `*_viewport_rows` probe
-/// resolves against) plus [`WINDOWED_BAND_PAD_ROWS`].
+/// resolves against) plus
+/// [`quadraui::behaviour::row_window::BAND_PAD_ROWS`].
 fn windowed_band_rows(backend: &mut dyn Backend, area: Rect) -> usize {
-    band_rows_for(area.height, backend.line_height())
-}
-
-/// [`windowed_band_rows`]'s own arithmetic, over plain numbers.
-fn band_rows_for(height: f32, line_height: f32) -> usize {
-    let rows = if line_height > 0.0 {
-        (height.max(0.0) / line_height).ceil() as usize
-    } else {
-        0
-    };
-    rows.saturating_add(WINDOWED_BAND_PAD_ROWS)
+    quadraui::behaviour::row_window::band_rows_for(area.height, backend.line_height())
 }
 
 /// The band `band_rows` rows wide that paints a windowed collection
@@ -1801,10 +1711,7 @@ fn windowed_band(
     scroll_offset: usize,
     band_rows: usize,
 ) -> WindowedBand {
-    let real_total = window.total.max(window.start.saturating_add(loaded_len));
-    let start = scroll_offset.min(real_total.saturating_sub(1));
-    let len = band_rows.max(1).min(real_total.saturating_sub(start));
-    WindowedBand { start, len }
+    quadraui::behaviour::row_window::band(window, loaded_len, scroll_offset, band_rows)
 }
 
 /// Everything painting one windowed leaf needs that its descriptor can't
@@ -1852,19 +1759,17 @@ fn windowed_leaf(
     line_height: f32,
     band_rows: usize,
 ) -> WindowedLeaf {
-    let (scroll_offset, scroll_px) = match scroll_px {
-        Some(px) if line_height > 0.0 => {
-            let rows = (px / line_height).floor().max(0.0);
-            (rows as usize, Some(px - rows * line_height))
-        }
-        other => (descriptor_offset, other),
-    };
+    let (scroll_offset, scroll_px) = quadraui::behaviour::row_window::split_scroll_px(
+        descriptor_offset,
+        scroll_px,
+        line_height,
+    );
     let band = windowed_band(window, loaded_len, scroll_offset, band_rows);
     WindowedLeaf {
         band,
         scroll_offset: band.start,
         scroll_px,
-        total: window.total.max(window.start.saturating_add(loaded_len)),
+        total: window.row_count(loaded_len),
         loaded: LoadedRows {
             start: window.start,
             len: loaded_len,
@@ -1895,20 +1800,9 @@ fn windowed_vec<T: Clone>(
     loaded: &[T],
     window: ItemsWindow,
     band: WindowedBand,
-    mut placeholder: impl FnMut(usize) -> T,
+    placeholder: impl FnMut(usize) -> T,
 ) -> Vec<T> {
-    let mut out = Vec::with_capacity(band.len);
-    for i in 0..band.len {
-        let absolute = band.start.saturating_add(i);
-        match absolute
-            .checked_sub(window.start)
-            .and_then(|loaded_idx| loaded.get(loaded_idx))
-        {
-            Some(row) => out.push(row.clone()),
-            None => out.push(placeholder(absolute)),
-        }
-    }
-    out
+    quadraui::behaviour::row_window::materialise(loaded, window, band, placeholder)
 }
 
 /// [`windowed_vec`] for a [`DataTable`]'s own `rows` — an empty-`cells`
@@ -2038,15 +1932,16 @@ fn windowed_text_display_band(
             band_rows,
         );
     }
-    let real_total = window.total.max(window.start.saturating_add(loaded_len));
-    let tail_start = real_total.saturating_sub(band_rows.max(1));
+    let tail_start = window
+        .row_count(loaded_len)
+        .saturating_sub(band_rows.max(1));
     windowed_leaf(window, loaded_len, tail_start, None, line_height, band_rows)
 }
 
 /// `idx` rebased from an absolute collection index onto `band`, or `None`
 /// when it isn't inside the band at all.
 fn band_relative(idx: Option<usize>, band: WindowedBand) -> Option<usize> {
-    idx?.checked_sub(band.start).filter(|rel| *rel < band.len)
+    quadraui::behaviour::row_window::band_relative(idx, band)
 }
 
 /// Shifts every row index a list's `Primitive::layout` resolved against a
@@ -2471,8 +2366,6 @@ pub fn paint_leaf_windowed(
                 scroll_offset: windowed.map_or(painted_table.scroll_offset, |windowed| {
                     windowed.scroll_offset
                 }),
-                items_window: None,
-                scroll_px: None,
                 total_rows: windowed.map_or(painted_table.rows.len(), |windowed| windowed.total),
                 selected_idx: data_table.selected_idx,
                 viewport_rows,
@@ -5795,15 +5688,18 @@ mod tests {
     #[test]
     fn windowed_band_rows_track_the_viewport_not_the_collection() {
         assert_eq!(
-            band_rows_for(24.0, TUI_LINE_HEIGHT),
-            24 + WINDOWED_BAND_PAD_ROWS
+            quadraui::behaviour::row_window::band_rows_for(24.0, TUI_LINE_HEIGHT),
+            24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
         );
         assert_eq!(
-            band_rows_for(24.0 * PIXEL_LINE_HEIGHT, PIXEL_LINE_HEIGHT),
-            24 + WINDOWED_BAND_PAD_ROWS
+            quadraui::behaviour::row_window::band_rows_for(24.0 * PIXEL_LINE_HEIGHT, PIXEL_LINE_HEIGHT),
+            24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
         );
         // A degenerate `line_height` can't divide by zero into an
         // unbounded band.
-        assert_eq!(band_rows_for(1_000.0, 0.0), WINDOWED_BAND_PAD_ROWS);
+        assert_eq!(
+            quadraui::behaviour::row_window::band_rows_for(1_000.0, 0.0),
+            quadraui::behaviour::row_window::BAND_PAD_ROWS
+        );
     }
 }

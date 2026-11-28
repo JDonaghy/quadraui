@@ -213,15 +213,12 @@ impl<T: Clone + PartialEq> HostLatch<T> {
         self.value = Some(value);
     }
 
-    /// Rewrite the widget's own value in place — `None` from `f` clears
-    /// it, handing the value back to the descriptor.
-    pub fn map(&mut self, f: impl FnOnce(&T) -> Option<T>) {
-        if let Some(value) = self.value.take() {
-            self.value = f(&value);
-            if self.value.is_none() {
-                self.seen = None;
-            }
-        }
+    /// Rewrite both the remembered descriptor value and the widget's own
+    /// value through `f` — for a renumbering both sides undergo at once
+    /// (a closed tab shifting every later tab's index down by one).
+    pub fn map(&mut self, f: impl Fn(&T) -> T) {
+        self.seen = self.seen.as_ref().map(&f);
+        self.value = self.value.as_ref().map(&f);
     }
 
     /// The descriptor value the last move was made against, if any.
@@ -418,9 +415,8 @@ mod tests {
         latch.set(&0, 5);
         assert_eq!(latch.get(&0), 5, "an unchanged descriptor keeps the move");
         assert_eq!(latch.get(&7), 7, "a changed descriptor wins");
-        latch.map(|v| Some(v + 1));
-        assert_eq!(latch.get(&0), 6);
-        latch.map(|_| None);
+        latch.map(|v| v + 1);
+        assert_eq!(latch.get(&1), 6, "both sides shift");
         assert_eq!(latch.get(&0), 0);
     }
 
