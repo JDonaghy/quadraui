@@ -5,33 +5,19 @@
 
 use serde_json::Value;
 
-use crate::layout::{LayoutLeaf, LeafDescriptor, LEAF_KIND_KEYS};
+use crate::layout::{LayoutLeaf, LeafDescriptor};
 use crate::widget_kinds::{decode_widget_leaf, widget_leaf_kinds};
 use crate::DecodeError;
 
 use super::value::{
-    a11y_info_from_leaf_value, check_unknown_keys, decode_value_checked, drag_role_from_leaf_value,
-    must_be_dict, obj_get, DecodeDiagnostics, A11Y_KEYS, DRAG_ROLE_KEYS, TEXT_DISPLAY_EXTRA_KEYS,
-    UNIVERSAL_NODE_SIBLING_KEYS, WINDOWED_LEAF_EXTRA_KEYS,
+    a11y_info_from_leaf_value, check_unknown_keys, drag_role_from_leaf_value, must_be_dict,
+    obj_get, DecodeDiagnostics, A11Y_KEYS, DRAG_ROLE_KEYS, UNIVERSAL_NODE_SIBLING_KEYS,
 };
 
-/// Records leaf `id`'s `"items_window"` into `diagnostics`'s own side
-/// table (see [`DecodeDiagnostics::record_items_window`]) when `body` (the
-/// raw `"list"`/`"tree"`/`"data_table"`/`"text_display"` descriptor dict,
-/// the same [`Value`] [`crate::render::items_window_from_value`] itself
-/// reads) carries one — a no-op when it doesn't, mirroring every other
-/// optional leaf-level side-table recording in this module.
-fn record_items_window(diagnostics: &DecodeDiagnostics, id: &str, body: &Value) {
-    if let Some(window) = crate::render::items_window_from_value(body) {
-        diagnostics.record_items_window(id, window);
-    }
-}
-
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or a
+/// must be present and a string; exactly one
 /// [`crate::widget_kinds::widget_leaf_kinds`] kind must be present and
-/// hold a `dict` — a leaf with two kind keys is rejected by the single
-/// `found` duplicate check shared across both loops below. Also reads this leaf's
+/// hold a `dict` — a leaf with two kind keys is rejected. Also reads this leaf's
 /// optional
 /// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
 /// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
@@ -52,7 +38,7 @@ pub(super) fn layout_leaf_from_value(
         None => return Err(DecodeError::missing_field(what, "leaf.id")),
     };
     let context = format!("{what} › leaf#{id}");
-    // "id" plus whichever of `LEAF_KIND_KEYS`/`widget_leaf_kinds()` holds
+    // "id" plus whichever of `widget_leaf_kinds()` holds
     // this leaf's one descriptor, plus the sibling keys every layout-tree
     // node dict may carry regardless of its own kind, plus the two
     // leaf-only drag-role keys and the one leaf-only accessibility-override
@@ -60,7 +46,6 @@ pub(super) fn layout_leaf_from_value(
     // container, so they stay out of `UNIVERSAL_NODE_SIBLING_KEYS` itself).
     let widget_kinds = widget_leaf_kinds();
     let known_keys: Vec<&str> = std::iter::once("id")
-        .chain(LEAF_KIND_KEYS)
         .chain(widget_kinds.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
         .chain(DRAG_ROLE_KEYS)
@@ -77,79 +62,6 @@ pub(super) fn layout_leaf_from_value(
     }
 
     let mut found: Option<LeafDescriptor> = None;
-    // Set alongside `found` only for the three scrollable kinds —
-    // `scroll_px_from_value` reads the same leaf dict `decode_value` just
-    // decoded a typed descriptor from, so it stays `None` for every other
-    // kind (and whenever the dict never sets the key).
-    let mut scroll_px: Option<f32> = None;
-    for key in LEAF_KIND_KEYS {
-        let Some(v) = obj_get(value, key) else {
-            continue;
-        };
-        let value_dict = must_be_dict(&context, v, key)?;
-        if found.is_some() {
-            return Err(DecodeError::borrow(
-                &context,
-                "has more than one descriptor kind",
-            ));
-        }
-        found = Some(match key {
-            "text_display" => {
-                record_items_window(diagnostics, &id, v);
-                LeafDescriptor::TextDisplay(decode_value_checked(
-                    diagnostics,
-                    &context,
-                    key,
-                    value_dict,
-                    &TEXT_DISPLAY_EXTRA_KEYS,
-                )?)
-            }
-            "list" => {
-                scroll_px = crate::scroll_px_from_value(v);
-                record_items_window(diagnostics, &id, v);
-                LeafDescriptor::List(decode_value_checked(
-                    diagnostics,
-                    &context,
-                    key,
-                    value_dict,
-                    &WINDOWED_LEAF_EXTRA_KEYS,
-                )?)
-            }
-            "tree" => {
-                scroll_px = crate::scroll_px_from_value(v);
-                record_items_window(diagnostics, &id, v);
-                LeafDescriptor::Tree(decode_value_checked(
-                    diagnostics,
-                    &context,
-                    key,
-                    value_dict,
-                    &WINDOWED_LEAF_EXTRA_KEYS,
-                )?)
-            }
-            "data_table" => {
-                scroll_px = crate::scroll_px_from_value(v);
-                record_items_window(diagnostics, &id, v);
-                LeafDescriptor::DataTable(decode_value_checked(
-                    diagnostics,
-                    &context,
-                    key,
-                    value_dict,
-                    &WINDOWED_LEAF_EXTRA_KEYS,
-                )?)
-            }
-            "tab_bar" => LeafDescriptor::TabBar(decode_value_checked(
-                diagnostics,
-                &context,
-                key,
-                value_dict,
-                &[],
-            )?),
-            _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
-        });
-    }
-    // `widget_leaf_kinds()` decodes into `LeafDescriptor::Widget` via
-    // `quadraui::decode_widget`, sharing the fixed kinds' `found`
-    // duplicate check.
     for &kind in &widget_kinds {
         let Some(v) = obj_get(value, kind) else {
             continue;
@@ -170,15 +82,11 @@ pub(super) fn layout_leaf_from_value(
     let descriptor = found.ok_or_else(|| {
         DecodeError::borrow(
             &context,
-            format!("is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {widget_kinds:?})"),
+            format!("is missing a descriptor (one of {widget_kinds:?})"),
         )
     })?;
 
-    Ok(LayoutLeaf {
-        id,
-        descriptor,
-        scroll_px,
-    })
+    Ok(LayoutLeaf { id, descriptor })
 }
 
 #[cfg(test)]
@@ -257,9 +165,7 @@ mod tests {
         let crate::layout::LayoutNode::Leaf(leaf) = node else {
             panic!("expected a leaf node");
         };
-        let LeafDescriptor::Widget { kind, widget } = leaf.descriptor else {
-            panic!("expected a generic widget descriptor");
-        };
+        let LeafDescriptor::Widget { kind, widget } = leaf.descriptor;
         assert_eq!(kind, "scripted_widget");
         assert!(
             widget
@@ -287,26 +193,6 @@ mod tests {
                 .to_string()
                 .contains("no scripted widget is registered"),
             "{error}"
-        );
-    }
-
-    /// A leaf dict naming two descriptor kinds at once is rejected — even
-    /// across the `LEAF_KIND_KEYS`/`WIDGET_KINDS` loops `"list"`/`"button"`
-    /// fall into respectively, so `"list"` carries a complete, validly
-    /// decoding body here (unlike most other fixtures in this file, which
-    /// only need enough to reach the check they're after).
-    #[test]
-    fn rejects_a_leaf_with_two_descriptor_kinds() {
-        let value = json!({
-            "id": "leaf1",
-            "button": {"id": "leaf1", "label": "A"},
-            "list": {"id": "leaf1", "items": [], "selected_idx": 0},
-        });
-        let err = err(decode(&value));
-        assert!(
-            err.to_string().contains("more than one descriptor kind"),
-            "{}",
-            err.to_string()
         );
     }
 
@@ -521,34 +407,6 @@ mod tests {
         );
     }
 
-    /// An unrecognised key inside a `"tab_bar"` descriptor body -- a fixed
-    /// leaf's own dict, decoded through [`decode_value_checked`] rather
-    /// than [`check_unknown_keys`]'s sibling-key path -- is a hard
-    /// [`DecodeError::UnknownKey`] under `strict`, naming the key, the
-    /// dict it was found on, and the keys `TabBar` actually accepts.
-    #[test]
-    fn tab_bar_leaf_body_rejects_an_unknown_key_under_strict() {
-        let sets = StyleSets::new();
-        let theme = Theme::default();
-        let diagnostics = DecodeDiagnostics::strict();
-        let value = json!({
-            "id": "b1",
-            "tab_bar": {"id": "b1", "tabz": []},
-        });
-        let error = err(decode_layout_node_with_styles(
-            "test",
-            &value,
-            StyleContext::new(&sets, &theme),
-            &diagnostics,
-        ));
-        assert_eq!(error.code(), "unknown_key");
-        assert!(
-            error.to_string().contains("\"tabz\""),
-            "{}",
-            error.to_string()
-        );
-    }
-
     /// The same typo'd key [`tab_bar_leaf_body_rejects_an_unknown_key_under_strict`]
     /// rejects under `strict` only warns once, through the registered hook,
     /// under the default (warn) policy -- the decode still succeeds, since
@@ -575,9 +433,9 @@ mod tests {
         );
     }
 
-    /// A [`WIDGET_KINDS`] body gets the same treatment as the fixed leaf
-    /// above even though its concrete descriptor type is named by the kind
-    /// string rather than statically: `"labl"` inside a `"button"` dict is
+    /// A [`WIDGET_KINDS`] body's concrete descriptor type is named by the
+    /// kind string rather than statically, and its keys are still checked:
+    /// `"labl"` inside a `"button"` dict is
     /// a hard [`DecodeError::UnknownKey`] under `strict`, naming the key.
     #[test]
     fn widget_leaf_body_rejects_an_unknown_key_under_strict() {
@@ -628,11 +486,88 @@ mod tests {
         );
     }
 
+    /// A genuine typo next to `"scroll_px"` in a scrollable body -- e.g.
+    /// `"scroll_pxx"` -- still reports as unknown; the fix above only
+    /// widens the accepted set by the one documented key, not by anything
+    /// else.
+    #[test]
+    fn a_typo_near_scroll_px_still_rejects_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let value = json!({
+            "id": "leaf-1",
+            "list": {
+                "id": "l1",
+                "items": [],
+                "selected_idx": 0,
+                "scroll_pxx": 3.5,
+            },
+        });
+        let strict = DecodeDiagnostics::strict();
+        let error = err(decode_render_output_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &strict,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"scroll_pxx\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// A leaf dict naming two descriptor kinds at once is rejected, even
+    /// when both decode on their own — so `"list"` carries a complete,
+    /// validly decoding body here (unlike most other fixtures in this
+    /// file, which only need enough to reach the check they're after).
+    #[test]
+    fn rejects_a_leaf_with_two_descriptor_kinds() {
+        let value = json!({
+            "id": "leaf1",
+            "button": {"id": "leaf1", "label": "A"},
+            "list": {"id": "leaf1", "items": [], "selected_idx": 0},
+        });
+        let err = err(decode(&value));
+        assert!(
+            err.to_string().contains("more than one descriptor kind"),
+            "{}",
+            err.to_string()
+        );
+    }
+
+    /// An unrecognised key inside a `"tab_bar"` descriptor body -- a fixed
+    /// leaf's own dict, decoded through [`decode_value_checked`] rather
+    /// than [`check_unknown_keys`]'s sibling-key path -- is a hard
+    /// [`DecodeError::UnknownKey`] under `strict`, naming the key, the
+    /// dict it was found on, and the keys `TabBar` actually accepts.
+    #[test]
+    fn tab_bar_leaf_body_rejects_an_unknown_key_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::strict();
+        let value = json!({
+            "id": "b1",
+            "tab_bar": {"id": "b1", "tabz": []},
+        });
+        let error = err(decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"tabz\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
     /// A minimal `"list"`/`"tree"`/`"data_table"` descriptor body carrying
-    /// `"scroll_px"` -- the documented `scroll_px_from_value` extension key,
-    /// not a field any of `ListView`/`TreeView`/`DataTable` declares (see
-    /// `docs/bindings-wire-format.md`'s own `"scroll_px"` entries and
-    /// [`crate::scroll_px_from_value`]'s doc). Covers both the layout-tree
+    /// `"scroll_px"`, a field `ListView`/`TreeView`/`DataTable` each
+    /// declare. Covers both the layout-tree
     /// leaf shape (`{"id": ..., "list": {...}}`) and the flat per-slot shape
     /// (`{"list": {...}}`) [`decode_render_output_with_styles`] dispatches
     /// between.
@@ -740,9 +675,8 @@ mod tests {
     }
 
     /// A minimal `"list"`/`"tree"`/`"data_table"`/`"text_display"`
-    /// descriptor body carrying `"items_window"` -- the documented
-    /// `items_window_from_value` extension key, not a field any of
-    /// `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares. Mirrors
+    /// descriptor body carrying `"items_window"`, a field
+    /// `ListView`/`TreeView`/`DataTable`/`TextDisplay` each declare. Mirrors
     /// [`scrollable_body_with_scroll_px`]'s own dual-shape coverage.
     fn windowed_body_with_items_window(kind: &str) -> Value {
         let window = json!({"start": 0, "total": 100_000});
@@ -846,37 +780,5 @@ mod tests {
                 panic!("{kind} layout-tree leaf with items_window under strict: {e}")
             });
         }
-    }
-
-    /// A genuine typo next to `"scroll_px"` in a scrollable body -- e.g.
-    /// `"scroll_pxx"` -- still reports as unknown; the fix above only
-    /// widens the accepted set by the one documented key, not by anything
-    /// else.
-    #[test]
-    fn a_typo_near_scroll_px_still_rejects_under_strict() {
-        let sets = StyleSets::new();
-        let theme = Theme::default();
-        let value = json!({
-            "id": "leaf-1",
-            "list": {
-                "id": "l1",
-                "items": [],
-                "selected_idx": 0,
-                "scroll_pxx": 3.5,
-            },
-        });
-        let strict = DecodeDiagnostics::strict();
-        let error = err(decode_render_output_with_styles(
-            "test",
-            &value,
-            StyleContext::new(&sets, &theme),
-            &strict,
-        ));
-        assert_eq!(error.code(), "unknown_key");
-        assert!(
-            error.to_string().contains("\"scroll_pxx\""),
-            "{}",
-            error.to_string()
-        );
     }
 }

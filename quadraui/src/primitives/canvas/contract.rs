@@ -181,12 +181,13 @@ impl crate::interactive::Interactive for Canvas {
                 None => Handled::Ignored,
             },
             RoutedEvent::Pointer {
-                kind: PointerKind::DoubleClick(_),
+                kind: PointerKind::DoubleClick(button),
                 local,
                 ..
             } => match region_at(local) {
                 Some(region) => Handled::Event(CanvasEvent::RegionDoubleClicked {
                     region,
+                    button: *button,
                     x: local.x,
                     y: local.y,
                 }),

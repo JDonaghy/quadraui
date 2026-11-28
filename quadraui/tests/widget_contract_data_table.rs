@@ -42,11 +42,15 @@ fn table() -> DataTable {
         })
         .collect();
     DataTable {
+        selection_mode: quadraui::SelectionMode::Multi,
+        selected_indices: Vec::new(),
         id: WidgetId::new("table:contract"),
         columns: vec![column("Name"), column("Kind"), column("Size")],
         rows,
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: true,
         show_scrollbar: true,

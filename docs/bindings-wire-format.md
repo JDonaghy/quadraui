@@ -191,17 +191,16 @@ descendant's `{"class": "secondary"}` against that narrowed theme.
 A `"leaf"` node (`LayoutLeafNode`) is `{"id": <str>, "<kind>": <descriptor>}`
 -- exactly one `<kind>` key is present alongside `"id"`. `LayoutLeafNode`'s
 own field table in the generated reference lists every registered kind key
-and the descriptor type it carries: the fixed kinds
-(`quadraui-binding-core::layout::LEAF_KIND_KEYS` -- `"text_display"`,
-`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`) and every generic widget
-kind (`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
-`quadraui::widget_kinds!` table declares, such as `"button"`, `"form"`,
+and the descriptor type it carries: every widget kind
+(`quadraui_binding_core::widget_leaf_kinds()`: the kinds core's
+`quadraui::widget_kinds!` table declares, such as `"text_display"`,
+`"list"`, `"tree"`, `"data_table"`, `"tab_bar"`, `"button"`, `"form"`,
 `"menu_bar"`, `"text_input"` and `"palette"`, plus any kind a binding
-registers at runtime). A generic kind decodes into its core widget and is
+registers at runtime). Each kind decodes into its core widget and is
 painted, hit-tested and routed through that widget's own
-`Primitive`/`Interactive` implementation. Adding a kind to either list is
-what adds its row to `LayoutLeafNode`'s table below -- this page never
-lists them by hand.
+`Primitive`/`Interactive` implementation, which keeps its own selection,
+scroll and similar state. Adding a kind to that list is what adds its row
+to `LayoutLeafNode`'s table below -- this page never lists them by hand.
 
 `RenderFrameDict` is the older, flat, per-slot shape some callbacks return
 instead of a `LayoutNode` tree: the same kind keys as `LayoutLeafNode`, but
@@ -470,7 +469,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`DataTable`](#wire-datatable)
 - [`DataTableEvent`](#wire-datatableevent)
 - [`DataTableGlyphs`](#wire-datatableglyphs)
-- [`DataTableLeaf`](#wire-datatableleaf)
 - [`DateFormat`](#wire-dateformat)
 - [`DateLocale`](#wire-datelocale)
 - [`DatePicker`](#wire-datepicker)
@@ -556,7 +554,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`ListItem`](#wire-listitem)
 - [`ListView`](#wire-listview)
 - [`ListViewEvent`](#wire-listviewevent)
-- [`ListViewLeaf`](#wire-listviewleaf)
 - [`Markdown`](#wire-markdown)
 - [`MenuDef`](#wire-menudef)
 - [`MessageDialogOverlayDescriptor`](#wire-messagedialogoverlaydescriptor)
@@ -602,7 +599,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`RenderFrameDict`](#wire-renderframedict)
 - [`RenderOutput`](#wire-renderoutput)
 - [`RowAlign`](#wire-rowalign)
-- [`RowsRequestedEvent`](#wire-rowsrequestedevent)
 - [`ScrollAxis`](#wire-scrollaxis)
 - [`ScrollAxisValue`](#wire-scrollaxisvalue)
 - [`ScrollDelta`](#wire-scrolldelta)
@@ -661,7 +657,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`TextArea`](#wire-textarea)
 - [`TextDisplay`](#wire-textdisplay)
 - [`TextDisplayEvent`](#wire-textdisplayevent)
-- [`TextDisplayLeaf`](#wire-textdisplayleaf)
 - [`TextDisplayLine`](#wire-textdisplayline)
 - [`TextField`](#wire-textfield)
 - [`TextInput`](#wire-textinput)
@@ -687,7 +682,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`TreeTableEvent`](#wire-treetableevent)
 - [`TreeTableNode`](#wire-treetablenode)
 - [`TreeView`](#wire-treeview)
-- [`TreeViewLeaf`](#wire-treeviewleaf)
 - [`UiEvent`](#wire-uievent)
 - [`UpdateInfoWire`](#wire-updateinfowire)
 - [`UserPayload`](#wire-userpayload)
@@ -735,6 +729,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_DataTableEventContextMenuRequested`](#wire-_datatableeventcontextmenurequested)
 - [`_DataTableEventHeaderClicked`](#wire-_datatableeventheaderclicked)
 - [`_DataTableEventRowActivated`](#wire-_datatableeventrowactivated)
+- [`_DataTableEventRowClicked`](#wire-_datatableeventrowclicked)
 - [`_DataTableEventRowDoubleClicked`](#wire-_datatableeventrowdoubleclicked)
 - [`_DataTableEventRowSelected`](#wire-_datatableeventrowselected)
 - [`_DataTableEventScroll`](#wire-_datatableeventscroll)
@@ -812,12 +807,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_FormEventToggleChanged`](#wire-_formeventtogglechanged)
 - [`_FormEventToolbarButtonClicked`](#wire-_formeventtoolbarbuttonclicked)
 - [`_HeaderHitDict`](#wire-_headerhitdict)
-- [`_HitDetailDataTableFooter`](#wire-_hitdetaildatatablefooter)
-- [`_HitDetailDataTableHeader`](#wire-_hitdetaildatatableheader)
-- [`_HitDetailDataTableHeaderDivider`](#wire-_hitdetaildatatableheaderdivider)
-- [`_HitDetailDataTableRow`](#wire-_hitdetaildatatablerow)
-- [`_HitDetailListItem`](#wire-_hitdetaillistitem)
-- [`_HitDetailListTitle`](#wire-_hitdetaillisttitle)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
 - [`_HitDetailScrollScrollbarThumb`](#wire-_hitdetailscrollscrollbarthumb)
 - [`_HitDetailScrollScrollbarTrackAfter`](#wire-_hitdetailscrollscrollbartrackafter)
@@ -826,21 +815,14 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitFirstPane`](#wire-_hitdetailsplitfirstpane)
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailTextDisplayLine`](#wire-_hitdetailtextdisplayline)
-- [`_HitDetailTextDisplayScrollbarThumb`](#wire-_hitdetailtextdisplayscrollbarthumb)
-- [`_HitDetailTextDisplayScrollbarTrackAfter`](#wire-_hitdetailtextdisplayscrollbartrackafter)
-- [`_HitDetailTextDisplayScrollbarTrackBefore`](#wire-_hitdetailtextdisplayscrollbartrackbefore)
-- [`_HitDetailTreeChevron`](#wire-_hitdetailtreechevron)
-- [`_HitDetailTreeRow`](#wire-_hitdetailtreerow)
-- [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
-- [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
-- [`_HitDetailTreeScrollbarTrackBefore`](#wire-_hitdetailtreescrollbartrackbefore)
 - [`_HitDetailWidgetBody`](#wire-_hitdetailwidgetbody)
 - [`_Icon1`](#wire-_icon1)
 - [`_Icon2`](#wire-_icon2)
 - [`_KeyBindingDict`](#wire-_keybindingdict)
 - [`_LayoutLeafNodeScriptedWidget`](#wire-_layoutleafnodescriptedwidget)
+- [`_ListViewEventContextMenuRequested`](#wire-_listvieweventcontextmenurequested)
 - [`_ListViewEventItemActivated`](#wire-_listvieweventitemactivated)
+- [`_ListViewEventItemClicked`](#wire-_listvieweventitemclicked)
 - [`_ListViewEventItemDoubleClicked`](#wire-_listvieweventitemdoubleclicked)
 - [`_ListViewEventKeyPressed`](#wire-_listvieweventkeypressed)
 - [`_ListViewEventSelectionChanged`](#wire-_listvieweventselectionchanged)
@@ -963,6 +945,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_TreeTableEventColumnResized`](#wire-_treetableeventcolumnresized)
 - [`_TreeTableEventContextMenuRequested`](#wire-_treetableeventcontextmenurequested)
 - [`_TreeTableEventRowActivated`](#wire-_treetableeventrowactivated)
+- [`_TreeTableEventRowClicked`](#wire-_treetableeventrowclicked)
 - [`_TreeTableEventRowDoubleClicked`](#wire-_treetableeventrowdoubleclicked)
 - [`_TreeTableEventRowSelected`](#wire-_treetableeventrowselected)
 - [`_TreeTableEventScroll`](#wire-_treetableeventscroll)
@@ -985,6 +968,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_UiEventOpenRequested`](#wire-_uieventopenrequested)
 - [`_UiEventPowerStateChanged`](#wire-_uieventpowerstatechanged)
 - [`_UiEventRadioGroupSelectionChanged`](#wire-_uieventradiogroupselectionchanged)
+- [`_UiEventRowsRequested`](#wire-_uieventrowsrequested)
 - [`_UiEventScroll`](#wire-_uieventscroll)
 - [`_UiEventScrollOffsetChanged`](#wire-_uieventscrolloffsetchanged)
 - [`_UiEventScrollbarMoved`](#wire-_uieventscrollbarmoved)
@@ -1369,7 +1353,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `RegionClicked` | `_CanvasEventRegionClicked` | A declared region was clicked (any mouse button — see `button`). |
-| `RegionDoubleClicked` | `_CanvasEventRegionDoubleClicked` | A declared region was double-clicked. |
+| `RegionDoubleClicked` | `_CanvasEventRegionDoubleClicked` | A declared region was double-clicked with `button` — the button `UiEvent::DoubleClick` carries. |
 | `RegionHovered` | `_CanvasEventRegionHovered` | The hovered region changed, including to/from no region at all. |
 
 <a id="wire-canvasfontrole"></a>
@@ -1765,10 +1749,14 @@ Declarative description of a `DataTable` widget.
 | `h_scroll` | `number` | no | Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI). |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `min_total_width` | `number \| null` | no | Minimum total width for all columns. |
 | `rows` | `DataRow[]` | yes |  |
 | `scroll_offset` | `number` | no |  |
-| `selected_idx` | `number \| null` | no |  |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
+| `selected_idx` | `number \| null` | no | The cursor row, and the anchor a Shift range grows from. |
+| `selected_indices` | `number[]` | no | The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back. |
+| `selection_mode` | `SelectionMode` | no | `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`. |
 | `show_scrollbar` | `boolean` | no | Show a vertical scrollbar when rows exceed the viewport. |
 | `sort` | `[number, SortDirection] \| null` | no | Which column is sorted, and in which direction. |
 | `striped` | `boolean` | no | Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling. |
@@ -1792,6 +1780,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ScrollChanged` | `_DataTableEventScrollChanged` | The widget scrolled — a wheel, a scrollbar gesture, or a cursor move brought its row into view. |
 | `ColumnFocused` | `_DataTableEventColumnFocused` | Left/Right moved the keyboard's column cursor to `col`. |
 | `ContextMenuRequested` | `_DataTableEventContextMenuRequested` | The user asked for row `idx`'s context menu (right-click); `position` is where, in the same coordinates the table was laid out in. |
+| `RowClicked` | `_DataTableEventRowClicked` | Row `idx` was pressed with a button other than the primary and secondary ones — middle (open in a new tab), `X1`/`X2` (back / forward) or a backend-specific button. |
 
 <a id="wire-datatableglyphs"></a>
 #### `DataTableGlyphs`
@@ -1802,29 +1791,6 @@ Optional app-supplied override for the sort-direction glyphs `native_surface_pai
 | --- | --- | --- | --- |
 | `sort_ascending` | `Icon \| null` | no |  |
 | `sort_descending` | `Icon \| null` | no |  |
-
-<a id="wire-datatableleaf"></a>
-#### `DataTableLeaf`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `bordered` | `boolean` | no | Reserve a 1-cell/pixel margin on every edge of the table's viewport for a decorative frame, mirroring `crate::primitives::list::ListView::bordered` and `crate::types::TreeStyle::bordered`. |
-| `column_overrides` | `(number \| null)[]` | no | Per-column width overrides from user drag. |
-| `columns` | `Column[]` | yes |  |
-| `footer` | `DataRow \| null` | no | Optional pinned summary/totals row, laid out against the same resolved columns as the body. |
-| `glyphs` | `DataTableGlyphs \| null` | no | Sort-direction glyph overrides for the header — see `DataTableGlyphs`. |
-| `h_scroll` | `number` | no | Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI). |
-| `has_focus` | `boolean` | no |  |
-| `id` | `WidgetId` | yes |  |
-| `min_total_width` | `number \| null` | no | Minimum total width for all columns. |
-| `rows` | `DataRow[]` | yes |  |
-| `scroll_offset` | `number` | no |  |
-| `selected_idx` | `number \| null` | no |  |
-| `show_scrollbar` | `boolean` | no | Show a vertical scrollbar when rows exceed the viewport. |
-| `sort` | `[number, SortDirection] \| null` | no | Which column is sorted, and in which direction. |
-| `striped` | `boolean` | no | Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling. |
-| `items_window` | `ItemsWindow \| null` | no |  |
-| `scroll_px` | `number` | no |  |
 
 <a id="wire-dateformat"></a>
 #### `DateFormat`
@@ -2208,6 +2174,7 @@ The inline find/replace overlay displayed at the top-right of the active editor 
 | `cursor` | `number` | no | Cursor position within the focused field (char offset). |
 | `focus` | `number` | no | Which field has focus: 0 = find, 1 = replace. |
 | `group_bounds` | `Rect` | yes | Bounding rect of the active editor group, in the surface's own units. |
+| `hidden_toggles` | `FindReplaceToggle[]` | no | Toggles this panel does not offer — say regex and preserve-case for a host whose search engine has neither. |
 | `hit_regions` | `[FrHitRegion, FindReplaceClickTarget][]` | no | Hit regions for click handling, in char-cell units relative to the panel content corner (inside borders). |
 | `id` | `WidgetId` | no | This overlay's id — the one its `FindReplaceEvent`s are reported under. |
 | `in_selection` | `boolean` | no | Find in selection mode. |
@@ -2403,7 +2370,7 @@ Alias for `"Opened" | "Closed"`.
 
 The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-icon"></a>
 #### `Icon`
@@ -2488,12 +2455,12 @@ Single-line text input rendered inline (used for SC commit messages, search-with
 <a id="wire-itemswindow"></a>
 #### `ItemsWindow`
 
-A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/ `"data_table"`/`"text_display"` leaf's own descriptor dict by `items_window_from_value` — `start` is the index, into the widget's true row/item/line count `total`, that this frame's `items`/`rows`/ `lines` payload begins at. Like `crate::scroll_px_from_value`, this is **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares: a render callback that never sets `"items_window"` is completely unaffected, and one that does only sends the slice of rows currently visible (plus whatever prefetch margin it chooses) instead of every row up front.
+A windowed collection: the descriptor's rows/items/lines are the loaded slice starting at absolute index `start` of `total` real rows.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `start` | `number` | yes |  |
-| `total` | `number` | yes |  |
+| `start` | `number` | yes | The absolute index of the descriptor's first loaded row. |
+| `total` | `number` | yes | How many rows the real collection has. |
 
 <a id="wire-justifyvalue"></a>
 #### `JustifyValue`
@@ -2610,7 +2577,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `command_center` | `CommandCenter` | no |  |
 | `command_line` | `CommandLine` | no |  |
 | `context_menu` | `ContextMenu` | no |  |
-| `data_table` | `DataTable \| DataTableLeaf` | no |  |
+| `data_table` | `DataTable` | no |  |
 | `date_picker` | `DatePicker` | no |  |
 | `diff_view` | `DiffView` | no |  |
 | `draggable` | `boolean \| null` | no |  |
@@ -2621,7 +2588,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `icon_grid` | `IconGrid` | no |  |
 | `id` | `string` | yes |  |
 | `image` | `Image` | no |  |
-| `list` | `ListView \| ListViewLeaf` | no |  |
+| `list` | `ListView` | no |  |
 | `markdown` | `Markdown` | no |  |
 | `max` | `number \| null` | no |  |
 | `menu_bar` | `AppMenu` | no |  |
@@ -2647,12 +2614,12 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `switch` | `Switch` | no |  |
 | `tab_bar` | `TabBar` | no |  |
 | `terminal` | `Terminal` | no |  |
-| `text_display` | `TextDisplay \| TextDisplayLeaf` | no |  |
+| `text_display` | `TextDisplay` | no |  |
 | `text_field` | `TextField` | no |  |
 | `text_input` | `TextInput` | no |  |
 | `textarea` | `TextArea` | no |  |
 | `toolbar` | `Toolbar` | no |  |
-| `tree` | `TreeView \| TreeViewLeaf` | no |  |
+| `tree` | `TreeView` | no |  |
 | `tree_table` | `TreeTable` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
 | `wire_version` | `number \| null` | no |  |
@@ -2870,8 +2837,10 @@ Declarative description of a `ListView` widget.
 | `has_focus` | `boolean` | no | Whether this list currently holds keyboard focus. |
 | `id` | `WidgetId` | yes |  |
 | `items` | `ListItem[]` | yes |  |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `max_content_width` | `number \| null` | no | Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text. |
 | `scroll_offset` | `number` | no |  |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
 | `selected_idx` | `number` | yes |  |
 | `show_v_scrollbar` | `boolean` | no | When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there. |
 | `striped` | `boolean` | no | Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling. |
@@ -2891,25 +2860,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ItemDoubleClicked` | `_ListViewEventItemDoubleClicked` | User double-clicked a row — distinct from `SelectionChanged` (a plain click) so an app can tell "select" apart from "open" without both folding into `ItemActivated`. |
 | `KeyPressed` | `_ListViewEventKeyPressed` | A key was pressed while the list had focus and the primitive did not consume it. |
 | `SelectionSet` | `_ListViewEventSelectionSet` | The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd click toggled a row, Shift click/extend selected a range, or a keyboard extension grew the set. |
-
-<a id="wire-listviewleaf"></a>
-#### `ListViewLeaf`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `bordered` | `boolean` | no | When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list and inset items by 1 cell on each side. |
-| `h_scroll` | `number` | no | Horizontal scroll offset in **display cells** (terminal columns — a CJK/emoji glyph counts as 2, matching `crate::text_util::char_cell_width`), not characters. |
-| `has_focus` | `boolean` | no | Whether this list currently holds keyboard focus. |
-| `id` | `WidgetId` | yes |  |
-| `items` | `ListItem[]` | yes |  |
-| `max_content_width` | `number \| null` | no | Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text. |
-| `scroll_offset` | `number` | no |  |
-| `selected_idx` | `number` | yes |  |
-| `show_v_scrollbar` | `boolean` | no | When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there. |
-| `striped` | `boolean` | no | Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling. |
-| `title` | `StyledText \| null` | no | Optional header row shown above the items. |
-| `items_window` | `ItemsWindow \| null` | no |  |
-| `scroll_px` | `number` | no |  |
+| `ContextMenuRequested` | `_ListViewEventContextMenuRequested` | The user asked for item `idx`'s context menu (right-click); `position` is where, in the coordinates the list was laid out in. |
+| `ItemClicked` | `_ListViewEventItemClicked` | Item `idx` was pressed with a button other than the primary and secondary ones — middle, `X1`/`X2` or a backend-specific button. |
 
 <a id="wire-markdown"></a>
 #### `Markdown`
@@ -3176,6 +3128,7 @@ Declarative description of a `Palette` widget.
 | `query_cursor` | `number` | no | Cursor byte offset in `query`. |
 | `scroll_offset` | `number` | no | How many rows have been scrolled past. |
 | `selected_idx` | `number` | yes | Index into `items` of the currently highlighted row. |
+| `show_mode_badge` | `boolean` | no | Paint the `[L]`/`[I]` mode badge at the right of the title row. |
 | `show_query` | `boolean` | no | When `false`, the query input row and separator are hidden — producing a popup-style list (tab switcher, branch picker). |
 | `title` | `string` | yes | Header text shown above the query input, e.g. |
 | `total_count` | `number` | no | Total number of items in the underlying source (before filtering). |
@@ -3391,7 +3344,7 @@ A flat render frame: one optional descriptor per widget kind.
 | `command_center` | `CommandCenter \| null` | no |  |
 | `command_line` | `CommandLine \| null` | no |  |
 | `context_menu` | `ContextMenu \| null` | no |  |
-| `data_table` | `(DataTable \| DataTableLeaf) \| null` | no |  |
+| `data_table` | `DataTable \| null` | no |  |
 | `date_picker` | `DatePicker \| null` | no |  |
 | `diff_view` | `DiffView \| null` | no |  |
 | `editor` | `Editor \| null` | no |  |
@@ -3399,7 +3352,7 @@ A flat render frame: one optional descriptor per widget kind.
 | `form` | `Form \| null` | no |  |
 | `icon_grid` | `IconGrid \| null` | no |  |
 | `image` | `Image \| null` | no |  |
-| `list` | `(ListView \| ListViewLeaf) \| null` | no |  |
+| `list` | `ListView \| null` | no |  |
 | `markdown` | `Markdown \| null` | no |  |
 | `menu_bar` | `AppMenu \| null` | no |  |
 | `message_list` | `MessageList \| null` | no |  |
@@ -3420,12 +3373,12 @@ A flat render frame: one optional descriptor per widget kind.
 | `switch` | `Switch \| null` | no |  |
 | `tab_bar` | `TabBar \| null` | no |  |
 | `terminal` | `Terminal \| null` | no |  |
-| `text_display` | `(TextDisplay \| TextDisplayLeaf) \| null` | no |  |
+| `text_display` | `TextDisplay \| null` | no |  |
 | `text_field` | `TextField \| null` | no |  |
 | `text_input` | `TextInput \| null` | no |  |
 | `textarea` | `TextArea \| null` | no |  |
 | `toolbar` | `Toolbar \| null` | no |  |
-| `tree` | `(TreeView \| TreeViewLeaf) \| null` | no |  |
+| `tree` | `TreeView \| null` | no |  |
 | `tree_table` | `TreeTable \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
 | `wire_version` | `number` | no |  |
@@ -3443,17 +3396,6 @@ Alias for `LayoutNode | RenderFrameDict`.
 How an item-bearing `FieldKind`'s items (`ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`) pack within their row's available width — the space between `items_start_x` (from the field's `FormFieldMeasure`) and the row's right edge. Set on `FormSpacing::row_align` as the form-wide default, or on `FormField::row_align` to override a single field.
 
 Alias for `"Start" | "Center" | "End" | "Stretch"`.
-
-<a id="wire-rowsrequestedevent"></a>
-#### `RowsRequestedEvent`
-
-The `{id, start, count}` a binding should ask its app's render callback for next, computed by `rows_requested_for_window` once scrolling moves outside the slice an `ItemsWindow` says is currently loaded.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `count` | `number` | yes |  |
-| `id` | `WidgetId` | yes |  |
-| `start` | `number` | yes |  |
 
 <a id="wire-scrollaxis"></a>
 #### `ScrollAxis`
@@ -4203,6 +4145,7 @@ Declarative description of a `TextDisplay`.
 | `auto_scroll` | `boolean` | no | When true, backends auto-scroll to keep the latest line visible. |
 | `has_focus` | `boolean` | no |  |
 | `id` | `WidgetId` | yes |  |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded lines sit in the real collection: when set, the payload holds lines `start..` of `total`, and `scroll_offset` and every line index in this widget's events are absolute indices into those `total` lines. |
 | `lines` | `TextDisplayLine[]` | yes |  |
 | `max_lines` | `number` | no | Maximum lines to retain in the ring buffer. |
 | `scroll_offset` | `number` | no | Index of the first visible line. |
@@ -4222,21 +4165,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `AutoScrollToggled` | `_TextDisplayEventAutoScrollToggled` | User toggled auto-scroll (typically via a keyboard shortcut or click on a "Follow" indicator). |
 | `Copied` | `_TextDisplayEventCopied` | User initiated a copy of selected lines. |
 | `KeyPressed` | `_TextDisplayEventKeyPressed` | A key was pressed with the display focused and the primitive did not consume it. |
-
-<a id="wire-textdisplayleaf"></a>
-#### `TextDisplayLeaf`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `auto_scroll` | `boolean` | no | When true, backends auto-scroll to keep the latest line visible. |
-| `has_focus` | `boolean` | no |  |
-| `id` | `WidgetId` | yes |  |
-| `lines` | `TextDisplayLine[]` | yes |  |
-| `max_lines` | `number` | no | Maximum lines to retain in the ring buffer. |
-| `scroll_offset` | `number` | no | Index of the first visible line. |
-| `show_scrollbar` | `boolean` | no | When true, a vertical scrollbar is rendered at the trailing edge of the viewport. |
-| `title` | `StyledText \| null` | no | Optional title row painted above the body. |
-| `items_window` | `ItemsWindow \| null` | no |  |
 
 <a id="wire-textdisplayline"></a>
 #### `TextDisplayLine`
@@ -4400,7 +4328,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Tag | Payload type | Description |
 | --- | --- | --- |
-| `RowClicked` | `_TreeEventRowClicked` | Single-click (or Enter on the keyboard) on a row. |
+| `RowClicked` | `_TreeEventRowClicked` | A press on a row with any button but the secondary (right) one, which asks for `Self::ContextMenuRequested` instead. |
 | `RowDoubleClicked` | `_TreeEventRowDoubleClicked` | Double-click on a row (typically "open" / "activate"). |
 | `RowToggleExpand` | `_TreeEventRowToggleExpand` | The chevron was clicked, or Space/arrow-keys expanded/collapsed a branch. |
 | `SelectionChanged` | `_TreeEventSelectionChanged` | Keyboard selection moved to a new row. |
@@ -4533,6 +4461,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ToggleExpanded` | `_TreeTableEventToggleExpanded` | The chevron was clicked, or Left/Right/Space resolved to an expand/collapse. |
 | `ChildrenRequested` | `_TreeTableEventChildrenRequested` | Expanding a `TreeTableNode::children_pending` branch: the app should load its children and supply them, clearing the flag. |
 | `ContextMenuRequested` | `_TreeTableEventContextMenuRequested` | The user asked for row `idx`'s context menu (right-click); `position` is where, in the coordinates the table was laid out in. |
+| `RowClicked` | `_TreeTableEventRowClicked` | Row `idx` was pressed with a button other than the primary and secondary ones. |
 
 <a id="wire-treetablenode"></a>
 #### `TreeTableNode`
@@ -4557,26 +4486,13 @@ Declarative description of a `TreeView` widget.
 | --- | --- | --- | --- |
 | `has_focus` | `boolean` | no | Whether this tree currently holds keyboard focus. |
 | `id` | `WidgetId` | yes |  |
+| `items_window` | `ItemsWindow \| null` | no | Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows. |
 | `rows` | `TreeRow[]` | yes | Pre-flattened, pre-expanded rows in visual order. |
 | `scroll_offset` | `number` | no | How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1). |
+| `scroll_px` | `number \| null` | no | Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`. |
 | `selected_path` | `number[] \| null` | no |  |
 | `selection_mode` | `SelectionMode` | yes |  |
 | `style` | `TreeStyle` | yes |  |
-
-<a id="wire-treeviewleaf"></a>
-#### `TreeViewLeaf`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `has_focus` | `boolean` | no | Whether this tree currently holds keyboard focus. |
-| `id` | `WidgetId` | yes |  |
-| `rows` | `TreeRow[]` | yes | Pre-flattened, pre-expanded rows in visual order. |
-| `scroll_offset` | `number` | no | How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1). |
-| `selected_path` | `number[] \| null` | no |  |
-| `selection_mode` | `SelectionMode` | yes |  |
-| `style` | `TreeStyle` | yes |  |
-| `items_window` | `ItemsWindow \| null` | no |  |
-| `scroll_px` | `number` | no |  |
 
 <a id="wire-uievent"></a>
 #### `UiEvent`
@@ -4647,16 +4563,16 @@ Alias for `"activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart
 <a id="wire-widgetstatesnapshot"></a>
 #### `WidgetStateSnapshot`
 
-A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once.
+What a binding's `widget_state(id)` reports for one id: the `quadraui::interactive::StateSummary` the widget painted under `id` keeps in its own state (selection, scroll, active tab, expansion), plus a `Split`'s divider ratio, which the host keeps.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `active_tab` | `number \| null` | no | A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`. |
-| `expanded` | `number[][] \| null` | no | A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`. |
+| `active_tab` | `number \| null` | no | A tab bar's resolved active tab. |
+| `expanded` | `number[][] \| null` | no | A tree's expanded branches, when it resolves expansion itself. |
 | `ratio` | `number \| null` | no | A `Split`'s stored divider ratio, if `id` is one being tracked by `resolve_split_ratio`. |
-| `scroll_offset` | `number \| null` | no | A `Tree`/`List`/`DataTable`'s stored scroll offset, alongside whichever of `selected_path`/`selected_idx` applies. |
-| `selected_idx` | `number \| null` | no | A `List`/`DataTable`'s stored cursor row, if `id` is one being tracked by `resolve_list_cursor`/`resolve_data_table_cursor`. |
-| `selected_path` | `number[] \| null` | no | A `Tree`'s stored cursor row, if `id` is a tree being tracked by `resolve_tree_cursor`. |
+| `scroll_offset` | `number \| null` | no | The resolved scroll row (absolute when windowed). |
+| `selected_idx` | `number \| null` | no | A list's or table's resolved selected row (absolute when windowed). |
+| `selected_path` | `number[] \| null` | no | A tree's resolved selected row. |
 
 <a id="wire-workspaceevent"></a>
 #### `WorkspaceEvent`
@@ -4747,6 +4663,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `region` | `WidgetId` | yes |  |
 | `x` | `number` | yes |  |
 | `y` | `number` | yes |  |
@@ -4992,6 +4909,15 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `idx` | `number` | yes |  |
+
+<a id="wire-_datatableeventrowclicked"></a>
+#### `_DataTableEventRowClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
 
 <a id="wire-_datatableeventrowdoubleclicked"></a>
 #### `_DataTableEventRowDoubleClicked`
@@ -5683,52 +5609,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- |
 | `Action` | `string` | Right-aligned action button. |
 
-<a id="wire-_hitdetaildatatablefooter"></a>
-#### `_HitDetailDataTableFooter`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"data_table_footer"` | yes |  |
-
-<a id="wire-_hitdetaildatatableheader"></a>
-#### `_HitDetailDataTableHeader`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `col` | `number` | yes |  |
-| `kind` | `"data_table_header"` | yes |  |
-
-<a id="wire-_hitdetaildatatableheaderdivider"></a>
-#### `_HitDetailDataTableHeaderDivider`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `col` | `number` | yes |  |
-| `kind` | `"data_table_header_divider"` | yes |  |
-
-<a id="wire-_hitdetaildatatablerow"></a>
-#### `_HitDetailDataTableRow`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"data_table_row"` | yes |  |
-| `row` | `number` | yes |  |
-
-<a id="wire-_hitdetaillistitem"></a>
-#### `_HitDetailListItem`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `index` | `number` | yes |  |
-| `kind` | `"list_item"` | yes |  |
-
-<a id="wire-_hitdetaillisttitle"></a>
-#### `_HitDetailListTitle`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"list_title"` | yes |  |
-
 <a id="wire-_hitdetailscrollbody"></a>
 #### `_HitDetailScrollBody`
 
@@ -5741,7 +5621,7 @@ Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more sp
 <a id="wire-_hitdetailscrollscrollbarthumb"></a>
 #### `_HitDetailScrollScrollbarThumb`
 
-Landed on a `Scroll`'s own scrollbar thumb — mirrors `Self::TreeScrollbarThumb`.
+Landed on a `Scroll`'s own scrollbar thumb; arms a drag.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5750,7 +5630,7 @@ Landed on a `Scroll`'s own scrollbar thumb — mirrors `Self::TreeScrollbarThumb
 <a id="wire-_hitdetailscrollscrollbartrackafter"></a>
 #### `_HitDetailScrollScrollbarTrackAfter`
 
-Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone) — mirrors `Self::TreeScrollbarTrackAfter`.
+Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5759,7 +5639,7 @@ Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone) — mirrors
 <a id="wire-_hitdetailscrollscrollbartrackbefore"></a>
 #### `_HitDetailScrollScrollbarTrackBefore`
 
-Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone) — mirrors `Self::TreeScrollbarTrackBefore`.
+Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5795,78 +5675,6 @@ Landed on a `quadraui::SplitTree` divider — `split_index` is the pre-order ind
 | --- | --- | --- | --- |
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
-
-<a id="wire-_hitdetailtextdisplayline"></a>
-#### `_HitDetailTextDisplayLine`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"text_display_line"` | yes |  |
-| `line` | `number` | yes |  |
-
-<a id="wire-_hitdetailtextdisplayscrollbarthumb"></a>
-#### `_HitDetailTextDisplayScrollbarThumb`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"text_display_scrollbar_thumb"` | yes |  |
-
-<a id="wire-_hitdetailtextdisplayscrollbartrackafter"></a>
-#### `_HitDetailTextDisplayScrollbarTrackAfter`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"text_display_scrollbar_track_after"` | yes |  |
-
-<a id="wire-_hitdetailtextdisplayscrollbartrackbefore"></a>
-#### `_HitDetailTextDisplayScrollbarTrackBefore`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"text_display_scrollbar_track_before"` | yes |  |
-
-<a id="wire-_hitdetailtreechevron"></a>
-#### `_HitDetailTreeChevron`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tree_chevron"` | yes |  |
-| `row` | `number` | yes |  |
-
-<a id="wire-_hitdetailtreerow"></a>
-#### `_HitDetailTreeRow`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tree_row"` | yes |  |
-| `row` | `number` | yes |  |
-
-<a id="wire-_hitdetailtreescrollbarthumb"></a>
-#### `_HitDetailTreeScrollbarThumb`
-
-Landed on a tree's vertical scrollbar thumb. Arms a drag in the binding's own event handler (mirroring `SplitDivider`'s `ActiveDrag`); never reaches `semantic_event_for_hit`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tree_scrollbar_thumb"` | yes |  |
-
-<a id="wire-_hitdetailtreescrollbartrackafter"></a>
-#### `_HitDetailTreeScrollbarTrackAfter`
-
-Landed after the thumb on a tree's vertical scrollbar track (page-down zone). Handled directly in the binding's own event handler, same as `TreeScrollbarTrackBefore`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tree_scrollbar_track_after"` | yes |  |
-
-<a id="wire-_hitdetailtreescrollbartrackbefore"></a>
-#### `_HitDetailTreeScrollbarTrackBefore`
-
-Landed before the thumb on a tree's vertical scrollbar track (page-up zone). Handled directly in the binding's own event handler, which replaces the raw click with `UiEvent::ScrollOffsetChanged` — never reaches `semantic_event_for_hit`.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"tree_scrollbar_track_before"` | yes |  |
 
 <a id="wire-_hitdetailwidgetbody"></a>
 #### `_HitDetailWidgetBody`
@@ -5914,12 +5722,29 @@ The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was reg
 | `id` | `string` | yes |  |
 | `props` | `unknown` | no |  |
 
+<a id="wire-_listvieweventcontextmenurequested"></a>
+#### `_ListViewEventContextMenuRequested`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `idx` | `number` | yes |  |
+| `position` | `Point` | yes |  |
+
 <a id="wire-_listvieweventitemactivated"></a>
 #### `_ListViewEventItemActivated`
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `idx` | `number` | yes |  |
+
+<a id="wire-_listvieweventitemclicked"></a>
+#### `_ListViewEventItemClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
 
 <a id="wire-_listvieweventitemdoubleclicked"></a>
 #### `_ListViewEventItemDoubleClicked`
@@ -6791,6 +6616,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `modifiers` | `Modifiers` | yes |  |
 | `path` | `number[]` | yes |  |
 
@@ -6924,6 +6750,16 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `idx` | `number` | yes |  |
 | `path` | `number[]` | yes |  |
 
+<a id="wire-_treetableeventrowclicked"></a>
+#### `_TreeTableEventRowClicked`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
+| `idx` | `number` | yes |  |
+| `modifiers` | `Modifiers` | yes |  |
+| `path` | `number[]` | yes |  |
+
 <a id="wire-_treetableeventrowdoubleclicked"></a>
 #### `_TreeTableEventRowDoubleClicked`
 
@@ -7010,7 +6846,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `MouseMoved` | `_UiEventMouseMoved` |  |
 | `MouseEntered` | `_UiEventMouseEntered` | Optional capability — hover state is a real, likely-future desktop need (tooltip auto-show, hover highlighting) that has no substitute mechanism. |
 | `MouseLeft` | `_UiEventMouseLeft` | See `Self::MouseEntered` — same optional-capability status, same rationale, always emitted/not-emitted as a pair. |
-| `DoubleClick` | `_UiEventDoubleClick` |  |
+| `DoubleClick` | `_UiEventDoubleClick` | The second press of a quick primary-button pair at one spot. |
 | `Scroll` | `_UiEventScroll` | Scroll-wheel event. |
 | `WindowResized` | `_UiEventWindowResized` |  |
 | `WindowFocused` | `boolean` |  |
@@ -7024,6 +6860,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `SystemThemeChanged` | `SystemTheme` | The OS-level light/dark/accent/high-contrast preference changed while the app was running — the live counterpart to `PlatformServices::system_theme`'s poll-on-demand query. |
 | `PowerStateChanged` | `_UiEventPowerStateChanged` | A power-state transition occurred: the system is suspending or resumed, switched between battery and AC, or the screen locked or unlocked. |
 | `ScrollOffsetChanged` | `_UiEventScrollOffsetChanged` | A scrollbar drag or click resolved to a new offset. |
+| `RowsRequested` | `_UiEventRowsRequested` | A windowed list, tree, table or text display (one whose descriptor sets `items_window`) scrolled or moved its cursor outside the rows it has loaded: re-render widget `id` with `items_window.start = start` and the `count` rows from there. |
 | `ScrollbarMoved` | `_UiEventScrollbarMoved` | A standalone `crate::Scrollbar` widget resolved a gesture — thumb drag, track page, or wheel — to a new thumb position, expressed as `fraction` of the thumb's available travel (`0.0` = start of the track, `1.0` = end). |
 | `SwitchToggled` | `_UiEventSwitchToggled` | A standalone `crate::Switch` flipped, via `crate::Switch::handle_key` (`Enter`/`Space` while focused) or `crate::Switch::click` (a left click, regardless of focus). |
 | `RadioGroupSelectionChanged` | `_UiEventRadioGroupSelectionChanged` | A standalone `crate::RadioGroup`'s selection changed, via `crate::RadioGroup::handle_key` (arrow-key cursor movement) or `crate::RadioGroup::select` (a click on a specific option). |
@@ -7082,6 +6919,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `button` | `MouseButton` | yes |  |
 | `position` | `Point` | yes |  |
 | `widget` | `WidgetId \| null` | no |  |
 
@@ -7173,6 +7011,15 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `index` | `number` | yes |  |
 | `widget` | `WidgetId` | yes |  |
+
+<a id="wire-_uieventrowsrequested"></a>
+#### `_UiEventRowsRequested`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `count` | `number` | yes | How many rows to send from `start`. |
+| `id` | `WidgetId` | yes | The windowed widget asking for rows. |
+| `start` | `number` | yes | The absolute index of the first row to send, the next `items_window.start`. |
 
 <a id="wire-_uieventscroll"></a>
 #### `_UiEventScroll`

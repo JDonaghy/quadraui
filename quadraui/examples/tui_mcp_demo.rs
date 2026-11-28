@@ -28,8 +28,7 @@
 use quadraui::control::{CommandError, CommandRegistry, CommandSpec};
 use quadraui::{
     AppLogic, Backend, Decoration, Key, ListItem, ListView, ListViewEvent, NamedKey, Reaction,
-    Rect, ScreenLayout, StyledSpan, StyledText, Surface, TextDisplay, TextDisplayLine, UiEvent,
-    WidgetId,
+    Rect, ScreenLayout, StyledText, Surface, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 use serde_json::{json, Value};
 
@@ -151,11 +150,7 @@ impl Default for McpDemo {
 /// One line of plain, unstyled text — the same shape every
 /// `TextDisplay` pane below is built from.
 fn plain_line(text: impl Into<String>) -> TextDisplayLine {
-    TextDisplayLine {
-        spans: vec![StyledSpan::plain(text)],
-        decoration: Decoration::default(),
-        timestamp: None,
-    }
+    TextDisplayLine::plain(text)
 }
 
 impl AppLogic for McpDemo {
@@ -193,6 +188,8 @@ impl AppLogic for McpDemo {
                     .collect(),
                 selected_idx: self.selected,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: true,
                 bordered: true,
                 h_scroll: 0,

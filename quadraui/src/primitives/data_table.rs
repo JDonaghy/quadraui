@@ -89,7 +89,7 @@
 ))]
 use crate::event::Rect;
 use crate::primitives::layout_metrics;
-use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
+use crate::types::{Decoration, Icon, Modifiers, SelectionMode, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 /// Column definition for a `DataTable`.
@@ -252,6 +252,8 @@ impl DataTableGlyphs {
 /// use quadraui::{Column, ColumnMeasure, DataRow, DataTable, DataTableHit, StyledText, WidgetId};
 ///
 /// let table = DataTable {
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 ///     id: WidgetId::new("table:results"),
 ///     columns: vec![Column {
 ///         title: "Name".to_string(),
@@ -264,6 +266,8 @@ impl DataTableGlyphs {
 ///     }],
 ///     selected_idx: None,
 ///     scroll_offset: 0,
+///     items_window: None,
+///     scroll_px: None,
 ///     sort: None,
 ///     has_focus: true,
 ///     show_scrollbar: false,
@@ -285,10 +289,43 @@ pub struct DataTable {
     pub id: WidgetId,
     pub columns: Vec<Column>,
     pub rows: Vec<DataRow>,
+    /// The cursor row, and the anchor a Shift range grows from.
     #[serde(default)]
     pub selected_idx: Option<usize>,
+    /// [`SelectionMode::Multi`] lets Ctrl/Cmd and Shift clicks, Shift+arrow
+    /// keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection,
+    /// reported as [`DataTableEvent::SelectionSet`]. Default `Single`.
+    #[serde(default)]
+    pub selection_mode: SelectionMode,
+    /// The multi-selection to paint (row indices), usually the last
+    /// [`DataTableEvent::SelectionSet`]'s `indices` echoed back. Painted
+    /// with the selection colour alongside `selected_idx`; empty paints
+    /// `selected_idx` alone.
+    #[serde(default)]
+    pub selected_indices: Vec<usize>,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Where the loaded rows sit in the real collection: when set, the
+    /// payload holds rows `start..` of `total`, and `scroll_offset`, the selection and
+    /// every row index in this widget's events are absolute indices into
+    /// those `total` rows.
+    ///
+    /// `None`: the payload is the whole collection. A windowed widget asks
+    /// for rows it scrolls to with [`crate::UiEvent::RowsRequested`], after
+    /// input only, so the app sends the rows its first viewport shows (and
+    /// any a larger viewport shows after a resize) without being asked;
+    /// unloaded rows paint as placeholders. See
+    /// [`crate::behaviour::row_window`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
+    /// Scroll position finer than a whole row, in the surface's native
+    /// units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is
+    /// one row); when set it wins over `scroll_offset`.
+    ///
+    /// A caller's [`crate::primitive::PaintState::scroll_px`] wins over
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_px: Option<f32>,
     /// Which column is sorted, and in which direction. `None` = no
     /// sort indicator shown.
     #[serde(default)]
@@ -404,6 +441,40 @@ pub enum DataTableEvent {
         idx: usize,
         position: crate::event::Point,
     },
+    /// Row `idx` was pressed with a button other than the primary and
+    /// secondary ones — middle (open in a new tab), `X1`/`X2` (back /
+    /// forward) or a backend-specific button. A left press selects
+    /// ([`Self::RowSelected`] / [`Self::SelectionSet`]); a right press asks
+    /// for the context menu ([`Self::ContextMenuRequested`]).
+    RowClicked {
+        idx: usize,
+        button: crate::event::MouseButton,
+        modifiers: Modifiers,
+    },
+}
+
+impl DataTableEvent {
+    /// The event a press on row `idx`, resolved by
+    /// [`crate::SelectionCore::press`], reports. `position` is the press
+    /// point in the coordinates the table was laid out in.
+    pub fn from_row_press(
+        press: crate::RowPress,
+        idx: usize,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+    ) -> Self {
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::RowSelected { idx },
+            RowPress::Set(indices) => Self::SelectionSet { indices },
+            RowPress::ContextMenu => Self::ContextMenuRequested { idx, position },
+            RowPress::Click(button) => Self::RowClicked {
+                idx,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────
@@ -793,6 +864,12 @@ impl DataTableLayout {
 }
 
 impl DataTable {
+    /// Whether row `idx` paints as selected: the cursor row
+    /// (`selected_idx`) or a member of `selected_indices`.
+    pub fn is_row_selected(&self, idx: usize) -> bool {
+        self.selected_idx == Some(idx) || self.selected_indices.contains(&idx)
+    }
+
     /// Compute layout from viewport dimensions and a column measurer.
     ///
     /// `row_height` is the backend's row height (1.0 for TUI, line_height
@@ -894,6 +971,25 @@ impl DataTable {
             inset_y,
             v_scrollbar_track,
             scroll_sub_px: 0.0,
+        }
+    }
+
+    /// How many rows the real collection has: the window's total when
+    /// [`Self::items_window`] is set, else [`Self::rows`]' length.
+    pub fn row_count(&self) -> usize {
+        match self.items_window {
+            Some(w) => w.row_count(self.rows.len()),
+            None => self.rows.len(),
+        }
+    }
+
+    /// [`Self::selection_mode`] as input applies it: `Single` over a
+    /// windowed table, whose selection set could span the whole
+    /// (unbounded) collection.
+    pub fn live_selection_mode(&self) -> SelectionMode {
+        match self.items_window {
+            Some(_) => SelectionMode::Single,
+            None => self.selection_mode,
         }
     }
 
@@ -1429,7 +1525,7 @@ pub(crate) mod native_surface_paint {
         let line_height = ctx.line_height;
         let band = Rect::new(rect.x, row_y, rect.width, line_height);
         let row = &table.rows[abs_idx];
-        let is_selected = table.selected_idx == Some(abs_idx);
+        let is_selected = table.is_row_selected(abs_idx);
         let is_hovered = hovered_idx == Some(abs_idx) && !is_selected;
 
         // Zebra stripe: a solid fill painted first, so the selection and
@@ -1853,6 +1949,8 @@ pub(crate) mod native_surface_paint {
 
         fn two_col_table() -> DataTable {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("dt"),
                 columns: vec![
                     Column {
@@ -1878,6 +1976,8 @@ pub(crate) mod native_surface_paint {
                 ],
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -2423,8 +2523,19 @@ pub struct DataTablePrimitiveLayout {
     /// an absolute row index, since [`DataTableLayout`] itself carries
     /// no row count or scroll position.
     pub scroll_offset: usize,
-    /// `self.rows.len()` at the same time, for the same reason.
+    /// `self.rows.len()` at the same time, for the same reason — the real
+    /// extent for a windowed table.
     pub total_rows: usize,
+    /// The band a windowed table ([`DataTable::items_window`]) was laid
+    /// out through, `None` for an unwindowed one. [`Self::scroll_offset`]
+    /// and [`Self::total_rows`] are absolute either way, so a hit resolves
+    /// to an absolute row.
+    pub window: Option<Box<crate::behaviour::row_window::WindowedLayout<DataTable>>>,
+    /// A windowed table's vertical scrollbar, sized from the real extent
+    /// and painted over the band's own; `None` for an unwindowed table.
+    pub vscrollbar: Option<crate::primitives::scrollbar::Scrollbar>,
+    /// [`Self::vscrollbar`]'s own resolved layout.
+    pub vscrollbar_layout: Option<crate::primitives::scrollbar::ScrollbarLayout>,
 }
 
 #[cfg(any(
@@ -2519,7 +2630,21 @@ impl DataTable {
     /// [`crate::primitive::PaintState`]), and the caller's pixel-precise
     /// scroll, press and stripe.
     pub(crate) fn row_paint_state(&self, env: &crate::PaintEnv) -> DataTablePaintState {
-        let in_range = |i: usize| (i < self.rows.len()).then_some(i);
+        self.row_paint_state_at(env, 0, env.state.scroll_px().or(self.scroll_px))
+    }
+
+    /// [`Self::row_paint_state`] for a band whose row `0` is absolute row
+    /// `band_start`, painted at sub-row `scroll_px`.
+    fn row_paint_state_at(
+        &self,
+        env: &crate::PaintEnv,
+        band_start: usize,
+        scroll_px: Option<f32>,
+    ) -> DataTablePaintState {
+        let in_range = |i: usize| {
+            i.checked_sub(band_start)
+                .filter(|rel| *rel < self.rows.len())
+        };
         let row_of = |sub: Option<crate::interactive::SubTarget>| {
             sub.and_then(DataTableSubPart::from_sub_target)
                 .and_then(DataTableSubPart::row)
@@ -2528,7 +2653,7 @@ impl DataTable {
         DataTablePaintState::default()
             .with_hovered_idx(row_of(env.hovered_sub(&self.id)).or(env.state.hovered_idx()))
             .with_pressed_idx(row_of(env.pressed_sub(&self.id)).or(env.state.pressed_idx()))
-            .with_scroll_px(env.state.scroll_px())
+            .with_scroll_px(scroll_px)
             .with_striped(self.striped || env.state.striped())
     }
 }
@@ -2539,26 +2664,17 @@ impl DataTable {
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-impl crate::primitive::Primitive for DataTable {
-    type Layout = DataTablePrimitiveLayout;
-    type Event = DataTableEvent;
-
-    fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::DataTable(self.clone())
-    }
-
-    fn id(&self) -> Option<&WidgetId> {
-        Some(&self.id)
-    }
-
-    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+impl DataTable {
+    /// The unwindowed layout at an explicit sub-row `scroll_px`.
+    fn layout_at(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+    ) -> DataTablePrimitiveLayout {
         // `ctx.units()` separates TUI's whole-cell `line_height`
         // convention from a real pixel font metric, even when both
         // features are compiled into the same binary.
-        // The paint state's `scroll_px` resolves the starting row and its
-        // sub-row shift exactly as the painters resolve them, so a point
-        // hit-tests the row painted under it.
-        let scroll_px = ctx.paint_state().scroll_px();
         let scroll_offset = self.effective_scroll_offset(ctx.line_height, scroll_px);
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
@@ -2571,6 +2687,9 @@ impl crate::primitive::Primitive for DataTable {
                 scroll_offset,
                 total_rows: self.rows.len(),
                 layout,
+                window: None,
+                vscrollbar: None,
+                vscrollbar_layout: None,
             };
         }
         // Content columns measure their titles through the backend's own
@@ -2601,6 +2720,165 @@ impl crate::primitive::Primitive for DataTable {
             scroll_offset,
             total_rows: self.rows.len(),
             layout,
+            window: None,
+            vscrollbar: None,
+            vscrollbar_layout: None,
+        }
+    }
+
+    /// The layout of a windowed table: only the band of rows the viewport
+    /// shows is materialised (empty rows outside the loaded slice), laid
+    /// out at offset `0`; the hit geometry and the scrollbar use the
+    /// absolute offset and the real extent.
+    fn windowed_layout(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+        window: crate::behaviour::row_window::ItemsWindow,
+    ) -> DataTablePrimitiveLayout {
+        use crate::behaviour::row_window;
+        let cells = ctx.units() == crate::primitive::Units::Cells;
+        let row_h = if cells { 1.0 } else { ctx.line_height };
+        let (scroll, rem) = row_window::split_scroll_px(self.scroll_offset, scroll_px, row_h);
+        let rem = if cells { None } else { rem };
+        let loaded = self.rows.len();
+        let total = window.row_count(loaded);
+        let band_rows = row_window::band_rows_for(rect.height, row_h);
+        let band = row_window::band(window, loaded, scroll, band_rows);
+        let mut rows = row_window::materialise(&self.rows, window, band, |_| DataRow {
+            cells: Vec::new(),
+            decoration: Decoration::default(),
+        });
+        // A band near the end of an overflowing table is padded past the
+        // last row, so the band still overflows its viewport and reserves
+        // the scrollbar strip the real extent needs; the padding never
+        // hit-tests, since rows resolve against the real total.
+        if total > band_rows - row_window::BAND_PAD_ROWS {
+            rows.resize(
+                band_rows,
+                DataRow {
+                    cells: Vec::new(),
+                    decoration: Decoration::default(),
+                },
+            );
+        }
+        let band_table = DataTable {
+            rows,
+            scroll_offset: 0,
+            selected_idx: row_window::band_relative(self.selected_idx, band),
+            selected_indices: (self.selected_indices.iter())
+                .filter_map(|&i| row_window::band_relative(Some(i), band))
+                .collect(),
+            items_window: None,
+            scroll_px: None,
+            ..self.clone()
+        };
+        let mut layout = band_table.layout_at(ctx, rect, rem);
+        layout.scroll_offset = band.start;
+        layout.total_rows = total;
+        let viewport_rows = layout.layout.visible_rows;
+        layout.vscrollbar = layout.layout.v_scrollbar_track.and_then(|track| {
+            row_window::extent_scrollbar(
+                self.id,
+                Rect::new(
+                    rect.x + track.x,
+                    rect.y + track.y,
+                    track.width,
+                    track.height,
+                ),
+                total,
+                band.start,
+                rem,
+                viewport_rows,
+                layout.layout.row_height,
+            )
+        });
+        layout.vscrollbar_layout = layout
+            .vscrollbar
+            .as_ref()
+            .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
+        layout.window = Some(Box::new(row_window::WindowedLayout {
+            band,
+            total,
+            loaded: (window.start, loaded),
+            scroll: band.start,
+            viewport_rows,
+            scroll_px: rem,
+            live: Box::new(band_table),
+        }));
+        layout
+    }
+
+    /// What this table paints for `layout`: a windowed table's band, or
+    /// `live`; with the row paint state rebased onto it.
+    fn paint_target<'a>(
+        live: &'a DataTable,
+        layout: &'a DataTablePrimitiveLayout,
+        env: &crate::PaintEnv,
+    ) -> (&'a DataTable, DataTablePaintState) {
+        match &layout.window {
+            Some(w) => (
+                w.live.as_ref(),
+                w.live.row_paint_state_at(env, w.band.start, w.scroll_px),
+            ),
+            None => (live, live.row_paint_state(env)),
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for DataTable {
+    type Layout = DataTablePrimitiveLayout;
+    type Event = DataTableEvent;
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::DataTable(self.clone())
+    }
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this table to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
+    }
+
+    /// The table resolves through its own state first
+    /// ([`DataTable::live`]), and a windowed one
+    /// ([`DataTable::items_window`]) lays out only the band its viewport
+    /// shows — see [`crate::behaviour::row_window`].
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let resolved = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state
+                .and_then(|s| s.downcast_ref::<DataTableState>())
+                .map(|s| self.resolved(s))
+        });
+        let live = self.live_at(resolved);
+        // The paint state's `scroll_px` resolves the starting row and its
+        // sub-row shift exactly as the painters resolve them, so a point
+        // hit-tests the row painted under it; it wins over the
+        // descriptor's own.
+        let scroll_px = ctx.paint_state().scroll_px().or(live.scroll_px);
+        match live.items_window {
+            None => live.layout_at(ctx, rect, scroll_px),
+            Some(window) => live.windowed_layout(ctx, rect, scroll_px, window),
         }
     }
 
@@ -2616,9 +2894,10 @@ impl crate::primitive::Primitive for DataTable {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let state = self.row_paint_state(env);
+            let live = self.live(env.widget_state_as::<DataTableState>());
+            let (painted, state) = Self::paint_target(&live, layout, env);
             native_surface_paint::paint_laid_out(
-                self,
+                painted,
                 surface,
                 env.theme(),
                 layout.area,
@@ -2627,6 +2906,9 @@ impl crate::primitive::Primitive for DataTable {
                 layout.nerd_fonts_enabled,
                 layout.layout.clone(),
             );
+            if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
+                crate::primitive::Primitive::paint(sb, sb_layout, surface, env);
+            }
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all;
         // TUI paints through `Self::paint_cells`.
@@ -2649,17 +2931,21 @@ impl crate::primitive::Primitive for DataTable {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let state = self.row_paint_state(env);
+        let live = self.live(env.widget_state_as::<DataTableState>());
+        let (painted, state) = Self::paint_target(&live, layout, env);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         paint_cells::draw_data_table_inner(
             cells,
             area,
-            self,
+            painted,
             env.theme(),
             &state,
             None,
             layout.nerd_fonts_enabled,
         );
+        if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
+            crate::primitive::Primitive::paint_cells(sb, sb_layout, cells, env);
+        }
     }
 }
 
@@ -2731,6 +3017,21 @@ pub struct DataTableState {
     pub resize: Option<ColumnResizeDrag>,
     /// A scrollbar thumb drag in progress.
     pub thumb: Option<crate::primitives::scrollbar::ThumbDrag>,
+    /// The selection the last move landed on, against the descriptor's
+    /// `selected_idx` — see [`crate::behaviour::row_window::HostLatch`].
+    pub selected: crate::behaviour::row_window::HostLatch<Option<usize>>,
+    /// The scroll row the last move or scroll landed on, against the
+    /// descriptor's `scroll_offset`.
+    pub scroll: crate::behaviour::row_window::HostLatch<usize>,
+    /// Repeat suppression for a windowed table's
+    /// [`crate::UiEvent::RowsRequested`].
+    pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_idx` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<Option<usize>>,
 }
 
 /// Narrowest width a divider drag shrinks a column to, in the table's
@@ -2757,27 +3058,63 @@ impl DataTable {
 
     /// The largest whole-row scroll offset.
     fn max_scroll(&self, layout: &DataTablePrimitiveLayout) -> usize {
-        self.rows.len().saturating_sub(layout.layout.visible_rows)
+        self.row_count().saturating_sub(layout.layout.visible_rows)
     }
 
-    /// The keyboard cursor row: [`DataTableState::cursor`] while the
-    /// descriptor's `selected_idx` still lies in the widget's own
-    /// selection set, otherwise `selected_idx`.
-    fn current_idx(&self, state: &DataTableState) -> Option<usize> {
-        let in_set = self
-            .selected_idx
-            .is_some_and(|idx| state.selection.selected.contains(&idx));
-        match state.cursor {
-            Some(cursor) if in_set && cursor < self.rows.len() => Some(cursor),
-            _ => self.selected_idx,
+    /// The `(selected_idx, scroll_offset)` `state` resolves this
+    /// descriptor to — see [`crate::behaviour::row_window::HostLatch`].
+    fn resolved(&self, state: &DataTableState) -> (Option<usize>, usize) {
+        (
+            state.selected.get(&self.selected_idx),
+            state.scroll.get(&self.scroll_offset),
+        )
+    }
+
+    /// This table with `state`'s resolved selection and scroll applied —
+    /// the descriptor it lays out and paints as.
+    pub fn live(&self, state: Option<&DataTableState>) -> std::borrow::Cow<'_, Self> {
+        self.live_at(state.map(|s| self.resolved(s)))
+    }
+
+    fn live_at(&self, resolved: Option<(Option<usize>, usize)>) -> std::borrow::Cow<'_, Self> {
+        match resolved {
+            Some((selected_idx, scroll_offset))
+                if (selected_idx, scroll_offset) != (self.selected_idx, self.scroll_offset) =>
+            {
+                std::borrow::Cow::Owned(Self {
+                    selected_idx,
+                    scroll_offset,
+                    ..self.clone()
+                })
+            }
+            _ => std::borrow::Cow::Borrowed(self),
         }
     }
 
-    /// Report a scroll offset change, or just consume when it did not move.
-    fn scroll_to(&self, scroll_offset: usize) -> crate::Handled<DataTableEvent> {
-        if scroll_offset == self.scroll_offset {
+    /// The keyboard cursor row: [`DataTableState::cursor`] while the
+    /// resolved selection still lies in the widget's own selection set,
+    /// otherwise the resolved selection.
+    fn current_idx(&self, state: &DataTableState) -> Option<usize> {
+        let selected = self.resolved(state).0;
+        let in_set = selected.is_some_and(|idx| state.selection.selected.contains(&idx));
+        match state.cursor {
+            Some(cursor) if in_set && cursor < self.row_count() => Some(cursor),
+            _ => selected,
+        }
+    }
+
+    /// Latch a scroll to `scroll_offset` and report it, or just consume
+    /// when it did not move.
+    fn scroll_to(
+        &self,
+        state: &mut DataTableState,
+        layout: &DataTablePrimitiveLayout,
+        scroll_offset: usize,
+    ) -> crate::Handled<DataTableEvent> {
+        if scroll_offset == layout.scroll_offset {
             crate::Handled::Consumed
         } else {
+            state.scroll.set(&self.scroll_offset, scroll_offset);
             crate::Handled::Event(DataTableEvent::ScrollChanged { scroll_offset })
         }
     }
@@ -2797,16 +3134,21 @@ impl DataTable {
         use crate::types::SelectionGesture;
         use crate::Handled;
         let scroll_offset = crate::behaviour::scroll::ensure_visible(
-            self.scroll_offset,
+            layout.scroll_offset,
             layout.layout.visible_rows,
             target,
         );
-        if scroll_offset != self.scroll_offset {
+        if scroll_offset != layout.scroll_offset {
+            state.scroll.set(&self.scroll_offset, scroll_offset);
             cx.emit(DataTableEvent::ScrollChanged { scroll_offset }.into_ui_event(self.id));
         }
         let current = self.current_idx(state);
+        let selected = self.resolved(state).0;
         state.cursor = Some(target);
-        if extend {
+        state.selected.set(&self.selected_idx, Some(target));
+        // A windowed table's selection set could span the whole
+        // collection, so an extending move over one moves only the cursor.
+        if extend && self.items_window.is_none() {
             let indices = state
                 .selection
                 .on_gesture(current, target, SelectionGesture::Range);
@@ -2816,7 +3158,7 @@ impl DataTable {
         state
             .selection
             .on_gesture(Some(target), target, SelectionGesture::Replace);
-        if self.selected_idx == Some(target) && was_single {
+        if selected == Some(target) && was_single {
             return Handled::Consumed;
         }
         Handled::Event(DataTableEvent::RowSelected { idx: target })
@@ -2844,10 +3186,22 @@ impl DataTable {
                 other => other,
             };
             let current = self.current_idx(state);
-            return match FlatNav::mv(self.rows.len(), current, nav, false, |_| true) {
-                Some(target) => self.move_cursor(state, target, mods.shift, layout, cx),
+            let extend = mods.shift && self.live_selection_mode() == SelectionMode::Multi;
+            return match FlatNav::mv_all(self.row_count(), current, nav, false) {
+                Some(target) => self.move_cursor(state, target, extend, layout, cx),
                 None => Handled::Ignored,
             };
+        }
+        let cursor = self.current_idx(state);
+        state.selection.sync_painted(&self.selected_indices);
+        if let Some(indices) = state.selection.key(
+            self.live_selection_mode(),
+            &event.key,
+            mods,
+            cursor,
+            self.rows.len(),
+        ) {
+            return Handled::Event(DataTableEvent::SelectionSet { indices });
         }
         match &event.key {
             Key::Named(dir @ (NamedKey::Left | NamedKey::Right)) => {
@@ -2866,22 +3220,15 @@ impl DataTable {
                 state.cursor_col = Some(col);
                 Handled::Event(DataTableEvent::ColumnFocused { col })
             }
-            Key::Named(NamedKey::Enter) => match self.selected_idx {
-                Some(idx) if idx < self.rows.len() => {
+            Key::Named(NamedKey::Enter) => match self.resolved(state).0 {
+                Some(idx) if idx < self.row_count() => {
                     Handled::Event(DataTableEvent::RowActivated { idx })
                 }
                 _ => Handled::Ignored,
             },
-            Key::Char('a') if mods.ctrl || mods.cmd => {
-                if self.rows.is_empty() {
-                    return Handled::Ignored;
-                }
-                let indices: Vec<usize> = (0..self.rows.len()).collect();
-                state.selection.selected = indices.clone();
-                state.selection.anchor = Some(self.rows.len() - 1);
-                Handled::Event(DataTableEvent::SelectionSet { indices })
-            }
-            Key::Char(c) if no_accel && !c.is_control() => {
+            // Typeahead matches the loaded rows only, which a windowed
+            // table's absolute cursor does not index.
+            Key::Char(c) if no_accel && !c.is_control() && self.items_window.is_none() => {
                 let labels: Vec<String> = self
                     .rows
                     .iter()
@@ -2905,24 +3252,29 @@ impl DataTable {
         }
     }
 
-    /// Left press on a body row: plain click selects, Ctrl/Cmd and Shift
-    /// grow the multi-selection.
+    /// A press of `button` on body row `idx`, resolved by
+    /// [`crate::SelectionCore::press`]: a left press selects (or, in
+    /// [`SelectionMode::Multi`], grows the set with Ctrl/Cmd or Shift), a
+    /// right press asks for the context menu, any other button reports
+    /// [`DataTableEvent::RowClicked`].
     fn handle_row_press(
         &self,
         state: &mut DataTableState,
         idx: usize,
+        button: crate::event::MouseButton,
         mods: Modifiers,
+        position: crate::event::Point,
     ) -> crate::Handled<DataTableEvent> {
-        use crate::types::SelectionGesture;
-        use crate::Handled;
-        let gesture = SelectionGesture::from_modifiers(mods);
         let current = self.current_idx(state);
-        state.cursor = Some(idx);
-        let indices = state.selection.on_gesture(current, idx, gesture);
-        match gesture {
-            SelectionGesture::Replace => Handled::Event(DataTableEvent::RowSelected { idx }),
-            _ => Handled::Event(DataTableEvent::SelectionSet { indices }),
+        state.selection.sync_painted(&self.selected_indices);
+        let press = state
+            .selection
+            .press(self.live_selection_mode(), current, idx, button, mods);
+        if button == crate::event::MouseButton::Left {
+            state.cursor = Some(idx);
+            state.selected.set(&self.selected_idx, Some(idx));
         }
+        crate::Handled::Event(DataTableEvent::from_row_press(press, idx, mods, position))
     }
 
     /// Left press on the scrollbar track: the thumb starts a captured
@@ -2940,12 +3292,13 @@ impl DataTable {
         };
         let visible = layout.layout.visible_rows;
         let max = self.max_scroll(layout);
+        let scroll = layout.scroll_offset;
         let sb = crate::primitives::row_stack::vscrollbar_thumb(
             self.id,
             track,
-            self.scroll_offset,
+            scroll,
             None,
-            self.rows.len(),
+            self.row_count(),
             layout.layout.row_height,
             visible as f32,
         );
@@ -2953,15 +3306,15 @@ impl DataTable {
             PressZone::Thumb => {
                 state.thumb = Some(ThumbDrag::begin(
                     local.y,
-                    self.scroll_offset as f32,
+                    scroll as f32,
                     sb.travel(),
                     max as f32,
                 ));
                 cx.capture_pointer();
                 crate::Handled::Consumed
             }
-            PressZone::Before => self.scroll_to(self.scroll_offset.saturating_sub(visible)),
-            PressZone::After => self.scroll_to((self.scroll_offset + visible).min(max)),
+            PressZone::Before => self.scroll_to(state, layout, scroll.saturating_sub(visible)),
+            PressZone::After => self.scroll_to(state, layout, (scroll + visible).min(max)),
         }
     }
 }
@@ -2975,6 +3328,8 @@ impl DataTable {
 impl crate::interactive::Interactive for DataTable {
     type State = DataTableState;
     type Action = DataTableEvent;
+
+    const SCROLLS_OWN_ROWS: bool = true;
 
     /// One focus stop as a whole — rows and columns are navigated inside
     /// [`Self::handle`].
@@ -3007,7 +3362,7 @@ impl crate::interactive::Interactive for DataTable {
         let body_y = l.inset_y + l.header_height;
         let body_bottom = body_y + l.visible_rows as f32 * l.row_height;
         let visible = (l.visible_rows + usize::from(l.scroll_sub_px > 0.0))
-            .min(self.rows.len().saturating_sub(layout.scroll_offset));
+            .min(layout.total_rows.saturating_sub(layout.scroll_offset));
         for r in crate::primitives::row_stack::stack_rows_from(
             layout.scroll_offset,
             l.scroll_sub_px,
@@ -3044,11 +3399,14 @@ impl crate::interactive::Interactive for DataTable {
         use crate::interactive::{PointerKind, RoutedEvent};
         use crate::Handled;
 
-        let total = self.rows.len();
+        let total = layout.total_rows;
         let hit = |local: &crate::event::Point| {
             layout
                 .layout
                 .hit_test(local.x, local.y, layout.scroll_offset, total)
+        };
+        let abs = |local: &crate::event::Point| {
+            crate::event::Point::new(local.x + layout.area.x, local.y + layout.area.y)
         };
         match event {
             RoutedEvent::Pointer {
@@ -3073,7 +3431,9 @@ impl crate::interactive::Interactive for DataTable {
                     DataTableHit::Header { col } => {
                         Handled::Event(DataTableEvent::HeaderClicked { col })
                     }
-                    DataTableHit::Row { idx } => self.handle_row_press(state, idx, *mods),
+                    DataTableHit::Row { idx } => {
+                        self.handle_row_press(state, idx, MouseButton::Left, *mods, abs(local))
+                    }
                     DataTableHit::Footer | DataTableHit::Empty => Handled::Consumed,
                 }
             }
@@ -3088,17 +3448,14 @@ impl crate::interactive::Interactive for DataTable {
                 _ => Handled::Ignored,
             },
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Right),
+                kind: PointerKind::Down(button),
                 local,
+                mods,
                 ..
             } => match hit(local) {
-                DataTableHit::Row { idx } => Handled::Event(DataTableEvent::ContextMenuRequested {
-                    idx,
-                    position: crate::event::Point::new(
-                        local.x + layout.area.x,
-                        local.y + layout.area.y,
-                    ),
-                }),
+                DataTableHit::Row { idx } => {
+                    self.handle_row_press(state, idx, *button, *mods, abs(local))
+                }
                 _ => Handled::Ignored,
             },
             RoutedEvent::Pointer {
@@ -3115,7 +3472,7 @@ impl crate::interactive::Interactive for DataTable {
                     });
                 }
                 match state.thumb.as_ref().and_then(|t| t.offset_at(local.y)) {
-                    Some(offset) => self.scroll_to(offset.round() as usize),
+                    Some(offset) => self.scroll_to(state, layout, offset.round() as usize),
                     None => Handled::Consumed,
                 }
             }
@@ -3130,19 +3487,72 @@ impl crate::interactive::Interactive for DataTable {
             }
             RoutedEvent::Wheel { dy, .. } => {
                 let rows = crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0);
-                self.scroll_to(crate::primitives::scrollbar::scroll_by_clamped(
-                    self.scroll_offset.min(self.max_scroll(layout)),
+                let target = crate::primitives::scrollbar::scroll_by_clamped(
+                    layout.scroll_offset.min(self.max_scroll(layout)),
                     rows,
                     self.max_scroll(layout),
-                ))
+                );
+                self.scroll_to(state, layout, target)
             }
             RoutedEvent::Key(key_event) => self.handle_key(state, key_event, layout, cx),
-            RoutedEvent::Action(A11yAction::Click) => match self.selected_idx {
+            RoutedEvent::Action(A11yAction::Click) => match self.resolved(state).0 {
                 Some(idx) if idx < total => Handled::Event(DataTableEvent::RowActivated { idx }),
                 _ => Handled::Ignored,
             },
             _ => Handled::Ignored,
         }
+    }
+
+    /// A selection the app moved (a new descriptor `selected_idx`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the table's own keys moved does — so an app that owns the
+    /// selection but leaves the scroll to the table keeps its selection
+    /// visible.
+    fn settle(&self, state: &mut DataTableState, layout: &DataTablePrimitiveLayout) -> bool {
+        if state.followed_selection == Some(self.selected_idx) {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_idx);
+        let Some(row) = self.selected_idx else {
+            return false;
+        };
+        if state.selected.get(&self.selected_idx) != Some(row) || row >= self.row_count() {
+            return false;
+        }
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, Self::page_rows(layout), row)
+    }
+
+    /// A windowed table asks for the rows around its viewport once it
+    /// scrolls outside the loaded slice — see
+    /// [`crate::behaviour::row_window::RowsRequestLatch`].
+    fn data_requested(
+        &self,
+        state: &mut DataTableState,
+        layout: &DataTablePrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let window = layout.window.as_ref()?;
+        state.rows_requested.request(
+            self.id,
+            window.window(),
+            window.loaded.1,
+            window.scroll,
+            window.viewport_rows,
+        )
+    }
+
+    /// This widget scrolled so `row` is its first visible row.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self> {
+        Some(Self {
+            scroll_offset: row,
+            ..self.clone()
+        })
+    }
+
+    fn state_summary(&self, state: &DataTableState) -> crate::interactive::StateSummary {
+        let (selected, scroll) = self.resolved(state);
+        crate::interactive::StateSummary::scroll(scroll).with_selected_idx(selected)
     }
 }
 
@@ -3150,6 +3560,30 @@ impl crate::interactive::Interactive for DataTable {
 mod tests {
     use super::*;
     use crate::types::StyledText;
+
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        use crate::interactive::Interactive;
+        use crate::primitive::{LayoutCtx, Primitive};
+        let mut table = make_table(2, 100);
+        table.selected_idx = Some(70);
+        let mut state = DataTableState::default();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let layout = Primitive::layout(&table, &ctx, Rect::new(0.0, 0.0, 30.0, 10.0));
+        assert!(Interactive::settle(&table, &mut state, &layout));
+        let scroll = table.live(Some(&state)).scroll_offset;
+        let rows = layout.layout.visible_rows.max(1);
+        assert!(scroll <= 70 && 70 < scroll + rows, "{scroll}");
+        assert!(!Interactive::settle(&table, &mut state, &layout));
+    }
 
     fn make_table(ncols: usize, nrows: usize) -> DataTable {
         let columns: Vec<Column> = (0..ncols)
@@ -3168,11 +3602,15 @@ mod tests {
             })
             .collect();
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("test"),
             columns,
             rows,
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -4568,6 +5006,8 @@ mod primitive_parity_tests {
 
     fn sample_table() -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("pods"),
             columns: vec![
                 Column {
@@ -4592,6 +5032,8 @@ mod primitive_parity_tests {
                 .collect(),
             selected_idx: Some(2),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: Some((0, SortDirection::Ascending)),
             has_focus: true,
             show_scrollbar: false,

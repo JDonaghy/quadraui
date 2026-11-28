@@ -663,6 +663,8 @@ impl ColumnUnitProbe for GtkDriver<DataTableApp> {
 /// viewport" pass never masks what column 0 asked for.
 fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32 {
     let table = DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("table:column-unit-probe"),
         columns: vec![
             Column {
@@ -682,6 +684,8 @@ fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32
         }],
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: false,
         show_scrollbar: false,

@@ -24,7 +24,7 @@ is safe again.
 
 Rendering only (Tree-mode `view()` output, i.e. anywhere a `Node` is
 accepted) resolves a `Widget` into a live script-backed primitive -- the
-flat six-slot `QuiApp.set_render` shape (`"button"`/`"text_display"`/...)
+flat per-kind `QuiApp.set_render` shape (`"button"`/`"text_display"`/...)
 has no per-id additive slot to put one in, so a `Widget` placed there
 paints as its placeholder (an empty, non-interactive canvas) instead.
 """

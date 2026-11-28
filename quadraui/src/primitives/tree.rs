@@ -75,6 +75,8 @@ use serde::{Deserialize, Serialize};
 ///     selection_mode: SelectionMode::Single,
 ///     selected_path: Some(vec![0]),
 ///     scroll_offset: 0,
+///     items_window: None,
+///     scroll_px: None,
 ///     style: TreeStyle::default(),
 ///     has_focus: true,
 /// };
@@ -82,7 +84,7 @@ use serde::{Deserialize, Serialize};
 /// let layout = tree.layout(40.0, 10.0, |_| TreeRowMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), TreeViewHit::Row(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TreeView {
     pub id: WidgetId,
@@ -95,6 +97,27 @@ pub struct TreeView {
     /// `docs/UI_CRATE_DESIGN.md` §3.1).
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Where the loaded rows sit in the real collection: when set, the
+    /// payload holds rows `start..` of `total`, and `scroll_offset`, the selection and
+    /// every row index in this widget's events are absolute indices into
+    /// those `total` rows.
+    ///
+    /// `None`: the payload is the whole collection. A windowed widget asks
+    /// for rows it scrolls to with [`crate::UiEvent::RowsRequested`], after
+    /// input only, so the app sends the rows its first viewport shows (and
+    /// any a larger viewport shows after a resize) without being asked;
+    /// unloaded rows paint as placeholders. See
+    /// [`crate::behaviour::row_window`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
+    /// Scroll position finer than a whole row, in the surface's native
+    /// units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is
+    /// one row); when set it wins over `scroll_offset`.
+    ///
+    /// A caller's [`crate::primitive::PaintState::scroll_px`] wins over
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_px: Option<f32>,
     pub style: TreeStyle,
     /// Whether this tree currently holds keyboard focus. Gates the
     /// focused row's highlight (`Theme::selected_bg` vs. the unfocused
@@ -1375,6 +1398,8 @@ pub(crate) mod native_surface_paint {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: true,
             }
@@ -2240,6 +2265,11 @@ pub struct TreeViewPrimitiveLayout {
     ///
     /// [`Primitive`]: crate::primitive::Primitive
     pub vscrollbar_layout: Option<crate::primitives::scrollbar::ScrollbarLayout>,
+    /// The band a windowed tree ([`TreeView::items_window`]) was laid out
+    /// through, `None` for an unwindowed one. [`Self::layout`]'s row
+    /// indices are relative to its band; [`Self::abs_row`] maps them back.
+    /// [`Self::vscrollbar`] is sized from the real extent.
+    pub window: Option<Box<crate::behaviour::row_window::WindowedLayout<TreeView>>>,
 }
 
 #[cfg(any(
@@ -2254,6 +2284,14 @@ impl TreeViewPrimitiveLayout {
     /// `hit_regions` are tree-local.
     pub fn hit_test(&self, x: f32, y: f32) -> TreeViewHit {
         self.layout.hit_test(x - self.area.x, y - self.area.y)
+    }
+
+    /// The absolute row index of [`Self::layout`]'s row `idx`.
+    pub fn abs_row(&self, idx: usize) -> usize {
+        match &self.window {
+            Some(w) => w.to_abs(idx),
+            None => idx,
+        }
     }
 
     /// Whether the absolute point `(x, y)` lands on the vertical
@@ -2320,23 +2358,15 @@ impl TreeViewSubPart {
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-impl crate::primitive::Primitive for TreeView {
-    type Layout = TreeViewPrimitiveLayout;
-    type Event = TreeEvent;
-
-    fn id(&self) -> Option<&WidgetId> {
-        Some(&self.id)
-    }
-
-    fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::Tree(self.clone())
-    }
-
-    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+impl TreeView {
+    /// The unwindowed layout at an explicit sub-row `scroll_px`.
+    fn layout_at(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+    ) -> TreeViewPrimitiveLayout {
         let border = if self.style.bordered { 2.0 } else { 0.0 };
-        // The paint state's `scroll_px` shifts the rows and the thumb
-        // exactly as the painters shift them.
-        let scroll_px = ctx.paint_state().scroll_px();
         // `ctx.units()` separates TUI's whole-cell `line_height`
         // convention from a real pixel font metric, even when both
         // features are compiled into the same binary.
@@ -2374,6 +2404,7 @@ impl crate::primitive::Primitive for TreeView {
                 viewport_rows,
                 vscrollbar,
                 vscrollbar_layout,
+                window: None,
             };
         }
         // The host's live `Style` sets the row padding and scrollbar
@@ -2416,6 +2447,154 @@ impl crate::primitive::Primitive for TreeView {
             viewport_rows,
             vscrollbar,
             vscrollbar_layout,
+            window: None,
+        }
+    }
+
+    /// The layout of a windowed tree: only the band of rows the viewport
+    /// shows is materialised (empty placeholder rows outside the loaded
+    /// slice), laid out at offset `0`, with the scrollbar sized from the
+    /// real extent.
+    fn windowed_layout(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+        window: crate::behaviour::row_window::ItemsWindow,
+    ) -> TreeViewPrimitiveLayout {
+        use crate::behaviour::row_window;
+        let cells = ctx.units() == crate::primitive::Units::Cells;
+        let pitch = if cells {
+            1.0
+        } else {
+            crate::primitives::layout_metrics::tree_row_pitch(self, ctx.line_height as f64) as f32
+        };
+        let (scroll, rem) = row_window::split_scroll_px(self.scroll_offset, scroll_px, pitch);
+        let rem = if cells { None } else { rem };
+        let loaded = self.rows.len();
+        let total = window.row_count(loaded);
+        let band_rows = row_window::band_rows_for(rect.height, pitch);
+        let band = row_window::band(window, loaded, scroll, band_rows);
+        let mut rows = row_window::materialise(&self.rows, window, band, |_| placeholder_row());
+        // Padded past the last row near the end of an overflowing tree, so
+        // the band still overflows and reserves the scrollbar the real
+        // extent needs; rows resolve only through the loaded slice, so the
+        // padding never reaches an event.
+        if total > band_rows - row_window::BAND_PAD_ROWS {
+            rows.resize_with(band_rows, placeholder_row);
+        }
+        let band_tree = TreeView {
+            rows,
+            scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
+            ..self.clone()
+        };
+        let mut layout = band_tree.layout_at(ctx, rect, rem);
+        let viewport_rows = layout.viewport_rows;
+        layout.vscrollbar = layout.vscrollbar.as_ref().and_then(|sb| {
+            row_window::extent_scrollbar(
+                self.id,
+                sb.track,
+                total,
+                band.start,
+                rem,
+                viewport_rows,
+                pitch,
+            )
+        });
+        layout.vscrollbar_layout = layout
+            .vscrollbar
+            .as_ref()
+            .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
+        layout.window = Some(Box::new(row_window::WindowedLayout {
+            band,
+            total,
+            loaded: (window.start, loaded),
+            scroll: band.start,
+            viewport_rows,
+            scroll_px: rem,
+            live: Box::new(band_tree),
+        }));
+        layout
+    }
+}
+
+/// The empty row a windowed tree paints where it has no loaded row. Its
+/// empty path matches no real row (and no selection), and a windowed
+/// tree resolves rows only through its loaded slice, so it never reaches
+/// an event.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn placeholder_row() -> TreeRow {
+    TreeRow {
+        path: Vec::new(),
+        indent: 0,
+        icon: None,
+        text: StyledText::plain(""),
+        badge: None,
+        is_expanded: None,
+        decoration: Decoration::default(),
+        edit: None,
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::primitive::Primitive for TreeView {
+    type Layout = TreeViewPrimitiveLayout;
+    type Event = TreeEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this tree to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Tree(self.clone())
+    }
+
+    /// The tree resolves through its own state first ([`TreeView::live`]),
+    /// and a windowed one ([`TreeView::items_window`]) lays out only the
+    /// band its viewport shows — see [`crate::behaviour::row_window`].
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let live = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            let state = state.and_then(|s| s.downcast_ref::<TreeViewState>());
+            match self.live(state) {
+                std::borrow::Cow::Owned(live) => Some(live),
+                std::borrow::Cow::Borrowed(_) => None,
+            }
+        });
+        let live = live.as_ref().unwrap_or(self);
+        // The paint state's `scroll_px` shifts the rows and the thumb
+        // exactly as the painters shift them, and wins over the
+        // descriptor's own.
+        let scroll_px = ctx.paint_state().scroll_px().or(live.scroll_px);
+        match live.items_window {
+            None => live.layout_at(ctx, rect, scroll_px),
+            Some(window) => live.windowed_layout(ctx, rect, scroll_px, window),
         }
     }
 
@@ -2433,9 +2612,11 @@ impl crate::primitive::Primitive for TreeView {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let pointer = TreePointer::from_env(self, env);
+            let live = self.live(env.widget_state_as::<TreeViewState>());
+            let (painted, band_start, scroll_px) = tree_paint_target(&live, layout, env);
+            let pointer = TreePointer::from_env(painted, env, band_start);
             native_surface_paint::paint_with_scroll_px(
-                self,
+                painted,
                 layout.area,
                 &layout.layout,
                 layout.line_height,
@@ -2446,8 +2627,14 @@ impl crate::primitive::Primitive for TreeView {
                 pointer.hovered_row,
                 pointer.pressed_row,
                 env.state.focus_ring_visible(),
-                env.state.scroll_px(),
+                scroll_px,
             );
+            if layout.window.is_some() {
+                if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout)
+                {
+                    crate::primitive::Primitive::paint(sb, sb_layout, surface, env);
+                }
+            }
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all —
         // `self` reaching the screen on TUI goes through `Self::paint_cells`
@@ -2475,17 +2662,38 @@ impl crate::primitive::Primitive for TreeView {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let live = self.live(env.widget_state_as::<TreeViewState>());
+        let (painted, _, scroll_px) = tree_paint_target(&live, layout, env);
         paint_cells::paint_tree_rows_with_scroll_px(
             cells,
             crate::tui::backend::q_rect_to_ratatui(layout.area),
-            self,
+            painted,
             theme,
             layout.nerd_fonts_enabled,
-            env.state.scroll_px(),
+            scroll_px,
         );
         if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
             crate::primitive::Primitive::paint_cells(sb, sb_layout, cells, env);
         }
+    }
+}
+
+/// What a tree paints for `layout`: a windowed tree's band (with its first
+/// absolute row) or `live`, and the sub-row scroll it paints at.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn tree_paint_target<'a>(
+    live: &'a TreeView,
+    layout: &'a TreeViewPrimitiveLayout,
+    env: &crate::PaintEnv,
+) -> (&'a TreeView, usize, Option<f32>) {
+    match &layout.window {
+        Some(w) => (w.live.as_ref(), w.band.start, w.scroll_px),
+        None => (live, 0, env.state.scroll_px().or(live.scroll_px)),
     }
 }
 
@@ -2509,8 +2717,11 @@ struct TreePointer {
     all(feature = "macos", target_os = "macos")
 ))]
 impl TreePointer {
-    fn from_env(tree: &TreeView, env: &crate::PaintEnv) -> Self {
-        let in_range = |i: usize| (i < tree.rows.len()).then_some(i);
+    fn from_env(tree: &TreeView, env: &crate::PaintEnv, band_start: usize) -> Self {
+        let in_range = |i: usize| {
+            i.checked_sub(band_start)
+                .filter(|rel| *rel < tree.rows.len())
+        };
         let row_of = |sub: Option<crate::interactive::SubTarget>| {
             sub.and_then(TreeViewSubPart::from_sub_target)
                 .and_then(TreeViewSubPart::row)
@@ -2547,10 +2758,12 @@ impl crate::interactive::WidgetAction for TreeEvent {
 /// [`crate::interactive::Interactive::State`] for [`TreeView`].
 ///
 /// `nav` is the navigation core every move is computed in; it is
-/// re-seeded from the descriptor's `selected_path` and `scroll_offset`
-/// whenever those differ from what it last produced, so the descriptor
-/// always wins. Its pixel-precise wheel position survives as long as the
-/// app echoes the whole-row offset it reported.
+/// re-seeded from the tree's resolved selection and scroll
+/// ([`TreeView::live`]) whenever those differ from what it last produced.
+/// Every move is latched into [`Self::selected`]/[`Self::scroll`], so the
+/// descriptor wins only when the app changes it. Its pixel-precise wheel
+/// position survives as long as the resolved whole-row offset stays the
+/// one it reported.
 ///
 /// `#[non_exhaustive]`: a future gesture field is additive.
 #[cfg(any(
@@ -2569,6 +2782,52 @@ pub struct TreeViewState {
     /// The multi-selection a Ctrl/Cmd or Shift gesture grew, as indices
     /// into `TreeView.rows`, and the row a Shift range extends from.
     pub selection: crate::types::SelectionCore,
+    /// The selection the last move landed on, against the descriptor's
+    /// `selected_path` — see [`crate::behaviour::row_window::HostLatch`].
+    pub selected: crate::behaviour::row_window::HostLatch<Option<TreePath>>,
+    /// The scroll row the last move or scroll landed on, against the
+    /// descriptor's `scroll_offset`.
+    pub scroll: crate::behaviour::row_window::HostLatch<usize>,
+    /// A windowed tree's cursor, as an absolute row index — it may sit on
+    /// a row that is not loaded yet. [`TreeView::live`] trusts it only
+    /// while [`Self::window_cursor_anchor`] still matches the descriptor.
+    pub window_cursor: Option<usize>,
+    /// What the descriptor and the cursor's row said when the widget last
+    /// handled input, which decides whether [`Self::window_cursor`] still
+    /// stands.
+    pub window_cursor_anchor: Option<WindowCursorAnchor>,
+    /// Each branch row's expansion the widget toggled, against the
+    /// descriptor's `is_expanded` for that row. Applied to an unwindowed
+    /// tree only: a windowed tree's rows are flattened by the app.
+    pub expanded:
+        std::collections::BTreeMap<TreePath, crate::behaviour::row_window::HostLatch<bool>>,
+    /// Repeat suppression for a windowed tree's
+    /// [`crate::UiEvent::RowsRequested`].
+    pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_path` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<Option<TreePath>>,
+}
+
+/// A windowed tree's cursor anchor: the descriptor `selected_path` the
+/// cursor was set against, and the path of the row it sat on (`None`
+/// when that row was not loaded).
+///
+/// The cursor stands while the descriptor still says `seen` or names the
+/// cursor's own row (the app echoed the move). A descriptor that changed
+/// to another path wins, the way [`crate::behaviour::row_window::HostLatch`]
+/// lets an app's own new value win. When the row under the cursor is no
+/// longer `path` (the app re-flattened the rows around it), the cursor
+/// follows `path` to its new loaded position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowCursorAnchor {
+    /// The descriptor's `selected_path` when the cursor last moved.
+    pub seen: Option<TreePath>,
+    /// The path of the loaded row the cursor sat on.
+    pub path: Option<TreePath>,
 }
 
 #[cfg(any(
@@ -2578,7 +2837,8 @@ pub struct TreeViewState {
     all(feature = "macos", target_os = "macos")
 ))]
 impl TreeViewState {
-    /// Re-seed the navigation core from `tree`'s own controlled fields.
+    /// Re-seed the navigation core from `tree`'s resolved fields — the
+    /// descriptor [`TreeView::live`] produced from this state.
     fn sync(&mut self, tree: &TreeView) {
         if tree.selected_path.is_some() && self.nav.selected_path() != tree.selected_path.as_ref() {
             self.nav.set_selected_path(tree.selected_path.clone());
@@ -2596,6 +2856,231 @@ impl TreeViewState {
     all(feature = "macos", target_os = "macos")
 ))]
 impl TreeView {
+    /// This tree with `state`'s resolved selection, scroll and (when
+    /// unwindowed) expansion applied — the descriptor it lays out, paints
+    /// and handles input as. A collapsed branch's descendants are dropped
+    /// from the rows, since a row's `is_expanded` drives only its own
+    /// chevron.
+    pub fn live(&self, state: Option<&TreeViewState>) -> std::borrow::Cow<'_, Self> {
+        let Some(state) = state else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let scroll = state.scroll.get(&self.scroll_offset);
+        let selected = match self.items_window {
+            Some(_) => self
+                .resolved_window_cursor(state)
+                .and_then(|abs| self.loaded_row(abs))
+                .map(|row| Some(row.path.clone()))
+                .unwrap_or_else(|| state.selected.get(&self.selected_path)),
+            None => state.selected.get(&self.selected_path),
+        };
+        let expansion_differs = self.items_window.is_none()
+            && self.rows.iter().any(
+                |row| match (row.is_expanded, state.expanded.get(&row.path)) {
+                    (Some(desc), Some(latch)) => latch.get(&desc) != desc,
+                    _ => false,
+                },
+            );
+        if scroll == self.scroll_offset && selected == self.selected_path && !expansion_differs {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut live = Self {
+            scroll_offset: scroll,
+            selected_path: selected,
+            ..self.clone()
+        };
+        if expansion_differs {
+            for row in &mut live.rows {
+                if let (Some(desc), Some(latch)) = (row.is_expanded, state.expanded.get(&row.path))
+                {
+                    row.is_expanded = Some(latch.get(&desc));
+                }
+            }
+            let collapsed: Vec<TreePath> = live
+                .rows
+                .iter()
+                .filter(|row| row.is_expanded == Some(false))
+                .map(|row| row.path.clone())
+                .collect();
+            live.rows.retain(|row| {
+                !collapsed.iter().any(|ancestor| {
+                    row.path.len() > ancestor.len() && row.path.starts_with(ancestor)
+                })
+            });
+        }
+        std::borrow::Cow::Owned(live)
+    }
+
+    /// How many rows the real collection has: the window's total when
+    /// [`Self::items_window`] is set, else [`Self::rows`]' length.
+    pub fn row_count(&self) -> usize {
+        match self.items_window {
+            Some(w) => w.row_count(self.rows.len()),
+            None => self.rows.len(),
+        }
+    }
+
+    /// A windowed tree's cursor row against this descriptor — see
+    /// [`WindowCursorAnchor`] for when the stored cursor stands. Without
+    /// one, the descriptor's `selected_path` at its loaded position.
+    /// `None` for an unwindowed tree.
+    fn resolved_window_cursor(&self, state: &TreeViewState) -> Option<usize> {
+        let window = self.items_window?;
+        let loaded_at = |path: &TreePath| {
+            self.rows
+                .iter()
+                .position(|row| &row.path == path)
+                .map(|i| window.start + i)
+        };
+        let from_descriptor = || self.selected_path.as_ref().and_then(loaded_at);
+        let Some(cursor) = state.window_cursor else {
+            return from_descriptor();
+        };
+        let anchor = state.window_cursor_anchor.as_ref();
+        let row_path = self.loaded_row(cursor).map(|row| &row.path);
+        if row_path.is_some() && row_path == self.selected_path.as_ref() {
+            return Some(cursor);
+        }
+        if anchor.is_some_and(|a| a.seen != self.selected_path) {
+            return from_descriptor();
+        }
+        match (anchor.and_then(|a| a.path.as_ref()), row_path) {
+            (Some(was), Some(now)) if was != now => loaded_at(was).or_else(from_descriptor),
+            _ => Some(cursor),
+        }
+    }
+
+    /// The loaded row at absolute index `abs` of a windowed tree (or row
+    /// `abs` of an unwindowed one), `None` for a row not loaded.
+    fn loaded_row(&self, abs: usize) -> Option<&TreeRow> {
+        match self.items_window {
+            Some(window) => window
+                .loaded_index(self.rows.len(), abs)
+                .map(|i| &self.rows[i]),
+            None => self.rows.get(abs),
+        }
+    }
+
+    /// Latch what `handle` just did against the descriptor `desc`: the
+    /// navigation core's selection and scroll, and a toggled branch's
+    /// expansion.
+    fn latch(&self, desc: &TreeView, state: &mut TreeViewState, out: &Handled<TreeEvent>) {
+        let selected = state.nav.selected_path().cloned();
+        if selected.is_some() && selected != self.selected_path {
+            state.selected.set(&desc.selected_path, selected);
+        }
+        let scroll = state.nav.scroll_offset();
+        if scroll != self.scroll_offset {
+            state.scroll.set(&desc.scroll_offset, scroll);
+        }
+        if let Handled::Event(TreeEvent::RowToggleExpand { path }) = out {
+            desc.toggle_expanded(state, path);
+        }
+    }
+
+    /// Flip branch `path`'s expansion in `state`, against this
+    /// descriptor's own `is_expanded` for it, and drop the latches of
+    /// paths that are no longer branches. A windowed tree's rows are
+    /// flattened by the app, so it keeps no expansion of its own.
+    fn toggle_expanded(&self, state: &mut TreeViewState, path: &TreePath) {
+        if self.items_window.is_some() {
+            return;
+        }
+        if let Some(Some(desc_expanded)) = self
+            .rows
+            .iter()
+            .find(|row| &row.path == path)
+            .map(|row| row.is_expanded)
+        {
+            let latch = state.expanded.entry(path.clone()).or_default();
+            let current = latch.get(&desc_expanded);
+            latch.set(&desc_expanded, !current);
+        }
+        let branches: std::collections::BTreeSet<&TreePath> = self
+            .rows
+            .iter()
+            .filter(|row| row.is_expanded.is_some())
+            .map(|row| &row.path)
+            .collect();
+        state.expanded.retain(|path, _| branches.contains(path));
+    }
+
+    /// One windowed-tree navigation key: the cursor moves over the real
+    /// extent by absolute index. A loaded target reports its path; an
+    /// unloaded one only moves the cursor, and the tree asks for its rows
+    /// through [`crate::interactive::Interactive::data_requested`].
+    fn handle_windowed_key(
+        &self,
+        state: &mut TreeViewState,
+        event: &crate::interactive::KeyEvent,
+        layout: &TreeViewPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TreeEvent> {
+        use crate::behaviour::nav::{FlatNav, NavKey};
+        use crate::event::{Key, NamedKey};
+        use crate::interactive::WidgetAction;
+        let page = layout.viewport_rows.max(1);
+        let vim = self.style.vim_keys
+            && !(event.modifiers.ctrl || event.modifiers.alt || event.modifiers.cmd);
+        let nav = match event.key {
+            Key::Char('j') if vim => Some(NavKey::Down),
+            Key::Char('k') if vim => Some(NavKey::Up),
+            _ => NavKey::from_key(event).map(|nav| match nav {
+                NavKey::PageUp(_) => NavKey::PageUp(page.saturating_sub(1).max(1)),
+                NavKey::PageDown(_) => NavKey::PageDown(page.saturating_sub(1).max(1)),
+                other => other,
+            }),
+        };
+        let cursor = state.window_cursor;
+        if let Some(nav) = nav {
+            let Some(target) = FlatNav::mv_all(self.row_count(), cursor, nav, false) else {
+                return Handled::Ignored;
+            };
+            state.window_cursor = Some(target);
+            let scroll = state.nav.scroll_offset();
+            state
+                .nav
+                .set_scroll_offset(crate::behaviour::scroll::ensure_visible(
+                    scroll, page, target,
+                ));
+            return match self.loaded_row(target) {
+                Some(row) => {
+                    state.nav.set_selected_path(Some(row.path.clone()));
+                    Handled::Event(TreeEvent::SelectionChanged {
+                        path: row.path.clone(),
+                    })
+                }
+                None => Handled::Consumed,
+            };
+        }
+        let row = cursor.and_then(|abs| self.loaded_row(abs));
+        match (&event.key, row) {
+            (Key::Named(NamedKey::Enter), Some(row)) => Handled::Event(TreeEvent::RowActivated {
+                path: row.path.clone(),
+            }),
+            (Key::Named(NamedKey::Left), Some(row)) if row.is_expanded == Some(true) => {
+                Handled::Event(TreeEvent::RowToggleExpand {
+                    path: row.path.clone(),
+                })
+            }
+            (Key::Named(NamedKey::Right), Some(row)) if row.is_expanded == Some(false) => {
+                Handled::Event(TreeEvent::RowToggleExpand {
+                    path: row.path.clone(),
+                })
+            }
+            (key, _) => {
+                cx.emit(
+                    TreeEvent::KeyPressed {
+                        key: crate::primitives::list::key_to_event_string(key),
+                        modifiers: event.modifiers,
+                    }
+                    .into_ui_event(cx.id),
+                );
+                Handled::Ignored
+            }
+        }
+    }
+
     /// The row currently in the edit (rename) session, if any.
     fn editing_row(&self) -> Option<(usize, &TreeRowEditState)> {
         self.rows
@@ -2753,33 +3238,34 @@ impl TreeView {
         }
     }
 
-    /// Left press on a row body: plain click selects, Ctrl/Cmd and
-    /// Shift grow a multi-selection when the descriptor allows one.
+    /// A press of `button` on a row body, resolved by
+    /// [`crate::SelectionCore::press`]: a left click selects, Ctrl/Cmd and
+    /// Shift grow a multi-selection when the descriptor allows one, a
+    /// right click asks for the context menu and any other button reports
+    /// [`TreeEvent::RowClicked`] with that button.
     fn handle_row_press(
         &self,
         state: &mut TreeViewState,
         idx: usize,
+        button: crate::event::MouseButton,
         mods: Modifiers,
+        position: crate::event::Point,
     ) -> Handled<TreeEvent> {
-        use crate::types::SelectionGesture;
         let path = self.rows[idx].path.clone();
-        let gesture = SelectionGesture::from_modifiers(mods);
-        if self.selection_mode == SelectionMode::Multi && gesture != SelectionGesture::Replace {
-            let current = state.nav.selected_row_index(&self.rows).unwrap_or(idx);
-            let indices = state.selection.on_gesture(Some(current), idx, gesture);
-            state.nav.set_selected_path(Some(path));
-            return Handled::Event(TreeEvent::SelectionSet {
-                paths: selected_paths_for_indices(&self.rows, &indices),
-            });
-        }
-        state
+        let current = state.nav.selected_row_index(&self.rows).or(Some(idx));
+        let press = state
             .selection
-            .on_gesture(None, idx, crate::types::SelectionGesture::Replace);
-        state.nav.set_selected_path(Some(path.clone()));
-        Handled::Event(TreeEvent::RowClicked {
+            .press(self.selection_mode, current, idx, button, mods);
+        if button == crate::event::MouseButton::Left {
+            state.nav.set_selected_path(Some(path.clone()));
+        }
+        Handled::Event(TreeEvent::from_row_press(
+            press,
             path,
-            modifiers: mods,
-        })
+            mods,
+            position,
+            |indices| selected_paths_for_indices(&self.rows, indices),
+        ))
     }
 
     /// Left press on the scrollbar track: the thumb starts a captured
@@ -2798,7 +3284,7 @@ impl TreeView {
             sb.press_zone(y),
             y,
             sb.travel(),
-            self.rows.len(),
+            self.row_count(),
             layout.viewport_rows,
         ) {
             ScrollbarPress::DragStarted => {
@@ -2821,10 +3307,12 @@ impl crate::interactive::Interactive for TreeView {
     type State = TreeViewState;
     type Action = TreeEvent;
 
+    const SCROLLS_OWN_ROWS: bool = true;
+
     /// One focus stop as a whole — rows are navigated inside
     /// [`Self::handle`]. An empty tree has nothing to land on.
     fn focus(&self) -> crate::interactive::FocusSpec {
-        if self.rows.is_empty() {
+        if self.row_count() == 0 {
             crate::interactive::FocusSpec::None
         } else {
             crate::interactive::FocusSpec::Stop
@@ -2843,8 +3331,8 @@ impl crate::interactive::Interactive for TreeView {
             .iter()
             .filter_map(|(r, hit)| {
                 let part = match hit {
-                    TreeViewHit::Row(i) => TreeViewSubPart::Row(*i),
-                    TreeViewHit::Chevron(i) => TreeViewSubPart::Chevron(*i),
+                    TreeViewHit::Row(i) => TreeViewSubPart::Row(layout.abs_row(*i)),
+                    TreeViewHit::Chevron(i) => TreeViewSubPart::Chevron(layout.abs_row(*i)),
                     TreeViewHit::Empty => return None,
                 };
                 Some((*r, part.sub_target()))
@@ -2864,6 +3352,8 @@ impl crate::interactive::Interactive for TreeView {
         out
     }
 
+    /// Handles `event` as the tree's resolved descriptor
+    /// ([`TreeView::live`]), then latches the move against `self`.
     fn handle(
         &self,
         state: &mut TreeViewState,
@@ -2871,11 +3361,148 @@ impl crate::interactive::Interactive for TreeView {
         layout: &Self::Layout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TreeEvent> {
+        if self.items_window.is_some() {
+            state.window_cursor = self.resolved_window_cursor(state);
+        }
+        let live = self.live(Some(state));
+        state.sync(&live);
+        let out = live.handle_live(state, event, layout, cx);
+        live.latch(self, state, &out);
+        if self.items_window.is_some() {
+            state.window_cursor_anchor = Some(WindowCursorAnchor {
+                seen: self.selected_path.clone(),
+                path: state
+                    .window_cursor
+                    .and_then(|abs| self.loaded_row(abs))
+                    .map(|row| row.path.clone()),
+            });
+        }
+        out
+    }
+
+    /// A windowed tree asks for the rows around its viewport once it
+    /// scrolls or moves its cursor outside the loaded slice — see
+    /// [`crate::behaviour::row_window::RowsRequestLatch`].
+    fn data_requested(
+        &self,
+        state: &mut TreeViewState,
+        layout: &TreeViewPrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let window = layout.window.as_ref()?;
+        let scroll = match state.window_cursor {
+            // A cursor outside the viewport asks for the rows around it.
+            Some(cursor)
+                if cursor < window.scroll || cursor >= window.scroll + window.viewport_rows =>
+            {
+                cursor
+            }
+            _ => window.scroll,
+        };
+        state.rows_requested.request(
+            self.id,
+            window.window(),
+            window.loaded.1,
+            scroll,
+            window.viewport_rows,
+        )
+    }
+
+    /// A selection the app moved (a new descriptor `selected_path`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the tree's own keys moved does — so an app that owns the selection
+    /// but leaves the scroll to the tree keeps its selection visible.
+    fn settle(&self, state: &mut TreeViewState, layout: &TreeViewPrimitiveLayout) -> bool {
+        if state.followed_selection.as_ref() == Some(&self.selected_path) {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_path.clone());
+        let Some(path) = &self.selected_path else {
+            return false;
+        };
+        let live = self.live(Some(state));
+        if live.selected_path.as_ref() != Some(path) {
+            return false;
+        }
+        let Some(row) = live.rows.iter().position(|r| &r.path == path) else {
+            return false;
+        };
+        let row = row + self.items_window.map_or(0, |w| w.start);
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, layout.viewport_rows, row)
+    }
+
+    /// A `RowToggleExpand` for this tree the host delivered on the app's
+    /// behalf toggles that branch exactly as a chevron click would.
+    fn follow_event(&self, state: &mut TreeViewState, event: &crate::UiEvent) {
+        if let crate::UiEvent::Tree(id, TreeEvent::RowToggleExpand { path }) = event {
+            if *id == self.id {
+                self.toggle_expanded(state, path);
+            }
+        }
+    }
+
+    /// This widget scrolled so `row` is its first visible row.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self> {
+        Some(Self {
+            scroll_offset: row,
+            ..self.clone()
+        })
+    }
+
+    fn state_summary(&self, state: &TreeViewState) -> crate::interactive::StateSummary {
+        let live = self.live(Some(state));
+        let resolves_expansion =
+            self.items_window.is_none() && self.rows.iter().any(|row| row.is_expanded.is_some());
+        let expanded = resolves_expansion.then(|| {
+            live.rows
+                .iter()
+                .filter(|row| row.is_expanded == Some(true))
+                .map(|row| row.path.clone())
+                .collect()
+        });
+        crate::interactive::StateSummary::scroll(live.scroll_offset)
+            .with_selected_path(live.selected_path.clone())
+            .with_expanded(expanded)
+    }
+
+    fn a11y_actions(&self, _state: &TreeViewState) -> Vec<crate::a11y::A11yAction> {
+        use crate::a11y::A11yAction;
+        if self.rows.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                A11yAction::Click,
+                A11yAction::Focus,
+                A11yAction::Expand,
+                A11yAction::Collapse,
+                A11yAction::ScrollIntoView,
+            ]
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TreeView {
+    /// [`crate::interactive::Interactive::handle`] for the resolved
+    /// descriptor `self`, with `state`'s navigation core already seeded
+    /// from it.
+    fn handle_live(
+        &self,
+        state: &mut TreeViewState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &TreeViewPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<TreeEvent> {
         use crate::a11y::A11yAction;
         use crate::event::MouseButton;
         use crate::interactive::{KeyEvent, PointerKind, RoutedEvent};
 
-        state.sync(self);
         let abs = |local: &crate::event::Point| (local.x + layout.area.x, local.y + layout.area.y);
         match event {
             RoutedEvent::Pointer {
@@ -2890,8 +3517,17 @@ impl crate::interactive::Interactive for TreeView {
                     let sb = sb.clone();
                     return self.handle_scrollbar_press(state, &sb, y, layout, cx);
                 }
+                if self.items_window.is_some() {
+                    return self.handle_windowed_press(state, layout.hit_test(x, y), layout, *mods);
+                }
                 match layout.hit_test(x, y) {
-                    TreeViewHit::Row(idx) => self.handle_row_press(state, idx, *mods),
+                    TreeViewHit::Row(idx) => self.handle_row_press(
+                        state,
+                        idx,
+                        MouseButton::Left,
+                        *mods,
+                        crate::event::Point::new(x, y),
+                    ),
                     TreeViewHit::Chevron(idx) => Handled::Event(TreeEvent::RowToggleExpand {
                         path: self.rows[idx].path.clone(),
                     }),
@@ -2899,17 +3535,39 @@ impl crate::interactive::Interactive for TreeView {
                 }
             }
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Right),
+                kind: PointerKind::Down(button),
                 local,
+                mods,
                 ..
             } => {
                 let (x, y) = abs(local);
+                let position = crate::event::Point::new(x, y);
+                if self.items_window.is_some() {
+                    // A windowed tree has no multi-selection, so the press
+                    // only names its loaded row.
+                    return match self.hit_row(layout, x, y) {
+                        Some(row) => {
+                            let press = state.selection.press(
+                                SelectionMode::Single,
+                                None,
+                                0,
+                                *button,
+                                *mods,
+                            );
+                            Handled::Event(TreeEvent::from_row_press(
+                                press,
+                                row.path.clone(),
+                                *mods,
+                                position,
+                                |_| Vec::new(),
+                            ))
+                        }
+                        None => Handled::Ignored,
+                    };
+                }
                 match layout.hit_test(x, y) {
                     TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
-                        Handled::Event(TreeEvent::ContextMenuRequested {
-                            path: self.rows[idx].path.clone(),
-                            position: crate::event::Point::new(x, y),
-                        })
+                        self.handle_row_press(state, idx, *button, *mods, position)
                     }
                     TreeViewHit::Empty => Handled::Ignored,
                 }
@@ -2920,13 +3578,11 @@ impl crate::interactive::Interactive for TreeView {
                 ..
             } => {
                 let (x, y) = abs(local);
-                match layout.hit_test(x, y) {
-                    TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
-                        Handled::Event(TreeEvent::RowDoubleClicked {
-                            path: self.rows[idx].path.clone(),
-                        })
-                    }
-                    TreeViewHit::Empty => Handled::Ignored,
+                match self.hit_row(layout, x, y) {
+                    Some(row) => Handled::Event(TreeEvent::RowDoubleClicked {
+                        path: row.path.clone(),
+                    }),
+                    None => Handled::Ignored,
                 }
             }
             RoutedEvent::Pointer {
@@ -2955,7 +3611,7 @@ impl crate::interactive::Interactive for TreeView {
                 state.nav.scroll_by_wheel(
                     *dy,
                     layout.row_pitch,
-                    self.rows.len(),
+                    self.row_count(),
                     layout.viewport_rows,
                 );
                 self.scroll_outcome(before, state)
@@ -2965,7 +3621,11 @@ impl crate::interactive::Interactive for TreeView {
                     Some((idx, edit)) => self.handle_rename_key(idx, edit, key, *modifiers),
                     None => {
                         let before = state.nav.scroll_offset();
-                        let handled = self.handle_nav_key(state, key_event, layout, cx);
+                        let handled = if self.items_window.is_some() {
+                            self.handle_windowed_key(state, key_event, layout, cx)
+                        } else {
+                            self.handle_nav_key(state, key_event, layout, cx)
+                        };
                         // A move that scrolled the selection into view
                         // reports the new offset alongside the selection,
                         // so the app's controlled `scroll_offset` follows.
@@ -3032,20 +3692,55 @@ impl crate::interactive::Interactive for TreeView {
             _ => Handled::Ignored,
         }
     }
+}
 
-    fn a11y_actions(&self, _state: &TreeViewState) -> Vec<crate::a11y::A11yAction> {
-        use crate::a11y::A11yAction;
-        if self.rows.is_empty() {
-            Vec::new()
-        } else {
-            vec![
-                A11yAction::Click,
-                A11yAction::Focus,
-                A11yAction::Expand,
-                A11yAction::Collapse,
-                A11yAction::ScrollIntoView,
-            ]
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TreeView {
+    /// The row painted under absolute `(x, y)` — through the loaded slice
+    /// for a windowed tree, so a placeholder never resolves to a row.
+    fn hit_row(&self, layout: &TreeViewPrimitiveLayout, x: f32, y: f32) -> Option<&TreeRow> {
+        match layout.hit_test(x, y) {
+            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
+                self.loaded_row(layout.abs_row(idx))
+            }
+            TreeViewHit::Empty => None,
         }
+    }
+
+    /// A left press on a windowed tree's rows: a loaded row is clicked (or
+    /// its chevron toggled) by path; a placeholder only takes focus.
+    fn handle_windowed_press(
+        &self,
+        state: &mut TreeViewState,
+        hit: TreeViewHit,
+        layout: &TreeViewPrimitiveLayout,
+        mods: Modifiers,
+    ) -> Handled<TreeEvent> {
+        let (idx, chevron) = match hit {
+            TreeViewHit::Row(idx) => (idx, false),
+            TreeViewHit::Chevron(idx) => (idx, true),
+            TreeViewHit::Empty => return Handled::Consumed,
+        };
+        let abs = layout.abs_row(idx);
+        let Some(row) = self.loaded_row(abs) else {
+            return Handled::Consumed;
+        };
+        let path = row.path.clone();
+        if chevron {
+            return Handled::Event(TreeEvent::RowToggleExpand { path });
+        }
+        state.window_cursor = Some(abs);
+        state.nav.set_selected_path(Some(path.clone()));
+        Handled::Event(TreeEvent::RowClicked {
+            path,
+            button: crate::event::MouseButton::Left,
+            modifiers: mods,
+        })
     }
 }
 
@@ -3137,9 +3832,12 @@ fn apply_rename_op(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TreeEvent {
-    /// Single-click (or Enter on the keyboard) on a row.
+    /// A press on a row with any button but the secondary (right) one,
+    /// which asks for [`Self::ContextMenuRequested`] instead. `button`
+    /// tells a plain (left) click from a middle or `X1`/`X2` one.
     RowClicked {
         path: TreePath,
+        button: crate::event::MouseButton,
         modifiers: Modifiers,
     },
     /// Double-click on a row (typically "open" / "activate").
@@ -3193,6 +3891,39 @@ pub enum TreeEvent {
         path: TreePath,
         position: crate::event::Point,
     },
+}
+
+impl TreeEvent {
+    /// The event a press on the row at `path`, resolved by
+    /// [`crate::SelectionCore::press`], reports. `paths` maps a
+    /// multi-selection's row indices back to their paths (see
+    /// [`selected_paths_for_indices`]); `position` is the press point.
+    pub fn from_row_press(
+        press: crate::RowPress,
+        path: TreePath,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+        paths: impl FnOnce(&[usize]) -> Vec<TreePath>,
+    ) -> Self {
+        use crate::event::MouseButton;
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::RowClicked {
+                path,
+                button: MouseButton::Left,
+                modifiers,
+            },
+            RowPress::Set(indices) => Self::SelectionSet {
+                paths: paths(&indices),
+            },
+            RowPress::ContextMenu => Self::ContextMenuRequested { path, position },
+            RowPress::Click(button) => Self::RowClicked {
+                path,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 /// Maps flattened-row indices (as produced by
@@ -3278,6 +4009,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         };
@@ -3347,6 +4080,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: scroll,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -3732,6 +4467,8 @@ mod primitive_parity_tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0, 0]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -3869,6 +4606,8 @@ mod interactive_tests {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         }
@@ -3895,6 +4634,45 @@ mod interactive_tests {
             Interactive::handle(tree, state, &event, &layout, &mut cx)
         };
         (handled, host)
+    }
+
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection, and the scroll it records
+    /// is what the tree resolves next.
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        let mut tree = tree(30);
+        tree.selected_path = Some(vec![20]);
+        let mut state = TreeViewState::default();
+        let layout = layout_for(&tree, 5.0);
+        assert!(Interactive::settle(&tree, &mut state, &layout));
+        let scroll = tree.live(Some(&state)).scroll_offset;
+        assert!(
+            scroll <= 20 && 20 < scroll + layout.viewport_rows,
+            "{scroll}"
+        );
+        // The same selection again records nothing more.
+        assert!(!Interactive::settle(&tree, &mut state, &layout));
+    }
+
+    /// A `RowToggleExpand` the host delivers on the app's behalf expands
+    /// the branch it names, and one naming another tree is ignored.
+    #[test]
+    fn follow_event_toggles_the_named_branch_only_for_this_tree() {
+        let tree = tree(3);
+        let mut state = TreeViewState::default();
+        let toggle = |id: &str| {
+            crate::UiEvent::Tree(
+                WidgetId::new(id),
+                TreeEvent::RowToggleExpand { path: vec![0] },
+            )
+        };
+        Interactive::follow_event(&tree, &mut state, &toggle("tree:other"));
+        assert_eq!(tree.live(Some(&state)).rows[0].is_expanded, Some(false));
+        Interactive::follow_event(&tree, &mut state, &toggle("tree:unit"));
+        assert_eq!(tree.live(Some(&state)).rows[0].is_expanded, Some(true));
+        let summary = Interactive::state_summary(&tree, &state);
+        assert_eq!(summary.expanded, Some(vec![vec![0]]));
     }
 
     fn key(named: NamedKey) -> RoutedEvent {

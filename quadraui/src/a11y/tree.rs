@@ -1786,7 +1786,7 @@ impl A11yPrimitive for TreeTable {
         let positions = tree_path_positions(self.tree.iter().map(|n| n.path.as_slice()));
         let mut children: Vec<A11yChild> = vec![data_table_header(table)];
         children.extend(a11y_window(table.scroll_offset, total).map(|idx| {
-            let selected = table.selected_idx == Some(idx);
+            let selected = table.is_row_selected(idx);
             let info = match (self.tree.get(idx), positions.get(idx)) {
                 (Some(node), Some(&pos)) => {
                     tree_row_info(A11yRole::Row, node.indent, node.is_expanded, pos, selected)
@@ -1868,7 +1868,7 @@ fn data_table_row(table: &DataTable, idx: usize, total: usize) -> A11yChild {
     let info = in_set(
         A11yInfo::new()
             .with_role(A11yRole::Row)
-            .with_selected(table.selected_idx == Some(idx)),
+            .with_selected(table.is_row_selected(idx)),
         idx,
         total,
     );
@@ -2388,6 +2388,8 @@ mod tests {
                 .collect(),
             selected_idx: selected,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: false,
             bordered: false,
             h_scroll: 0,
@@ -3120,6 +3122,8 @@ mod tests {
             decoration: Decoration::default(),
         };
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("files"),
             columns: vec![
                 Column {
@@ -3136,6 +3140,8 @@ mod tests {
             rows: vec![row("src"), row("main.rs"), row("docs")],
             selected_idx: Some(1),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -3183,6 +3189,8 @@ mod tests {
     #[test]
     fn data_table_maps_rows_cells_and_a_footer_with_no_position() {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("people"),
             columns: vec![
                 Column {
@@ -3208,6 +3216,8 @@ mod tests {
             ],
             selected_idx: Some(1),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -3256,6 +3266,8 @@ mod tests {
     fn data_table_virtualisation_reports_true_set_size_under_a_100k_row_window() {
         let total = 100_000usize;
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("big"),
             columns: vec![Column {
                 title: "Value".to_string(),
@@ -3270,6 +3282,8 @@ mod tests {
                 .collect(),
             selected_idx: None,
             scroll_offset: 50_000,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -3358,6 +3372,8 @@ mod tests {
             selection_mode: SelectionMode::Single,
             selected_path: Some(vec![0, 1]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: false,
         };
@@ -3510,6 +3526,8 @@ mod tests {
                         selection_mode: SelectionMode::Single,
                         selected_path: None,
                         scroll_offset: 0,
+                        items_window: None,
+                        scroll_px: None,
                         style: TreeStyle::default(),
                         has_focus: false,
                     }),
@@ -3770,6 +3788,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: PaletteMode::default(),
+            show_mode_badge: true,
         };
         let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),

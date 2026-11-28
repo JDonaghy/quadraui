@@ -438,6 +438,8 @@ impl Sidebar {
                         selection_mode: SelectionMode::Single,
                         selected_path: None,
                         scroll_offset: 0,
+                        items_window: None,
+                        scroll_px: None,
                         style: Default::default(),
                         has_focus: false,
                     }),
@@ -1726,6 +1728,7 @@ mod contract {
             let ev = h.last(
                 &UiEvent::DoubleClick {
                     widget: None,
+                    button: crate::MouseButton::Left,
                     position: Point::new(body.x + 3.0, body.y + 2.0),
                 },
                 RECT,

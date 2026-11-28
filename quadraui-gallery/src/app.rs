@@ -338,6 +338,8 @@ impl GalleryApp {
             items,
             selected_idx,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             // Always highlighted, not gated on real keyboard focus: this
             // row denotes "currently showing", a persistent indicator
             // rather than a focus-only affordance. This always paints
@@ -492,6 +494,8 @@ impl ShellApp for GalleryApp {
                     }],
                     selected_idx: 0,
                     scroll_offset: 0,
+                    items_window: None,
+                    scroll_px: None,
                     has_focus: false,
                     bordered: false,
                     h_scroll: 0,

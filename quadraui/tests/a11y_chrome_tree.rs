@@ -747,6 +747,7 @@ fn payload_less_overlays_still_appear_in_the_tree() {
                 replace_one_glyph: "R1".to_string(),
                 replace_all_glyph: "R*".to_string(),
                 hit_regions,
+                hidden_toggles: Vec::new(),
             }),
         })
         .with_surface(Surface::Widget {

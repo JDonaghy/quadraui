@@ -169,6 +169,8 @@ impl NavRow for TreeTableNode {
 /// };
 ///
 /// let table = DataTable {
+///     selection_mode: Default::default(),
+///     selected_indices: Vec::new(),
 ///     id: WidgetId::new("tree_table:files"),
 ///     columns: vec![Column {
 ///         title: "Name".to_string(),
@@ -187,6 +189,8 @@ impl NavRow for TreeTableNode {
 ///     ],
 ///     selected_idx: None,
 ///     scroll_offset: 0,
+///     items_window: None,
+///     scroll_px: None,
 ///     sort: None,
 ///     has_focus: true,
 ///     show_scrollbar: false,
@@ -516,6 +520,14 @@ pub enum TreeTableEvent {
         idx: usize,
         path: TreePath,
         position: crate::event::Point,
+    },
+    /// Row `idx` was pressed with a button other than the primary and
+    /// secondary ones. See [`crate::DataTableEvent::RowClicked`].
+    RowClicked {
+        idx: usize,
+        path: TreePath,
+        button: crate::event::MouseButton,
+        modifiers: Modifiers,
     },
 }
 
@@ -849,6 +861,8 @@ pub(crate) mod native_surface_paint {
 
         fn table(labels: &[&str]) -> DataTable {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("tt"),
                 columns: vec![Column {
                     title: "Name".into(),
@@ -864,6 +878,8 @@ pub(crate) mod native_surface_paint {
                     .collect(),
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: true,
                 show_scrollbar: false,
@@ -1152,6 +1168,8 @@ mod tests {
 
     fn table(rows: usize) -> DataTable {
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tt"),
             columns: vec![
                 Column {
@@ -1173,6 +1191,8 @@ mod tests {
                 .collect(),
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,
@@ -1328,6 +1348,8 @@ mod tests {
     /// time until column 0 clears it.
     fn narrow_tree_table() -> TreeTable {
         let dt = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tt:narrow"),
             columns: vec![
                 Column {
@@ -1364,6 +1386,8 @@ mod tests {
                 .collect(),
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,
@@ -1498,6 +1522,8 @@ mod primitive_parity_tests {
 
     fn sample_tree_table() -> TreeTable {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("files"),
             columns: vec![Column {
                 title: "Name".to_string(),
@@ -1513,6 +1539,8 @@ mod primitive_parity_tests {
                 .collect(),
             selected_idx: Some(1),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

@@ -43,10 +43,40 @@ is a field on the widget struct, and the widget's private
 ## If you know...
 
 - **React:** exactly controlled versus uncontrolled inputs. There are no
-  hooks; component-local state comes from `Component` (Python, Node).
+  hooks; component-local state comes from `Component` (Python, Node),
+  shown below.
 - **Elm:** your model is the state. Elm has no widget-owned state; quadraui
   adds it so you do not have to model scroll positions.
 - **iced:** like the `State` a stateful iced widget keeps in its tree, but
   you never thread it through `view`.
 - **Textual:** like reactive attributes on a widget, except your data stays
   on your own object and the widget's own data is managed for you.
+
+## Component-local state
+
+State that belongs to one piece of the view, rather than to your app
+object, goes in a `Component` (`from quadraui.app import Component`; Node:
+`Component` from `@quadraui/node/app`). `initial_state()` gives its shape
+the first time it renders, and `view(state)` reads and changes it; the
+runtime keeps the dict per component, by its place in the tree or its
+`key=`. From `quadraui-py/examples/hot_reload/notes_view.py`:
+
+<!-- sample: quadraui-py/examples/hot_reload/notes_view.py -->
+```python
+class Counter(Component):
+    """Component-local state: survives every reload of this file."""
+
+    def initial_state(self) -> Dict[str, Any]:
+        return {"count": 0}
+
+    def view(self, state: Dict[str, Any]) -> Any:
+        def bump() -> None:
+            state["count"] += 1
+
+        return Column(
+            TextDisplay([_display_line(f"Counter: {state['count']}")], id="hr:count"),
+            Button("Add one", id="hr:add", on_click=bump),
+        )
+```
+
+Use it like any node: `Column(Counter(), ...)`.

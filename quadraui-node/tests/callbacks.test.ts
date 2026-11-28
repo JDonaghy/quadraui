@@ -18,7 +18,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("../js/index.ts");
+const { DecodeFailedError, InvalidDescriptorError, QuiApp } = require("@quadraui/node");
 
 /** A bespoke layout validation failure: `DecodeFailedError`, still an `InvalidDescriptorError`. */
 function isDecodeFailed(err: unknown): boolean {
@@ -104,7 +104,7 @@ test("a tick handler returning false exits without raising", () => {
   assert.equal(app.step(), false);
 });
 
-test("setRender overrides the fixed slots for every frame", () => {
+test("setRender supplies the layout for every frame", () => {
   const app = new QuiApp(40, 5);
   app.setRender(() => ({
     button: { id: "demo:ok", label: "From render" },

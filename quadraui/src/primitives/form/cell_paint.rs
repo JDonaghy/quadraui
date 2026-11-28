@@ -934,9 +934,8 @@ fn draw_field_dropdown(
 /// a `ComboBox`'s dropdown popup, since both are a
 /// list of rows with one highlighted. There's no separate "open" or
 /// "highlighted-but-uncommitted" state: `selected_idx` itself is both
-/// what's shown and what Up/Down move (see
-/// `compose::form_controller::FormController::handle_key`'s Dropdown
-/// block), so the highlighted row is always exactly `selected_idx`.
+/// what's shown and what Up/Down move (see `contract::handle_key`'s
+/// Dropdown block), so the highlighted row is always exactly `selected_idx`.
 fn draw_dropdown_popup(
     surface: &mut dyn CellSurface,
     area: Rect,
@@ -1103,7 +1102,7 @@ fn draw_field_button_row(
 /// focused/selected date as a single right-aligned line of text — the row
 /// stays one cell tall like every other field, so the full month grid never
 /// appears here. Day-by-day keyboard navigation and selection still work;
-/// they're just not visualized inline (see `FormController`, which drives
+/// they're just not visualized inline (the form's `Interactive` drives
 /// the picker's own `navigate` and emits `FormEvent::DateChanged`).
 fn draw_field_date_picker(
     surface: &mut dyn CellSurface,
@@ -1120,10 +1119,10 @@ fn draw_field_date_picker(
         ..
     } = *ctx;
 
-    // While this row is focused, show the live scrub position
-    // `FormController` overlays per keystroke rather than the
-    // app-confirmed `selected` — see `compose::form_controller`'s
-    // "Date picker fields" doc section. Otherwise fall back to
+    // While this row is focused, show the live scrub position the
+    // widget's `FormState` overlays per keystroke rather than the
+    // app-confirmed `selected` — see `contract`'s "Date picker fields"
+    // doc section. Otherwise fall back to
     // `selected`, or `focused` before any date has been confirmed.
     let date = if is_focused {
         picker.focused
@@ -1145,7 +1144,7 @@ fn draw_field_date_picker(
 /// `text` buffer plus a chevron as a single right-aligned line — the row
 /// stays one cell tall like every other field, so the open dropdown list
 /// never appears here. Type-to-filter keystrokes still work; they're just
-/// not visualized inline (see `FormController`, which drives the combo
+/// not visualized inline (the form's `Interactive` drives the combo
 /// box's own `handle_key` and emits `FormEvent::ComboBoxTextChanged` /
 /// `ComboBoxCommitted`). Painting the open dropdown itself is the app's
 /// job, mirroring `FieldKind::ColorPicker`'s popup contract.
@@ -1192,7 +1191,7 @@ fn draw_field_combo_box(
 /// (unlike `DatePicker`/`ComboBox`) there is no popup to keep collapsed.
 /// `visible_field.item_bounds`'s single entry (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::NumberInput` arm) is
-/// the control's on-screen rect — the same lookup `FormController`'s click
+/// the control's on-screen rect — the same lookup the form's click
 /// routing uses, so paint and click always agree.
 fn draw_field_number_input(
     surface: &mut dyn CellSurface,
@@ -1251,7 +1250,7 @@ fn draw_field_number_input(
 /// does, one row per option — `visible_field.item_bounds` (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::RadioGroup` arm, one
 /// entry per [`crate::primitives::radio_group::RadioOption`]) gives the
-/// control's on-screen rect via its first entry; `FormController`'s click
+/// control's on-screen rect via its first entry; the form's click
 /// routing resolves a click straight to the clicked option's own entry.
 fn draw_field_radio_group(
     surface: &mut dyn CellSurface,
@@ -1297,7 +1296,7 @@ fn draw_field_radio_group(
     // drives the selected option's marker colour (see
     // `crate::primitives::radio_group::cell_paint::paint`) — the app
     // isn't expected to mirror `Form::focused_field` onto the embedded
-    // primitive itself, the same contract `FormController`'s
+    // primitive itself, the same contract the form's
     // `ComboBox`/`DatePicker` handling already documents.
     let mut group = group.clone();
     group.focused = is_focused;

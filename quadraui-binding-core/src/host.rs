@@ -2,12 +2,12 @@
 //! today, a napi leaf next, #1126) needs around [`crate::engine::InteractionEngine`]
 //! to drive a [`quadraui::AppLogic`], but that still carries zero
 //! host-language FFI type. A binding's own `AppLogic` impl holds one
-//! [`BindingHost`] (the six fixed primitive slots, any number of additive
-//! slots, and the backend-settings replay store) plus its own callback
+//! [`BindingHost`] (its per-kind widget map and the backend-settings
+//! replay store) plus its own callback
 //! fields (a Python callable, a JS function value, ...) and an
 //! [`crate::engine::InteractionEngine`]; [`render_overlays`] is the one
 //! render-time call every binding's `AppLogic::render` makes after painting
-//! its own slots, so the anchored-overlay z-order — context menu, float,
+//! its own widgets, so the anchored-overlay z-order — context menu, float,
 //! rich-text popup, completions, dialog, tooltip, toast topmost of all, in
 //! the exact order [`render_overlays`]'s own body paints them — is written
 //! down once instead of copy-pasted per binding.
@@ -31,62 +31,38 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use quadraui::behaviour::nav::{Edge, NavKey, NavOutcome, TreeNavCore};
 use quadraui::compose::HoverTooltipTracker;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
-    mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, DataTable,
-    Decoration, Key, ListView, Modifiers, MouseButton, Reaction, Split, SplitMeasure, Style,
-    StyledSpan, StyledText, TabBar, TextDisplay, TextDisplayLine, Theme, Tooltip, TreePath,
-    TreeRow, TreeView, UiEvent, WidgetId,
+    mouse_down, mouse_up, Accelerator, AcceleratorId, AppLogic, Backend, Button, Decoration, Key,
+    Modifiers, MouseButton, Reaction, Split, SplitMeasure, Style, StyledSpan, TextDisplay,
+    TextDisplayLine, Theme, Tooltip, UiEvent, WidgetId,
 };
 
 use crate::engine::InteractionEngine;
 use crate::hit::PaintedHit;
-use crate::layout::{LayoutLeaf, LayoutNode, LayoutTabs, LeafDescriptor, StyleSets};
+use crate::layout::{LayoutNode, LayoutTabs, LeafDescriptor, StyleSets};
 use crate::render::{
-    data_table_viewport_rows, layout_container_rects, list_viewport_rows, natural_main_length,
-    scroll_content_slots, scroll_viewport_and_track, tree_viewport_rows, ItemsWindow, RenderFrame,
-    RenderRefs, ScrollMetrics, ScrollSlots,
+    layout_container_rects, natural_main_length, scroll_content_slots, scroll_viewport_and_track,
+    ScrollMetrics, ScrollSlots,
 };
 use quadraui::layout::stack::{
     apply_split_gap, quantise_horizontal, quantise_vertical, shrink_main_axis,
 };
 use quadraui::WidgetStateStore;
 
-/// Slot id of the host's `Button` descriptor.
-pub const SLOT_BUTTON: i64 = 0;
-/// Slot id of the host's `TextDisplay` descriptor.
-pub const SLOT_TEXT_DISPLAY: i64 = 1;
-/// Slot id of the host's `ListView` descriptor.
-pub const SLOT_LIST: i64 = 2;
-/// Slot id of the host's `TreeView` descriptor.
-pub const SLOT_TREE: i64 = 3;
-/// Slot id of the host's `DataTable` descriptor.
-pub const SLOT_DATA_TABLE: i64 = 4;
-/// Slot id of the host's `TabBar` descriptor.
-pub const SLOT_TAB_BAR: i64 = 5;
-
 /// The host-side half of a binding's `AppLogic`: a bag of optional
-/// descriptors, one per core primitive, plus the backend-settings replay
+/// widgets, one per kind, plus the backend-settings replay
 /// store a `run_tui`/`run_native`-style call needs to carry onto a freshly
 /// constructed backend. A binding's own `AppLogic` impl holds one of these
 /// alongside its own callback fields and [`InteractionEngine`] — nothing
 /// here is host-language-specific.
 #[derive(Default)]
 pub struct BindingHost {
-    /// The host's `"button"` slot, carried as a generic
-    /// [`quadraui::primitive::DynWidget`] entry (keyed `"button"`) rather
-    /// than its own typed field — [`SLOT_BUTTON`] reads/writes this
-    /// entry specifically, the same single-slot shape a `Button` had as a
-    /// dedicated field before it joined [`crate::widget_kinds::WIDGET_KINDS`].
+    /// The widgets [`crate::render::draw_bands`] paints when a binding
+    /// has no render callback, keyed by kind name.
     pub widgets: HashMap<String, std::rc::Rc<dyn quadraui::primitive::DynWidget>>,
-    pub text_display: Option<TextDisplay>,
-    pub list: Option<ListView>,
-    pub tree: Option<TreeView>,
-    pub data_table: Option<DataTable>,
-    pub tab_bar: Option<TabBar>,
     /// Set via a binding's own `register_accelerator`/`unregister_accelerator`
     /// surface. Kept here (not just applied directly to the live backend)
     /// so this whole host — moved by value into a real
@@ -145,9 +121,7 @@ pub struct BindingHost {
     /// wholesale by [`Self::set_leaf_tooltips`] each render; consulted by
     /// [`Self::hover_tooltip_text`] as the layout-tree counterpart of
     /// [`Self::widgets`]'s `"button"` entry read. A binding whose render
-    /// never paints a layout tree at all (or paints only via
-    /// [`Self::render_refs`]'s five fixed slots) leaves this empty
-    /// forever, so [`Self::hover_tooltip_text`] falls through to
+    /// never paints a layout tree at all leaves this empty forever, so [`Self::hover_tooltip_text`] falls through to
     /// [`Self::widgets`] directly. A [`RefCell`] (not a plain field)
     /// because `AppLogic::render` takes `&self`, not `&mut self` --
     /// the same reason [`Self::tooltip_clock`]/[`Self::test_clock_ms`]
@@ -188,45 +162,6 @@ pub struct BindingHost {
 }
 
 impl BindingHost {
-    /// Whether `slot` currently holds a descriptor.
-    pub fn slot_occupied(&self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.widgets.contains_key("button"),
-            SLOT_TEXT_DISPLAY => self.text_display.is_some(),
-            SLOT_LIST => self.list.is_some(),
-            SLOT_TREE => self.tree.is_some(),
-            SLOT_DATA_TABLE => self.data_table.is_some(),
-            SLOT_TAB_BAR => self.tab_bar.is_some(),
-            _ => false,
-        }
-    }
-
-    /// Whether `slot` names one of the six fixed primitive slots.
-    pub fn is_known_slot(slot: i64) -> bool {
-        matches!(
-            slot,
-            SLOT_BUTTON
-                | SLOT_TEXT_DISPLAY
-                | SLOT_LIST
-                | SLOT_TREE
-                | SLOT_DATA_TABLE
-                | SLOT_TAB_BAR
-        )
-    }
-
-    /// Empties one slot, returning whether it held anything.
-    pub fn clear_slot(&mut self, slot: i64) -> bool {
-        match slot {
-            SLOT_BUTTON => self.widgets.remove("button").is_some(),
-            SLOT_TEXT_DISPLAY => self.text_display.take().is_some(),
-            SLOT_LIST => self.list.take().is_some(),
-            SLOT_TREE => self.tree.take().is_some(),
-            SLOT_DATA_TABLE => self.data_table.take().is_some(),
-            SLOT_TAB_BAR => self.tab_bar.take().is_some(),
-            _ => false,
-        }
-    }
-
     /// Replays every accelerator and backend-settings field this host has
     /// recorded onto `backend` — call from a binding's own
     /// [`AppLogic::setup`] so a chord/theme/style/font set before
@@ -260,28 +195,6 @@ impl BindingHost {
         }
         if let Some(family) = &self.nerd_font_fallback {
             backend.set_nerd_font_fallback(family);
-        }
-    }
-
-    /// Borrows this host's five fixed slots (plus its own `"button"`
-    /// [`Self::widgets`] entry) as the [`RenderRefs`] shape
-    /// [`crate::render::draw_bands`] paints from.
-    pub fn render_refs(&self) -> RenderRefs<'_> {
-        RenderRefs {
-            text_display: self.text_display.as_ref(),
-            list: self.list.as_ref(),
-            tree: self.tree.as_ref(),
-            data_table: self.data_table.as_ref(),
-            tab_bar: self.tab_bar.as_ref(),
-            widgets: &self.widgets,
-            // `BindingHost`'s slots are set directly from Rust fields, not
-            // decoded from a raw dict, so there is no `scroll_px` key to
-            // lift out here — a host that wants pixel-precise scrolling
-            // paints the widget through `draw_dyn` with its own paint
-            // state instead of this helper.
-            list_scroll_px: None,
-            tree_scroll_px: None,
-            data_table_scroll_px: None,
         }
     }
 
@@ -519,813 +432,23 @@ impl BindingHost {
     }
 }
 
-// ─── Tree cursor + scroll, uncontrolled by default ─────────────────────────
-//
-// A `TreeView` descriptor's own `selected_path`/`scroll_offset` stay the
-// source of truth whenever an app sets them (controlled mode, unchanged
-// from before this module existed). When it leaves them at their defaults
-// (`None` / `0`) the app gets working keyboard navigation for free: the
-// cursor and its scroll position live in `WidgetStateStore`, keyed by the
-// tree's own id, moved and scrolled into view through
-// `quadraui::behaviour::nav::TreeNavCore`, the navigation core
-// `TreeView`'s own `Interactive` uses, rather than re-deriving that
-// arithmetic here.
-//
-// [`apply_tree_nav_key`] is the event-time half — called from a key
-// handler (e.g. [`crate::engine::InteractionEngine::handle`]) with the
-// `PaintedHit::Tree` geometry the most recent render produced, it moves
-// the stored cursor and persists the result. [`resolve_tree_cursor`] is
-// the render-time half — called right before painting, it merges the
-// descriptor's own (possibly controlled) fields with whatever is stored,
-// re-clamps the result into view against the current viewport, and
-// returns the `TreeView` a binding should actually paint.
-
-/// The subset of navigation keys this module's cursor navigation
-/// (`Tree`/`List`/`DataTable` alike) actually moves a stored cursor for.
-/// Enter and Space stay out of scope: row activation and expand/collapse
-/// keep going through each widget's own existing semantic-event
-/// translation (`crate::semantic::list_key_event`/`data_table_key_event`,
-/// or `Tree`'s raw `TreeEvent::KeyPressed` fallback) rather than moving
-/// into the widget-state store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CursorNav {
-    Up,
-    Down,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-}
-
-/// Classifies a raw key into [`CursorNav`] through
-/// [`NavKey::from_key`], the one key map every list and tree widget's
-/// own navigation shares, plus the `j`/`k` aliases for `Down`/`Up` when
-/// no Ctrl/Alt/Cmd is held. None of `Tree`/`List`/`DataTable`'s
-/// descriptors carry a per-widget toggle for those aliases, so they are
-/// always on (`ListView`'s own module doc documents `j`/`k` as `Down`/`Up`
-/// aliases unconditionally, matching this).
-fn cursor_nav_for_key(key: &Key) -> Option<CursorNav> {
-    let event = quadraui::interactive::KeyEvent {
-        key: key.clone(),
-        modifiers: Modifiers::default(),
-        repeat: false,
-    };
-    let nav = NavKey::from_key(&event).or(match key {
-        Key::Char('j') => Some(NavKey::Down),
-        Key::Char('k') => Some(NavKey::Up),
-        _ => None,
-    })?;
-    Some(match nav {
-        NavKey::Up => CursorNav::Up,
-        NavKey::Down => CursorNav::Down,
-        NavKey::Home => CursorNav::Home,
-        NavKey::End => CursorNav::End,
-        NavKey::PageUp(_) => CursorNav::PageUp,
-        NavKey::PageDown(_) => CursorNav::PageDown,
-    })
-}
-
-/// `(viewport_rows.max(1) - 1).max(1)`, as an `isize` delta — the page
-/// size `TreeNavCore::handle_key`'s own `PageUp`/`PageDown` arms use,
-/// shared here so `Tree`/`List`/`DataTable`'s own page navigation agrees
-/// with it instead of re-deriving the formula per call site.
-fn page_delta(viewport_rows: usize) -> isize {
-    (viewport_rows.max(1) - 1).max(1) as isize
-}
-
-/// A `Tree`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by the
-/// tree's own id. [`apply_tree_nav_key`] writes it on a recognized
-/// navigation key; [`resolve_tree_cursor`] reads it back — merged with
-/// whatever the descriptor itself pins — at render time.
-///
-/// `scroll_controlled` latches `true` the first time a frame's own
-/// `TreeView::scroll_offset` is non-zero, and then stays `true` forever
-/// after (even across a later frame whose `scroll_offset` goes back to
-/// `0`) — see [`resolve_tree_cursor`]'s own doc for why `scroll_offset`
-/// alone can't tell "controlled, pinned to the top" apart from
-/// "uncontrolled, never pinned" and why this latch is the fix.
-#[derive(Debug, Clone, Default)]
-struct TreeCursorState {
-    selected_path: Option<TreePath>,
-    scroll_offset: usize,
-    scroll_controlled: bool,
-}
-
-/// A throwaway [`TreeRow`] standing in for `path`, with every other field
-/// at its default — the row shape [`TreeNavCore`]'s movement reads, for
-/// pure path/count arithmetic that never reads a row's icon, text, badge,
-/// or expand state.
-fn placeholder_tree_row(path: TreePath) -> TreeRow {
-    TreeRow {
-        path,
-        indent: 0,
-        icon: None,
-        text: StyledText::plain(""),
-        badge: None,
-        is_expanded: None,
-        decoration: Decoration::default(),
-        edit: None,
-    }
-}
-
-/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `Tree`, resolved against [`quadraui::WidgetStateStore`] rather than the app: moves the
-/// stored cursor for `id` by one row (or to an edge, or by a page) and
-/// scrolls it into view, via [`TreeNavCore`]'s own navigation
-/// (never re-derived here) seeded from whichever
-/// cursor is currently stored. `row_paths` and `viewport_rows` should come
-/// from `crate::hit::tree_rows_and_viewport` against the most recent
-/// render's hit map — the same geometry [`crate::drag::tree_scroll_state`]
-/// already reads for scrollbar drag/wheel handling — so movement matches
-/// what was actually painted rather than a stale descriptor, and so a
-/// tree whose selected row is currently mid-rename is never navigated out
-/// from under the edit in progress (`tree_rows_and_viewport` already
-/// returns `None` for that case).
-///
-/// Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) for a recognized
-/// navigation key that actually moved the cursor, so the caller knows to
-/// redraw; `false` for any other key, or for a recognized key that moved
-/// nothing (an empty tree, or already at the edge an arrow key pushes
-/// further against), which the caller should fall through to unchanged
-/// (today's raw `TreeEvent::KeyPressed` dispatch keeps working for Enter,
-/// Space, and anything app-specific). A controlled `Tree` (whose
-/// descriptor sets a non-default `selected_path`/`scroll_offset`) still
-/// has its stored cursor moved here — harmless, since [`resolve_tree_cursor`]
-/// discards it again in favor of the descriptor's own value on the very
-/// next render, the same "controlled wins and is written back" rule
-/// [`quadraui::WidgetStateStore::resolve`]'s own doc already describes.
-pub fn apply_tree_nav_key(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    row_paths: &[TreePath],
-    viewport_rows: usize,
-    key: &Key,
-) -> bool {
-    let Some(nav) = cursor_nav_for_key(key) else {
-        return false;
-    };
-    if row_paths.is_empty() {
-        return false;
-    }
-    let stored = widget_state
-        .borrow()
-        .value::<TreeCursorState>(&id)
-        .unwrap_or_default();
-    let rows: Vec<TreeRow> = row_paths
-        .iter()
-        .cloned()
-        .map(placeholder_tree_row)
-        .collect();
-    let mut nav_core = TreeNavCore::new();
-    nav_core.set_selected_path(stored.selected_path);
-    nav_core.set_scroll_offset(stored.scroll_offset);
-    let outcome = match nav {
-        CursorNav::Up => nav_core.move_selection_by(&rows, -1, viewport_rows),
-        CursorNav::Down => nav_core.move_selection_by(&rows, 1, viewport_rows),
-        CursorNav::Home => nav_core.move_selection_to_edge(&rows, Edge::Start, viewport_rows),
-        CursorNav::End => nav_core.move_selection_to_edge(&rows, Edge::End, viewport_rows),
-        CursorNav::PageUp => {
-            nav_core.move_selection_by(&rows, -page_delta(viewport_rows), viewport_rows)
-        }
-        CursorNav::PageDown => {
-            nav_core.move_selection_by(&rows, page_delta(viewport_rows), viewport_rows)
-        }
-    };
-    widget_state.borrow_mut().set(
-        id,
-        TreeCursorState {
-            selected_path: nav_core.selected_path().cloned(),
-            scroll_offset: nav_core.scroll_offset(),
-            scroll_controlled: stored.scroll_controlled,
-        },
-    );
-    matches!(outcome, NavOutcome::Selected(_))
-}
-
-/// Resolves `tree`'s cursor + scroll for painting, through the
-/// controlled/uncontrolled policy [`quadraui::WidgetStateStore`]'s own module doc
-/// describes: `tree.selected_path` wins outright when `Some`; otherwise
-/// the id's stored cursor wins (`None`, no selection, the first time it's
-/// seen).
-///
-/// `scroll_offset` needs one more rule on top of that, because `0` is
-/// already `TreeView::scroll_offset`'s own "unscrolled" sentinel and so
-/// can't tell "the app explicitly pins the scroll to the top" apart from
-/// "the app never set this field at all". [`TreeCursorState::scroll_controlled`]
-/// resolves the ambiguity by latching: the very first frame whose
-/// `tree.scroll_offset` is non-zero marks this id controlled from then on,
-/// including every later frame whose `scroll_offset` goes back to `0` —
-/// so an app that pins `20`, lets the user wheel back to the top, and then
-/// paints `0` again keeps that `0` rather than getting stuck at `20`
-/// forever (the bug this latch exists to fix) or silently falling back to
-/// treating `0` as uncontrolled (which would just move the bug to "pin at
-/// exactly `0`" instead). The one case this still can't distinguish —
-/// an app that pins `0` from the very first frame and never changes it —
-/// is indistinguishable from "uncontrolled, never touched" without a
-/// breaking change to `TreeView::scroll_offset`'s own type; see
-/// `CLAUDE.md`'s *Downstream consumers* section for why that cost isn't
-/// paid here.
-///
-/// Once controlled, the descriptor's value wins outright and is returned
-/// exactly as given — never nudged to keep the selection visible — while
-/// uncontrolled resolves from the store and IS scrolled into view (via
-/// `TreeNavCore::scroll_to_visible`, never re-derived here) against the
-/// current `viewport_rows`, so a resize or a freshly uncontrolled
-/// selection are both caught here even without an intervening
-/// [`apply_tree_nav_key`] call.
-///
-/// Call once per frame, before painting `tree` — the returned [`TreeView`]
-/// is what a binding's render should hand to [`crate::render::draw_bands`]/
-/// [`crate::render::paint_layout`], not `tree` itself.
-pub fn resolve_tree_cursor(
-    widget_state: &RefCell<WidgetStateStore>,
-    tree: &TreeView,
-    viewport_rows: usize,
-) -> TreeView {
-    let id = tree.id;
-    let stored = widget_state
-        .borrow()
-        .value::<TreeCursorState>(&id)
-        .unwrap_or_default();
-
-    let selected_path = tree.selected_path.clone().or(stored.selected_path);
-    let scroll_controlled = stored.scroll_controlled || tree.scroll_offset != 0;
-    let mut scroll_offset = if scroll_controlled {
-        tree.scroll_offset
-    } else {
-        stored.scroll_offset
-    };
-
-    if !scroll_controlled {
-        if let Some(path) = &selected_path {
-            if let Some(row) = tree.rows.iter().position(|r| &r.path == path) {
-                let mut nav_core = TreeNavCore::new();
-                nav_core.set_scroll_offset(scroll_offset);
-                nav_core.scroll_to_visible(row, viewport_rows);
-                scroll_offset = nav_core.scroll_offset();
-            }
-        }
-    }
-
-    widget_state.borrow_mut().set(
-        id,
-        TreeCursorState {
-            selected_path: selected_path.clone(),
-            scroll_offset,
-            scroll_controlled,
-        },
-    );
-
-    TreeView {
-        selected_path,
-        scroll_offset,
-        ..tree.clone()
-    }
-}
-
-// ─── Windowed Tree cursor + scroll, by absolute index ──────────────────────
-//
-// A windowed tree's loaded `rows` is only ever a slice of its real
-// `ItemsWindow::total` extent, and a not-yet-loaded position's placeholder
-// `TreeRow::path` is a synthetic value with no stable identity across a
-// window update (see `crate::render::windowed_tree`'s own doc) — so unlike
-// `apply_tree_nav_key`/`resolve_tree_cursor` above, which track the cursor
-// by `TreePath` and re-locate it within `tree.rows` every frame, these
-// track it by absolute `usize` index instead, the same flat-cursor shape
-// `List`/`DataTable` already use (`move_flat_index`/`edge_flat_index`/
-// `scroll_into_view` below are the exact same functions, over `window.total`
-// rather than a bare row count).
-
-/// A windowed `Tree`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed
-/// by [`windowed_tree_cursor_id`] (NOT the tree's own id directly) — the
-/// windowed counterpart of [`TreeCursorState`]. `selected_index` is `None`
-/// only when nothing has been selected yet (`DataTableCursorState`'s own
-/// shape, not `ListCursorState`'s latch: an absolute index has no
-/// ambiguous "unset" sentinel the way a bare `usize` does).
-#[derive(Debug, Clone, Default)]
-struct TreeCursorStateWindowed {
-    selected_index: Option<usize>,
-    scroll_offset: usize,
-    scroll_controlled: bool,
-}
-
-/// The [`quadraui::WidgetStateStore`] key [`apply_tree_nav_key_windowed`]/
-/// [`resolve_tree_cursor_windowed`] store [`TreeCursorStateWindowed`]
-/// under — derived from, but distinct from, `id` itself.
-///
-/// [`quadraui::WidgetStateStore`] holds exactly one type-erased entry per [`WidgetId`]
-/// (see its own module doc), and [`InteractionEngine::handle`]'s generic
-/// focused-`Tree` key dispatch already writes a plain [`TreeCursorState`]
-/// under a tree's own id unconditionally — it has no way to know a given
-/// tree is windowed and should stay out of the way. Storing
-/// [`TreeCursorStateWindowed`] under that same id would have the generic
-/// dispatch silently clobber it (a `downcast_ref::<TreeCursorStateWindowed>()`
-/// against a stored `TreeCursorState` value just returns `None`, so this
-/// would fail silent, not loud) the moment a real app's event loop ran
-/// both paths for the same frame. Deriving a side key — the same
-/// `format!("{}-scrollbar", ...)` pattern `draw_tree_with_scrollbar_and_state`'s
-/// own `Scrollbar::vertical` call already uses for an unrelated per-tree
-/// id — keeps the two stores independent instead.
-fn windowed_tree_cursor_id(id: WidgetId) -> WidgetId {
-    WidgetId::new(format!("{}{WINDOWED_CURSOR_KEY_SUFFIX}", id.as_str()))
-}
-
-/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// windowed `Tree`, resolved against [`quadraui::WidgetStateStore`] by absolute index —
-/// the windowed counterpart of [`apply_tree_nav_key`], for a tree whose
-/// `id` has an [`ItemsWindow`] in play. `total_rows`/`viewport_rows`
-/// should come from `crate::hit::tree_total_rows_and_viewport` against the
-/// most recent render's hit map (its `total_rows` is the collection's real
-/// extent — `ItemsWindow::total` — not the loaded slice's own length).
-/// Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) only when a
-/// recognized navigation key actually moved the cursor; `false` otherwise,
-/// mirroring [`apply_list_nav_key`]'s own contract exactly.
-pub fn apply_tree_nav_key_windowed(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    total_rows: usize,
-    viewport_rows: usize,
-    key: &Key,
-) -> bool {
-    let Some(nav) = cursor_nav_for_key(key) else {
-        return false;
-    };
-    let state_id = windowed_tree_cursor_id(id);
-    let stored = widget_state
-        .borrow()
-        .value::<TreeCursorStateWindowed>(&state_id)
-        .unwrap_or_default();
-    let new_idx = match nav {
-        CursorNav::Up => move_flat_index(stored.selected_index, -1, total_rows),
-        CursorNav::Down => move_flat_index(stored.selected_index, 1, total_rows),
-        CursorNav::Home => edge_flat_index(Edge::Start, total_rows),
-        CursorNav::End => edge_flat_index(Edge::End, total_rows),
-        CursorNav::PageUp => move_flat_index(
-            stored.selected_index,
-            -page_delta(viewport_rows),
-            total_rows,
-        ),
-        CursorNav::PageDown => {
-            move_flat_index(stored.selected_index, page_delta(viewport_rows), total_rows)
-        }
-    };
-    let moved = new_idx != stored.selected_index;
-    let scroll_offset = match new_idx {
-        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
-        _ => stored.scroll_offset,
-    };
-    widget_state.borrow_mut().set(
-        state_id,
-        TreeCursorStateWindowed {
-            selected_index: new_idx,
-            scroll_offset,
-            scroll_controlled: stored.scroll_controlled,
-        },
-    );
-    moved
-}
-
-/// The absolute scroll offset [`quadraui::WidgetStateStore`] currently holds for `id`'s
-/// uncontrolled `Tree`/`List`/`DataTable` cursor, or `None` when nothing
-/// has stored one yet.
-///
-/// [`quadraui::WidgetStateStore`] keeps exactly one type-erased entry per [`WidgetId`]
-/// (see its own module doc), so which cursor-state type a given id holds is
-/// decided by whichever `apply_*_nav_key` last wrote it — this tries each
-/// in turn rather than requiring the caller to know the leaf's kind. The
-/// windowed-`Tree` store is checked first because it lives under its own
-/// derived key ([`windowed_tree_cursor_id`]), so it can coexist with a
-/// plain [`TreeCursorState`] under the tree's own id and is the one that
-/// tracks absolute indices.
-///
-/// Read by [`crate::InteractionEngine::handle`] right after a navigation
-/// key moved a cursor, to ask a windowed leaf's app for the rows that move
-/// scrolled into view.
-pub fn stored_cursor_scroll_offset(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-) -> Option<usize> {
-    if let Some(stored) = widget_state
-        .borrow()
-        .value::<TreeCursorStateWindowed>(&windowed_tree_cursor_id(id))
-    {
-        return Some(stored.scroll_offset);
-    }
-    if let Some(stored) = widget_state.borrow().value::<TreeCursorState>(&id) {
-        return Some(stored.scroll_offset);
-    }
-    if let Some(stored) = widget_state.borrow().value::<ListCursorState>(&id) {
-        return Some(stored.scroll_offset);
-    }
-    if let Some(stored) = widget_state.borrow().value::<DataTableCursorState>(&id) {
-        return Some(stored.scroll_offset);
-    }
-    None
-}
-
-/// Resolves a windowed `tree`'s cursor + scroll for painting — the
-/// windowed counterpart of [`resolve_tree_cursor`], for a tree whose `id`
-/// has `window` in play. `tree.selected_path`, when it resolves to one of
-/// `tree`'s own currently-loaded `rows`, controls the absolute index the
-/// same "controlled wins" way [`resolve_tree_cursor`] always has
-/// (translated into `window.start + row_idx`); otherwise the stored
-/// absolute index — persisted across frames, and across a window update
-/// moving which slice is loaded, by [`apply_tree_nav_key_windowed`] —
-/// wins. `scroll_offset` keeps [`resolve_tree_cursor`]'s own
-/// `scroll_controlled` latch unchanged (a non-zero `tree.scroll_offset`
-/// still means "the app pins this scroll" forever after).
-///
-/// Call once per frame, before painting `tree`, in place of
-/// [`resolve_tree_cursor`] for a leaf `window` already has an
-/// [`ItemsWindow`] for.
-pub fn resolve_tree_cursor_windowed(
-    widget_state: &RefCell<WidgetStateStore>,
-    tree: &TreeView,
-    window: ItemsWindow,
-    viewport_rows: usize,
-) -> TreeView {
-    let state_id = windowed_tree_cursor_id(tree.id);
-    let stored = widget_state
-        .borrow()
-        .value::<TreeCursorStateWindowed>(&state_id)
-        .unwrap_or_default();
-
-    let descriptor_index = tree.selected_path.as_ref().and_then(|path| {
-        tree.rows
-            .iter()
-            .position(|r| &r.path == path)
-            .map(|row_idx| window.start + row_idx)
-    });
-    let selected_index = descriptor_index.or(stored.selected_index);
-
-    let scroll_controlled = stored.scroll_controlled || tree.scroll_offset != 0;
-    let mut scroll_offset = if scroll_controlled {
-        tree.scroll_offset
-    } else {
-        stored.scroll_offset
-    };
-
-    if !scroll_controlled {
-        if let Some(idx) = selected_index {
-            scroll_offset = scroll_into_view(scroll_offset, idx, viewport_rows);
-        }
-    }
-
-    widget_state.borrow_mut().set(
-        state_id,
-        TreeCursorStateWindowed {
-            selected_index,
-            scroll_offset,
-            scroll_controlled,
-        },
-    );
-
-    // Only translated back into a `TreePath` when the absolute index
-    // falls within this frame's own loaded slice -- a not-yet-loaded
-    // index has no real row to point `selected_path` at (and `tree.rows`
-    // past that slice is placeholder content a backend never highlights
-    // meaningfully anyway).
-    let selected_path = selected_index.and_then(|idx| {
-        idx.checked_sub(window.start)
-            .and_then(|row_idx| tree.rows.get(row_idx))
-            .map(|row| row.path.clone())
-    });
-
-    TreeView {
-        selected_path,
-        scroll_offset,
-        ..tree.clone()
-    }
-}
-
-// ─── List cursor + scroll, uncontrolled by default ─────────────────────────
-//
-// Same policy as the `Tree` section above, for a flat `ListView`. Unlike
-// `Tree`, there is no composed `ListController` in `quadraui::compose` to
-// reuse for movement/scroll-into-view (only `TreeNavCore` exists today)
-// — [`move_flat_index`]/[`edge_flat_index`]/[`scroll_into_view`] below are
-// the pure index arithmetic a future `ListController` would also need,
-// kept as free functions here rather than duplicated per widget since
-// `List`/`DataTable` share the identical flat-cursor shape.
-
-/// A `List`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by the
-/// list's own id. `selected_idx`/`selected_controlled` mirror
-/// [`TreeCursorState::scroll_controlled`]'s latch, because
-/// `ListView::selected_idx` (a bare `usize`, always a valid index into a
-/// non-empty list) has the exact same `0`-is-ambiguous shape
-/// `TreeView::scroll_offset` does — see [`resolve_list_cursor`]'s own doc.
-#[derive(Debug, Clone, Default)]
-struct ListCursorState {
-    selected_idx: Option<usize>,
-    selected_controlled: bool,
-    scroll_offset: usize,
-    scroll_controlled: bool,
-}
-
-/// Moves a flat (non-hierarchical) cursor by `delta` rows within `[0,
-/// count)`, clamped at either edge — the `List`/`DataTable` counterpart of
-/// `TreeNavCore::move_selection_by`'s own clamp. `None` means "nothing
-/// selected yet": a forward move (`delta > 0`) starts at row `0`, a
-/// backward one at the last row, matching `TreeNavCore::move_selection_by`'s
-/// own "no current selection" branch. Returns `None` only when `count == 0`.
-fn move_flat_index(current: Option<usize>, delta: isize, count: usize) -> Option<usize> {
-    if count == 0 {
-        return None;
-    }
-    let new = match current {
-        Some(cur) => {
-            let target = cur as isize + delta;
-            target.max(0).min(count as isize - 1) as usize
-        }
-        None if delta > 0 => 0,
-        None => count - 1,
-    };
-    Some(new)
-}
-
-/// The first (`Edge::Start`) or last (`Edge::End`) row of a `count`-row
-/// flat list — the `List`/`DataTable` counterpart of
-/// `TreeNavCore::move_selection_to_edge`'s own edge row. Returns `None`
-/// only when `count == 0`.
-fn edge_flat_index(edge: Edge, count: usize) -> Option<usize> {
-    if count == 0 {
-        return None;
-    }
-    Some(match edge {
-        Edge::Start => 0,
-        Edge::End => count - 1,
-    })
-}
-
-/// Scrolls `scroll_offset` by the minimum amount needed to bring `row`
-/// into a `viewport_rows`-tall window — the `List`/`DataTable` counterpart
-/// of `TreeNavCore::scroll_to_visible`'s own formula.
-fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> usize {
-    if viewport_rows == 0 {
-        return scroll_offset;
-    }
-    if row < scroll_offset {
-        row
-    } else if row >= scroll_offset + viewport_rows {
-        row.saturating_sub(viewport_rows.saturating_sub(1))
-    } else {
-        scroll_offset
-    }
-}
-
-/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `List`, resolved against [`quadraui::WidgetStateStore`] — the `List` counterpart of
-/// [`apply_tree_nav_key`]. `total_items`/`viewport_rows` should come from
-/// `crate::hit::list_rows_and_viewport` against the most recent render's
-/// hit map. Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated) only when
-/// a recognized navigation key actually moved the cursor; `false`
-/// otherwise. Either way the event the caller goes on to dispatch is
-/// unchanged — `crate::semantic::list_key_event`'s Enter translation, or
-/// the raw `ListViewEvent::KeyPressed` fallback for everything else,
-/// navigation keys included, so an app that tracks its own
-/// `ListView::selected_idx` still sees them.
-pub fn apply_list_nav_key(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    total_items: usize,
-    viewport_rows: usize,
-    key: &Key,
-) -> bool {
-    let Some(nav) = cursor_nav_for_key(key) else {
-        return false;
-    };
-    let stored = widget_state
-        .borrow()
-        .value::<ListCursorState>(&id)
-        .unwrap_or_default();
-    let new_idx = match nav {
-        CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_items),
-        CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_items),
-        CursorNav::Home => edge_flat_index(Edge::Start, total_items),
-        CursorNav::End => edge_flat_index(Edge::End, total_items),
-        CursorNav::PageUp => {
-            move_flat_index(stored.selected_idx, -page_delta(viewport_rows), total_items)
-        }
-        CursorNav::PageDown => {
-            move_flat_index(stored.selected_idx, page_delta(viewport_rows), total_items)
-        }
-    };
-    let moved = new_idx != stored.selected_idx;
-    let scroll_offset = match new_idx {
-        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
-        _ => stored.scroll_offset,
-    };
-    widget_state.borrow_mut().set(
-        id,
-        ListCursorState {
-            selected_idx: new_idx,
-            selected_controlled: stored.selected_controlled,
-            scroll_offset,
-            scroll_controlled: stored.scroll_controlled,
-        },
-    );
-    moved
-}
-
-/// Resolves `list`'s cursor + scroll for painting — the `List` counterpart
-/// of [`resolve_tree_cursor`]. `ListView::selected_idx` has no "unset"
-/// state of its own (always a valid index into a non-empty list, default
-/// `0`), so it gets the exact same latch [`resolve_tree_cursor`]'s own doc
-/// describes for `scroll_offset`: `selected_controlled` turns `true` the
-/// first time `list.selected_idx` is non-zero and then stays `true`,
-/// including a later frame whose `selected_idx` goes back to `0`. An app
-/// that genuinely pins the selection at row `0` from the very first frame
-/// is indistinguishable from "uncontrolled, never touched" — the same
-/// residual ambiguity [`resolve_tree_cursor`] accepts for `scroll_offset`.
-///
-/// Call once per frame, before painting `list`.
-pub fn resolve_list_cursor(
-    widget_state: &RefCell<WidgetStateStore>,
-    list: &ListView,
-    viewport_rows: usize,
-) -> ListView {
-    let id = list.id;
-    let stored = widget_state
-        .borrow()
-        .value::<ListCursorState>(&id)
-        .unwrap_or_default();
-
-    let selected_controlled = stored.selected_controlled || list.selected_idx != 0;
-    let selected_idx = if selected_controlled {
-        Some(list.selected_idx)
-    } else {
-        stored.selected_idx
-    };
-    let resolved_selected_idx = selected_idx.unwrap_or(0);
-
-    let scroll_controlled = stored.scroll_controlled || list.scroll_offset != 0;
-    let mut scroll_offset = if scroll_controlled {
-        list.scroll_offset
-    } else {
-        stored.scroll_offset
-    };
-
-    if !scroll_controlled {
-        scroll_offset = scroll_into_view(scroll_offset, resolved_selected_idx, viewport_rows);
-    }
-
-    widget_state.borrow_mut().set(
-        id,
-        ListCursorState {
-            selected_idx,
-            selected_controlled,
-            scroll_offset,
-            scroll_controlled,
-        },
-    );
-
-    ListView {
-        selected_idx: resolved_selected_idx,
-        scroll_offset,
-        ..list.clone()
-    }
-}
-
-// ─── DataTable cursor + scroll, uncontrolled by default ────────────────────
-//
-// Same policy as `List` above, reusing the same flat-cursor arithmetic.
-// `DataTable::selected_idx` is already `Option<usize>` (unlike `ListView`'s
-// bare `usize`), so its own resolution needs no latch — `None` already
-// unambiguously means "no selection, uncontrolled" the same way
-// `TreeView::selected_path` does.
-
-/// A `DataTable`'s cursor + scroll, persisted in [`quadraui::WidgetStateStore`] keyed by
-/// the table's own id.
-#[derive(Debug, Clone, Default)]
-struct DataTableCursorState {
-    selected_idx: Option<usize>,
-    scroll_offset: usize,
-    scroll_controlled: bool,
-}
-
-/// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
-/// `DataTable`, resolved against [`quadraui::WidgetStateStore`] — the `DataTable`
-/// counterpart of [`apply_tree_nav_key`]/[`apply_list_nav_key`].
-/// `total_rows`/`viewport_rows` should come from
-/// `crate::hit::data_table_rows_and_viewport` against the most recent
-/// render's hit map. Returns `true` (and leaves [`quadraui::WidgetStateStore`] updated)
-/// only when a recognized navigation key actually moved the cursor;
-/// `false` otherwise, so the caller falls through unchanged — today's
-/// `crate::semantic::data_table_key_event` Enter/Up/Down event
-/// translation.
-pub fn apply_data_table_nav_key(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    total_rows: usize,
-    viewport_rows: usize,
-    key: &Key,
-) -> bool {
-    let Some(nav) = cursor_nav_for_key(key) else {
-        return false;
-    };
-    let stored = widget_state
-        .borrow()
-        .value::<DataTableCursorState>(&id)
-        .unwrap_or_default();
-    let new_idx = match nav {
-        CursorNav::Up => move_flat_index(stored.selected_idx, -1, total_rows),
-        CursorNav::Down => move_flat_index(stored.selected_idx, 1, total_rows),
-        CursorNav::Home => edge_flat_index(Edge::Start, total_rows),
-        CursorNav::End => edge_flat_index(Edge::End, total_rows),
-        CursorNav::PageUp => {
-            move_flat_index(stored.selected_idx, -page_delta(viewport_rows), total_rows)
-        }
-        CursorNav::PageDown => {
-            move_flat_index(stored.selected_idx, page_delta(viewport_rows), total_rows)
-        }
-    };
-    let moved = new_idx != stored.selected_idx;
-    let scroll_offset = match new_idx {
-        Some(row) if moved => scroll_into_view(stored.scroll_offset, row, viewport_rows),
-        _ => stored.scroll_offset,
-    };
-    widget_state.borrow_mut().set(
-        id,
-        DataTableCursorState {
-            selected_idx: new_idx,
-            scroll_offset,
-            scroll_controlled: stored.scroll_controlled,
-        },
-    );
-    moved
-}
-
-/// Resolves `table`'s cursor + scroll for painting — the `DataTable`
-/// counterpart of [`resolve_tree_cursor`]/[`resolve_list_cursor`]. No
-/// latch needed for `selected_idx` (unlike `List`'s): `DataTable::selected_idx`
-/// is already `Option<usize>`, so `None` unambiguously means
-/// "uncontrolled". `scroll_offset` still needs the same latch
-/// [`resolve_tree_cursor`]'s own doc describes, for the identical reason
-/// (`DataTable::scroll_offset` is a bare `usize`).
-///
-/// Call once per frame, before painting `table`.
-pub fn resolve_data_table_cursor(
-    widget_state: &RefCell<WidgetStateStore>,
-    table: &DataTable,
-    viewport_rows: usize,
-) -> DataTable {
-    let id = table.id;
-    let stored = widget_state
-        .borrow()
-        .value::<DataTableCursorState>(&id)
-        .unwrap_or_default();
-
-    let selected_idx = table.selected_idx.or(stored.selected_idx);
-
-    let scroll_controlled = stored.scroll_controlled || table.scroll_offset != 0;
-    let mut scroll_offset = if scroll_controlled {
-        table.scroll_offset
-    } else {
-        stored.scroll_offset
-    };
-
-    if !scroll_controlled {
-        if let Some(row) = selected_idx {
-            scroll_offset = scroll_into_view(scroll_offset, row, viewport_rows);
-        }
-    }
-
-    widget_state.borrow_mut().set(
-        id,
-        DataTableCursorState {
-            selected_idx,
-            scroll_offset,
-            scroll_controlled,
-        },
-    );
-
-    DataTable {
-        selected_idx,
-        scroll_offset,
-        ..table.clone()
-    }
-}
-
 // ─── Split divider ratio, uncontrolled by default ──────────────────────────
 //
-// A two-pane `Split`'s divider resolves against `WidgetStateStore` the same
-// "controlled value wins and is written back" way `resolve_tree_cursor`'s
-// own module doc describes, but `Split::ratio` (a bare `f32`, never
-// `Option`) has no structural "unset" sentinel at all — unlike
-// `TreeView::scroll_offset`'s `0`, every ratio from `0.0` to `1.0` is
-// equally plausible as a deliberately pinned value, so there is no single
-// default this module could latch against the way `TreeCursorState::scroll_controlled`
-// latches against `0`. Instead, `SplitRatioState` remembers the last ratio
+// A two-pane `Split`'s divider ratio is uncontrolled by default: an app
+// that never echoes a divider drag keeps the dragged ratio, and one that
+// sends a new ratio pins it. `Split::ratio` (a bare `f32`, never
+// `Option`) has no structural "unset" sentinel at all — every ratio from
+// `0.0` to `1.0` is equally plausible as a deliberately pinned value — so
+// `SplitRatioState` remembers the last ratio
 // this module actually SAW the descriptor send (`baseline`), not the last
 // ratio it handed back (`resolved`): a frame counts as controlled only when
 // its `Split::ratio` differs from that baseline, i.e. the caller itself
 // changed what it's sending, never merely because it differs from whatever
 // a previous divider drag persisted. An uncontrolled caller that always
 // resends the same literal ratio therefore keeps seeing its own dragged
-// value, because that literal ratio never stops matching `baseline` — the
-// same ping-pong `resolve_tree_cursor`'s own `scroll_controlled` latch
-// exists to avoid, solved here by comparing against what was last
-// observed rather than a fixed constant.
+// value, because that literal ratio never stops matching `baseline`. This
+// is the policy [`quadraui::behaviour::row_window::HostLatch`] gives every
+// widget's own state.
 #[derive(Debug, Clone, Copy)]
 struct SplitRatioState {
     baseline: f32,
@@ -1342,8 +465,6 @@ struct SplitRatioState {
 /// divider 3 then divider 1 of the same tree would silently overwrite one
 /// shared entry keyed only by `tree`, each drag clobbering the last.
 const SPLIT_RATIO_KEY_PREFIX: &str = "quadraui-binding-core::split-ratio::";
-const TREE_EXPANDED_KEY_PREFIX: &str = "quadraui-binding-core::tree-expanded::";
-const WINDOWED_CURSOR_KEY_SUFFIX: &str = "-windowed-cursor";
 
 fn split_ratio_state_id(tree: WidgetId, split_index: usize) -> WidgetId {
     if split_index == 0 {
@@ -1459,482 +580,56 @@ pub fn apply_scroll_offset(
     widget_state.borrow_mut().set(id, new_offset);
 }
 
-// ─── TabBar active tab, uncontrolled by default ────────────────────────────
-//
-// Same "compare against the last-seen descriptor, not a fixed sentinel"
-// policy as `Split::ratio` above, and for the same reason:
-// `TabItem::is_active` all `false` (nothing marked active) is a legitimate
-// descriptor state — most real `TabBar`s mark one tab active from their
-// very first frame, so latching "controlled" the first time ANY tab is
-// active (mirroring `TreeCursorState::scroll_controlled`'s `!= 0` rule)
-// would mark nearly every real caller controlled immediately and defeat
-// "uncontrolled by default" outright.
-#[derive(Debug, Clone, Copy, Default)]
-struct TabActiveState {
-    baseline: Option<usize>,
-    resolved: Option<usize>,
-}
+// ─── Tab group active tab ──────────────────────────────────────────────────
 
-/// Persists `index` as `id`'s active tab — call when a
-/// [`quadraui::TabBarEvent::TabActivated`] fires. Leaves `baseline`
-/// untouched, for the same reason [`apply_split_divider_drag`] leaves
-/// [`SplitRatioState::baseline`] untouched: it tracks the descriptor's own
-/// last value, which a click never changes by itself.
-pub fn apply_tab_activated(widget_state: &RefCell<WidgetStateStore>, id: WidgetId, index: usize) {
-    let mut state = widget_state
-        .borrow()
-        .value::<TabActiveState>(&id)
-        .unwrap_or_default();
-    state.resolved = Some(index);
-    widget_state.borrow_mut().set(id, state);
-}
-
-/// Shifts `id`'s persisted active tab when a
-/// [`quadraui::TabBarEvent::TabClosed`] fires for `closed_index` — closing
-/// a tab renumbers every later tab down by one (`TabItem` has no stable id
-/// of its own, see [`quadraui::TabBar`]'s own doc, so index addressing is
-/// all either side has), and a stored index that doesn't shift with it
-/// would silently point at the wrong tab from the very next render on. The
-/// closed tab's own index (if it was the one persisted as active) resolves
-/// to `None` rather than clamping to a neighbor — closing the active tab
-/// leaves nothing active until the app or a later click picks one, the
-/// same "nothing marked active is a legitimate state" rule
-/// [`resolve_tab_bar_active`]'s own section doc opens with. A no-op when
-/// nothing has been persisted for `id` yet (nothing to shift). `baseline`
-/// shifts the identical way, so the very next [`resolve_tab_bar_active`]
-/// call keeps comparing against a baseline addressed the same way the
-/// descriptor's own next, already-renumbered `tabs` will be.
-pub fn apply_tab_closed(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    closed_index: usize,
-) {
-    let Some(mut state) = widget_state.borrow().value::<TabActiveState>(&id) else {
-        return;
-    };
-    let shift = |idx: Option<usize>| match idx {
-        Some(i) if i == closed_index => None,
-        Some(i) if i > closed_index => Some(i - 1),
-        other => other,
-    };
-    state.baseline = shift(state.baseline);
-    state.resolved = shift(state.resolved);
-    widget_state.borrow_mut().set(id, state);
-}
-
-/// Shared resolution step behind [`resolve_tab_bar_active`] and
-/// [`resolve_layout_tabs_active`]: stores the controlled/uncontrolled
-/// decision in [`quadraui::WidgetStateStore`] under `tab_bar.id` and returns the resolved
-/// active index, so both callers — one rebuilding a bare [`TabBar`], the
-/// other also steering a [`LayoutTabs`] tab group's content pane — apply
-/// the identical rule rather than one of them drifting out of sync with
-/// the other. See [`resolve_tab_bar_active`]'s own doc for the rule itself.
-fn resolved_tab_active_index(
-    widget_state: &RefCell<WidgetStateStore>,
-    tab_bar: &TabBar,
-) -> Option<usize> {
-    let id = tab_bar.id;
-    let descriptor_active = tab_bar.tabs.iter().position(|tab| tab.is_active);
-    let previous = widget_state.borrow().value::<TabActiveState>(&id);
-    let (baseline, resolved) = match previous {
-        None => (descriptor_active, descriptor_active),
-        Some(state) if descriptor_active != state.baseline => {
-            (descriptor_active, descriptor_active)
-        }
-        Some(state) => (state.baseline, state.resolved),
-    };
-    widget_state
-        .borrow_mut()
-        .set(id, TabActiveState { baseline, resolved });
-    resolved
-}
-
-/// Resolves `tab_bar`'s active tab for painting — the `TabBar` counterpart
-/// of [`resolve_split_ratio`]. `descriptor_active` is whichever tab (if
-/// any) `tab_bar` itself marks `is_active`; a frame counts as controlled
-/// only when that differs from the baseline this module last saw — a
-/// caller that pins `is_active` to the same tab every frame, including one
-/// that rejects a click outright and resends the identical `tab_bar` it
-/// always has, reads back as controlled only once that pinned value itself
-/// changes, never merely because it differs from whatever
-/// [`apply_tab_activated`] persisted. A caller that never touches
-/// `is_active` at all (`descriptor_active` stays `None`, or stays pinned at
-/// the same index every frame) keeps whatever [`apply_tab_activated`]
-/// persisted indefinitely. Call once per frame, before painting `tab_bar`.
-///
-/// Only resolves the strip's own `is_active` flags — a `tab_bar` reached
-/// through a [`LayoutTabs`] tab group (`LayoutNode::Tabs`) also needs
-/// [`LayoutTabs::selected`] resolved the identical way, or the content pane
-/// `crate::render::paint_layout` paints stays on the old tab while the
-/// strip highlights the new one; see [`resolve_layout_tabs_active`] for
-/// that case.
-pub fn resolve_tab_bar_active(
-    widget_state: &RefCell<WidgetStateStore>,
-    tab_bar: &TabBar,
-) -> TabBar {
-    let resolved = resolved_tab_active_index(widget_state, tab_bar);
-    match resolved {
-        Some(idx) if idx < tab_bar.tabs.len() => {
-            let mut tabs = tab_bar.tabs.clone();
-            for (i, tab) in tabs.iter_mut().enumerate() {
-                tab.is_active = i == idx;
-            }
-            TabBar {
-                tabs,
-                ..tab_bar.clone()
-            }
-        }
-        _ => tab_bar.clone(),
-    }
-}
-
-/// Resolves a [`LayoutTabs`] tab group's active tab for *both* halves a
-/// layout-tree binding paints it with: the strip
-/// ([`resolve_tab_bar_active`]'s own job, applied here to `tabs.tab_bar`)
-/// and the content pane `crate::render::paint_layout`'s `LayoutNode::Tabs`
-/// arm selects via `tabs.entries.get(tabs.selected)`. A `Split` whose
-/// `first`/`second` are each a `Tabs` IS this crate's tab group — see
-/// [`LayoutTabs`]'s own doc — so this is the one call a layout-tree
-/// binding needs to make the content pane track the clicked tab with no
-/// app state at all, rather than the strip highlighting one tab while the
-/// pane underneath keeps painting another. Call once per frame on the
-/// decoded layout tree, before `crate::render::paint_layout`, the same way
-/// a decoded `TreeView` needs [`resolve_tree_cursor`] called on it first.
-///
-/// Mutates `tabs` in place rather than returning a new one:
-/// [`crate::layout::LayoutNode`] holds an arbitrarily nested subtree, so rebuilding `LayoutTabs::entries` wholesale the way
-/// [`resolve_tab_bar_active`] rebuilds a bare [`TabBar`] isn't an option
-/// here.
-pub fn resolve_layout_tabs_active(widget_state: &RefCell<WidgetStateStore>, tabs: &mut LayoutTabs) {
-    let resolved = resolved_tab_active_index(widget_state, &tabs.tab_bar);
-    let Some(idx) = resolved else {
-        return;
-    };
-    if idx < tabs.tab_bar.tabs.len() {
-        for (i, tab) in tabs.tab_bar.tabs.iter_mut().enumerate() {
-            tab.is_active = i == idx;
-        }
-    }
-    if idx < tabs.entries.len() {
+/// Resolves a [`LayoutTabs`] tab group's content pane to the tab its strip
+/// shows active: the strip is a [`TabBar`] widget whose own
+/// [`quadraui::primitives::tab_bar::TabBarState`] (in `engine`'s widget states, keyed by the
+/// bar's id) keeps the tab a click, key or close last activated, and this
+/// sets `tabs.selected` to [`TabBar::resolved_active`] so
+/// `crate::render::paint_layout`'s `LayoutNode::Tabs` arm paints that
+/// tab's content. A `Split` whose `first`/`second` are each a `Tabs` IS
+/// this crate's tab group — see [`LayoutTabs`]'s own doc — so an app gets
+/// a working tab group with no app state at all.
+pub fn resolve_layout_tabs_active(engine: &InteractionEngine, tabs: &mut LayoutTabs) {
+    let id = tabs.tab_bar.id;
+    let resolved = engine.with_widget_states(|states| {
+        let state = states
+            .get(&id)
+            .and_then(|state| state.downcast_ref::<quadraui::primitives::tab_bar::TabBarState>());
+        tabs.tab_bar.resolved_active(state)
+    });
+    if let Some(idx) = resolved.filter(|&idx| idx < tabs.entries.len()) {
         tabs.selected = idx;
     }
 }
 
-// ─── Tree expanded set, uncontrolled by default ────────────────────────────
-//
-// Same "compare against the last-seen descriptor, not a fixed sentinel"
-// policy as `Split`/`TabBar` above, applied per [`TreePath`] rather than to
-// one whole-widget value: `TreeRow::is_expanded` is `Some(bool)` for every
-// branch row, and both `true` and `false` are equally plausible starting
-// states (a tree that opens fully expanded vs. one that opens fully
-// collapsed), so there is no fixed sentinel this module could latch
-// against the way `TreeCursorState::scroll_controlled` latches against `0`.
-
-/// One row's expand/collapse resolution — the per-path counterpart of
-/// [`SplitRatioState`]/[`TabActiveState`].
-#[derive(Debug, Clone, Copy)]
-struct ExpandedEntry {
-    baseline: bool,
-    resolved: bool,
-}
-
-/// One tree's per-row expand/collapse overrides, keyed by [`TreePath`].
-#[derive(Debug, Clone, Default)]
-struct TreeExpandedState {
-    entries: HashMap<TreePath, ExpandedEntry>,
-}
-
-/// The id [`TreeExpandedState`] is actually stored under — a synthetic id
-/// derived from `id`, NOT `id` itself. `WidgetStateStore` holds exactly one
-/// typed value per id (see its own module doc on a reused id "discarded
-/// and reseeded" when the stored type changes), and a focused tree's
-/// cursor/scroll ([`apply_tree_nav_key`]/[`resolve_tree_cursor`]'s own
-/// `TreeCursorState`) is already stored under `id` itself — storing
-/// `TreeExpandedState` there too would silently clobber whichever of the
-/// two was written most recently, on every frame both are in use for the
-/// same tree. Deriving a distinct key sidesteps that collision entirely.
-fn expanded_state_id(id: WidgetId) -> WidgetId {
-    WidgetId::new(format!("{TREE_EXPANDED_KEY_PREFIX}{}", id.as_str()))
-}
-
-/// Flips `id`'s stored expand state for `path` — call when a
-/// [`quadraui::TreeEvent::RowToggleExpand`] fires. Seeds a never-before-seen
-/// path from `false`; the very next [`resolve_tree_expansion`] call
-/// reconciles that guess against whatever the descriptor actually says for
-/// `path`, the same first-frame seeding [`resolve_split_ratio`]/
-/// [`resolve_tab_bar_active`] do for their own state. In practice this only
-/// seeds from `false` when [`resolve_tree_expansion`] hasn't run yet this
-/// session (a click can't land on a row that was never painted), so the
-/// guess is immediately corrected on the next render regardless.
-pub fn apply_tree_toggle_expand(
-    widget_state: &RefCell<WidgetStateStore>,
-    id: WidgetId,
-    path: &TreePath,
-) {
-    let state_id = expanded_state_id(id);
-    let mut state = widget_state
-        .borrow()
-        .value::<TreeExpandedState>(&state_id)
-        .unwrap_or_default();
-    let entry = state.entries.entry(path.clone()).or_insert(ExpandedEntry {
-        baseline: false,
-        resolved: false,
-    });
-    entry.resolved = !entry.resolved;
-    widget_state.borrow_mut().set(state_id, state);
-}
-
-/// Resolves `tree`'s per-row expand/collapse state for painting — the
-/// `Tree` counterpart of [`resolve_split_ratio`]/[`resolve_tab_bar_active`],
-/// applied once per branch row (`is_expanded: Some(_)`) rather than to the
-/// whole widget; a leaf row (`is_expanded: None`) is never touched. Also
-/// drops every row underneath a resolved-collapsed ancestor outright —
-/// `TreeRow::is_expanded` only drives a branch row's own chevron glyph
-/// (see `TreeView`'s cell paint doc), so without this an
-/// uncontrolled tree's resolved collapse would flip the chevron and leave
-/// every descendant row painting anyway, the row set being whatever flat
-/// list the caller's descriptor already sent. Prunes any stored path no
-/// longer present in `tree.rows` (before that drop — a row hidden by its
-/// own collapsed ancestor keeps its override, in case the ancestor
-/// re-expands later), mirroring [`quadraui::WidgetStateStore::gc`]'s own per-frame
-/// cleanup at the whole-id level: a row removed from the tree outright
-/// drops its entry rather than resurrecting a stale override if the same
-/// path is ever reused. As with [`resolve_split_ratio`]/
-/// [`resolve_tab_bar_active`], "controlled" here means "this row's own
-/// `is_expanded` differs from what this module last saw the descriptor
-/// send", not merely "the descriptor sets `is_expanded` at all" — a row
-/// pinned at the same `Some(false)`/`Some(true)` every frame, including
-/// one that rejects a toggle outright, still reads back as uncontrolled
-/// and keeps whatever [`apply_tree_toggle_expand`] resolved. Call once
-/// per frame, before painting `tree`.
-pub fn resolve_tree_expansion(
-    widget_state: &RefCell<WidgetStateStore>,
-    tree: &TreeView,
-) -> TreeView {
-    let state_id = expanded_state_id(tree.id);
-    let previous = widget_state.borrow().value::<TreeExpandedState>(&state_id);
-    let had_stored_state = previous.is_some();
-    let mut state = previous.unwrap_or_default();
-    let mut rows = tree.rows.clone();
-    for row in &mut rows {
-        if let Some(descriptor_value) = row.is_expanded {
-            let entry = state
-                .entries
-                .entry(row.path.clone())
-                .or_insert(ExpandedEntry {
-                    baseline: descriptor_value,
-                    resolved: descriptor_value,
-                });
-            if descriptor_value != entry.baseline {
-                entry.baseline = descriptor_value;
-                entry.resolved = descriptor_value;
-            }
-            row.is_expanded = Some(entry.resolved);
-        }
-    }
-    let current_paths: HashSet<TreePath> = rows
-        .iter()
-        .filter(|row| row.is_expanded.is_some())
-        .map(|row| row.path.clone())
-        .collect();
-    state.entries.retain(|path, _| current_paths.contains(path));
-    // A tree with no branch rows at all (every `is_expanded` stays `None`)
-    // never populates `state.entries`, and never had anything stored to
-    // prune either — skip writing back an empty `TreeExpandedState` in
-    // that case, since `unwrap_or_default` already treats "nothing
-    // stored" and "stored but empty" identically on the next call. A
-    // frame whose own `retain` just emptied a *previously* non-empty
-    // entry set still writes it back — that pruning is itself the
-    // observable effect this call needs to persist, not a no-op to skip.
-    if !state.entries.is_empty() || had_stored_state {
-        widget_state.borrow_mut().set(state_id, state);
-    }
-
-    let collapsed_ancestors: Vec<TreePath> = rows
-        .iter()
-        .filter(|row| row.is_expanded == Some(false))
-        .map(|row| row.path.clone())
-        .collect();
-    rows.retain(|row| {
-        !collapsed_ancestors.iter().any(|ancestor| {
-            row.path.len() > ancestor.len() && row.path.starts_with(ancestor.as_slice())
-        })
-    });
-
-    TreeView {
-        rows,
-        ..tree.clone()
-    }
-}
-
-// ─── Resolving the five fixed slots as a unit, and reading the store back ───
-//
-// Every `resolve_*` function above takes one descriptor and returns the
-// same shape back; a binding's own `render` still has to know which of its
-// five fixed slots are present, in what order they'll be painted, and
-// which ones even carry resolvable state. [`resolve_render_refs`] is that
-// wiring, done once here so `quadraui-py`/`quadraui-node` each call it
-// instead of re-deriving [`crate::render::draw_bands`]'s own band order by
-// hand. [`widget_state_snapshot`] is the read-only counterpart an app-layer
-// `app.widget_state(id)`/`app.widgetState(id)` surface calls to hand the
-// resolved state for one id back to app code, after a frame has already
-// resolved it through the functions above.
-
-/// Resolves whichever of `refs`'s `list`/`tree`/`data_table`/`tab_bar`
-/// slots are present against `widget_state` — `text_display`
-/// carries no widget-state of its own and passes through unresolved, as do
-/// any `widgets` slots. Walks [`crate::render::next_band`] in the exact same
-/// top-to-bottom order and fixed line counts [`crate::render::draw_bands`]
-/// itself paints into, so an occupied slot gets the same `viewport_rows`
-/// its own `resolve_tree_cursor`/`resolve_list_cursor`/
-/// `resolve_data_table_cursor` would see once actually painted, including
-/// the "ran out of vertical room, painted nothing" case — that slot's
-/// descriptor passes through unresolved, which costs more than just this
-/// frame's resolution: nothing touches its stored [`quadraui::WidgetStateStore`] entry
-/// either, so [`quadraui::WidgetStateStore::gc`] drops it at the end of this same frame.
-/// A transient tiny viewport (or a resize that comes back) silently
-/// resets that slot's cursor/scroll rather than preserving it. A tree's
-/// per-row expand/collapse is resolved before its cursor, via
-/// [`resolve_tree_expansion`], so a collapsed ancestor's now-pruned
-/// descendants are never considered when scrolling the resolved selection
-/// into view.
-///
-/// Each occupied slot re-derives its own `viewport_rows` via a full
-/// `list_viewport_rows`/`tree_viewport_rows`/`data_table_viewport_rows`
-/// shadow layout pass here, then [`crate::render::draw_bands`] does its own
-/// layout work again right after to actually paint — roughly doubling
-/// per-frame layout cost for whichever of the three slots are present.
-/// Fine at today's scale (a handful of fixed slots, not a deep tree); a
-/// shared layout result would need the one below to accept it as an input
-/// rather than recomputing it.
-///
-/// Call once per frame, immediately before [`crate::render::draw_bands`] —
-/// [`crate::render::RenderFrame::as_refs`] on the returned
-/// [`crate::render::RenderFrame`] is what should be painted, not `refs`
-/// itself.
-pub fn resolve_render_refs(
-    widget_state: &RefCell<WidgetStateStore>,
-    backend: &mut dyn Backend,
-    refs: RenderRefs<'_>,
-) -> RenderFrame {
-    let viewport = backend.viewport();
-    let line_height = backend.line_height();
-    let mut y = 0.0_f32;
-    let mut band = |lines: f32| {
-        crate::render::next_band(&mut y, viewport.width, viewport.height, line_height, lines)
-    };
-
-    let text_display = refs.text_display.cloned();
-    if text_display.is_some() {
-        band(3.0);
-    }
-    let list = refs.list.map(|list| match band(4.0) {
-        Some(rect) => {
-            resolve_list_cursor(widget_state, list, list_viewport_rows(backend, rect, list))
-        }
-        None => list.clone(),
-    });
-    let tree = refs.tree.map(|tree| {
-        let expanded = resolve_tree_expansion(widget_state, tree);
-        match band(4.0) {
-            Some(rect) => {
-                let viewport_rows = tree_viewport_rows(backend, rect, &expanded);
-                resolve_tree_cursor(widget_state, &expanded, viewport_rows)
-            }
-            None => expanded,
-        }
-    });
-    let data_table = refs.data_table.map(|table| match band(4.0) {
-        Some(rect) => resolve_data_table_cursor(
-            widget_state,
-            table,
-            data_table_viewport_rows(backend, rect, table),
-        ),
-        None => table.clone(),
-    });
-    let tab_bar = refs.tab_bar.map(|tab_bar| match band(3.0) {
-        Some(_) => resolve_tab_bar_active(widget_state, tab_bar),
-        None => tab_bar.clone(),
-    });
-
-    RenderFrame {
-        text_display,
-        list,
-        tree,
-        data_table,
-        tab_bar,
-        widgets: refs.widgets.clone(),
-        list_scroll_px: refs.list_scroll_px,
-        tree_scroll_px: refs.tree_scroll_px,
-        data_table_scroll_px: refs.data_table_scroll_px,
-    }
-}
-
-/// [`resolve_render_refs`]'s counterpart for a render callback's decoded
-/// [`LayoutNode`] tree: resolves every `Tree`/`List`/`DataTable` leaf,
-/// every `Split`'s ratio, and every `Tabs` group's active tab against
-/// `widget_state`, mutating `node` in place. A leaf's `Tree`/`List`/
-/// `DataTable`/`TabBar` descriptor is resolved under its enclosing
-/// [`LayoutLeaf`]'s own tree-address id, not the descriptor's embedded id
-/// — the same id [`crate::render::paint_leaf`] keys its [`PaintedHit`] by
-/// and [`crate::engine::InteractionEngine`]'s nav/expand hooks write back
-/// under, so a render callback that leaves a descriptor's embedded id at
-/// its default (or reuses one across leaves) still resolves and persists
-/// correctly. Walks `Row`/`Column`'s own [`crate::render::layout_container_rects`]
+/// Resolves a render callback's decoded [`LayoutNode`] tree's container
+/// state against `engine`, mutating `node` in place: every `Split`'s
+/// ratio and every `Scroll`'s offset (in [`InteractionEngine::widget_state`]),
+/// and every `Tabs` group's selected pane (from its strip's own state, see
+/// [`resolve_layout_tabs_active`]). A leaf's widget resolves its own state
+/// (selection, scroll, expansion, active tab) when it lays out. Walks
+/// `Row`/`Column`'s own [`crate::render::layout_container_rects`]
 /// subdivision and `Split`'s own [`Split::layout`] exactly as
-/// [`crate::render::paint_layout`] does — including quantising `first_min`/
-/// `second_min` into native units and carving the quantised gap out
-/// before layout — so a `Tree`/`List`/`DataTable` leaf nested under either
-/// gets the same rect it will actually be painted into, for
-/// `viewport_rows`'s sake — a `Tabs` group's content area is computed the
-/// identical way [`crate::render::paint_layout`]'s own `LayoutNode::Tabs`
-/// arm does (`3.0 * line_height` strip, remainder to content). A tree's
-/// expand state is resolved before its cursor, same ordering reasoning as
-/// [`resolve_render_refs`]'s own tree leaf.
-///
-/// `SidebarPanel`/`SplitTree` hold no *leaf* widget-state of their
-/// own (no cursor/scroll/ratio/active-tab), so their own content recurses
-/// with `area` passed straight through rather than their real (paint-time,
-/// backend-side-effecting) content rect — the only cost is a `Tree`/
-/// `List`/`DataTable` leaf nested under one of those two computing its
-/// very first `viewport_rows` against a larger-than-actual rect; every
-/// later `apply_*_nav_key` call still scrolls it correctly, against the
-/// real painted geometry `crate::hit::tree_rows_and_viewport` (and its
-/// `list`/`data_table` counterparts) read back from the hit map
-/// `crate::render::paint_layout` itself just populated. A `SplitTree`'s own
-/// divider ratios are a different matter — see [`apply_split_divider_drag`]'s
-/// own doc.
+/// [`crate::render::paint_layout`] does — including quantising
+/// `first_min`/`second_min` into native units and carving the quantised
+/// gap out before layout — so a nested `Scroll` gets the same viewport it
+/// is actually painted into. `SidebarPanel`/`SplitTree` hold no state of
+/// their own here, so their content recurses with `area` passed straight
+/// through. A `SplitTree`'s own divider ratios are a different matter —
+/// see [`apply_split_divider_drag`]'s own doc.
 ///
 /// Call once per frame, immediately before [`crate::render::paint_layout`]
 /// — `node` is mutated in place, so the exact same tree handed to
 /// `paint_layout` right after is the resolved one.
-/// [`resolve_layout_node_windowed`] with an empty `windows` map — a tree
-/// whose decode recorded no `"items_window"` for any leaf resolves exactly
-/// as this always has.
 pub fn resolve_layout_node(
-    widget_state: &RefCell<WidgetStateStore>,
+    engine: &InteractionEngine,
     backend: &mut dyn Backend,
     area: Rect,
     node: &mut LayoutNode,
 ) {
-    resolve_layout_node_windowed(widget_state, backend, area, node, &HashMap::new());
-}
-
-/// [`resolve_layout_node`], additionally resolving a WINDOWED `Tree` leaf
-/// (one `windows`, keyed by the leaf's own tree-address id, has an
-/// [`ItemsWindow`] for) through [`resolve_tree_cursor_windowed`] instead of
-/// [`resolve_tree_cursor`]. `windows` is the same
-/// [`crate::wire::DecodeDiagnostics::items_windows`] side table a binding
-/// hands [`crate::render::paint_layout_windowed`] right after this, so the
-/// cursor/scroll a frame resolves always agrees with the band that frame
-/// paints.
-pub fn resolve_layout_node_windowed(
-    widget_state: &RefCell<WidgetStateStore>,
-    backend: &mut dyn Backend,
-    area: Rect,
-    node: &mut LayoutNode,
-    windows: &HashMap<String, ItemsWindow>,
-) {
+    let widget_state = engine.widget_state();
     match node {
         LayoutNode::Row(container) => {
             let char_width = backend.char_width();
@@ -1942,7 +637,7 @@ pub fn resolve_layout_node_windowed(
             let inner = container.spacing.inset(area, char_width, line_height);
             let rects = layout_container_rects(backend, inner, container, true);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node_windowed(widget_state, backend, rect, &mut child.node, windows);
+                resolve_layout_node(engine, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Column(container) => {
@@ -1951,80 +646,16 @@ pub fn resolve_layout_node_windowed(
             let inner = container.spacing.inset(area, char_width, line_height);
             let rects = layout_container_rects(backend, inner, container, false);
             for (child, rect) in container.children.iter_mut().zip(rects) {
-                resolve_layout_node_windowed(widget_state, backend, rect, &mut child.node, windows);
+                resolve_layout_node(engine, backend, rect, &mut child.node);
             }
         }
         LayoutNode::Grid(grid) => {
             let rects = grid.cell_rects(area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter_mut().zip(rects) {
-                resolve_layout_node_windowed(widget_state, backend, rect, child, windows);
+                resolve_layout_node(engine, backend, rect, child);
             }
         }
-        LayoutNode::Leaf(LayoutLeaf {
-            id: leaf_id,
-            descriptor,
-            ..
-        }) => {
-            // Keyed on `leaf_id` — this leaf's own tree-address id — never
-            // the descriptor's embedded id. [`crate::render::paint_leaf`]
-            // pushes this leaf's `PaintedHit` under `WidgetId::new(leaf_id)`
-            // and the engine's nav/expand hooks (`apply_tree_nav_key`,
-            // `apply_list_nav_key`, `apply_data_table_nav_key`,
-            // `apply_tree_toggle_expand`) write back under that same hit
-            // id, so resolving against anything else would read a
-            // different (likely empty, and never GC-preserved) entry than
-            // the one navigation just wrote. A render callback is free to
-            // leave the descriptor's own id at its default and reuse it
-            // across leaves — see `crate::wire`'s decode of the leaf `"id"`
-            // and the descriptor's own `"id"` as fully independent fields
-            // — so the descriptor's id is overwritten here to match before
-            // resolving, keeping the rest of this function's logic (and
-            // `resolve_tree_cursor`/`resolve_list_cursor`/
-            // `resolve_data_table_cursor`/`resolve_tab_bar_active`, shared
-            // with [`resolve_render_refs`]'s fixed-slot path, which has no
-            // separate leaf id and keys on the descriptor's id directly)
-            // unchanged.
-            let widget_id = WidgetId::new(leaf_id.clone());
-            match descriptor {
-                LeafDescriptor::Tree(tree) => {
-                    tree.id = widget_id;
-                    let expanded = resolve_tree_expansion(widget_state, tree);
-                    let viewport_rows = tree_viewport_rows(backend, area, &expanded);
-                    // A windowed tree's cursor is tracked by ABSOLUTE
-                    // index, not by `TreePath`: a not-yet-loaded row has
-                    // no path to track it by, and
-                    // `crate::InteractionEngine::handle` moves it with
-                    // `apply_tree_nav_key_windowed` for that reason -- so
-                    // it has to resolve through the matching windowed
-                    // counterpart here, or every keyboard move would be
-                    // discarded the next frame.
-                    *tree = match windows.get(leaf_id).copied() {
-                        Some(window) => resolve_tree_cursor_windowed(
-                            widget_state,
-                            &expanded,
-                            window,
-                            viewport_rows,
-                        ),
-                        None => resolve_tree_cursor(widget_state, &expanded, viewport_rows),
-                    };
-                }
-                LeafDescriptor::List(list) => {
-                    list.id = widget_id;
-                    let viewport_rows = list_viewport_rows(backend, area, list);
-                    *list = resolve_list_cursor(widget_state, list, viewport_rows);
-                }
-                LeafDescriptor::DataTable(table) => {
-                    table.id = widget_id;
-                    let viewport_rows = data_table_viewport_rows(backend, area, table);
-                    *table = resolve_data_table_cursor(widget_state, table, viewport_rows);
-                }
-                LeafDescriptor::TabBar(tab_bar) => {
-                    tab_bar.id = widget_id;
-                    *tab_bar = resolve_tab_bar_active(widget_state, tab_bar);
-                }
-                LeafDescriptor::TextDisplay(_) | LeafDescriptor::Widget { .. } => {}
-            }
-        }
+        LayoutNode::Leaf(_) => {}
         LayoutNode::Split(split) => {
             split.split = resolve_split_ratio(widget_state, &split.split);
             let char_width = backend.char_width();
@@ -2055,23 +686,11 @@ pub fn resolve_layout_node_windowed(
             let draw_area = shrink_main_axis(inner, horizontal, gap);
             let mut layout = native_split.layout(draw_area, SplitMeasure::new(line_height));
             apply_split_gap(&mut layout, horizontal, gap);
-            resolve_layout_node_windowed(
-                widget_state,
-                backend,
-                layout.first_bounds,
-                &mut split.first,
-                windows,
-            );
-            resolve_layout_node_windowed(
-                widget_state,
-                backend,
-                layout.second_bounds,
-                &mut split.second,
-                windows,
-            );
+            resolve_layout_node(engine, backend, layout.first_bounds, &mut split.first);
+            resolve_layout_node(engine, backend, layout.second_bounds, &mut split.second);
         }
         LayoutNode::Tabs(tabs) => {
-            resolve_layout_tabs_active(widget_state, tabs);
+            resolve_layout_tabs_active(engine, tabs);
             let char_width = backend.char_width();
             let line_height = backend.line_height();
             let inner = tabs.spacing.inset(area, char_width, line_height);
@@ -2089,30 +708,18 @@ pub fn resolve_layout_node_windowed(
             // scroll, ratios and active tabs.
             for (index, entry) in tabs.entries.iter_mut().enumerate() {
                 if index == selected {
-                    resolve_layout_node_windowed(
-                        widget_state,
-                        backend,
-                        content_rect,
-                        &mut entry.content,
-                        windows,
-                    );
+                    resolve_layout_node(engine, backend, content_rect, &mut entry.content);
                 } else {
-                    keep_subtree_state_alive(widget_state, &entry.content);
+                    keep_subtree_state_alive(engine, &entry.content);
                 }
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            resolve_layout_node_windowed(
-                widget_state,
-                backend,
-                area,
-                &mut sidebar_node.content,
-                windows,
-            );
+            resolve_layout_node(engine, backend, area, &mut sidebar_node.content);
         }
         LayoutNode::SplitTree(split_tree) => {
             for leaf in &mut split_tree.leaves {
-                resolve_layout_node_windowed(widget_state, backend, area, leaf, windows);
+                resolve_layout_node(engine, backend, area, leaf);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
@@ -2159,30 +766,18 @@ pub fn resolve_layout_node_windowed(
                     {
                         for (child, slot) in container.children.iter_mut().zip(slots) {
                             if slot.visible {
-                                resolve_layout_node_windowed(
-                                    widget_state,
-                                    backend,
-                                    slot.rect,
-                                    &mut child.node,
-                                    windows,
-                                );
+                                resolve_layout_node(engine, backend, slot.rect, &mut child.node);
                             } else {
-                                keep_subtree_state_alive(widget_state, &child.node);
+                                keep_subtree_state_alive(engine, &child.node);
                             }
                         }
                     }
                 }
                 ScrollSlots::Atomic(rect, visible) => {
                     if visible {
-                        resolve_layout_node_windowed(
-                            widget_state,
-                            backend,
-                            rect,
-                            &mut scroll_node.content,
-                            windows,
-                        );
+                        resolve_layout_node(engine, backend, rect, &mut scroll_node.content);
                     } else {
-                        keep_subtree_state_alive(widget_state, &scroll_node.content);
+                        keep_subtree_state_alive(engine, &scroll_node.content);
                     }
                 }
             }
@@ -2191,190 +786,138 @@ pub fn resolve_layout_node_windowed(
         // purely a `crate::render::paint_layout`-time overlay -- so this
         // resolve pass is a straight passthrough to whatever it wraps.
         LayoutNode::Styled(styled) => {
-            resolve_layout_node_windowed(widget_state, backend, area, &mut styled.node, windows);
+            resolve_layout_node(engine, backend, area, &mut styled.node);
         }
     }
 }
 
-/// Keeps every [`quadraui::WidgetStateStore`] entry owned by `node`'s subtree alive through
-/// this frame's [`quadraui::WidgetStateStore::gc`] without resolving it. A subtree with no
-/// geometry this frame (an unselected tab entry, a scroll child outside the
-/// viewport) still owns its cursor, scroll offset, split ratio, expansion
-/// and active tab; they come back unchanged when it is shown again.
-fn keep_subtree_state_alive(widget_state: &RefCell<WidgetStateStore>, node: &LayoutNode) {
+/// Keeps every state entry owned by `node`'s subtree alive through this
+/// frame's sweep without resolving it: the container state in
+/// [`InteractionEngine::widget_state`] and each leaf widget's own
+/// `Interactive::State`. A subtree with no geometry this frame (an
+/// unselected tab entry, a scroll child outside the viewport) still owns
+/// its selection, scroll offset, split ratio, expansion and active tab;
+/// they come back unchanged when it is shown again.
+fn keep_subtree_state_alive(engine: &InteractionEngine, node: &LayoutNode) {
     let mut owners = HashSet::new();
-    collect_state_owner_ids(node, &mut owners);
+    let mut widgets = Vec::new();
+    collect_state_owner_ids(node, &mut owners, &mut widgets);
+    engine.keep_widget_states_alive(widgets);
     if owners.is_empty() {
         return;
     }
-    widget_state
+    engine
+        .widget_state()
         .borrow_mut()
         .keep_alive(|key| owners.contains(state_owner_id(key)));
 }
 
-/// Every id under `node` that [`quadraui::WidgetStateStore`] keys state on, directly or
-/// through a derived key [`state_owner_id`] maps back to it.
-fn collect_state_owner_ids(node: &LayoutNode, owners: &mut HashSet<String>) {
+/// Every container id under `node` that [`InteractionEngine::widget_state`]
+/// keys state on, directly or through a derived key [`state_owner_id`]
+/// maps back to it, into `owners`; every leaf widget's state key into
+/// `widgets`.
+fn collect_state_owner_ids(
+    node: &LayoutNode,
+    owners: &mut HashSet<String>,
+    widgets: &mut Vec<WidgetId>,
+) {
     match node {
         LayoutNode::Row(container) | LayoutNode::Column(container) => {
             for child in &container.children {
-                collect_state_owner_ids(&child.node, owners);
+                collect_state_owner_ids(&child.node, owners, widgets);
             }
         }
         LayoutNode::Grid(grid) => {
             for child in &grid.children {
-                collect_state_owner_ids(child, owners);
+                collect_state_owner_ids(child, owners, widgets);
             }
         }
         LayoutNode::Leaf(leaf) => {
-            owners.insert(leaf.id.clone());
+            let LeafDescriptor::Widget { widget, .. } = &leaf.descriptor;
+            widgets.push(crate::engine::dyn_state_key(
+                WidgetId::new(leaf.id.as_str()),
+                widget.as_ref(),
+            ));
         }
         LayoutNode::Split(split) => {
             owners.insert(split.split.id.as_str().to_string());
-            collect_state_owner_ids(&split.first, owners);
-            collect_state_owner_ids(&split.second, owners);
+            collect_state_owner_ids(&split.first, owners, widgets);
+            collect_state_owner_ids(&split.second, owners, widgets);
         }
         LayoutNode::Tabs(tabs) => {
-            owners.insert(tabs.tab_bar.id.as_str().to_string());
+            widgets.push(tabs.tab_bar.id);
             for entry in &tabs.entries {
-                collect_state_owner_ids(&entry.content, owners);
+                collect_state_owner_ids(&entry.content, owners, widgets);
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            collect_state_owner_ids(&sidebar_node.content, owners);
+            collect_state_owner_ids(&sidebar_node.content, owners, widgets);
         }
         LayoutNode::SplitTree(split_tree) => {
             owners.insert(split_tree.id.clone());
             for leaf in &split_tree.leaves {
-                collect_state_owner_ids(leaf, owners);
+                collect_state_owner_ids(leaf, owners, widgets);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
             owners.insert(scroll_node.id.clone());
-            collect_state_owner_ids(&scroll_node.content, owners);
+            collect_state_owner_ids(&scroll_node.content, owners, widgets);
         }
-        LayoutNode::Styled(styled) => collect_state_owner_ids(&styled.node, owners),
+        LayoutNode::Styled(styled) => collect_state_owner_ids(&styled.node, owners, widgets),
     }
 }
 
-/// The owning widget id of a [`quadraui::WidgetStateStore`] key: the key itself, or the
-/// id a derived key ([`split_ratio_state_id`], [`expanded_state_id`],
-/// [`windowed_tree_cursor_id`]) was built from.
+/// The owning container id of an [`InteractionEngine::widget_state`] key:
+/// the key itself, or the id a derived [`split_ratio_state_id`] key was
+/// built from.
 fn state_owner_id(key: &str) -> &str {
-    if let Some(rest) = key.strip_prefix(SPLIT_RATIO_KEY_PREFIX) {
-        return rest.rsplit_once("::").map_or(rest, |(owner, _)| owner);
+    match key.strip_prefix(SPLIT_RATIO_KEY_PREFIX) {
+        Some(rest) => rest.rsplit_once("::").map_or(rest, |(owner, _)| owner),
+        None => key,
     }
-    if let Some(owner) = key.strip_prefix(TREE_EXPANDED_KEY_PREFIX) {
-        return owner;
-    }
-    key.strip_suffix(WINDOWED_CURSOR_KEY_SUFFIX).unwrap_or(key)
 }
 
-/// A read-only merge of whatever [`quadraui::WidgetStateStore`] currently holds for one
-/// id, across every shape this module tracks — [`resolve_tree_cursor`]/
-/// [`resolve_list_cursor`]/[`resolve_data_table_cursor`]'s cursor +
-/// scroll, [`resolve_split_ratio`]'s ratio, [`resolve_tab_bar_active`]/
-/// [`resolve_layout_tabs_active`]'s active tab, and
-/// [`resolve_tree_expansion`]'s per-row expand set — for a binding's own
-/// introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather
-/// than for resolving a frame's descriptor. Each field is independently
-/// `None` when that shape isn't what `id` (or, for `expanded`, `id`'s
-/// derived expansion key — see [`expanded_state_id`]) is storing; a tree
-/// widget populates `selected_path`/`scroll_offset` from its own id and
-/// `expanded` from the derived one in the same snapshot, since both can
-/// be live for the same tree at once.
+/// What a binding's `widget_state(id)` reports for one id: the
+/// [`quadraui::interactive::StateSummary`] the widget painted under `id`
+/// keeps in its own state (selection, scroll, active tab, expansion),
+/// plus a `Split`'s divider ratio, which the host keeps.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WidgetStateSnapshot {
-    /// A `Tree`'s stored cursor row, if `id` is a tree being tracked by
-    /// [`resolve_tree_cursor`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_path: Option<TreePath>,
-    /// A `List`/`DataTable`'s stored cursor row, if `id` is one being
-    /// tracked by [`resolve_list_cursor`]/[`resolve_data_table_cursor`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_idx: Option<usize>,
-    /// A `Tree`/`List`/`DataTable`'s stored scroll offset, alongside
-    /// whichever of `selected_path`/`selected_idx` applies.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scroll_offset: Option<usize>,
+    /// The widget's own state summary.
+    #[serde(flatten)]
+    pub summary: quadraui::interactive::StateSummary,
     /// A `Split`'s stored divider ratio, if `id` is one being tracked by
     /// [`resolve_split_ratio`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ratio: Option<f32>,
-    /// A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one
-    /// being tracked by [`resolve_tab_bar_active`]/
-    /// [`resolve_layout_tabs_active`]. `None` both when nothing is stored
-    /// for `id` under this shape and when it is stored but nothing is
-    /// currently active — a read-only snapshot has no need to tell those
-    /// two apart.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_tab: Option<usize>,
-    /// A `Tree`'s stored set of currently-expanded row paths, if `id` is
-    /// one being tracked by [`resolve_tree_expansion`] — sorted for a
-    /// deterministic read, since the underlying store is a `HashMap`.
-    /// `Some(vec![])` (tracked, nothing expanded) and `None` (not tracked
-    /// at all) are kept distinct.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expanded: Option<Vec<TreePath>>,
 }
 
-/// Reads [`WidgetStateSnapshot`]'s fields back out of [`quadraui::WidgetStateStore`] for
-/// `id`, or `None` if none of the shapes it tracks have anything stored
-/// for `id` (or its derived expansion key) at all. Never mutates the
-/// store and never marks `id` seen — a snapshot is a side-effect-free
-/// read, unlike every `resolve_*` function above.
+/// Reads [`WidgetStateSnapshot`] back for `id`, or `None` if neither a
+/// widget painted this frame keeps state under `id` nor a split ratio is
+/// stored for it. Never mutates any state — a snapshot is a
+/// side-effect-free read.
 pub fn widget_state_snapshot(
-    widget_state: &RefCell<WidgetStateStore>,
+    engine: &InteractionEngine,
     id: WidgetId,
 ) -> Option<WidgetStateSnapshot> {
-    let mut snapshot = WidgetStateSnapshot::default();
-    let mut found = false;
-
-    if let Some(stored) = widget_state.borrow().value::<TreeCursorState>(&id) {
-        snapshot.selected_path = stored.selected_path;
-        snapshot.scroll_offset = Some(stored.scroll_offset);
-        found = true;
-    } else if let Some(stored) = widget_state.borrow().value::<ListCursorState>(&id) {
-        snapshot.selected_idx = stored.selected_idx;
-        snapshot.scroll_offset = Some(stored.scroll_offset);
-        found = true;
-    } else if let Some(stored) = widget_state.borrow().value::<DataTableCursorState>(&id) {
-        snapshot.selected_idx = stored.selected_idx;
-        snapshot.scroll_offset = Some(stored.scroll_offset);
-        found = true;
-    }
-
-    if let Some(stored) = widget_state.borrow().value::<SplitRatioState>(&id) {
-        snapshot.ratio = Some(stored.resolved);
-        found = true;
-    }
-
-    if let Some(stored) = widget_state.borrow().value::<TabActiveState>(&id) {
-        snapshot.active_tab = stored.resolved;
-        found = true;
-    }
-
-    if let Some(stored) = widget_state
+    let summary = engine.widget_state_summary(id);
+    let ratio = engine
+        .widget_state()
         .borrow()
-        .value::<TreeExpandedState>(&expanded_state_id(id))
-    {
-        let mut paths: Vec<TreePath> = stored
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.resolved)
-            .map(|(path, _)| path.clone())
-            .collect();
-        paths.sort();
-        snapshot.expanded = Some(paths);
-        found = true;
+        .value::<SplitRatioState>(&id)
+        .map(|stored| stored.resolved);
+    if summary.is_none() && ratio.is_none() {
+        return None;
     }
-
-    found.then_some(snapshot)
+    Some(WidgetStateSnapshot {
+        summary: summary.unwrap_or_default(),
+        ratio,
+    })
 }
 
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
-/// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
+/// once, after painting its own widgets (via [`crate::render::draw_bands`]
 /// or [`crate::render::paint_layout`]) and collecting `hits`: makes the one [`InteractionEngine::render_overlays`] call that
 /// paints every open overlay in z-order (dialog on top of everything but
 /// tooltip/toast, then float/rich-text-popup/completions below it, toast
@@ -2840,6 +1383,7 @@ pub fn text_display_from_lines(id: WidgetId, lines: Vec<String>) -> TextDisplay 
             })
             .collect(),
         scroll_offset: 0,
+        items_window: None,
         auto_scroll: false,
         max_lines: 0,
         has_focus: false,
@@ -3191,7 +1735,7 @@ mod tests {
         }
     }
 
-    /// A minimal [`AppLogic`] whose `render` goes through [`BindingHost::render_refs`]
+    /// A minimal [`AppLogic`] whose `render` goes through [`BindingHost::widgets`]
     /// and [`render_overlays`] exactly the way a real binding's own thin
     /// `AppLogic` leaf would.
     struct HostLogic {
@@ -3205,7 +1749,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            draw_bands(backend, self.host.render_refs(), &mut hits);
+            self.engine
+                .paint_with_widget_state(|| draw_bands(backend, &self.host.widgets, &mut hits));
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -3340,195 +1885,6 @@ mod tests {
         );
     }
 
-    /// A minimal [`AppLogic`] whose `render` resolves [`BindingHost::render_refs`]
-    /// through [`resolve_render_refs`] before painting — exactly the
-    /// resolve-then-paint sequence a real binding's own `render` runs for
-    /// its five fixed slots, as opposed to [`HostLogic`]'s raw (unresolved)
-    /// `render_refs()` call above.
-    struct ResolvedHostLogic {
-        host: BindingHost,
-        engine: InteractionEngine,
-        sink: RefCell<RecordingSink>,
-    }
-
-    impl AppLogic for ResolvedHostLogic {
-        type AreaId = ();
-
-        fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let resolved =
-                resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
-            let mut hits = Vec::new();
-            draw_bands(backend, resolved.as_refs(), &mut hits);
-            render_overlays(&self.engine, backend, hits);
-        }
-
-        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-            self.engine.tab_stops()
-        }
-
-        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-            self.engine
-                .handle(event, backend, &mut *self.sink.borrow_mut())
-        }
-    }
-
-    /// Builds a `row_count`-row `Tree` with no selection/scroll set and
-    /// drives it through a [`ResolvedHostLogic`] — the [`BindingHost`]
-    /// fixed-slot counterpart of `engine::tests::tree_driver`.
-    fn resolved_tree_driver(
-        row_count: usize,
-        selected_path: Option<TreePath>,
-        scroll_offset: usize,
-    ) -> TuiDriver<ResolvedHostLogic> {
-        use quadraui::StyledText;
-
-        let rows: Vec<TreeRow> = (0..row_count)
-            .map(|i| TreeRow {
-                path: vec![i as u16],
-                indent: 0,
-                icon: None,
-                text: StyledText::plain(format!("row {i}")),
-                badge: None,
-                is_expanded: None,
-                decoration: Default::default(),
-                edit: None,
-            })
-            .collect();
-
-        let tree = TreeView {
-            id: WidgetId::new("tree"),
-            rows,
-            selection_mode: quadraui::SelectionMode::Single,
-            selected_path,
-            scroll_offset,
-            style: Default::default(),
-            has_focus: false,
-        };
-        let logic = ResolvedHostLogic {
-            host: BindingHost {
-                tree: Some(tree),
-                ..BindingHost::default()
-            },
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink),
-        };
-        TuiDriver::new(logic, 24, 8)
-    }
-
-    /// A 500-row `Tree` painted through [`BindingHost`]'s fixed `tree` slot
-    /// with no `selected_path`/`scroll_offset` set must still move its
-    /// cursor and keep it scrolled into view from arrow-key presses alone
-    /// — [`resolve_render_refs`] is what makes a fixed-slot binding see the
-    /// same uncontrolled-by-default behaviour `engine::tests`' own
-    /// `TreeLogic` harness already covers directly against
-    /// `resolve_tree_cursor`. [`widget_state_snapshot`] must report the
-    /// identical resolved cursor/scroll back to app code.
-    #[test]
-    fn resolve_render_refs_scrolls_an_uncontrolled_tree_into_view() {
-        use quadraui::{Key, Modifiers, NamedKey};
-
-        let mut driver = resolved_tree_driver(500, None, 0);
-        driver.render();
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("tree"))),
-                "the tree is a tab stop and must accept focus"
-            );
-        }
-
-        for _ in 0..40 {
-            driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-        }
-
-        let hits = driver.app().engine.hit_map();
-        let tree_hit = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Tree {
-                id,
-                scroll_offset,
-                viewport_rows,
-                ..
-            } if *id == WidgetId::new("tree") => Some((*scroll_offset, *viewport_rows)),
-            _ => None,
-        });
-        let (scroll_offset, viewport_rows) =
-            tree_hit.expect("the tree must still be painted after 40 Down presses");
-        assert!(
-            scroll_offset > 0,
-            "500 rows in a {viewport_rows}-row tree viewport must have scrolled: {scroll_offset}"
-        );
-        assert!(
-            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
-            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
-            scroll_offset + viewport_rows
-        );
-
-        let snapshot =
-            widget_state_snapshot(driver.app().engine.widget_state(), WidgetId::new("tree"))
-                .expect("the tree's id must have resolved state after 40 Down presses");
-        assert_eq!(
-            snapshot.selected_path,
-            Some(vec![39]),
-            "the snapshot's selected_path must match what was painted"
-        );
-        assert_eq!(
-            snapshot.scroll_offset,
-            Some(scroll_offset),
-            "the snapshot's scroll_offset must match what was painted"
-        );
-    }
-
-    /// A `Tree` whose descriptor pins a non-zero `scroll_offset` keeps that
-    /// exact value through [`resolve_render_refs`], even while arrow keys
-    /// move the (uncontrolled) selection — and [`widget_state_snapshot`]
-    /// reports the pinned value back, not whatever an uncontrolled scroll
-    /// would have computed.
-    #[test]
-    fn resolve_render_refs_keeps_a_controlled_scroll_offset_pinned() {
-        use quadraui::{Key, Modifiers, NamedKey};
-
-        let mut driver = resolved_tree_driver(500, None, 50);
-        driver.render();
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("tree"))),
-                "the tree is a tab stop and must accept focus"
-            );
-        }
-
-        for _ in 0..10 {
-            driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-        }
-
-        let hits = driver.app().engine.hit_map();
-        let scroll_offset = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Tree {
-                id, scroll_offset, ..
-            } if *id == WidgetId::new("tree") => Some(*scroll_offset),
-            _ => None,
-        });
-        assert_eq!(
-            scroll_offset,
-            Some(50),
-            "a controlled scroll_offset must stay pinned at the descriptor's own value: {:?}",
-            scroll_offset
-        );
-
-        let snapshot =
-            widget_state_snapshot(driver.app().engine.widget_state(), WidgetId::new("tree"))
-                .expect("the tree's id must have resolved state");
-        assert_eq!(snapshot.scroll_offset, Some(50));
-    }
-
     /// A `Split`'s ratio persists after a divider drag — the same
     /// `apply_split_divider_drag`/`resolve_split_ratio` hook
     /// `InteractionEngine::handle` already applies for every binding's own
@@ -3537,7 +1893,8 @@ mod tests {
     /// original one.
     #[test]
     fn widget_state_snapshot_reports_a_split_ratio_persisted_after_a_drag() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
+        let engine = InteractionEngine::new();
+        let widget_state = engine.widget_state();
         let id = WidgetId::new("split:main");
         let split = Split {
             id,
@@ -3547,55 +1904,28 @@ mod tests {
             second_min: 0.0,
         };
         // The first frame resolves the descriptor's own starting ratio.
-        resolve_split_ratio(&widget_state, &split);
+        resolve_split_ratio(widget_state, &split);
         // A drag persists a new ratio.
-        apply_split_divider_drag(&widget_state, id, 0, 0.7);
+        apply_split_divider_drag(widget_state, id, 0, 0.7);
 
-        let snapshot =
-            widget_state_snapshot(&widget_state, id).expect("a ratio must be stored for id");
+        let snapshot = widget_state_snapshot(&engine, id).expect("a ratio must be stored for id");
         assert_eq!(snapshot.ratio, Some(0.7));
 
         // The next frame's descriptor still sends the OLD ratio (the same
         // literal the app always has) -- uncontrolled, so the dragged
         // value keeps winning.
-        let resolved = resolve_split_ratio(&widget_state, &split);
+        let resolved = resolve_split_ratio(widget_state, &split);
         assert_eq!(resolved.ratio, 0.7);
     }
 
-    /// [`widget_state_snapshot`] reports a `TabBar`'s active tab once
-    /// [`apply_tab_activated`] has persisted a click.
-    #[test]
-    fn widget_state_snapshot_reports_a_tab_bars_active_tab_after_a_click() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("tabs:main");
-        apply_tab_activated(&widget_state, id, 2);
-        let snapshot =
-            widget_state_snapshot(&widget_state, id).expect("an active tab must be stored for id");
-        assert_eq!(snapshot.active_tab, Some(2));
-    }
-
-    /// [`widget_state_snapshot`] reports a `Tree`'s expanded row paths once
-    /// [`apply_tree_toggle_expand`] has persisted a toggle — stored under a
-    /// synthetic id derived from `id`, per [`expanded_state_id`]'s own doc,
-    /// so this must resolve transparently from the plain `id` callers use.
-    #[test]
-    fn widget_state_snapshot_reports_a_trees_expanded_paths_after_a_toggle() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("tree:main");
-        apply_tree_toggle_expand(&widget_state, id, &vec![0]);
-        let snapshot =
-            widget_state_snapshot(&widget_state, id).expect("expand state must be stored for id");
-        assert_eq!(snapshot.expanded, Some(vec![vec![0]]));
-    }
-
-    /// An `id` nothing has ever resolved through any `resolve_*` function
-    /// has no stored state of any kind — [`widget_state_snapshot`] must say
-    /// so plainly (`None`) rather than returning a snapshot of all-`None`
+    /// An `id` no widget painted under and no split ratio was stored for
+    /// has no state of any kind — [`widget_state_snapshot`] must say so
+    /// plainly (`None`) rather than returning a snapshot of all-`None`
     /// fields an app could mistake for "resolved, but empty".
     #[test]
     fn widget_state_snapshot_is_none_for_an_id_never_resolved() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        assert!(widget_state_snapshot(&widget_state, WidgetId::new("never-rendered")).is_none());
+        let engine = InteractionEngine::new();
+        assert!(widget_state_snapshot(&engine, WidgetId::new("never-rendered")).is_none());
     }
 
     /// A minimal [`AppLogic`] painting a single two-pane `Split` through a
@@ -3625,7 +1955,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(Button::new(WidgetId::new("left-btn"), "L")),
                     },
-                    scroll_px: None,
                 })),
                 second: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "right".to_string(),
@@ -3633,11 +1962,10 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(Button::new(WidgetId::new("right-btn"), "R")),
                     },
-                    scroll_px: None,
                 })),
                 spacing: Spacing::default(),
             });
-            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            resolve_layout_node(&self.engine, backend, area, &mut node);
             let mut hits = Vec::new();
             paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
@@ -3710,10 +2038,9 @@ mod tests {
         // runs (see that function's own doc) -- so the widget-state store
         // already reflects it immediately, with no need to inspect what
         // `RecordingSink` (a no-op here) did with the dispatched event.
-        let dragged_ratio =
-            widget_state_snapshot(driver.app().engine.widget_state(), WidgetId::new("split"))
-                .and_then(|snapshot| snapshot.ratio)
-                .expect("the drag must have persisted a split_ratio for id");
+        let dragged_ratio = widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
+            .and_then(|snapshot| snapshot.ratio)
+            .expect("the drag must have persisted a split_ratio for id");
         assert_ne!(
             dragged_ratio, 0.5,
             "the drag must have actually moved the ratio away from its starting 0.5"
@@ -3737,171 +2064,11 @@ mod tests {
             "the dragged ratio must survive a render whose descriptor still says 0.5: got {resolved_ratio}, expected {dragged_ratio}"
         );
 
-        let snapshot =
-            widget_state_snapshot(driver.app().engine.widget_state(), WidgetId::new("split"))
-                .expect("the split's id must have resolved state");
+        let snapshot = widget_state_snapshot(&driver.app().engine, WidgetId::new("split"))
+            .expect("the split's id must have resolved state");
         assert!(
             (snapshot.ratio.expect("ratio must be set") - dragged_ratio).abs() < 0.001,
             "the snapshot must report the same dragged ratio back to app code"
-        );
-    }
-
-    /// A minimal [`AppLogic`] painting a single `Tree` leaf through a
-    /// decoded [`LayoutNode`] tree whose [`LayoutLeaf::id`] deliberately
-    /// differs from the `Tree` descriptor's own embedded `id` — the shape
-    /// [`resolve_layout_node`]'s own doc calls out as legal (a render
-    /// callback is free to leave a descriptor's embedded id at its
-    /// default, or reuse one across leaves).
-    struct ResolvedTreeLeafLogic {
-        tree: TreeView,
-        engine: InteractionEngine,
-        sink: RefCell<RecordingSink>,
-    }
-
-    impl AppLogic for ResolvedTreeLeafLogic {
-        type AreaId = ();
-
-        fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let viewport = backend.viewport();
-            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-            let mut node = LayoutNode::Leaf(LayoutLeaf {
-                id: "leaf:tree".to_string(),
-                descriptor: LeafDescriptor::Tree(self.tree.clone()),
-                scroll_px: None,
-            });
-            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
-            let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits);
-            self.engine.set_hits(hits);
-        }
-
-        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
-            self.engine.tab_stops()
-        }
-
-        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-            self.engine
-                .handle(event, backend, &mut *self.sink.borrow_mut())
-        }
-    }
-
-    /// The case [`resolve_layout_node`]'s own doc calls out: a `Tree`
-    /// leaf reached through a decoded [`LayoutNode`] tree whose
-    /// outer [`LayoutLeaf::id`] (`"leaf:tree"`) differs from the
-    /// descriptor's own embedded [`TreeView::id`] (`"tree:inner"`).
-    /// [`crate::render::paint_leaf`] pushes this leaf's [`PaintedHit`]
-    /// under the OUTER id, and [`InteractionEngine::handle`]'s nav hook
-    /// writes `TreeCursorState` back under that exact same (focused/hit)
-    /// id — so [`resolve_layout_node`] must resolve and persist under the
-    /// outer id too, or navigation would silently do nothing on screen
-    /// and the hit id's freshly-written state would be swept by
-    /// [`quadraui::WidgetStateStore::gc`] the very next frame.
-    #[test]
-    fn resolve_layout_node_keys_a_leaf_whose_descriptor_id_differs_from_its_own_on_the_outer_leaf_id(
-    ) {
-        use quadraui::{Key, Modifiers, NamedKey, StyledText};
-
-        let rows: Vec<TreeRow> = (0..500)
-            .map(|i| TreeRow {
-                path: vec![i as u16],
-                indent: 0,
-                icon: None,
-                text: StyledText::plain(format!("row {i}")),
-                badge: None,
-                is_expanded: None,
-                decoration: Default::default(),
-                edit: None,
-            })
-            .collect();
-        let tree = TreeView {
-            // Deliberately NOT `"leaf:tree"` — the whole point of this
-            // test is that the two ids disagree.
-            id: WidgetId::new("tree:inner"),
-            rows,
-            selection_mode: quadraui::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: Default::default(),
-            has_focus: false,
-        };
-        let logic = ResolvedTreeLeafLogic {
-            tree,
-            engine: InteractionEngine::new(),
-            sink: RefCell::new(RecordingSink),
-        };
-        let mut driver = TuiDriver::new(logic, 24, 8);
-        driver.render();
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("leaf:tree"))),
-                "the leaf's own outer tree-address id must be a tab stop"
-            );
-        }
-
-        for _ in 0..40 {
-            driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-        }
-
-        let tree_hit = {
-            let hits = driver.app().engine.hit_map();
-            hits.iter().find_map(|hit| match hit {
-                PaintedHit::Tree {
-                    id,
-                    scroll_offset,
-                    viewport_rows,
-                    ..
-                } if *id == WidgetId::new("leaf:tree") => Some((*scroll_offset, *viewport_rows)),
-                _ => None,
-            })
-        };
-        let (scroll_offset, viewport_rows) =
-            tree_hit.expect("the tree must still be painted, keyed by its own outer leaf id");
-        assert!(
-            scroll_offset > 0,
-            "500 rows in a {viewport_rows}-row tree viewport must have scrolled: {scroll_offset}"
-        );
-        assert!(
-            (scroll_offset..scroll_offset + viewport_rows).contains(&39),
-            "row 39 (the moved cursor) must be within the scrolled window [{scroll_offset}, {})",
-            scroll_offset + viewport_rows
-        );
-
-        let snapshot = widget_state_snapshot(
-            driver.app().engine.widget_state(),
-            WidgetId::new("leaf:tree"),
-        )
-        .expect("the leaf's own outer id must have resolved state after 40 Down presses");
-        assert_eq!(
-            snapshot.selected_path,
-            Some(vec![39]),
-            "the snapshot keyed by the outer leaf id must match what was painted"
-        );
-
-        assert!(
-            widget_state_snapshot(
-                driver.app().engine.widget_state(),
-                WidgetId::new("tree:inner")
-            )
-            .is_none(),
-            "the descriptor's own embedded id must never accumulate widget state of its own"
-        );
-
-        // A further render — nothing new dispatched — must not have the
-        // leaf id's entry swept by `WidgetStateStore::gc()`: `resolve_layout_node`
-        // itself has to touch it every frame, not just the nav hook.
-        driver.render();
-        assert!(
-            widget_state_snapshot(
-                driver.app().engine.widget_state(),
-                WidgetId::new("leaf:tree")
-            )
-            .is_some(),
-            "the outer leaf id's widget state must survive a further render instead of being GC'd"
         );
     }
 
@@ -3932,7 +2099,6 @@ mod tests {
                                 kind: "button",
                                 widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
                             },
-                            scroll_px: None,
                         })
                     })
                     .collect(),
@@ -3945,7 +2111,7 @@ mod tests {
                 content: Box::new(content),
                 spacing: Default::default(),
             });
-            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            resolve_layout_node(&self.engine, backend, area, &mut node);
             let mut hits = Vec::new();
             paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
@@ -4044,7 +2210,6 @@ mod tests {
                                 kind: "button",
                                 widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
                             },
-                            scroll_px: None,
                         });
                         if i == 0 {
                             LayoutNode::Styled(crate::layout::LayoutStyled {
@@ -4078,7 +2243,7 @@ mod tests {
                 content: Box::new(styled_content),
                 spacing: Default::default(),
             });
-            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            resolve_layout_node(&self.engine, backend, area, &mut node);
             let mut hits = Vec::new();
             paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
@@ -4303,7 +2468,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            draw_bands(backend, self.host.render_refs(), &mut hits);
+            self.engine
+                .paint_with_widget_state(|| draw_bands(backend, &self.host.widgets, &mut hits));
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -4753,8 +2919,8 @@ mod tests {
     }
 
     /// A minimal [`AppLogic`] whose `render` paints a layout tree through
-    /// [`crate::render::paint_layout`] -- not [`BindingHost::render_refs`]'s
-    /// five fixed slots -- and refreshes [`BindingHost::leaf_tooltips`] from
+    /// [`crate::render::paint_layout`] -- not [`BindingHost::widgets`]'
+    /// flat bands -- and refreshes [`BindingHost::leaf_tooltips`] from
     /// it every frame via [`crate::render::collect_leaf_tooltips`], the
     /// same two calls `quadraui-py`'s own `PyAppLogic::render` makes for
     /// its `RenderOutput::Tree` path.
@@ -4829,7 +2995,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(save_button),
                     },
-                    scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:other".to_string(),
@@ -4837,7 +3002,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(other_button),
                     },
-                    scroll_px: None,
                 }),
             ],
             Spacing::default(),
@@ -4917,7 +3081,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(alpha),
                     },
-                    scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:bravo".to_string(),
@@ -4925,7 +3088,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(bravo),
                     },
-                    scroll_px: None,
                 }),
             ],
             Spacing::default(),
@@ -5111,327 +3273,7 @@ mod tests {
         assert!(host.now_ms() < 5_000);
     }
 
-    // ─── Tree/List/DataTable cursor + scroll ───────────────────────────
-
-    use quadraui::{Column, DataRow, ListItem, NamedKey, SelectionMode, TreeStyle};
-
-    fn down_key() -> Key {
-        Key::Named(NamedKey::Down)
-    }
-
-    fn home_key() -> Key {
-        Key::Named(NamedKey::Home)
-    }
-
-    fn end_key() -> Key {
-        Key::Named(NamedKey::End)
-    }
-
-    fn test_tree(
-        row_count: usize,
-        selected_path: Option<TreePath>,
-        scroll_offset: usize,
-    ) -> TreeView {
-        TreeView {
-            id: WidgetId::new("host-test:tree"),
-            rows: (0..row_count)
-                .map(|i| placeholder_tree_row(vec![i as u16]))
-                .collect(),
-            selection_mode: SelectionMode::Single,
-            selected_path,
-            scroll_offset,
-            style: TreeStyle::default(),
-            has_focus: true,
-        }
-    }
-
-    fn test_list(row_count: usize, selected_idx: usize, scroll_offset: usize) -> ListView {
-        ListView {
-            id: WidgetId::new("host-test:list"),
-            title: None,
-            items: (0..row_count)
-                .map(|i| ListItem {
-                    text: StyledText::plain(format!("row {i}")),
-                    icon: None,
-                    detail: None,
-                    decoration: Decoration::default(),
-                })
-                .collect(),
-            selected_idx,
-            scroll_offset,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        }
-    }
-
-    fn test_data_table(
-        row_count: usize,
-        selected_idx: Option<usize>,
-        scroll_offset: usize,
-    ) -> DataTable {
-        DataTable {
-            id: WidgetId::new("host-test:table"),
-            columns: vec![Column {
-                title: "Col".to_string(),
-                width: Default::default(),
-                align: Default::default(),
-            }],
-            rows: (0..row_count)
-                .map(|i| DataRow {
-                    cells: vec![StyledText::plain(format!("row {i}"))],
-                    decoration: Decoration::default(),
-                })
-                .collect(),
-            selected_idx,
-            scroll_offset,
-            sort: None,
-            has_focus: true,
-            show_scrollbar: false,
-            min_total_width: None,
-            h_scroll: 0.0,
-            column_overrides: Vec::new(),
-            footer: None,
-            bordered: false,
-            striped: false,
-            glyphs: None,
-        }
-    }
-
-    /// A fully uncontrolled `Tree` (no `selected_path`, `scroll_offset: 0`)
-    /// moves its stored cursor one row per `Down` and keeps it within the
-    /// scrolled viewport — [`apply_tree_nav_key`]'s own basic contract,
-    /// exercised directly (no [`quadraui::tui::testing::TuiDriver`]
-    /// needed) rather than only through `crate::engine`'s integration
-    /// tests.
-    #[test]
-    fn apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let row_paths: Vec<TreePath> = (0..500).map(|i| vec![i as u16]).collect();
-
-        for _ in 0..40 {
-            let moved = apply_tree_nav_key(&widget_state, id, &row_paths, 8, &down_key());
-            assert!(moved, "every Down from row 0..39 must move the cursor");
-        }
-
-        let tree = test_tree(500, None, 0);
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 8);
-        assert_eq!(
-            resolved.selected_path,
-            Some(vec![39]),
-            "40 Downs starting from no selection must land exactly on row 39"
-        );
-        assert!(
-            (resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39),
-            "row 39 must be scrolled into the 8-row viewport: offset {}",
-            resolved.scroll_offset
-        );
-    }
-
-    /// `Home`/`End` jump straight to the first/last row; a further `Down`
-    /// past the last row is a no-op that reports no movement, matching
-    /// [`apply_tree_nav_key`]'s own "return `false` when nothing moved"
-    /// contract.
-    #[test]
-    fn apply_tree_nav_key_home_and_end_jump_to_the_edges_and_further_movement_past_the_end_is_a_no_op(
-    ) {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
-
-        assert!(apply_tree_nav_key(
-            &widget_state,
-            id,
-            &row_paths,
-            4,
-            &end_key()
-        ));
-        let tree = test_tree(10, None, 0);
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
-        assert_eq!(resolved.selected_path, Some(vec![9]));
-
-        assert!(
-            !apply_tree_nav_key(&widget_state, id, &row_paths, 4, &down_key()),
-            "Down past the last row must report no movement"
-        );
-
-        assert!(apply_tree_nav_key(
-            &widget_state,
-            id,
-            &row_paths,
-            4,
-            &home_key()
-        ));
-        let tree = test_tree(10, None, 0);
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
-        assert_eq!(resolved.selected_path, Some(vec![0]));
-    }
-
-    /// Vim `j`/`k` are recognized aliases for `Down`/`Up`.
-    #[test]
-    fn apply_tree_nav_key_recognizes_vim_j_and_k_aliases() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let row_paths: Vec<TreePath> = (0..10).map(|i| vec![i as u16]).collect();
-
-        assert!(apply_tree_nav_key(
-            &widget_state,
-            id,
-            &row_paths,
-            4,
-            &Key::Char('j')
-        ));
-        assert!(apply_tree_nav_key(
-            &widget_state,
-            id,
-            &row_paths,
-            4,
-            &Key::Char('j')
-        ));
-        assert!(apply_tree_nav_key(
-            &widget_state,
-            id,
-            &row_paths,
-            4,
-            &Key::Char('k')
-        ));
-
-        let tree = test_tree(10, None, 0);
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
-        assert_eq!(resolved.selected_path, Some(vec![0]));
-    }
-
-    /// A controlled `selected_path` wins outright over the stored cursor,
-    /// and the viewport re-clamps the scroll on every call even with no
-    /// intervening [`apply_tree_nav_key`] — covering the resize case
-    /// [`resolve_tree_cursor`]'s own doc describes.
-    #[test]
-    fn resolve_tree_cursor_controlled_selected_path_wins_and_rescrolls_on_viewport_resize() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let tree = test_tree(50, Some(vec![30]), 0);
-
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 8);
-        assert_eq!(resolved.selected_path, Some(vec![30]));
-        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&30));
-
-        // The viewport shrinks (e.g. the window resized) with the same
-        // controlled selection and no key pressed in between -- row 30
-        // must still be visible in the new, smaller viewport.
-        let resolved = resolve_tree_cursor(&widget_state, &tree, 4);
-        assert!(
-            (resolved.scroll_offset..resolved.scroll_offset + 4).contains(&30),
-            "a shrunk viewport must re-clamp the scroll to keep row 30 visible: {}",
-            resolved.scroll_offset
-        );
-    }
-
-    /// A `Tree` pinned at a non-zero `scroll_offset` that later goes back
-    /// to `0` must actually scroll back to the top, not get stuck at the
-    /// old pinned value — the regression this module's own
-    /// `scroll_controlled` latch exists to fix. Before the latch, `0` was
-    /// read as "uncontrolled", so `resolve_tree_cursor` fell back to the
-    /// stored (still-pinned) offset and the tree could never scroll back
-    /// to the top.
-    #[test]
-    fn resolve_tree_cursor_can_scroll_back_to_zero_after_being_pinned_nonzero() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-
-        let pinned = test_tree(50, None, 20);
-        let resolved = resolve_tree_cursor(&widget_state, &pinned, 8);
-        assert_eq!(resolved.scroll_offset, 20);
-
-        // The app (or the user wheeling back to the top) now pins the
-        // scroll at 0 on the very next frame.
-        let pinned_at_top = test_tree(50, None, 0);
-        let resolved = resolve_tree_cursor(&widget_state, &pinned_at_top, 8);
-        assert_eq!(
-            resolved.scroll_offset, 0,
-            "a controlled tree must be able to scroll back to the top"
-        );
-    }
-
-    /// A fully uncontrolled `List` (`selected_idx: 0`, `scroll_offset: 0`)
-    /// moves its stored cursor one row per `Down` and scrolls it into
-    /// view — the `List` counterpart of
-    /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
-    #[test]
-    fn apply_list_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:list");
-
-        for _ in 0..40 {
-            assert!(apply_list_nav_key(&widget_state, id, 500, 8, &down_key()));
-        }
-
-        let list = test_list(500, 0, 0);
-        let resolved = resolve_list_cursor(&widget_state, &list, 8);
-        assert_eq!(resolved.selected_idx, 39);
-        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39));
-    }
-
-    /// A `List` whose descriptor pins a non-zero `scroll_offset` keeps
-    /// that value even while uncontrolled navigation keys move the
-    /// selection — controlled mode wins outright, mirroring
-    /// `engine::tests::controlled_tree_scroll_offset_is_pinned_and_not_moved_by_navigation_keys`.
-    #[test]
-    fn resolve_list_cursor_controlled_scroll_offset_is_pinned() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:list");
-
-        for _ in 0..10 {
-            apply_list_nav_key(&widget_state, id, 500, 8, &down_key());
-        }
-
-        let list = test_list(500, 0, 50);
-        let resolved = resolve_list_cursor(&widget_state, &list, 8);
-        assert_eq!(resolved.scroll_offset, 50);
-    }
-
-    /// A fully uncontrolled `DataTable` (`selected_idx: None`,
-    /// `scroll_offset: 0`) moves its stored cursor one row per `Down` and
-    /// scrolls it into view — the `DataTable` counterpart of
-    /// `apply_tree_nav_key_down_moves_the_cursor_and_scrolls_it_into_view`.
-    #[test]
-    fn apply_data_table_nav_key_down_moves_the_cursor_and_scrolls_it_into_view() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:table");
-
-        for _ in 0..40 {
-            assert!(apply_data_table_nav_key(
-                &widget_state,
-                id,
-                500,
-                8,
-                &down_key()
-            ));
-        }
-
-        let table = test_data_table(500, None, 0);
-        let resolved = resolve_data_table_cursor(&widget_state, &table, 8);
-        assert_eq!(resolved.selected_idx, Some(39));
-        assert!((resolved.scroll_offset..resolved.scroll_offset + 8).contains(&39));
-    }
-
-    /// A `DataTable` whose descriptor pins a non-zero `scroll_offset`
-    /// keeps that value even while uncontrolled navigation keys move the
-    /// selection, the same as [`resolve_list_cursor_controlled_scroll_offset_is_pinned`].
-    #[test]
-    fn resolve_data_table_cursor_controlled_scroll_offset_is_pinned() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:table");
-
-        for _ in 0..10 {
-            apply_data_table_nav_key(&widget_state, id, 500, 8, &down_key());
-        }
-
-        let table = test_data_table(500, None, 50);
-        let resolved = resolve_data_table_cursor(&widget_state, &table, 8);
-        assert_eq!(resolved.scroll_offset, 50);
-    }
+    // ─── Container state ───────────────────────────────────────────────
 
     fn test_split(ratio: f32) -> Split {
         Split {
@@ -5533,8 +3375,8 @@ mod tests {
         assert_eq!(resolve_scroll_offset(&widget_state, id, None, 30.0), 30.0);
     }
 
-    fn test_tab_bar(tabs: Vec<bool>) -> TabBar {
-        TabBar {
+    fn test_tab_bar(tabs: Vec<bool>) -> quadraui::TabBar {
+        quadraui::TabBar {
             id: WidgetId::new("host-test:tab-bar"),
             tabs: tabs
                 .into_iter()
@@ -5554,63 +3396,6 @@ mod tests {
         }
     }
 
-    /// Clicking a tab (`TabBarEvent::TabActivated`) with no app state at
-    /// all — every subsequent render keeps resending the same tab marked
-    /// active it always has — leaves the clicked tab active instead.
-    #[test]
-    fn apply_tab_activated_persists_across_an_uncontrolled_render() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-        let tab_bar = test_tab_bar(vec![true, false, false, false]);
-
-        // A render always happens before a click can land on anything —
-        // this seeds the baseline from the descriptor's own starting
-        // active tab, the same order a real binding runs in.
-        resolve_tab_bar_active(&widget_state, &tab_bar);
-        apply_tab_activated(&widget_state, id, 2);
-
-        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
-        assert!(!resolved.tabs[0].is_active);
-        assert!(
-            resolved.tabs[2].is_active,
-            "a clicked tab must stay active across an uncontrolled render"
-        );
-    }
-
-    /// An app that explicitly moves its own active tab (not merely
-    /// resending the same one it always has) wins outright over whatever
-    /// a previous click persisted.
-    #[test]
-    fn resolve_tab_bar_active_controlled_change_overrides_a_stored_click() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-
-        resolve_tab_bar_active(
-            &widget_state,
-            &test_tab_bar(vec![true, false, false, false]),
-        );
-        apply_tab_activated(&widget_state, id, 2);
-
-        let tab_bar = test_tab_bar(vec![false, true, false, false]);
-        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
-        assert!(
-            resolved.tabs[1].is_active,
-            "an app explicitly activating a different tab must override the stored click"
-        );
-        assert!(!resolved.tabs[2].is_active);
-    }
-
-    /// A tree with no tab/row ever marked active at all stays that way —
-    /// clicking nothing leaves nothing active, the state every real
-    /// `TabBar` that hasn't loaded its tabs yet would be in.
-    #[test]
-    fn resolve_tab_bar_active_with_nothing_active_and_nothing_clicked_stays_inactive() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let tab_bar = test_tab_bar(vec![false, false, false]);
-        let resolved = resolve_tab_bar_active(&widget_state, &tab_bar);
-        assert!(resolved.tabs.iter().all(|tab| !tab.is_active));
-    }
-
     fn test_layout_tabs(tabs: Vec<bool>) -> LayoutTabs {
         let tab_bar = test_tab_bar(tabs);
         let entries = (0..tab_bar.tabs.len())
@@ -5625,7 +3410,6 @@ mod tests {
                             format!("tab {i} body"),
                         )),
                     },
-                    scroll_px: None,
                 })),
             })
             .collect();
@@ -5638,483 +3422,70 @@ mod tests {
         }
     }
 
-    /// A `Tree` leaf in an unselected tab keeps its stored cursor through
-    /// the frames its tab is hidden: switching away and back restores it.
-    #[test]
-    fn resolve_layout_node_keeps_a_hidden_tab_entrys_tree_cursor_alive() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
+    /// Paints `tabs` once through `engine`, so its strip is on the hit map.
+    fn paint_tabs(engine: &InteractionEngine, tabs: LayoutTabs) {
         let mut backend = TuiBackend::new();
-        let area = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let tree_id = WidgetId::new("files-tree");
-        let layout = |selected: usize| {
-            let mut tabs = test_layout_tabs(vec![selected == 0, selected == 1]);
-            tabs.selected = selected;
-            *tabs.entries[0].content = LayoutNode::Leaf(LayoutLeaf {
-                id: tree_id.as_str().to_string(),
-                descriptor: LeafDescriptor::Tree(test_tree(30, None, 0)),
-                scroll_px: None,
-            });
-            LayoutNode::Tabs(tabs)
-        };
-
-        let mut node = layout(0);
-        resolve_layout_node(&widget_state, &mut backend, area, &mut node);
-        widget_state.borrow_mut().gc();
-        let paths: Vec<TreePath> = (0..30u16).map(|i| vec![i]).collect();
-        for _ in 0..5 {
-            assert!(apply_tree_nav_key(
-                &widget_state,
-                tree_id,
-                &paths,
-                10,
-                &down_key()
-            ));
-        }
-        let before = widget_state_snapshot(&widget_state, tree_id)
-            .and_then(|snapshot| snapshot.selected_path)
-            .expect("the nav keys must have stored a cursor");
-
-        for selected in [1, 1, 0] {
-            let mut node = layout(selected);
-            resolve_layout_node(&widget_state, &mut backend, area, &mut node);
-            widget_state.borrow_mut().gc();
-        }
-
-        assert_eq!(
-            widget_state_snapshot(&widget_state, tree_id)
-                .and_then(|snapshot| snapshot.selected_path),
-            Some(before),
-            "the hidden tab's tree cursor must survive switching away and back"
-        );
+        let mut hits = Vec::new();
+        let area = Rect::new(0.0, 0.0, 40.0, 10.0);
+        let node = LayoutNode::Tabs(tabs);
+        engine.paint_with_widget_state(|| paint_layout(&mut backend, area, &node, &mut hits));
+        engine.set_hits(hits);
     }
 
-    /// Clicking a tab inside a `LayoutTabs` tab group with no app state at
-    /// all must move BOTH the strip's own active flag AND
-    /// `LayoutTabs::selected` — a binding addresses the content pane
-    /// `crate::render::paint_layout`'s `LayoutNode::Tabs` arm paints
-    /// through `selected`, not through `tab_bar.tabs[*].is_active`, so
-    /// resolving only the strip (`resolve_tab_bar_active` alone) would
-    /// leave the content pane on the old tab while the strip highlights
-    /// the new one.
+    /// A tab group's content pane follows the tab its strip's own state
+    /// last activated — an app that never echoes the activation still sees
+    /// the pane switch — and the strip reports that tab back through
+    /// [`widget_state_snapshot`].
     #[test]
-    fn resolve_layout_tabs_active_moves_both_the_strip_and_the_content_pane() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-        let mut tabs = test_layout_tabs(vec![true, false, false, false]);
+    fn resolve_layout_tabs_active_moves_the_content_pane_to_the_strips_active_tab() {
+        let engine = InteractionEngine::new();
+        paint_tabs(&engine, test_layout_tabs(vec![true, false, false]));
+        let strip = WidgetId::new("host-test:tab-bar");
+        engine.activate_tab(strip, 2);
 
-        // A render always happens before a click can land on anything.
-        resolve_layout_tabs_active(&widget_state, &mut tabs);
-        apply_tab_activated(&widget_state, id, 2);
-
-        // The app's own tab group is never touched by the click -- this
-        // resolves against the exact same "uncontrolled" descriptor as
-        // every other render.
-        let mut tabs = test_layout_tabs(vec![true, false, false, false]);
-        resolve_layout_tabs_active(&widget_state, &mut tabs);
-
-        assert!(
-            tabs.tab_bar.tabs[2].is_active,
-            "the clicked tab must stay active in the strip across an uncontrolled render"
-        );
-        assert!(!tabs.tab_bar.tabs[0].is_active);
-        assert_eq!(
-            tabs.selected, 2,
-            "the content pane must follow the clicked tab, not stay on the descriptor's own tab 0"
-        );
+        let mut resolved = test_layout_tabs(vec![true, false, false]);
+        resolve_layout_tabs_active(&engine, &mut resolved);
+        assert_eq!(resolved.selected, 2);
+        let snapshot = widget_state_snapshot(&engine, strip).expect("the strip keeps state");
+        assert_eq!(snapshot.summary.active_tab, Some(2));
     }
 
-    /// An app that explicitly moves its own active tab overrides a stored
-    /// click for both the strip and the content pane, the `LayoutTabs`
-    /// counterpart of `resolve_tab_bar_active_controlled_change_overrides_a_stored_click`.
+    /// A tab group whose app changes the active tab it sends wins over a
+    /// tab its strip activated earlier.
     #[test]
-    fn resolve_layout_tabs_active_controlled_change_overrides_a_stored_click() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
+    fn resolve_layout_tabs_active_controlled_change_overrides_an_earlier_activation() {
+        let engine = InteractionEngine::new();
+        paint_tabs(&engine, test_layout_tabs(vec![true, false, false]));
+        engine.activate_tab(WidgetId::new("host-test:tab-bar"), 2);
 
-        let mut seed = test_layout_tabs(vec![true, false, false, false]);
-        resolve_layout_tabs_active(&widget_state, &mut seed);
-        apply_tab_activated(&widget_state, id, 2);
-
-        let mut tabs = test_layout_tabs(vec![false, true, false, false]);
-        resolve_layout_tabs_active(&widget_state, &mut tabs);
-        assert!(tabs.tab_bar.tabs[1].is_active);
-        assert!(!tabs.tab_bar.tabs[2].is_active);
-        assert_eq!(
-            tabs.selected, 1,
-            "an app explicitly activating a different tab must override the stored click \
-             for the content pane too"
-        );
-    }
-
-    /// Closing a tab after the stored active index renumbers the stored
-    /// index down by one, so it keeps pointing at the same tab. The
-    /// descriptor itself never marks any tab active in any of these three
-    /// tests (`descriptor_active` stays `None` throughout) — the same
-    /// "uncontrolled, no app state" shape every other persistence test in
-    /// this module uses, so the only thing moving the resolved index is
-    /// the click/close pair under test, not a descriptor change.
-    #[test]
-    fn apply_tab_closed_shifts_a_stored_active_index_past_the_closed_tab() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-
-        resolve_tab_bar_active(
-            &widget_state,
-            &test_tab_bar(vec![false, false, false, false]),
-        );
-        apply_tab_activated(&widget_state, id, 2);
-        apply_tab_closed(&widget_state, id, 0);
-
-        let resolved =
-            resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![false, false, false]));
-        assert!(
-            resolved.tabs[1].is_active,
-            "closing tab 0 must shift the stored active index 2 down to 1"
-        );
-    }
-
-    /// Closing the stored active tab itself clears it rather than leaving
-    /// it pointing at whichever tab now occupies that slot.
-    #[test]
-    fn apply_tab_closed_clears_a_stored_active_index_at_the_closed_tab() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-
-        resolve_tab_bar_active(
-            &widget_state,
-            &test_tab_bar(vec![false, false, false, false]),
-        );
-        apply_tab_activated(&widget_state, id, 2);
-        apply_tab_closed(&widget_state, id, 2);
-
-        let resolved =
-            resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![false, false, false]));
-        assert!(
-            resolved.tabs.iter().all(|tab| !tab.is_active),
-            "closing the active tab must leave nothing active rather than resurrecting a stale index"
-        );
-    }
-
-    /// Closing a tab after the stored active index leaves it untouched.
-    #[test]
-    fn apply_tab_closed_leaves_an_index_before_the_closed_tab_untouched() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-
-        resolve_tab_bar_active(
-            &widget_state,
-            &test_tab_bar(vec![false, false, false, false]),
-        );
-        apply_tab_activated(&widget_state, id, 1);
-        apply_tab_closed(&widget_state, id, 3);
-
-        let resolved =
-            resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![false, false, false]));
-        assert!(resolved.tabs[1].is_active);
-    }
-
-    fn branch_row(path: TreePath, is_expanded: bool) -> TreeRow {
-        TreeRow {
-            is_expanded: Some(is_expanded),
-            ..placeholder_tree_row(path)
-        }
-    }
-
-    /// Toggling a collapsed branch row (`TreeEvent::RowToggleExpand`) with
-    /// no app state at all — the descriptor keeps resending the same
-    /// `is_expanded: Some(false)` it always has — leaves that row expanded
-    /// instead.
-    #[test]
-    fn apply_tree_toggle_expand_persists_across_an_uncontrolled_render() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let path = vec![0_u16];
-        let tree = TreeView {
-            rows: vec![branch_row(path.clone(), false)],
-            ..test_tree(1, None, 0)
-        };
-
-        // A render always happens before a click can land on a chevron —
-        // this seeds the baseline from the descriptor's own starting
-        // `is_expanded`, the same order a real binding runs in.
-        resolve_tree_expansion(&widget_state, &tree);
-        apply_tree_toggle_expand(&widget_state, id, &path);
-
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            resolved.rows[0].is_expanded,
-            Some(true),
-            "a toggled row must stay expanded across an uncontrolled render"
-        );
-    }
-
-    /// An app that explicitly changes a row's `is_expanded` relative to
-    /// what it last sent (not merely resending the same literal value it
-    /// always has) wins outright over whatever a previous toggle
-    /// persisted — even collapsing a row a toggle just expanded.
-    #[test]
-    fn resolve_tree_expansion_controlled_change_overrides_a_stored_toggle() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let path = vec![0_u16];
-        let collapsed = TreeView {
-            rows: vec![branch_row(path.clone(), false)],
-            ..test_tree(1, None, 0)
-        };
-
-        resolve_tree_expansion(&widget_state, &collapsed);
-        apply_tree_toggle_expand(&widget_state, id, &path);
-
-        // The render right after the toggle still matches the baseline
-        // (`false`) seeded just above, so the toggle (`true`) wins.
-        let resolved = resolve_tree_expansion(&widget_state, &collapsed);
-        assert_eq!(resolved.rows[0].is_expanded, Some(true));
-
-        // The app now explicitly sends `true` itself, establishing a new
-        // baseline to diverge from next.
-        let tree = TreeView {
-            rows: vec![branch_row(path.clone(), true)],
-            ..test_tree(1, None, 0)
-        };
-        resolve_tree_expansion(&widget_state, &tree);
-
-        // The app explicitly collapses this row — a genuine change from
-        // its own last value, not just an unchanged resend — which must
-        // win even though a toggle alone would have kept it expanded.
-        let tree = TreeView {
-            rows: vec![branch_row(path, false)],
-            ..test_tree(1, None, 0)
-        };
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            resolved.rows[0].is_expanded,
-            Some(false),
-            "an app explicitly re-collapsing the row must override the stored toggle"
-        );
-    }
-
-    /// A leaf row (`is_expanded: None`) is never touched.
-    #[test]
-    fn resolve_tree_expansion_leaves_leaf_rows_untouched() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let tree = test_tree(3, None, 0);
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert!(resolved.rows.iter().all(|row| row.is_expanded.is_none()));
-    }
-
-    /// Collapsing a branch row with no app state at all hides its
-    /// descendant row outright, not just its own chevron -- `is_expanded`
-    /// only drives the glyph upstream of this module (see
-    /// `TreeView`'s cell paint doc), so this module is the
-    /// one place an uncontrolled tree's resolved collapse actually
-    /// controls which rows paint.
-    #[test]
-    fn resolve_tree_expansion_hides_rows_under_a_resolved_collapsed_ancestor() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let parent = vec![0_u16];
-        let child = vec![0_u16, 0_u16];
-        let tree = TreeView {
-            rows: vec![
-                branch_row(parent.clone(), true),
-                branch_row(child.clone(), true),
-            ],
-            ..test_tree(2, None, 0)
-        };
-
-        // Seeds the baseline from the descriptor's own starting
-        // `is_expanded: Some(true)`, same order a real binding runs in.
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            resolved.rows.len(),
-            2,
-            "both rows must paint while the parent is expanded"
-        );
-
-        apply_tree_toggle_expand(&widget_state, id, &parent);
-
-        // The descriptor still resends the exact same `Some(true), Some(true)`
-        // it always has -- the "uncontrolled, no app state" shape.
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            resolved.rows.len(),
-            1,
-            "collapsing the parent must drop its child row, not only flip its own chevron"
-        );
-        assert_eq!(resolved.rows[0].path, parent);
-        assert_eq!(resolved.rows[0].is_expanded, Some(false));
-    }
-
-    /// A stored toggle for a path no longer present in `tree.rows` is
-    /// dropped (per this function's own pruning doc) rather than
-    /// resurrected if the same path reappears later -- a later render re-
-    /// adding the row reseeds its override from the descriptor's own
-    /// value, not from whatever a now-stale entry remembered.
-    #[test]
-    fn resolve_tree_expansion_reseeds_a_pruned_then_reappearing_path_from_the_descriptor() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let path = vec![0_u16];
-        let tree = TreeView {
-            rows: vec![branch_row(path.clone(), false)],
-            ..test_tree(1, None, 0)
-        };
-
-        resolve_tree_expansion(&widget_state, &tree);
-        apply_tree_toggle_expand(&widget_state, id, &path);
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(resolved.rows[0].is_expanded, Some(true));
-
-        // The row disappears entirely for a frame (e.g. an ancestor the
-        // app itself collapsed) -- the pruning branch drops its entry.
-        let empty_tree = TreeView {
-            rows: Vec::new(),
-            ..test_tree(1, None, 0)
-        };
-        resolve_tree_expansion(&widget_state, &empty_tree);
-
-        // The row reappears with the descriptor's own original value.
-        // Without the prune, a stale entry would still say `true`.
-        let resolved = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            resolved.rows[0].is_expanded,
-            Some(false),
-            "a path pruned while absent must reseed from the descriptor, not resurrect the \
-             toggle it had before it disappeared"
-        );
-    }
-
-    /// `resolve_tree_expansion` and `resolve_tree_cursor`/`apply_tree_nav_key`
-    /// both persist state for the same tree `id` in the one `WidgetStateStore`
-    /// store, which holds exactly one typed value per id — this asserts
-    /// they don't clobber each other's entry when both are used for the
-    /// same tree in the same frame, the regression `expanded_state_id`'s
-    /// own doc exists to prevent.
-    #[test]
-    fn tree_expansion_and_tree_cursor_state_coexist_for_the_same_tree_id() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let path = vec![0_u16];
-        let tree = TreeView {
-            rows: vec![branch_row(path.clone(), false)],
-            ..test_tree(1, None, 0)
-        };
-
-        resolve_tree_expansion(&widget_state, &tree);
-        apply_tree_toggle_expand(&widget_state, id, &path);
-
-        let row_paths = vec![path.clone()];
-        assert!(
-            apply_tree_nav_key(&widget_state, id, &row_paths, 4, &down_key()),
-            "cursor navigation for the same id must still work"
-        );
-
-        let cursor = resolve_tree_cursor(&widget_state, &test_tree(1, None, 0), 4);
-        assert_eq!(
-            cursor.selected_path,
-            Some(path.clone()),
-            "the cursor move must have survived the expand-state calls for the same id"
-        );
-
-        let expansion = resolve_tree_expansion(&widget_state, &tree);
-        assert_eq!(
-            expansion.rows[0].is_expanded,
-            Some(true),
-            "the toggled expand state must have survived the cursor-nav calls for the same id"
-        );
+        paint_tabs(&engine, test_layout_tabs(vec![false, true, false]));
+        let mut resolved = test_layout_tabs(vec![false, true, false]);
+        resolve_layout_tabs_active(&engine, &mut resolved);
+        assert_eq!(resolved.selected, 1);
     }
 
     /// Nothing stored for an id under any shape — e.g. one that was never
     /// resolved/applied this process — snapshots to `None`.
     #[test]
     fn widget_state_snapshot_is_none_for_an_untouched_id() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
+        let engine = InteractionEngine::new();
         assert_eq!(
-            widget_state_snapshot(&widget_state, WidgetId::new("host-test:untouched")),
+            widget_state_snapshot(&engine, WidgetId::new("host-test:untouched")),
             None
         );
-    }
-
-    /// A tree's cursor + scroll read back exactly as `resolve_tree_cursor`
-    /// left them stored.
-    #[test]
-    fn widget_state_snapshot_reads_back_a_tree_cursor() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let tree = test_tree(10, Some(vec![3_u16]), 0);
-        resolve_tree_cursor(&widget_state, &tree, 4);
-
-        let snapshot = widget_state_snapshot(&widget_state, id).expect("tree cursor stored");
-        assert_eq!(snapshot.selected_path, Some(vec![3_u16]));
-        assert_eq!(snapshot.selected_idx, None);
-        assert!(snapshot.scroll_offset.is_some());
-        assert_eq!(snapshot.ratio, None);
-        assert_eq!(snapshot.active_tab, None);
-        assert_eq!(snapshot.expanded, None);
-    }
-
-    /// A list's cursor + scroll read back exactly as `resolve_list_cursor`
-    /// left them stored.
-    #[test]
-    fn widget_state_snapshot_reads_back_a_list_cursor() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:list");
-        let list = test_list(10, 2, 0);
-        resolve_list_cursor(&widget_state, &list, 4);
-
-        let snapshot = widget_state_snapshot(&widget_state, id).expect("list cursor stored");
-        assert_eq!(snapshot.selected_idx, Some(2));
-        assert_eq!(snapshot.selected_path, None);
-        assert!(snapshot.scroll_offset.is_some());
     }
 
     /// A split's ratio reads back exactly as `resolve_split_ratio` left it
     /// stored, once a drag has moved it off the descriptor's own literal.
     #[test]
     fn widget_state_snapshot_reads_back_a_split_ratio() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
+        let engine = InteractionEngine::new();
         let id = WidgetId::new("host-test:split");
-        resolve_split_ratio(&widget_state, &test_split(0.5));
-        apply_split_divider_drag(&widget_state, id, 0, 0.7);
+        resolve_split_ratio(engine.widget_state(), &test_split(0.5));
+        apply_split_divider_drag(engine.widget_state(), id, 0, 0.7);
 
-        let snapshot = widget_state_snapshot(&widget_state, id).expect("split ratio stored");
+        let snapshot = widget_state_snapshot(&engine, id).expect("split ratio stored");
         assert_eq!(snapshot.ratio, Some(0.7));
-        assert_eq!(snapshot.selected_path, None);
-    }
-
-    /// A tab bar's active tab reads back exactly as `apply_tab_activated`
-    /// left it stored.
-    #[test]
-    fn widget_state_snapshot_reads_back_an_active_tab() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tab-bar");
-        resolve_tab_bar_active(&widget_state, &test_tab_bar(vec![true, false]));
-        apply_tab_activated(&widget_state, id, 1);
-
-        let snapshot = widget_state_snapshot(&widget_state, id).expect("active tab stored");
-        assert_eq!(snapshot.active_tab, Some(1));
-    }
-
-    /// A tree's expanded-row set reads back exactly as
-    /// `apply_tree_toggle_expand` left it stored, alongside (not instead
-    /// of) that same tree's cursor — the id and its derived expansion key
-    /// coexist in one snapshot since both can be live for the same tree.
-    #[test]
-    fn widget_state_snapshot_reads_back_an_expanded_set_alongside_the_cursor() {
-        let widget_state = RefCell::new(WidgetStateStore::new());
-        let id = WidgetId::new("host-test:tree");
-        let path = vec![0_u16];
-        let tree = TreeView {
-            rows: vec![branch_row(path.clone(), false)],
-            selected_path: Some(path.clone()),
-            ..test_tree(1, None, 0)
-        };
-        resolve_tree_expansion(&widget_state, &tree);
-        apply_tree_toggle_expand(&widget_state, id, &path);
-        resolve_tree_cursor(&widget_state, &tree, 4);
-
-        let snapshot = widget_state_snapshot(&widget_state, id).expect("tree state stored");
-        assert_eq!(snapshot.expanded, Some(vec![path.clone()]));
-        assert_eq!(snapshot.selected_path, Some(path));
+        assert_eq!(snapshot.summary.selected_path, None);
     }
 }

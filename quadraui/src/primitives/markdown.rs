@@ -78,6 +78,7 @@ impl Markdown {
             id: self.id,
             lines,
             scroll_offset: self.scroll_offset,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

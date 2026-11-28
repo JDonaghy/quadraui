@@ -5710,6 +5710,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         }
     }
 
@@ -6504,6 +6505,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,
@@ -7338,6 +7340,8 @@ mod tests {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: false,
             };
@@ -7404,6 +7408,8 @@ mod tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

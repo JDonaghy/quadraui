@@ -94,6 +94,8 @@ fn bordered_list() -> ListView {
             .collect(),
         selected_idx: 1,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         has_focus: true,
         bordered: true,
         h_scroll: 0,
@@ -196,6 +198,8 @@ const CELL: &str = "日本";
 
 fn wide_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("fidelity:table"),
         columns: vec![
             Column {
@@ -218,6 +222,8 @@ fn wide_table() -> DataTable {
         }],
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: false,
         show_scrollbar: false,
@@ -303,6 +309,8 @@ fn tall_tree() -> TreeView {
         selection_mode: SelectionMode::Single,
         selected_path: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         style: TreeStyle::default(),
         has_focus: false,
     }
@@ -429,6 +437,7 @@ fn panel() -> FindReplacePanel {
         replace_one_glyph: "R1".into(),
         replace_all_glyph: "R*".into(),
         hit_regions,
+        hidden_toggles: Vec::new(),
     }
 }
 

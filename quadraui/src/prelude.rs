@@ -8,6 +8,12 @@
 //! on screen and has no way to tell `StatusBar` (the thing they need)
 //! from `SidebarPanelHit` (the thing they don't, yet).
 //!
+//! It leads with the app layer ([`crate::app`]): [`View`], the
+//! [`Node`] constructors (`column`/`row`, `text`, `button`, `list`,
+//! `form`, …) and the `run_tui`/[`run_native`] one-liners — everything a
+//! first app needs. The `AppLogic` names below are the layer underneath,
+//! for an app that paints and routes by hand.
+//!
 //! `quadraui::prelude::*` is not a replacement for the crate root — it's
 //! a subset, picked for "building your first `AppLogic` app": the two
 //! runner traits, the event/geometry types every `handle`/`render`
@@ -21,6 +27,14 @@
 //! ```
 //! use quadraui::prelude::*;
 //! ```
+
+// ── App layer: View + Node tree + run_tui/run_native ────────────────────
+#[cfg(feature = "tui")]
+pub use crate::app::run_tui;
+pub use crate::app::{
+    button, column, form, list, row, run_native, run_native_with, status_bar, text, text_field,
+    widget, Command, Field, Leaf, NativeOptions, Node, Run, View,
+};
 
 // ── Runner (quadraui::{tui,gtk}::run) ───────────────────────────────────
 pub use crate::runner::{AppLogic, Reaction, StepOutcome};
@@ -49,9 +63,9 @@ pub use crate::frame::{ScreenLayout, Surface};
 // ── ShellView — the VS Code-style activity-bar/sidebar/editor frame.
 // `ShellLayout` is what `ShellApp::render_content` receives each
 // frame (see the crate root `README.md` hello-world); `PanelDefinition`
-// and `FormController`/`FormControllerAction` are the other `compose`
-// pieces a typical multi-pane app wires up alongside it.
-pub use crate::compose::{FormController, FormControllerAction, PanelDefinition, ShellLayout};
+// is the other `compose` piece a typical multi-pane app wires up
+// alongside it.
+pub use crate::compose::{PanelDefinition, ShellLayout};
 
 // ── A representative sample of primitives (the crate root table's own
 // "representative sample", kept in sync with it — see `lib.rs`'s module

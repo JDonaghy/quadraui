@@ -312,6 +312,12 @@ pub fn lend_widget_state<S: Any, R>(id: WidgetId, state: S, f: impl FnOnce() -> 
     (state, result)
 }
 
+/// Run `f` against this thread's runtime store, or answer `None` when the
+/// store is already borrowed further up the stack.
+pub(crate) fn try_with_widget_states<R>(f: impl FnOnce(&mut WidgetStateStore) -> R) -> Option<R> {
+    WIDGET_STATES.with(|s| s.try_borrow_mut().ok().map(|mut store| f(&mut store)))
+}
+
 /// Run `f` with `id`'s stored state from this thread's runtime store, or
 /// `None` when `id` is `None`, has no state yet, or the store is already
 /// borrowed further up the stack.

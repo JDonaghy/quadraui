@@ -327,6 +327,17 @@ pub(crate) trait PreprocessBackend {
 ///    (a hover repaint, an [`crate::interactive::EventHost::emit`]ted
 ///    event's own `Reaction`) is still merged into whatever the step
 ///    that finally answers the event returns.
+///
+///    Then a Tab / Shift+Tab (`NamedKey::BackTab`, or `NamedKey::Tab` with
+///    Shift held) the focused widget left unclaimed walks that widget's
+///    own [`crate::interactive::FocusSpec::Children`] stops: when focus is
+///    on one of its children and another child follows (or precedes) it
+///    in the order the widget declared, focus moves there, the ring turns
+///    focus-visible, and the widget receives
+///    [`crate::interactive::RoutedEvent::FocusIn`] for the new child —
+///    see [`step_widget_child_focus`]. At either end the key falls
+///    through unchanged, so Tab can leave the widget. Ctrl/Alt/Cmd held
+///    is left alone, as in step 4.
 /// 3. `KeyPressed` while an `ActivityBar` declared
 ///    `is_keyboard_focused = true`: redirect to
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
@@ -424,6 +435,15 @@ where
         WidgetRouteOutcome::Claimed(outcome) => return pointer_reaction.merge(outcome),
         WidgetRouteOutcome::Bubble(side_effect) => pointer_reaction.merge(side_effect),
     };
+
+    // ── 2b. Tab / Shift+Tab through a widget's own child stops ──────────
+    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        if let Some(delta) = crate::focus::tab_step(key, modifiers) {
+            if let Some(outcome) = step_widget_child_focus(backend, app, delta) {
+                return widget_side_reaction.merge(outcome);
+            }
+        }
+    }
 
     // ── 3. ActivityBar keyboard focus intercept ─────────────────────
     if let UiEvent::KeyPressed {
@@ -778,9 +798,9 @@ where
             modifiers,
             repeat,
         } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, tree),
-        UiEvent::DoubleClick { position, .. } => {
-            route_widget_double_click(*position, backend, app, tree)
-        }
+        UiEvent::DoubleClick {
+            position, button, ..
+        } => route_widget_double_click(*position, *button, backend, app, tree),
         UiEvent::Scroll {
             position, delta, ..
         } => route_widget_wheel(*position, *delta, backend, app, tree),
@@ -920,13 +940,13 @@ where
 }
 
 /// `DoubleClick` arm of [`route_widget_event`]: hit-test, then deliver
-/// [`PointerKind::DoubleClick`] — the same hit-test-and-deliver shape as
-/// [`route_widget_pointer_down`], except [`UiEvent::DoubleClick`] carries
-/// no button or modifiers of its own, so this always resolves
-/// [`MouseButton::Left`] with [`Modifiers::default`]. `Bubble(Continue)`
-/// when the click landed on no widget.
+/// [`PointerKind::DoubleClick`] with the event's own `button` — the same
+/// hit-test-and-deliver shape as [`route_widget_pointer_down`], with
+/// [`Modifiers::default`] since [`UiEvent::DoubleClick`] carries no
+/// modifiers. `Bubble(Continue)` when the click landed on no widget.
 fn route_widget_double_click<B, A>(
     position: Point,
+    button: MouseButton,
     backend: &mut B,
     app: &mut A,
     tree: &FrameTree,
@@ -940,7 +960,7 @@ where
     };
     let id = node.id;
     let routed = RoutedEvent::Pointer {
-        kind: PointerKind::DoubleClick(MouseButton::Left),
+        kind: PointerKind::DoubleClick(button),
         sub: None,
         local: local_point(position, node.rect),
         mods: Modifiers::default(),
@@ -1044,12 +1064,84 @@ where
     let Some(node) = tree.find(&focused) else {
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     };
+    if tab_leaves_children(&key, modifiers, node, backend, app) {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    }
     let routed = RoutedEvent::Key(KeyEvent {
         key,
         modifiers,
         repeat,
     });
     dispatch_widget_routed_event(focused, node, &routed, backend, app)
+}
+
+/// [`preprocess_event`]'s step 2b: move keyboard focus `delta` stops
+/// through the focused widget's own
+/// [`crate::interactive::FocusSpec::Children`] stops
+/// ([`crate::focus::step_child_stop`]) and deliver
+/// [`RoutedEvent::FocusIn`] for the child it lands on. `None` — the key
+/// carries on to the later steps — when widget routing is off, a modal
+/// is open, focus names no child of a widget in this frame's tree, or
+/// that child is the widget's first/last stop in the `delta` direction.
+fn step_widget_child_focus<B, A>(backend: &mut B, app: &mut A, delta: isize) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    backend.widget_routing_mut()?;
+    if !backend.modal_stack_handle().borrow().is_empty() {
+        return None;
+    }
+    let &(id, Some(sub)) = backend.focus_tree().focused()? else {
+        return None;
+    };
+    let tree = app.frame_tree(A::AreaId::default());
+    let node = tree.find(&id)?;
+    let next = crate::focus::step_child_stop(&node.widget.focus(), sub, delta)?;
+    let tree_focus = backend.focus_tree_mut();
+    tree_focus.set_focus(Some((id, Some(next))));
+    tree_focus.set_focus_visible(true);
+    let routed = RoutedEvent::FocusIn(Some(next));
+    Some(
+        match dispatch_widget_routed_event(id, node, &routed, backend, app) {
+            WidgetRouteOutcome::Claimed(outcome) => outcome,
+            WidgetRouteOutcome::Bubble(reaction) => reaction.merge(EventOutcome::Redraw),
+        },
+    )
+}
+
+/// A plain Tab (or Shift+Tab) on a focused widget with per-child focus
+/// stops whose focused child is its last (or first) stop, while the
+/// app's tab order names the widget among other stops: the key skips the
+/// widget so the Tab focus-cycling step moves focus on to the next stop,
+/// rather than the widget wrapping round its own children.
+fn tab_leaves_children<B, A>(
+    key: &Key,
+    modifiers: Modifiers,
+    node: &FrameTreeNode,
+    backend: &B,
+    app: &A,
+) -> bool
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let forward = match key {
+        Key::Named(NamedKey::Tab) => !modifiers.shift,
+        Key::Named(NamedKey::BackTab) => false,
+        _ => return false,
+    };
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return false;
+    }
+    let Some(&(_, sub)) = backend.focus_tree().focused() else {
+        return false;
+    };
+    if !node.widget.focus().child_at_edge(sub, forward) {
+        return false;
+    }
+    let stops = all_tab_stops(app, A::AreaId::default());
+    stops.len() > 1 && stops.iter().any(|(id, _)| *id == node.id)
 }
 
 /// `MouseMoved` arm of [`route_widget_event`]: while a widget holds an
@@ -1378,6 +1470,18 @@ where
     // via `WidgetRouteOutcome::Bubble` — the same channel a hover
     // Enter/Leave repaint already travels back on — so the original,
     // un-routed event still reaches every later step and `app.handle`.
+    // The content the input just brought into view
+    // (`Interactive::data_requested`), asked against a layout of the state
+    // `handle` wrote and delivered after the widget's own event.
+    let requested = if matches!(outcome, Handled::Ignored) {
+        None
+    } else {
+        let after = crate::backend::layout_like_paint(&*backend, node.widget.as_ref(), node.rect);
+        crate::widget_state::with_widget_states(|states| {
+            let state = states.state_for(id, node.widget.as_ref());
+            node.widget.data_requested(state, &*after)
+        })
+    };
     let result = match outcome {
         Handled::Event(ui_event) => {
             WidgetRouteOutcome::Claimed(extra_reaction.merge(app.handle(ui_event, backend)))
@@ -1386,6 +1490,12 @@ where
             WidgetRouteOutcome::Claimed(extra_reaction.merge(EventOutcome::Redraw))
         }
         Handled::Ignored => WidgetRouteOutcome::Bubble(extra_reaction),
+    };
+    let result = match (result, requested) {
+        (WidgetRouteOutcome::Claimed(outcome), Some(requested)) => {
+            WidgetRouteOutcome::Claimed(outcome.merge(app.handle(requested, backend)))
+        }
+        (result, _) => result,
     };
 
     // `EventHost::request_redraw` is a request made *during* `handle`,
@@ -1427,16 +1537,22 @@ fn all_tab_stops<A: AppLogic>(app: &A, area: A::AreaId) -> Vec<(WidgetId, crate:
     stops
 }
 
-/// The screen [`Rect`] of whichever tab stop currently has focus, or
-/// `None` — the per-frame lookup every runner (`gtk::run`, `macos::run`,
-/// `win::run`, `tui::run`) performs just before painting the focus-ring
-/// convention: `backend.focus_tree().focused()` for the focused id, then
-/// a linear scan of [`all_tab_stops`] for the matching rect.
+/// The screen [`Rect`] the focus ring traces this frame, or `None` — the
+/// per-frame lookup every runner (`gtk::run`, `macos::run`, `win::run`,
+/// `tui::run`) performs just before painting the focus-ring convention.
 ///
-/// Returns `None` both when nothing is focused and when the focused id
-/// isn't among this frame's tab stops (e.g. it scrolled out of view) —
-/// callers treat both the same way: skip `Backend::draw_focus_ring` for
-/// this frame.
+/// The focused id (`backend.focus_tree().focused()`) must be a stop this
+/// frame: one of [`all_tab_stops`], or a node of [`AppLogic::frame_tree`]
+/// that takes focus. When the widget painted through the widget contract
+/// this frame, its recorded [`crate::interactive::FocusIndicator`] decides the
+/// rect — the control's own extent rather than its whole layout cell, or
+/// no ring at all for a widget that shows its own focus
+/// ([`crate::primitive::painted_focus_ring`]); otherwise the stop's rect.
+///
+/// Returns `None` when nothing is focused, when the focused id isn't a
+/// stop this frame (e.g. it scrolled out of view), and when the widget
+/// draws its own focus — callers skip `Backend::draw_focus_ring` for the
+/// frame in each case.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -1452,16 +1568,18 @@ where
     B: crate::Backend,
     A: AppLogic,
 {
-    backend
-        .focus_tree()
-        .focused()
-        .map(|(id, _)| *id)
-        .and_then(|id| {
-            all_tab_stops(app, area)
-                .into_iter()
-                .find(|(stop_id, _)| *stop_id == id)
-                .map(|(_, rect)| rect)
-        })
+    let id = backend.focus_tree().focused()?.0;
+    let stop = all_tab_stops(app, area)
+        .into_iter()
+        .find(|(stop_id, _)| *stop_id == id)
+        .map(|(_, rect)| rect)
+        .or_else(|| {
+            app.frame_tree(area)
+                .find(&id)
+                .filter(|node| !matches!(node.widget.focus(), FocusSpec::None))
+                .map(|node| node.rect)
+        })?;
+    crate::primitive::painted_focus_ring(&id).unwrap_or(Some(stop))
 }
 
 /// Trailing-edge debounce settle window for `WindowResized` dispatch.
@@ -2236,6 +2354,7 @@ mod widget_routing_tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }
@@ -2453,6 +2572,7 @@ mod widget_routing_tests {
     fn double_click_at(x: f32, y: f32) -> UiEvent {
         UiEvent::DoubleClick {
             widget: None,
+            button: crate::MouseButton::Left,
             position: Point::new(x, y),
         }
     }
@@ -2501,6 +2621,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2547,6 +2668,7 @@ mod widget_routing_tests {
             app.received,
             vec![UiEvent::DoubleClick {
                 widget: Some(app.id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }]
         );
@@ -2631,6 +2753,7 @@ mod widget_routing_tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
         let move_to = |x: f32| UiEvent::MouseMoved {
             position: Point::new(x, 1.0),
@@ -2727,6 +2850,7 @@ mod widget_routing_tests {
                 UiEvent::TextCopied("exit-marker".into()),
                 UiEvent::DoubleClick {
                     widget: Some(app.id),
+                    button: crate::MouseButton::Left,
                     position: Point::default(),
                 },
             ]

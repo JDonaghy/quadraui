@@ -5,7 +5,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // `QuiApp.screen()` ends every row (including the last) with a trailing
 // `\n` -- see `quadraui::tui::testing::TuiDriver::screen`'s doc -- so a

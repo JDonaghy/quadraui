@@ -7,7 +7,6 @@
 //! build is needed to prove the binding path.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Once;
 
 use quadraui::primitive::{DynWidget, LayoutCtx, Primitive};
@@ -18,8 +17,8 @@ use quadraui::{
     WidgetAction, WidgetId,
 };
 use quadraui_binding_core::{
-    decode_layout_node, paint_layout_windowed, resolve_layout_node_windowed, EventSink, HitDetail,
-    InteractionEngine, LayoutNode, PaintedHit,
+    decode_layout_node, paint_layout, resolve_layout_node, EventSink, HitDetail, InteractionEngine,
+    LayoutNode, PaintedHit,
 };
 
 const KIND: &str = "outside_counter";
@@ -203,16 +202,9 @@ impl AppLogic for Host {
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let mut node = self.view();
-        let windows = HashMap::new();
-        resolve_layout_node_windowed(
-            self.engine.widget_state(),
-            backend,
-            area,
-            &mut node,
-            &windows,
-        );
+        resolve_layout_node(&self.engine, backend, area, &mut node);
         let mut hits = Vec::new();
-        paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+        paint_layout(backend, area, &node, &mut hits);
         quadraui_binding_core::render_overlays(&self.engine, backend, hits);
     }
 
@@ -239,9 +231,7 @@ fn an_outside_kind_decodes_as_a_generic_widget_leaf() {
     let LayoutNode::Leaf(leaf) = &column.children[0].node else {
         panic!("the counter is a leaf");
     };
-    let quadraui_binding_core::LeafDescriptor::Widget { kind, widget } = &leaf.descriptor else {
-        panic!("a runtime kind decodes to the generic widget leaf");
-    };
+    let quadraui_binding_core::LeafDescriptor::Widget { kind, widget } = &leaf.descriptor;
     assert_eq!(*kind, KIND);
     assert_eq!(widget.id(), Some(&WidgetId::new("c")));
     assert_eq!(widget.focus(), FocusSpec::Stop);

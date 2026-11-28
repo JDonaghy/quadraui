@@ -29,16 +29,13 @@
 // render callback is registered (see `../index.ts`'s own `run`/`pump`
 // doc), so the mutation a callback makes is already visible by the time
 // that same `step()` returns.
-//
-// Runtime exports go through `exports.X = ...` rather than `export`, the
-// same reason `../index.ts`'s own header comment gives.
 
 import type { Node, Renderable, ComponentLike } from "./nodes";
 import type { QuiAppActions, RenderCtx, WidgetState, RunHandle } from "../index";
 import type { Poller, ReboundPrototypes, Watcher } from "./hotReload";
 
-const { QuiApp, run, getCurrentCtx } = require("../index.ts");
-const hr = require("./hotReload.ts");
+import { QuiApp, run, getCurrentCtx } from "../index";
+import * as hr from "./hotReload";
 
 type AnyCallback = (...args: unknown[]) => void;
 type Registry = Record<string, Record<string, AnyCallback>>;
@@ -66,13 +63,13 @@ function autoId(path: ReadonlyArray<string | number>): string {
  * constant at import time), so it needs a matching bump by hand if that
  * constant ever changes.
  *
- * Read back through `exports.WIRE_VERSION` (not the module-local binding)
- * at stamping time below, so a test can force a mismatch by reassigning
- * `runtime.WIRE_VERSION` on the already-`require`d module -- the same
- * trick `quadraui-py`'s own test suite plays on its module-level
- * `WIRE_VERSION`, which Node's `const` would otherwise block.
+ * A `let`, not a `const`: the CommonJS build reads it back through
+ * `exports.WIRE_VERSION` at stamping time below, so a test can force a
+ * mismatch by reassigning `WIRE_VERSION` on the `@quadraui/node/app/runtime`
+ * module -- the same trick `quadraui-py`'s own test suite plays on its
+ * module-level `WIRE_VERSION`.
  */
-exports.WIRE_VERSION = 1;
+export let WIRE_VERSION = 1;
 
 function isNode(value: unknown): value is Node {
   return (
@@ -157,7 +154,8 @@ function walk(
         }
       }
     }
-    return value.build(nodeId, childrenWire);
+    const wire = value.build(nodeId, childrenWire);
+    return value.layout === undefined ? wire : { ...wire, ...value.layout };
   }
   if (typeof value === "object") {
     return value;
@@ -200,7 +198,7 @@ function rawKeyName(key: unknown): string | null {
  * layer ever sees them. Returns `null` for anything else, including a
  * bare-string event.
  */
-function keyName(event: unknown): string | null {
+export function keyName(event: unknown): string | null {
   if (typeof event !== "object" || event === null) {
     return null;
   }
@@ -219,7 +217,56 @@ function keyName(event: unknown): string | null {
   }
   return null;
 }
-exports.keyName = keyName;
+
+/**
+ * The `KeyPressed` payload out of a key event in either shape {@link keyName}
+ * accepts, and whether it arrived bare (`true`) or focus-scoped inside a
+ * focused widget's own event (`false`). `null` for anything else.
+ */
+function keyPressed(event: unknown): [Record<string, unknown>, boolean] | null {
+  if (typeof event !== "object" || event === null) {
+    return null;
+  }
+  const obj = event as Record<string, unknown>;
+  if ("KeyPressed" in obj) {
+    return [obj.KeyPressed as Record<string, unknown>, true];
+  }
+  for (const inner of Object.values(obj)) {
+    if (Array.isArray(inner) && inner.length === 2) {
+      const activation = inner[1] as unknown;
+      if (activation && typeof activation === "object" && "KeyPressed" in (activation as object)) {
+        return [(activation as Record<string, Record<string, unknown>>).KeyPressed, false];
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Ctrl-C in any key shape that reaches the app (a focused text field
+ * consumes it, so it never arrives); `q` or Escape only as a bare `KeyPressed`, which
+ * no focused widget claimed (a focused widget's keys arrive wrapped in its
+ * own event, and a focused text field turns `q` into an edit).
+ */
+function isQuitKey(event: unknown): boolean {
+  const found = keyPressed(event);
+  if (found === null) {
+    return false;
+  }
+  const [payload, bare] = found;
+  const name = rawKeyName(payload.key);
+  const modifiers = (payload.modifiers ?? {}) as Record<string, unknown>;
+  if (modifiers.ctrl && (name === "c" || name === "C")) {
+    return true;
+  }
+  if (!bare || modifiers.ctrl || modifiers.alt || modifiers.cmd) {
+    return false;
+  }
+  return name === "q" || name === "Escape";
+}
+
+/** The `User` payload {@link App.quit} posts when it is called outside a dispatch, so the next step's handler call sees it and ends the run. */
+const QUIT_WAKE = "quadraui.app:quit";
 
 const ACTIVATE_KEY_NAMES = new Set(["Enter", " "]);
 
@@ -237,21 +284,29 @@ const CONTAINER_EVENT_MAP: Record<
   Record<string, [string, (payload: Record<string, unknown>) => unknown[]]>
 > = {
   Tree: {
-    RowClicked: ["on_row_click", (p) => [p.path]],
+    RowClicked: ["on_click", (p) => [p.path, p.button]],
     RowToggleExpand: ["on_toggle_expand", (p) => [p.path]],
     RowDoubleClicked: ["on_activate", (p) => [p.path]],
     SelectionChanged: ["on_select", (p) => [p.path]],
+    SelectionSet: ["on_selection", (p) => [p.paths]],
+    ContextMenuRequested: ["on_context_menu", (p) => [p.path, p.position]],
   },
   DataTable: {
     RowDoubleClicked: ["on_activate", (p) => [p.idx]],
     RowActivated: ["on_activate", (p) => [p.idx]],
     RowSelected: ["on_select", (p) => [p.idx]],
     HeaderClicked: ["on_header_click", (p) => [p.col]],
+    SelectionSet: ["on_selection", (p) => [p.indices]],
+    ContextMenuRequested: ["on_context_menu", (p) => [p.idx, p.position]],
+    RowClicked: ["on_click", (p) => [p.idx, p.button]],
   },
   List: {
     SelectionChanged: ["on_select", (p) => [p.idx]],
     ItemDoubleClicked: ["on_activate", (p) => [p.idx]],
     ItemActivated: ["on_activate", (p) => [p.idx]],
+    SelectionSet: ["on_selection", (p) => [p.indices]],
+    ContextMenuRequested: ["on_context_menu", (p) => [p.idx, p.position]],
+    ItemClicked: ["on_click", (p) => [p.idx, p.button]],
   },
   TabBar: {
     TabClosed: ["on_close", (p) => [p.index]],
@@ -330,9 +385,17 @@ export interface AppOptions {
    * global key, an unrecognized shape, ...) -- the escape hatch a
    * keyboard-driven app (arrow keys moving a cursor with no single widget
    * "owning" them) still needs; see {@link keyName} for pulling a key name
-   * out of whatever shape it arrived in.
+   * out of whatever shape it arrived in. It sees a default quit key
+   * ({@link quitKeys}) before the app quits, and returning `true` keeps
+   * the app running.
    */
-  onEvent?(event: unknown): void;
+  onEvent?(event: unknown): boolean | void;
+  /**
+   * `q` or Escape quit unless the focused widget takes the key, and Ctrl-C
+   * quits unless a focused text field takes it. `false` turns all three
+   * off. Defaults to `true`.
+   */
+  quitKeys?: boolean;
   /**
    * Turns an unrecognised optional wire key on `view()`'s returned tree
    * (a misspelt prop, a typo'd slot) into a raised `InvalidDescriptorError`
@@ -372,7 +435,7 @@ export interface HotReloadOptions {
  * trees, with events dispatched to the `on*` callbacks those trees
  * carried on their last render rather than a hand-written `handle`.
  */
-class App {
+export class App {
   qui: InstanceType<typeof QuiApp>;
   /**
    * A `QuiAppActions` handle, shared with every render/event/tick callback
@@ -407,7 +470,12 @@ class App {
   /** How many reloads have succeeded and rendered. */
   reloadCount = 0;
   private _view: (ctx: RenderCtx) => Renderable;
-  private _onEvent: ((event: unknown) => void) | undefined;
+  private _onEvent: ((event: unknown) => boolean | void) | undefined;
+  private _quitKeys: boolean;
+  private _quitRequested = false;
+  private _dispatching = false;
+  private _live = false;
+  private _quitWaker: { post(value: unknown): void };
   private _watcher: Watcher | null = null;
   private _poller: Poller | null = null;
   private _onReload: ((app: App) => void) | undefined;
@@ -415,10 +483,22 @@ class App {
   private _rollback: (() => void) | null = null;
   private _migrateNextRender = false;
 
-  constructor(width: number, height: number, options: AppOptions) {
+  /**
+   * `width`/`height` are the cell grid a headless run (a test, `step()`,
+   * `screen()`) renders into, 80x24 when omitted (`new App({view})`);
+   * `runTui()`/`runNative()` size to the real terminal or window instead.
+   */
+  constructor(options: AppOptions);
+  constructor(width: number, height: number, options: AppOptions);
+  constructor(widthOrOptions: number | AppOptions, height?: number, maybeOptions?: AppOptions) {
+    const [width, rows, options] =
+      typeof widthOrOptions === "number"
+        ? [widthOrOptions, height as number, maybeOptions as AppOptions]
+        : [80, 24, widthOrOptions];
     this._view = options.view;
     this._onEvent = options.onEvent;
-    this.qui = new QuiApp(width, height);
+    this._quitKeys = options.quitKeys ?? true;
+    this.qui = new QuiApp(width, rows);
     this.qui.setRender(() => this._render());
     this.qui.setHandler((event: unknown) => this._handle(event));
     if (options.strict !== undefined) {
@@ -429,6 +509,7 @@ class App {
       this.qui.setOnUnknownKey((info: unknown) => onUnknownKey(info as { key: string; path: string }));
     }
     this.actions = this.qui.actions();
+    this._quitWaker = this.qui.waker();
     // Forces one real native paint immediately, mirroring `quadraui-py`'s
     // own `App.__init__`: its `QuiApp` constructor takes `render` directly
     // and renders eagerly, so a callback is already dispatchable -- and a
@@ -449,8 +530,22 @@ class App {
    * escape-hatch handler after the fact, instead of assigning the private
    * field directly.
    */
-  setOnEvent(onEvent: ((event: unknown) => void) | undefined): void {
+  setOnEvent(onEvent: ((event: unknown) => boolean | void) | undefined): void {
     this._onEvent = onEvent;
+  }
+
+  /**
+   * Ends the run: the current `step()` (or the next one, when this is
+   * called outside a dispatch) returns `false`, and a `runTui()`/
+   * `runNative()` session restores the terminal or closes the window and
+   * stops its loop. Safe from any callback, including one running inside
+   * `step()`, where calling the wrapped `qui.stopLive()` would throw.
+   */
+  quit(): void {
+    this._quitRequested = true;
+    if (!this._dispatching) {
+      this._quitWaker.post(QUIT_WAKE);
+    }
   }
 
   // --- dialogs --------------------------------------------------------------
@@ -654,13 +749,33 @@ class App {
     this._registry = registry;
     this._componentStates = newStates;
     if (typeof wire === "object" && wire !== null && !Array.isArray(wire) && !("wire_version" in (wire as object))) {
-      wire = { ...(wire as Record<string, unknown>), wire_version: exports.WIRE_VERSION };
+      wire = { ...(wire as Record<string, unknown>), wire_version: WIRE_VERSION };
     }
     return wire;
   }
 
-  /** Dispatches one event to a node callback, falling back to `onEvent`. Exposed for driving a focus-scoped event straight through in a test, same as `_render`. */
-  _handle(event: unknown): void {
+  /**
+   * Dispatches one event to a node callback, falling back to `onEvent`, and
+   * answers the wrapped `QuiApp`'s handler contract: `false` ends the run
+   * (after {@link quit} or a default quit key), `undefined` keeps it going.
+   * Exposed for driving a focus-scoped event straight through in a test,
+   * same as `_render`.
+   */
+  _handle(event: unknown): false | undefined {
+    this._dispatching = true;
+    try {
+      this._handleEvent(event);
+    } finally {
+      this._dispatching = false;
+    }
+    return this._quitRequested ? false : undefined;
+  }
+
+  private _handleEvent(event: unknown): void {
+    if (typeof event === "object" && event !== null && (event as Record<string, unknown>).User === QUIT_WAKE) {
+      this._quitRequested = true;
+      return;
+    }
     if (
       typeof event === "object" &&
       event !== null &&
@@ -676,8 +791,9 @@ class App {
     if (this._dispatch(event)) {
       return;
     }
-    if (this._onEvent !== undefined) {
-      this._onEvent(event);
+    const claimed = this._onEvent !== undefined ? this._onEvent(event) : undefined;
+    if (claimed !== true && this._quitKeys && isQuitKey(event)) {
+      this._quitRequested = true;
     }
   }
 
@@ -846,7 +962,11 @@ class App {
   // --- thin passthroughs to the wrapped QuiApp -----------------------------
 
   step(): boolean {
-    return this.qui.step();
+    const running = this.qui.step();
+    if (!running) {
+      this._live = false;
+    }
+    return running;
   }
 
   run(maxSteps?: number): boolean {
@@ -875,10 +995,12 @@ class App {
 
   startTui(mouse?: boolean): void {
     this.qui.startTui(mouse);
+    this._live = true;
   }
 
   startNative(title?: string, appId?: string, iconName?: string, singleInstance?: boolean): void {
     this.qui.startNative(title, appId, iconName, singleInstance);
+    this._live = true;
   }
 
   /**
@@ -901,7 +1023,16 @@ class App {
     return run(this);
   }
 
+  /**
+   * Tears a `startTui`/`startNative` session down now and reports whether
+   * one was running. Inside a callback this is {@link quit}: the session
+   * ends as soon as the dispatch running that callback returns.
+   */
   stopLive(): boolean {
+    if (this._dispatching) {
+      this.quit();
+      return this._live;
+    }
     return this.qui.stopLive();
   }
 
@@ -913,4 +1044,3 @@ class App {
     this.qui.disarmWakeNotify();
   }
 }
-exports.App = App;

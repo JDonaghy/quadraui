@@ -3070,6 +3070,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         }
     }
 
@@ -3087,6 +3088,8 @@ mod tests {
             }],
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -3122,6 +3125,8 @@ mod tests {
             selection_mode: crate::SelectionMode::Single,
             selected_path: Some(vec![0, 0]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: crate::TreeStyle::default(),
             has_focus: true,
         }
@@ -3132,6 +3137,8 @@ mod tests {
     /// used by the `Primitive` TUI parity tests below.
     fn sample_data_table() -> crate::DataTable {
         crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("test:data-table-primitive-pilot"),
             columns: vec![
                 crate::Column {
@@ -3156,6 +3163,8 @@ mod tests {
                 .collect(),
             selected_idx: Some(1),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,
@@ -3523,6 +3532,8 @@ mod tests {
     /// in a 60-wide viewport — the #550 repro geometry.
     fn wide_hscroll_table() -> crate::DataTable {
         crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("wide-hscroll"),
             columns: ["a", "b", "c", "d"]
                 .iter()
@@ -3543,6 +3554,8 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -4661,6 +4674,8 @@ mod tests {
         );
 
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![crate::primitives::data_table::Column {
                 title: "Name".into(),
@@ -4670,6 +4685,8 @@ mod tests {
             rows: vec![],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: Some((0, crate::primitives::data_table::SortDirection::Ascending)),
             has_focus: false,
             show_scrollbar: false,
@@ -4862,6 +4879,8 @@ mod tests {
                 .collect(),
             selected_idx: 2,
             scroll_offset: 1,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: true,
             h_scroll: 0,
@@ -5976,6 +5995,8 @@ mod tests {
                         .collect(),
                     selected_idx: self.selected,
                     scroll_offset: 0,
+                    items_window: None,
+                    scroll_px: None,
                     has_focus: true,
                     bordered: false,
                     h_scroll: 0,

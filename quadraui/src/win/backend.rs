@@ -3973,6 +3973,8 @@ mod tests {
             selection_mode: crate::types::SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
@@ -4225,6 +4227,8 @@ mod tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -5754,6 +5758,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         // Reads the cell metrics off the backend rather than assuming
@@ -6893,6 +6898,8 @@ mod tests {
             ],
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: false,
             bordered: false,
             h_scroll: 0,
@@ -7129,6 +7136,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: Default::default(),
+            show_mode_badge: true,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -7281,6 +7289,7 @@ mod tests {
                 timestamp: None,
             }],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -7410,6 +7419,8 @@ mod tests {
     #[test]
     fn win_backend_draw_data_table_paints_cell_text_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![crate::Column {
                 title: "col".to_string(),
@@ -7422,6 +7433,8 @@ mod tests {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -7741,6 +7754,8 @@ mod tests {
     #[test]
     fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
         let table = crate::DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("table"),
             columns: vec![
                 crate::Column {
@@ -7764,6 +7779,8 @@ mod tests {
             rows: vec![],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,
@@ -8874,6 +8891,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

@@ -191,6 +191,8 @@ impl AppLogic for SidebarPanelBodyDemo {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: None,
             scroll_offset: self.scroll_offset,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle {
                 show_scrollbar: false,
                 ..TreeStyle::default()

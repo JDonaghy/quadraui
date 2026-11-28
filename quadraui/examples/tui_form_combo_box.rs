@@ -1,7 +1,7 @@
 //! `cargo run --example tui_form_combo_box --features tui`
 //!
-//! `FieldKind::ComboBox` embedded in a `Form`, routed through
-//! `FormController`, on the TUI runner. The full `AppLogic` impl lives
+//! `FieldKind::ComboBox` embedded in a `Form`, hosted in a
+//! `ScrolledForm`, on the TUI runner. The full `AppLogic` impl lives
 //! in `examples/common/form_combo_box.rs` — TUI-only for now, no GTK
 //! twin yet.
 //!

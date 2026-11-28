@@ -73,6 +73,8 @@ fn sidebar() -> Sidebar {
         selection_mode: SelectionMode::Single,
         selected_path: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         style: Default::default(),
         has_focus: false,
     };

@@ -2,9 +2,10 @@
 // directly, so this compiles it in memory with esbuild (a devDependency of
 // `@quadraui/node`) using the same `jsx: "automatic"`,
 // `jsxImportSource: "@quadraui/node"` settings the package README documents,
-// and resolves `@quadraui/node/*` to this checkout's `quadraui-node/`. An app
-// using the published package needs none of this: its own bundler or `tsc`
-// compiles the JSX.
+// and resolves `@quadraui/node/*` to this checkout's compiled
+// `quadraui-node/dist/` (`npm run build:dist` there). An app using the
+// published package needs none of this: its own bundler or `tsc` compiles
+// the JSX.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -14,15 +15,20 @@ const PKG = path.resolve(__dirname, "../../../quadraui-node");
 const pkgRequire = Module.createRequire(path.join(PKG, "package.json"));
 const esbuild = pkgRequire("esbuild");
 
-const SUBPATHS: Record<string, string> = {
-  "@quadraui/node/app": path.join(PKG, "js/app/index.ts"),
-  "@quadraui/node/jsx-runtime": path.join(PKG, "js/jsx-runtime.ts"),
-  "@quadraui/node/testing": path.join(PKG, "js/testing.ts"),
-};
+/** Resolves an `@quadraui/node` specifier the way an installed package would, through its `exports` map. */
+function resolvePackage(id: string): string {
+  try {
+    return pkgRequire.resolve(id);
+  } catch (err) {
+    throw new Error(`cannot resolve ${id}: build quadraui-node/dist first (cd quadraui-node && npm run build:debug && npm run build:dist)\n${err}`);
+  }
+}
 
-let jsxRuntime: any = null;
+const SUBPATHS: Record<string, string> = Object.fromEntries(
+  ["@quadraui/node/app", "@quadraui/node/jsx-runtime", "@quadraui/node/testing"].map((id) => [id, resolvePackage(id)]),
+);
 
-/** Requires a `.ts`/`.tsx` file through esbuild, resolving `@quadraui/node/*` to this checkout. */
+/** Requires a `.ts`/`.tsx` file through esbuild, resolving `@quadraui/node/*` to this checkout and a relative `.ts`/`.tsx` import through this same loader. */
 function load(file: string, asMain = false): any {
   const { code } = esbuild.transformSync(fs.readFileSync(file, "utf8"), {
     loader: file.endsWith(".tsx") ? "tsx" : "ts",
@@ -33,8 +39,8 @@ function load(file: string, asMain = false): any {
   });
   const mod = { exports: {} as any };
   const req = (id: string) => {
-    if (id === "@quadraui/node/jsx-runtime") return (jsxRuntime ??= load(SUBPATHS[id]));
-    if (id in SUBPATHS) return require(SUBPATHS[id]);
+    if (id === "@quadraui/node" || id.startsWith("@quadraui/node/")) return require(resolvePackage(id));
+    if (id.startsWith(".") && /\.tsx?$/.test(id)) return load(path.resolve(path.dirname(file), id));
     return require(id.startsWith(".") ? path.resolve(path.dirname(file), id) : id);
   };
   // What the module's own `require.main === module` check reads.

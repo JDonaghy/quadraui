@@ -45,16 +45,7 @@ import type {
   Key as WireKey,
 } from "../wire";
 
-const nodeIndex = require("../index.ts") as {
-  registerScriptedWidget(
-    id: string,
-    measure: (packed: unknown) => unknown,
-    paint: (packed: unknown) => unknown,
-    onEvent: (packed: unknown) => unknown,
-    a11y: (packed: unknown) => unknown,
-    focusable: boolean,
-  ): void;
-};
+import { registerScriptedWidget } from "../index";
 
 /** `measure`/`paint`'s own render-time facts -- the napi binding's own packed `ctx`, camelCased. */
 export interface WidgetLayoutCtx {
@@ -167,7 +158,7 @@ function buildWidgetNode<P, S>(
     callbacks: {},
     children: {},
     build(resolvedId: string): Record<string, unknown> {
-      nodeIndex.registerScriptedWidget(
+      registerScriptedWidget(
         resolvedId,
         (packed: unknown) => {
           const { ctx, constraints } = packed as {
@@ -233,7 +224,7 @@ function widgetComponent<P, S>(
  * forwarded to `spec.measure`/`paint`/`onEvent`/`a11y` as `props`,
  * unchanged, every frame.
  */
-function defineWidget<P extends object, S = Record<string, unknown>>(
+export function defineWidget<P extends object, S = Record<string, unknown>>(
   spec: WidgetSpec<P, S>,
 ): (options: WidgetOptions<P>) => ComponentLike {
   return function Widget(options: WidgetOptions<P>): ComponentLike {
@@ -241,7 +232,6 @@ function defineWidget<P extends object, S = Record<string, unknown>>(
     return widgetComponent(spec, id, key, focusable ?? false, rest as P);
   };
 }
-exports.defineWidget = defineWidget;
 
 /**
  * `../jsx-runtime.ts`'s own `widget` intrinsic adapter calls this
@@ -251,10 +241,9 @@ exports.defineWidget = defineWidget;
  * the way `defineWidget`'s returned factory accepts them, since there is
  * no `spec`'s own prop names to flatten against here.
  */
-function widgetFromIntrinsic<P extends object, S = Record<string, unknown>>(
+export function widgetFromIntrinsic<P extends object, S = Record<string, unknown>>(
   spec: WidgetSpec<P, S>,
   options: WidgetFrameworkOptions & { props?: P },
 ): ComponentLike {
   return widgetComponent(spec, options.id, options.key, options.focusable ?? false, (options.props ?? {}) as P);
 }
-exports.widgetFromIntrinsic = widgetFromIntrinsic;

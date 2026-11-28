@@ -19,7 +19,7 @@
 // typecheck:examples` type-checks them in one `tsc --strict
 // examples/*.ts` pass, where a script file's top-level `const`s all share
 // one global scope.
-const { QuiApp: OverlayQuiApp } = require("../js/index.ts");
+const { QuiApp: OverlayQuiApp } = require("@quadraui/node");
 
 const OVERLAY_DEMO_WIDTH = 60;
 const OVERLAY_DEMO_HEIGHT = 20;

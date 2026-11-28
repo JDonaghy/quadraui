@@ -26,7 +26,7 @@
 // Runtime exports go through `exports.X = ...` rather than `export`, the
 // same reason `../js/index.ts`'s own header comment gives.
 
-const { App, keyName } = require("../js/app/index.ts");
+const { App, keyName } = require("@quadraui/node/app");
 const notesView = require("./hot_reload/notes_view.ts");
 
 const VIEW_MODULE = require.resolve("./hot_reload/notes_view.ts");

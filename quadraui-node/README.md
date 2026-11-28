@@ -7,7 +7,7 @@ descriptors and drive them headlessly, or take over a real terminal/native
 window with them.
 
 ```ts
-const { QuiApp } = require("@quadraui/node");
+import { QuiApp } from "@quadraui/node";
 ```
 
 See *Install* below for how to get `@quadraui/node` itself.
@@ -47,8 +47,9 @@ the published npm package — running them means a clone of the repo, built
 from source as above (`### From source`), not a plain `npm install
 @quadraui/node` into your own project.
 
-Every `.ts` file directly under `examples/` runs on its own, with no
-separate compile step, once `npm run build` has built the native addon:
+Every `.ts` file directly under `examples/` runs on its own once
+`npm run build` has built the native addon and `npm run build:dist` has
+compiled the package:
 
 ```bash
 node examples/appshell_demo.ts
@@ -62,10 +63,8 @@ type-strip `.tsx`, so it needs a transform first; see *JSX* below.
 not a runnable demo on its own.)
 
 Running directly relies on Node's own native TypeScript support (type
-stripping — no `ts-node`/`tsx`/`esbuild-register` needed); see
-*CommonJS vs. ESM — the `.ts`/`require` constraint* below for the one thing
-that support doesn't do, and why every file here works around it the same
-way.
+stripping — no `ts-node`/`tsx`/`esbuild-register` needed) and on the
+compiled `dist/`; see *TypeScript, `require` and `import`* below.
 
 `npm test` runs this package's own `node --test` suite
 (`tests/*.test.ts`), and `npm run typecheck:examples` type-checks every
@@ -107,46 +106,34 @@ there (optional dependencies that don't match the install platform are
 silently skipped) but the generated loader then fails at runtime with
 "Failed to load native binding" — see *Install > From source* above.
 
-## CommonJS vs. ESM — the `.ts`/`require` constraint
+## TypeScript, `require` and `import`
 
-This package's `package.json` sets `"type": "commonjs"`, and every example
-and in-repo consumer (`js/app/runtime.ts`, every test) loads this package's
-own TypeScript sources with `require("../js/index.ts")`, `.ts` extension
-and all, instead of `import`. Both of those are load-bearing, not stylistic:
+Every entry point — `@quadraui/node`, `@quadraui/node/app`,
+`@quadraui/node/testing`, `@quadraui/node/jsx-runtime` and
+`@quadraui/node/jsx-dev-runtime` — is compiled CommonJS in `dist/` with a
+generated `.d.ts` beside it, so `require(...)` and `import ... from ...` both
+work from `node_modules`, and TypeScript sees the real types:
 
-- **Node resolves a standalone `.ts` file's module format the same way it
-  resolves a `.js` file's** — by the nearest `package.json`'s `"type"`
-  field. With `"type": "commonjs"` (this package's own setting, and the
-  default when a `package.json` omits `"type"` entirely), a top-level
-  `import`/runtime `export` statement in a `.ts` file run directly is a
-  **hard parse error**, not something Node silently transpiles into
-  `require`/`module.exports` for you. `export type`/`import type` are
-  exempt — they're erasable (type-only, no runtime value), so they
-  disappear during type-stripping rather than needing ESM semantics — but
-  a value-level `import`/`export` is not.
-- That's why `js/index.ts`, every file under `examples/`, and this
-  package's own tests all use `require`/`exports.X = ...` for runtime
-  values, reserving `import type`/`export type` for types only: it's the
-  one shape that runs unchanged under Node's native TypeScript support
-  (type stripping — see
-  [Node's TypeScript documentation](https://nodejs.org/api/typescript.html))
-  with **no compile step**, which is what lets `node examples/appshell_demo.ts`
-  just work. This repo's CI runs that support on Node 24; consult Node's own
-  docs for the minimum version your Node needs it unflagged.
+```ts
+import { App, Button } from "@quadraui/node/app";
+import { harness } from "@quadraui/node/testing";
+```
 
-A consumer writing plain `.js`/pre-compiled TypeScript against the
-*published* package is unaffected either way: `require("@quadraui/node")`
-and `import { QuiApp } from "@quadraui/node"` both work, because the
-published `main`/`exports` entry point (`dist/index.js`, compiled by this
-package's own `prepack` hook) is a plain compiled CommonJS file Node's
-ESM loader already knows how to import named exports from. The constraint
-above only bites a file in *this repo* that `require()`s a sibling `.ts`
-file directly, or a consumer who copies that same pattern into their own
-`"type": "commonjs"` project to run TypeScript with no build step at all.
+TypeScript reads the package's `exports` map only with `"module"` set to
+`"node16"`, `"nodenext"` or `"bundler"`; the legacy `"node"` resolution
+reports `TS2307` for every subpath.
+
+In this repo, the examples and tests are `.ts` files Node runs directly
+(type stripping), and they import the package by its own name, so they run
+against `dist/`. `npm test` rebuilds `dist/` first; after editing anything
+under `js/` before running an example, run `npm run build:dist`.
+`scripts/pack_smoke.ts` (`npm run smoke:pack`) packs the root and platform
+packages, installs them into a clean project and runs the hero counter
+from there, the same check CI runs before a release.
 
 ## Building and testing an app
 
-`@quadraui/node/app` (`js/app/`) is a thin layer over `QuiApp`: a `view()`
+`@quadraui/node/app` is a thin layer over `QuiApp`: a `view()`
 returning typed node trees (`Split`, `Tree`, `List`, `Form`, `Button`, ...),
 `on*` callbacks on those nodes instead of one app-wide event switch,
 `App.confirm`/`App.alert` for an in-canvas dialog that resolves a promise
@@ -158,7 +145,7 @@ See `js/app/index.ts`'s own module doc for the full contract,
 dialog + status bar app that uses all of those, and
 `examples/file_manager_app.ts` for a larger worked example.
 
-`js/testing.ts` is the harness you write that app's own tests against — it
+`@quadraui/node/testing` is the harness you write that app's own tests against — it
 queries the frame the app actually rendered and synthesises the gestures a
 user performs, so a test never spells out a wire event or a coordinate.
 
@@ -208,17 +195,6 @@ esbuild.build({
 
 Bun picks up `tsconfig.json`'s `jsx`/`jsxImportSource` automatically; no
 separate Bun-specific configuration is needed.
-
-**Bundling (not just transforming) with esbuild**: esbuild's own
-module-type inference mishandles `js/app/nodes.ts` once it sees a sibling
-`export interface` in that file — it infers the whole module is ESM and
-emits a namespace with no callable values, so a *bundled* esbuild build
-hits `nodeConstructors.Split is not a function` at runtime even though the
-JSX itself transforms cleanly. This is a property of `js/app/nodes.ts`'s
-own `exports.X = ...` convention, not of the JSX runtime; it only shows up
-once esbuild inlines that file instead of leaving it to `require` at
-runtime. Transform-only (`esbuild.transformSync`/`.transform`, or a build
-with `js/app/*` left external) avoids it.
 
 ### Intrinsic elements vs. components
 

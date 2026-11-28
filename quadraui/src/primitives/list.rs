@@ -40,11 +40,11 @@ use crate::types::{Decoration, Icon, Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::A11yAction;
-use crate::event::{Key, MouseButton, NamedKey};
+use crate::event::{Key, MouseButton, NamedKey, Point};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-use crate::types::SelectionGesture;
+use crate::types::{SelectionGesture, SelectionMode};
 use crate::Handled;
 
 /// Declarative description of a `ListView` widget.
@@ -65,6 +65,8 @@ use crate::Handled;
 ///     }],
 ///     selected_idx: 0,
 ///     scroll_offset: 0,
+///     items_window: None,
+///     scroll_px: None,
 ///     has_focus: true,
 ///     bordered: false,
 ///     h_scroll: 0,
@@ -76,7 +78,7 @@ use crate::Handled;
 /// let layout = list.layout(80.0, 10.0, 0.0, |_| ListItemMeasure::new(1.0));
 /// assert_eq!(layout.hit_test(0.0, 0.0), ListViewHit::Item(0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ListView {
     pub id: WidgetId,
@@ -87,6 +89,27 @@ pub struct ListView {
     pub selected_idx: usize,
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Where the loaded rows sit in the real collection: when set, the
+    /// payload holds rows `start..` of `total`, and `scroll_offset`, the selection and
+    /// every row index in this widget's events are absolute indices into
+    /// those `total` rows.
+    ///
+    /// `None`: the payload is the whole collection. A windowed widget asks
+    /// for rows it scrolls to with [`crate::UiEvent::RowsRequested`], after
+    /// input only, so the app sends the rows its first viewport shows (and
+    /// any a larger viewport shows after a resize) without being asked;
+    /// unloaded rows paint as placeholders. See
+    /// [`crate::behaviour::row_window`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
+    /// Scroll position finer than a whole row, in the surface's native
+    /// units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is
+    /// one row); when set it wins over `scroll_offset`.
+    ///
+    /// A caller's [`crate::primitive::PaintState::scroll_px`] wins over
+    /// this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_px: Option<f32>,
     /// Whether this list currently holds keyboard focus. Gates the
     /// selected row's highlight (TUI reverse-video/`▶` prefix, GUI
     /// `Theme::selected_bg` fill).
@@ -694,13 +717,35 @@ impl ListView {
         track_width: f32,
         scroll_px: Option<f32>,
     ) -> Option<Scrollbar> {
+        self.vscrollbar_for_extent(
+            area,
+            row_height,
+            track_width,
+            scroll_px,
+            self.items.len(),
+            self.scroll_offset,
+        )
+    }
+
+    /// [`Self::vscrollbar_with_scroll_px`] for a list of `total_rows` rows
+    /// scrolled to row `scroll_offset` — the real extent of a windowed
+    /// list, whose descriptor holds only the loaded slice.
+    pub fn vscrollbar_for_extent(
+        &self,
+        area: Rect,
+        row_height: f32,
+        track_width: f32,
+        scroll_px: Option<f32>,
+        total_rows: usize,
+        scroll_offset: usize,
+    ) -> Option<Scrollbar> {
         if !self.show_v_scrollbar {
             return None;
         }
         if row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
-        let total = self.items.len() as f32;
+        let total = total_rows as f32;
         if total == 0.0 {
             return None;
         }
@@ -743,9 +788,9 @@ impl ListView {
         Some(row_stack::vscrollbar_thumb(
             self.id,
             track,
-            self.scroll_offset,
+            scroll_offset,
             scroll_px,
-            self.items.len(),
+            total_rows,
             row_height,
             visible,
         ))
@@ -771,6 +816,8 @@ mod hscrollbar_tests {
             }],
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll,
@@ -904,6 +951,8 @@ mod vscrollbar_tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -1549,6 +1598,8 @@ pub(crate) mod native_surface_paint {
                 items: (0..n_items).map(|i| item(&format!("row {i}"))).collect(),
                 selected_idx: 0,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: true,
                 bordered: false,
                 h_scroll: 0,
@@ -2343,9 +2394,40 @@ pub struct ListViewPrimitiveLayout {
     /// the chrome font's `M` advance. `None` when the content fits or
     /// [`ListView::max_content_width`] is unset.
     pub hscrollbar: Option<Scrollbar>,
+    /// The band a windowed list ([`ListView::items_window`]) was laid out
+    /// through, `None` for an unwindowed one. [`Self::layout`]'s item
+    /// indices are relative to its band; [`Self::abs_item`] maps them
+    /// back. [`Self::vscrollbar`] is sized from the real extent.
+    pub window: Option<Box<crate::behaviour::row_window::WindowedLayout<ListView>>>,
 }
 
 impl ListViewPrimitiveLayout {
+    /// The absolute item index of [`Self::layout`]'s item `idx`.
+    pub fn abs_item(&self, idx: usize) -> usize {
+        match &self.window {
+            Some(w) => w.to_abs(idx),
+            None => idx,
+        }
+    }
+
+    /// The absolute scroll row on screen.
+    pub fn scroll_row(&self) -> usize {
+        self.abs_item(self.layout.resolved_scroll_offset)
+    }
+
+    /// How many rows one page of keyboard navigation moves.
+    pub fn page(&self) -> usize {
+        self.viewport_rows().max(1)
+    }
+
+    /// How many rows the viewport shows at once.
+    pub fn viewport_rows(&self) -> usize {
+        match &self.window {
+            Some(w) => w.viewport_rows,
+            None => self.layout.visible_items.len(),
+        }
+    }
+
     /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
     /// origin before delegating to [`Self::local_hit_test`].
     pub fn hit_test(&self, x: f32, y: f32) -> ListViewHit {
@@ -2359,6 +2441,15 @@ impl ListViewPrimitiveLayout {
     pub fn local_hit_test(&self, x: f32, y: f32) -> ListViewHit {
         self.layout
             .hit_test(x - self.border_inset, y - self.border_inset)
+    }
+
+    /// [`Self::local_hit_test`] with an item index mapped to the absolute
+    /// one ([`Self::abs_item`]).
+    pub fn hit_test_abs_local(&self, x: f32, y: f32) -> ListViewHit {
+        match self.local_hit_test(x, y) {
+            ListViewHit::Item(idx) => ListViewHit::Item(self.abs_item(idx)),
+            other => other,
+        }
     }
 }
 
@@ -2438,8 +2529,11 @@ struct ListRowPointer {
 impl ListView {
     /// The runtime's hovered and pressed row for this list, falling back
     /// to the caller's own [`crate::primitive::PaintState`].
-    fn row_pointer(&self, env: &crate::PaintEnv) -> ListRowPointer {
-        let in_range = |i: usize| (i < self.items.len()).then_some(i);
+    fn row_pointer(&self, env: &crate::PaintEnv, band_start: usize) -> ListRowPointer {
+        let in_range = |i: usize| {
+            i.checked_sub(band_start)
+                .filter(|rel| *rel < self.items.len())
+        };
         let row_of = |sub: Option<crate::interactive::SubTarget>| {
             sub.and_then(ListViewSubPart::from_sub_target)
                 .and_then(ListViewSubPart::item)
@@ -2452,28 +2546,15 @@ impl ListView {
     }
 }
 
-impl crate::primitive::Primitive for ListView {
-    type Layout = ListViewPrimitiveLayout;
-    type Event = ListViewEvent;
-
-    fn id(&self) -> Option<&WidgetId> {
-        Some(&self.id)
-    }
-
-    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so
-    /// a `ListView` reached through [`crate::frame::Surface::Widget`]
-    /// replays through [`crate::backend::DrawsPrimitives::draw_primitive`]
-    /// and hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
-    /// exactly as it does live.
-    fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::ListWidget(self.clone())
-    }
-
-    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+impl ListView {
+    /// The unwindowed layout at an explicit sub-row `scroll_px`.
+    fn layout_at(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+    ) -> ListViewPrimitiveLayout {
         let size = (rect.width, rect.height);
-        // The paint state's `scroll_px` shifts the rows and the thumb
-        // exactly as the painters shift them.
-        let scroll_px = ctx.paint_state().scroll_px();
         let pixels = ctx.units() != crate::primitive::Units::Cells;
         let border_inset = if pixels && self.bordered {
             LIST_PIXEL_BORDER
@@ -2524,6 +2605,128 @@ impl crate::primitive::Primitive for ListView {
             vscrollbar,
             vscrollbar_layout,
             hscrollbar,
+            window: None,
+        }
+    }
+
+    /// The layout of a windowed list: only the band of rows the viewport
+    /// shows is materialised (placeholders for rows outside the loaded
+    /// slice), laid out at offset `0`, with the scrollbar sized from the
+    /// real extent.
+    fn windowed_layout(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        rect: Rect,
+        scroll_px: Option<f32>,
+        window: crate::behaviour::row_window::ItemsWindow,
+    ) -> ListViewPrimitiveLayout {
+        use crate::behaviour::row_window;
+        let cells = ctx.units() == crate::primitive::Units::Cells;
+        let row_h = if cells { 1.0 } else { ctx.line_height };
+        let (scroll, rem) = row_window::split_scroll_px(self.scroll_offset, scroll_px, row_h);
+        let rem = if cells { None } else { rem };
+        let loaded = self.items.len();
+        let total = window.row_count(loaded);
+        let band_rows = row_window::band_rows_for(rect.height, row_h);
+        let band = row_window::band(window, loaded, scroll, band_rows);
+        let placeholder = |_| ListItem {
+            text: StyledText::plain(""),
+            icon: None,
+            detail: None,
+            decoration: Decoration::default(),
+        };
+        let band_list = ListView {
+            items: row_window::materialise(&self.items, window, band, placeholder),
+            scroll_offset: 0,
+            // A selection outside the band matches no painted row.
+            selected_idx: band.relative(self.selected_idx).unwrap_or(band.len),
+            items_window: None,
+            scroll_px: None,
+            ..self.clone()
+        };
+        let probe = ListView {
+            items: (0..band_rows).map(placeholder).collect(),
+            ..band_list.clone()
+        };
+        let viewport_rows = probe.layout_at(ctx, rect, None).layout.visible_items.len();
+        let mut layout = band_list.layout_at(ctx, rect, rem);
+        let track_w = if cells {
+            1.0
+        } else {
+            ctx.style().scrollbar_width
+        };
+        let v_area = match (&layout.hscrollbar, cells) {
+            (Some(_), true) => Rect::new(rect.x, rect.y, rect.width, (rect.height - 1.0).max(0.0)),
+            _ => rect,
+        };
+        layout.vscrollbar =
+            self.vscrollbar_for_extent(v_area, row_h, track_w, rem, total, band.start);
+        layout.vscrollbar_layout = layout
+            .vscrollbar
+            .as_ref()
+            .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
+        layout.window = Some(Box::new(row_window::WindowedLayout {
+            band,
+            total,
+            loaded: (window.start, loaded),
+            scroll: band.start,
+            viewport_rows,
+            scroll_px: rem,
+            live: Box::new(band_list),
+        }));
+        layout
+    }
+}
+
+impl crate::primitive::Primitive for ListView {
+    type Layout = ListViewPrimitiveLayout;
+    type Event = ListViewEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this list to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(
+            None,
+            Some(self.row_count() as f32 * ctx.line_height.max(1.0)),
+        )
+    }
+
+    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so
+    /// a `ListView` reached through [`crate::frame::Surface::Widget`]
+    /// replays through [`crate::backend::DrawsPrimitives::draw_primitive`]
+    /// and hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
+    /// exactly as it does live.
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::ListWidget(self.clone())
+    }
+
+    /// The list resolves through its own state first ([`ListView::live`]),
+    /// and a windowed one ([`ListView::items_window`]) lays out only the
+    /// band its viewport shows — see [`crate::behaviour::row_window`].
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let resolved = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state
+                .and_then(|s| s.downcast_ref::<ListViewState>())
+                .map(|s| self.resolved(s))
+        });
+        let live = self.live_at(resolved);
+        // The paint state's `scroll_px` shifts the rows and the thumb
+        // exactly as the painters shift them, and wins over the
+        // descriptor's own.
+        let scroll_px = ctx.paint_state().scroll_px().or(live.scroll_px);
+        match live.items_window {
+            None => live.layout_at(ctx, rect, scroll_px),
+            Some(window) => live.windowed_layout(ctx, rect, scroll_px, window),
         }
     }
 
@@ -2552,10 +2755,12 @@ impl crate::primitive::Primitive for ListView {
             if bordered {
                 surface.surface_push_rounded_clip(layout.area, LIST_FRAME_RADIUS);
             }
-            let pointer = self.row_pointer(env);
-            let paint_state = env.state;
+            let live = self.live(env.widget_state_as::<ListViewState>());
+            let (painted, band_start, snap) = list_paint_target(&live, layout, env.state);
+            let pointer = painted.row_pointer(env, band_start);
+            let paint_state: &dyn crate::primitive::PaintState = &snap;
             native_surface_paint::paint_with_state(
-                self,
+                painted,
                 layout.area,
                 &layout.layout,
                 layout.line_height,
@@ -2571,6 +2776,12 @@ impl crate::primitive::Primitive for ListView {
                 paint_state.scroll_px(),
                 paint_state.striped(),
             );
+            if layout.window.is_some() {
+                if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout)
+                {
+                    crate::primitive::Primitive::paint(sb, sb_layout, surface, env);
+                }
+            }
             if bordered {
                 surface.surface_pop_clip();
                 let a = layout.area;
@@ -2615,16 +2826,55 @@ impl crate::primitive::Primitive for ListView {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
+        let live = self.live(env.widget_state_as::<ListViewState>());
+        let (painted, _, snap) = list_paint_target(&live, layout, env.state);
         paint_cells::paint(
             cells,
             layout.area,
-            self,
+            painted,
             env.theme(),
             layout.nerd_fonts_enabled,
-            env.state.scroll_px(),
+            crate::primitive::PaintState::scroll_px(&snap),
             env.state.striped(),
             env.style().list_cell_overflow,
         );
+        if layout.window.is_some() {
+            if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
+                crate::primitive::Primitive::paint_cells(sb, sb_layout, cells, env);
+            }
+        }
+    }
+}
+
+/// What a list paints for `layout`: the band descriptor of a windowed
+/// list (with the band's first absolute row, to rebase hover and press
+/// onto it) or `live` itself, and the paint state carrying the sub-row
+/// scroll it paints at.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+fn list_paint_target<'a>(
+    live: &'a ListView,
+    layout: &'a ListViewPrimitiveLayout,
+    state: &dyn crate::primitive::PaintState,
+) -> (&'a ListView, usize, crate::primitive::PaintStateSnapshot) {
+    match &layout.window {
+        Some(w) => (
+            w.live.as_ref(),
+            w.band.start,
+            crate::behaviour::row_window::band_paint_state(state, w.band, w.scroll_px),
+        ),
+        None => {
+            let snap = crate::primitive::PaintStateSnapshot::of(state);
+            let snap = crate::primitive::PaintStateSnapshot {
+                scroll_px: snap.scroll_px.or(live.scroll_px),
+                ..snap
+            };
+            (live, 0, snap)
+        }
     }
 }
 
@@ -2659,7 +2909,7 @@ impl WidgetAction for ListViewEvent {
 /// `#[non_exhaustive]`: a future field add here (e.g. an in-progress
 /// drag anchor) is additive, same convention as [`ListViewLayout`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ListViewState {
     /// The multi-selection set and the anchor a Shift range-extension
     /// grows from — the shared row-widget selection engine `TreeView` and
@@ -2682,6 +2932,26 @@ pub struct ListViewState {
     /// descriptor wins per the controlled-mode contract and `cursor`
     /// resyncs to it. `None` until the first move.
     pub cursor_echo: Option<usize>,
+    /// The descriptor `selected_idx` the last move was made against —
+    /// see [`crate::behaviour::row_window::HostLatch`]. A descriptor that
+    /// still says this (an app that never echoes a move), or says
+    /// [`Self::cursor_echo`] (an app that echoed it), leaves
+    /// [`Self::cursor`] in charge.
+    pub selected: crate::behaviour::row_window::HostLatch<usize>,
+    /// The scroll row the last move or scroll landed on, against the
+    /// descriptor's `scroll_offset`.
+    pub scroll: crate::behaviour::row_window::HostLatch<usize>,
+    /// An in-progress scrollbar thumb drag.
+    pub thumb: Option<crate::primitives::scrollbar::ThumbDrag>,
+    /// Repeat suppression for a windowed list's
+    /// [`crate::UiEvent::RowsRequested`].
+    pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_idx` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<usize>,
 }
 
 impl ListView {
@@ -2695,10 +2965,129 @@ impl ListView {
     /// field is set, it wins") requires this to trust over a stale
     /// `cursor`.
     fn current_idx(&self, state: &ListViewState) -> usize {
-        let last = self.items.len().saturating_sub(1);
-        match state.cursor {
-            Some(cursor) if state.cursor_echo == Some(self.selected_idx) => cursor.min(last),
-            _ => self.selected_idx.min(last),
+        let last = self.row_count().saturating_sub(1);
+        self.resolved(state).0.min(last)
+    }
+
+    /// How many rows the real collection has: the window's total when
+    /// [`Self::items_window`] is set, else [`Self::items`]' length.
+    pub fn row_count(&self) -> usize {
+        match self.items_window {
+            Some(w) => w.row_count(self.items.len()),
+            None => self.items.len(),
+        }
+    }
+
+    /// How Ctrl/Cmd and Shift grow this list's selection: always a
+    /// multi-selection, except over a windowed list, whose selection set
+    /// could span the whole (unbounded) collection.
+    fn selection_mode(&self) -> SelectionMode {
+        match self.items_window {
+            Some(_) => SelectionMode::Single,
+            None => SelectionMode::Multi,
+        }
+    }
+
+    /// The `(selected_idx, scroll_offset)` `state` resolves this
+    /// descriptor to: the widget's own cursor and scroll while the
+    /// descriptor still says what it said when the widget last moved (or
+    /// echoes that move back), the descriptor's otherwise.
+    fn resolved(&self, state: &ListViewState) -> (usize, usize) {
+        let desc = self.selected_idx;
+        let selected = match state.cursor {
+            Some(cursor)
+                if state.selected.seen() == Some(&desc) || state.cursor_echo == Some(desc) =>
+            {
+                cursor
+            }
+            _ => desc,
+        };
+        (selected, state.scroll.get(&self.scroll_offset))
+    }
+
+    /// This list with `state`'s resolved selection and scroll applied —
+    /// the descriptor it lays out and paints as.
+    pub fn live(&self, state: Option<&ListViewState>) -> std::borrow::Cow<'_, Self> {
+        self.live_at(state.map(|s| self.resolved(s)))
+    }
+
+    fn live_at(&self, resolved: Option<(usize, usize)>) -> std::borrow::Cow<'_, Self> {
+        match resolved {
+            Some((selected_idx, scroll_offset))
+                if (selected_idx, scroll_offset) != (self.selected_idx, self.scroll_offset) =>
+            {
+                std::borrow::Cow::Owned(Self {
+                    selected_idx,
+                    scroll_offset,
+                    ..self.clone()
+                })
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
+    }
+
+    /// Latch a cursor move to `target` and scroll it into view.
+    fn record_move(
+        &self,
+        state: &mut ListViewState,
+        target: usize,
+        layout: &ListViewPrimitiveLayout,
+    ) {
+        state.cursor = Some(target);
+        state.selected.set(&self.selected_idx, target);
+        let scroll = layout.scroll_row();
+        let visible = crate::behaviour::scroll::ensure_visible(scroll, layout.page(), target);
+        if visible != scroll {
+            state.scroll.set(&self.scroll_offset, visible);
+        }
+    }
+
+    /// Latch a scroll to `target` (clamped to the last full page) and
+    /// report it as [`crate::UiEvent::ScrollOffsetChanged`], the list's
+    /// scroll event.
+    fn scroll_to(
+        &self,
+        state: &mut ListViewState,
+        layout: &ListViewPrimitiveLayout,
+        target: usize,
+        cx: &mut EventCx,
+    ) -> Handled<ListViewEvent> {
+        let max = self.row_count().saturating_sub(layout.viewport_rows());
+        let target = target.min(max);
+        if target != layout.scroll_row() {
+            state.scroll.set(&self.scroll_offset, target);
+            cx.emit(crate::UiEvent::ScrollOffsetChanged {
+                widget: self.id,
+                new_offset: target,
+            });
+        }
+        Handled::Consumed
+    }
+
+    /// Left press on the vertical scrollbar: the thumb starts a captured
+    /// drag, either side of it pages.
+    fn handle_scrollbar_press(
+        &self,
+        state: &mut ListViewState,
+        sb: &Scrollbar,
+        y: f32,
+        layout: &ListViewPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ListViewEvent> {
+        use crate::primitives::scrollbar::{PressZone, ThumbDrag};
+        cx.request_focus(None);
+        let scroll = layout.scroll_row();
+        let max = self.row_count().saturating_sub(layout.viewport_rows());
+        match sb.press_zone(y) {
+            PressZone::Thumb => {
+                state.thumb = Some(ThumbDrag::begin(y, scroll as f32, sb.travel(), max as f32));
+                cx.capture_pointer();
+                Handled::Consumed
+            }
+            PressZone::Before => {
+                self.scroll_to(state, layout, scroll.saturating_sub(layout.page()), cx)
+            }
+            PressZone::After => self.scroll_to(state, layout, scroll + layout.page(), cx),
         }
     }
 
@@ -2718,13 +3107,16 @@ impl ListView {
         state: &mut ListViewState,
         target: usize,
         extend: bool,
+        layout: &ListViewPrimitiveLayout,
     ) -> Handled<ListViewEvent> {
-        if self.items.is_empty() {
+        if self.row_count() == 0 {
             return Handled::Ignored;
         }
         let current = self.current_idx(state);
-        state.cursor = Some(target);
-        if extend {
+        self.record_move(state, target, layout);
+        // A windowed list's selection set could span the whole collection,
+        // so an extending move over one reports only the cursor move.
+        if extend && self.items_window.is_none() {
             let indices =
                 state
                     .selection
@@ -2761,7 +3153,7 @@ impl ListView {
     ) -> Handled<ListViewEvent> {
         use crate::behaviour::nav::{FlatNav, NavKey};
         let extend = modifiers.shift;
-        let page = layout.layout.visible_items.len().max(1);
+        let page = layout.page();
         let no_accel = !(modifiers.ctrl || modifiers.alt || modifiers.cmd);
         let nav = match key {
             Key::Named(NamedKey::Down) => Some(NavKey::Down),
@@ -2776,31 +3168,29 @@ impl ListView {
         };
         if let Some(nav) = nav {
             let current = Some(self.current_idx(state));
-            return match FlatNav::mv(self.items.len(), current, nav, false, |_| true) {
-                Some(target) => self.navigate(state, target, extend),
+            return match FlatNav::mv_all(self.row_count(), current, nav, false) {
+                Some(target) => self.navigate(state, target, extend, layout),
                 None => Handled::Ignored,
             };
         }
+        let cursor = (self.row_count() > 0).then(|| self.current_idx(state));
+        if let Some(indices) = state.selection.key(
+            self.selection_mode(),
+            key,
+            *modifiers,
+            cursor,
+            self.items.len(),
+        ) {
+            return Handled::Event(ListViewEvent::SelectionSet { indices });
+        }
         match key {
             Key::Named(NamedKey::Enter) | Key::Char(' ') => {
-                if self.items.is_empty() {
+                if self.row_count() == 0 {
                     Handled::Ignored
                 } else {
                     Handled::Event(ListViewEvent::ItemActivated {
                         idx: self.current_idx(state),
                     })
-                }
-            }
-            Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
-                if self.items.is_empty() {
-                    Handled::Ignored
-                } else {
-                    let indices: Vec<usize> = (0..self.items.len()).collect();
-                    let last = self.items.len() - 1;
-                    state.selection.selected = indices.clone();
-                    state.selection.anchor = Some(last);
-                    state.cursor = Some(last);
-                    Handled::Event(ListViewEvent::SelectionSet { indices })
                 }
             }
             _ => {
@@ -2816,43 +3206,51 @@ impl ListView {
         }
     }
 
-    /// `PointerKind::Down(MouseButton::Left)` — hit-tests `local` and
-    /// selects the row it landed on, honouring `mods`' own
-    /// [`SelectionGesture`] the same way a keyboard range-extension does
-    /// (see [`Self::navigate`]). A hit on the title row requests focus
-    /// (so clicking a bordered list's header still focuses it) but is
-    /// otherwise non-actionable, per [`ListViewHit`]'s own doc; a hit on
-    /// the empty tail below the last item is ignored outright.
+    /// `PointerKind::Down(button)` at absolute `position` — hit-tests it
+    /// and resolves the press on the item it landed on through
+    /// [`crate::SelectionCore::press`]: a left press selects it (Ctrl/Cmd
+    /// and Shift grow a multi-selection, per [`Self::selection_mode`]), a
+    /// right press asks for its context menu, any other button reports
+    /// [`ListViewEvent::ItemClicked`]. A left press on the title row
+    /// requests focus (so clicking a bordered list's header still focuses
+    /// it) but is otherwise non-actionable, per [`ListViewHit`]'s own doc;
+    /// a hit on the empty tail below the last item is ignored outright.
     fn handle_mouse_down(
         &self,
         state: &mut ListViewState,
-        hit: ListViewHit,
+        position: Point,
+        button: MouseButton,
         mods: &Modifiers,
+        layout: &ListViewPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
+        let left = button == MouseButton::Left;
+        let hit = layout.hit_test_abs_local(position.x - layout.area.x, position.y - layout.area.y);
         let idx = match hit {
             ListViewHit::Item(idx) => idx,
-            ListViewHit::Title => {
+            ListViewHit::Title if left => {
                 cx.request_focus(None);
                 return Handled::Ignored;
             }
-            ListViewHit::Empty => return Handled::Ignored,
+            ListViewHit::Title | ListViewHit::Empty => return Handled::Ignored,
         };
+        if !left {
+            let press = state
+                .selection
+                .press(self.selection_mode(), None, idx, button, *mods);
+            return Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position));
+        }
         cx.request_focus(None);
         let current = self.current_idx(state);
-        let gesture = SelectionGesture::from_modifiers(*mods);
-        let indices = state.selection.on_gesture(Some(current), idx, gesture);
-        state.cursor = Some(idx);
-        match gesture {
-            SelectionGesture::Replace => {
-                state.cursor_echo = Some(idx);
-                Handled::Event(ListViewEvent::SelectionChanged { idx })
-            }
-            SelectionGesture::Toggle | SelectionGesture::Range => {
-                state.cursor_echo = indices.first().copied();
-                Handled::Event(ListViewEvent::SelectionSet { indices })
-            }
-        }
+        let press = state
+            .selection
+            .press(self.selection_mode(), Some(current), idx, button, *mods);
+        self.record_move(state, idx, layout);
+        state.cursor_echo = match &press {
+            crate::RowPress::Set(indices) => indices.first().copied(),
+            _ => Some(idx),
+        };
+        Handled::Event(ListViewEvent::from_row_press(press, idx, *mods, position))
     }
 }
 
@@ -2870,6 +3268,8 @@ impl Interactive for ListView {
     type State = ListViewState;
     type Action = ListViewEvent;
 
+    const SCROLLS_OWN_ROWS: bool = true;
+
     /// One focus stop as a whole — a flat list navigates internally via
     /// arrow/`j`/`k` keys inside [`Self::handle`]'s own dispatch rather
     /// than declaring a [`FocusSpec::Children`] stop per row (which,
@@ -2877,7 +3277,7 @@ impl Interactive for ListView {
     /// anyway once a host walks it). `FocusSpec::None` for an empty
     /// list — there is no row for a selection to land on.
     fn focus(&self) -> FocusSpec {
-        if self.items.is_empty() {
+        if self.row_count() == 0 {
             FocusSpec::None
         } else {
             FocusSpec::Stop
@@ -2901,7 +3301,7 @@ impl Interactive for ListView {
                         v.bounds.width,
                         v.bounds.height,
                     ),
-                    ListViewSubPart::Item(v.item_idx).sub_target(),
+                    ListViewSubPart::Item(layout.abs_item(v.item_idx)).sub_target(),
                 )
             })
             .collect();
@@ -2928,19 +3328,70 @@ impl Interactive for ListView {
     ) -> Handled<ListViewEvent> {
         match event {
             RoutedEvent::Pointer {
-                kind: PointerKind::Down(MouseButton::Left),
+                kind: PointerKind::Down(button),
                 local,
                 mods,
                 ..
             } => {
-                let hit = layout.local_hit_test(local.x, local.y);
-                self.handle_mouse_down(state, hit, mods, cx)
+                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                let position = Point::new(x, y);
+                if let Some(sb) = layout
+                    .vscrollbar
+                    .as_ref()
+                    .filter(|sb| sb.track.contains(position))
+                {
+                    if *button != MouseButton::Left {
+                        return Handled::Ignored;
+                    }
+                    return self.handle_scrollbar_press(state, &sb.clone(), y, layout, cx);
+                }
+                self.handle_mouse_down(state, position, *button, mods, layout, cx)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } if state.thumb.is_some() => {
+                let y = layout.area.y + local.y;
+                match state.thumb.and_then(|drag| drag.offset_at(y)) {
+                    Some(offset) => self.scroll_to(state, layout, offset.round() as usize, cx),
+                    None => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(MouseButton::Left),
+                ..
+            } if state.thumb.is_some() => {
+                state.thumb = None;
+                cx.release_pointer();
+                Handled::Consumed
+            }
+            RoutedEvent::Wheel { dy, .. } => {
+                match crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0) {
+                    0 => Handled::Ignored,
+                    rows => {
+                        let scroll = layout.scroll_row();
+                        let target = if rows < 0 {
+                            scroll.saturating_sub(rows.unsigned_abs())
+                        } else {
+                            scroll.saturating_add(rows as usize)
+                        };
+                        // A wheel that cannot move the list bubbles to an
+                        // enclosing scroller.
+                        let max = self.row_count().saturating_sub(layout.viewport_rows());
+                        if target.min(max) == scroll {
+                            Handled::Ignored
+                        } else {
+                            self.scroll_to(state, layout, target, cx)
+                        }
+                    }
+                }
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::DoubleClick(MouseButton::Left),
                 local,
                 ..
-            } => match layout.local_hit_test(local.x, local.y) {
+            } => match layout.hit_test_abs_local(local.x, local.y) {
                 ListViewHit::Item(idx) => Handled::Event(ListViewEvent::ItemDoubleClicked { idx }),
                 _ => Handled::Ignored,
             },
@@ -2960,7 +3411,7 @@ impl Interactive for ListView {
             // the same reason `a11y::action::route_action`'s own arm
             // documents: no generic "scroll to bounds" `UiEvent` exists yet.
             RoutedEvent::Action(A11yAction::Click) => {
-                if self.items.is_empty() {
+                if self.row_count() == 0 {
                     Handled::Ignored
                 } else {
                     Handled::Event(ListViewEvent::ItemActivated {
@@ -2970,6 +3421,55 @@ impl Interactive for ListView {
             }
             _ => Handled::Ignored,
         }
+    }
+
+    /// A selection the app moved (a new descriptor `selected_idx`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the list's own keys moved does — so an app that owns the selection
+    /// but leaves the scroll to the list keeps its selection visible.
+    fn settle(&self, state: &mut ListViewState, layout: &ListViewPrimitiveLayout) -> bool {
+        if state.followed_selection == Some(self.selected_idx) {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_idx);
+        let (selected, _) = self.resolved(state);
+        if selected != self.selected_idx || selected >= self.row_count() {
+            return false;
+        }
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, layout.viewport_rows(), selected)
+    }
+
+    /// A windowed list asks for the rows around its viewport once it
+    /// scrolls outside the loaded slice — see
+    /// [`crate::behaviour::row_window::RowsRequestLatch`].
+    fn data_requested(
+        &self,
+        state: &mut ListViewState,
+        layout: &ListViewPrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let window = layout.window.as_ref()?;
+        state.rows_requested.request(
+            self.id,
+            window.window(),
+            window.loaded.1,
+            window.scroll,
+            window.viewport_rows,
+        )
+    }
+
+    /// This widget scrolled so `row` is its first visible row.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self> {
+        Some(Self {
+            scroll_offset: row,
+            ..self.clone()
+        })
+    }
+
+    fn state_summary(&self, state: &ListViewState) -> crate::interactive::StateSummary {
+        let (selected, scroll) = self.resolved(state);
+        crate::interactive::StateSummary::scroll(scroll).with_selected_idx(Some(selected))
     }
 }
 
@@ -3031,6 +3531,8 @@ mod interactive_tests {
                 .collect(),
             selected_idx,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -3091,6 +3593,28 @@ mod interactive_tests {
     fn layout_for(list: &ListView) -> ListViewPrimitiveLayout {
         let ctx = LayoutCtx::new(1.0, 1.0, false);
         Primitive::layout(list, &ctx, Rect::new(0.0, 0.0, 20.0, 10.0))
+    }
+
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection; a scroll the app pins on
+    /// its first frame stands.
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        let list = list(100, 60);
+        let mut state = ListViewState::default();
+        let layout = layout_for(&list);
+        assert!(Interactive::settle(&list, &mut state, &layout));
+        let scroll = list.live(Some(&state)).scroll_offset;
+        let rows = layout.viewport_rows();
+        assert!(scroll <= 60 && 60 < scroll + rows, "{scroll}");
+        assert!(!Interactive::settle(&list, &mut state, &layout));
+
+        let mut pinned = list.clone();
+        pinned.scroll_offset = 5;
+        let mut state = ListViewState::default();
+        let layout = layout_for(&pinned);
+        assert!(!Interactive::settle(&pinned, &mut state, &layout));
+        assert_eq!(pinned.live(Some(&state)).scroll_offset, 5);
     }
 
     fn key(named: NamedKey) -> RoutedEvent {
@@ -3480,9 +4004,11 @@ mod interactive_tests {
             selection: crate::types::SelectionCore {
                 selected: vec![0],
                 anchor: Some(0),
+                ..Default::default()
             },
             cursor: Some(0),
             cursor_echo: Some(0),
+            ..ListViewState::default()
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(l.id, &mut host);
@@ -3554,7 +4080,7 @@ mod interactive_tests {
 }
 
 /// Events a `ListView` emits back to the app.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum ListViewEvent {
     /// Keyboard / mouse moved selection to a different row.
@@ -3581,6 +4107,44 @@ pub enum ListViewEvent {
     /// sorted, de-duplicated selection, not just the row that changed —
     /// see [`crate::types::apply_selection_gesture`].
     SelectionSet { indices: Vec<usize> },
+    /// The user asked for item `idx`'s context menu (right-click);
+    /// `position` is where, in the coordinates the list was laid out in.
+    ContextMenuRequested {
+        idx: usize,
+        position: crate::event::Point,
+    },
+    /// Item `idx` was pressed with a button other than the primary and
+    /// secondary ones — middle, `X1`/`X2` or a backend-specific button.
+    /// See [`crate::DataTableEvent::RowClicked`].
+    ItemClicked {
+        idx: usize,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
+}
+
+impl ListViewEvent {
+    /// The event a press on item `idx`, resolved by
+    /// [`crate::SelectionCore::press`], reports — the list counterpart of
+    /// [`crate::DataTableEvent::from_row_press`].
+    pub fn from_row_press(
+        press: crate::RowPress,
+        idx: usize,
+        modifiers: Modifiers,
+        position: crate::event::Point,
+    ) -> Self {
+        use crate::RowPress;
+        match press {
+            RowPress::Select => Self::SelectionChanged { idx },
+            RowPress::Set(indices) => Self::SelectionSet { indices },
+            RowPress::ContextMenu => Self::ContextMenuRequested { idx, position },
+            RowPress::Click(button) => Self::ItemClicked {
+                idx,
+                button,
+                modifiers,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3644,6 +4208,8 @@ mod tests {
             ],
             selected_idx: 1,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -3679,6 +4245,8 @@ mod tests {
             items,
             selected_idx: selected,
             scroll_offset: scroll,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -3914,6 +4482,8 @@ mod primitive_parity_tests {
                 .collect(),
             selected_idx: 2,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -4169,6 +4739,8 @@ mod gtk_multi_select_driver_tests {
             items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -4343,6 +4915,8 @@ mod macos_multi_select_driver_tests {
             items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -4544,6 +5118,8 @@ mod win_multi_select_driver_tests {
             items: (0..5).map(|i| item(&format!("row {i}"))).collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,

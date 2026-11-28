@@ -424,11 +424,15 @@ impl TreeTableController {
         TreeTable {
             vim_keys: true,
             table: DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: self.id,
                 columns,
                 rows: table_rows,
                 selected_idx,
                 scroll_offset: self.state.nav.scroll_offset(),
+                items_window: None,
+                scroll_px: None,
                 sort: self.sort.map(|(col, ascending)| {
                     (
                         col,
@@ -607,7 +611,9 @@ impl TreeTableController {
             | TreeTableEvent::SelectionSet { .. }
             | TreeTableEvent::ColumnResized { .. }
             | TreeTableEvent::Scroll { .. } => TreeTableControllerEvent::Consumed,
-            TreeTableEvent::ContextMenuRequested { .. } => TreeTableControllerEvent::Ignored,
+            TreeTableEvent::ContextMenuRequested { .. } | TreeTableEvent::RowClicked { .. } => {
+                TreeTableControllerEvent::Ignored
+            }
         }
     }
 

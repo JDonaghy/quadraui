@@ -290,7 +290,7 @@ pub mod validation;
 // Not under `primitives/`, same reasoning as `validation` above: declarative
 // show/hide and enable/disable rules are not a widget — no `Layout`, no
 // `hit_test`, no `Backend::draw_*` method of its own; they decide which
-// `primitives::form::FormField`s `compose::FormController` keeps in its
+// `primitives::form::FormField`s a host keeps in its
 // rendered `Form` and whether each is `disabled` — so this must not inflate
 // the primitive count `readme_truth.rs` derives from `primitives/mod.rs`'s
 // `pub mod` list. Built on `expr::Expr`, so it stays binding-neutral the
@@ -386,6 +386,9 @@ pub mod tui;
 #[cfg_attr(docsrs, doc(cfg(feature = "win")))]
 pub mod win;
 
+// The model-view-update app layer: `View`, `Node` trees laid out by the
+// core stack solver, and the `Run` adapter onto `AppLogic`.
+pub mod app;
 pub mod compose;
 
 // ── Phase B.1: Backend trait + UiEvent + Accelerator ────────────────────────
@@ -611,6 +614,7 @@ pub use a11y::{
     A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,
     A11yRole, A11yTree, A11yTreeBuilder, A11yTreeNode, A11yUpdate, A11yValueRange, FocusSource,
 };
+pub use behaviour::row_window::ItemsWindow;
 pub use caret_blink::CaretBlinkState;
 pub use diff::compute_hunks;
 pub use focus::{FocusAddress, FocusTree};
@@ -684,15 +688,17 @@ pub use primitives::editor::{
     Style as EditorStyle,
 };
 pub use primitives::find_replace::{
-    compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
+    compute_hit_regions as compute_find_replace_hit_regions,
+    compute_hit_regions_hiding as compute_find_replace_hit_regions_hiding, FindReplaceClickTarget,
     FindReplaceEvent, FindReplaceField, FindReplaceHit, FindReplaceLayout, FindReplaceMetrics,
     FindReplacePanel, FindReplaceToggle, FrHitRegion, FR_PANEL_WIDTH,
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
     BareFieldLayout, ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField,
-    FormFieldMeasure, FormHit, FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition,
-    RowAlign, ToggleGroupItem, ValidationState, VisibleFormField,
+    FormFieldMeasure, FormHit, FormItemMeasure, FormLayout, FormSpacing, FormState, LabelAlign,
+    LabelPosition, RowAlign, ScrolledForm, ScrolledFormLayout, ToggleGroupItem, ValidationState,
+    VisibleFormField,
 };
 pub use primitives::icon_grid::{
     icon_grid_move_selection, IconGrid, IconGridEvent, IconGridHit, IconGridItem, IconGridLayout,
@@ -862,7 +868,7 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionCore,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, RowPress, SelectionCore,
     SelectionGesture, SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
@@ -931,8 +937,8 @@ pub use primitive::{LayoutCtx, PaintEnv, Placed, Primitive};
 // doc. `non_interactive!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here.
 pub use interactive::{
-    EventCx, EventHost, FocusSpec, FocusStop, Interactive, KeyEvent, Never, PointerKind,
-    RoutedEvent, WidgetAction,
+    EventCx, EventHost, FocusIndicator, FocusSpec, FocusStop, Interactive, KeyEvent, Never,
+    PointerKind, RoutedEvent, WidgetAction,
 };
 // The widget-contract routing engine's two public types — see
 // `frame_tree`/`widget_state`'s own module docs.
@@ -993,15 +999,15 @@ pub use compose::{
     BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
     BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
     ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
-    FilePickerMode, FormController, FormControllerAction, FormDialogAction, GroupLayout, Handled,
-    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, MenuDef, NavigationMode,
-    PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout,
-    ShellPosition, ShellRegion, ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction,
-    SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
-    TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
-    ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc,
-    WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
+    FilePickerMode, FormDialogAction, GroupLayout, Handled, HelpAction, HelpNote,
+    HelpOverlayAction, HelpRegistry, MenuDef, NavigationMode, PanelDefinition, PathPickerAction,
+    SectionKind, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion, ShellView,
+    ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody, SidebarPanelBody,
+    SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection, SidebarSectionDef,
+    StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane, TabGroupPaneLayout,
+    TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab, ToastStackAction,
+    ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc, WorkspaceEvent,
+    WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
@@ -1021,15 +1027,13 @@ pub use compose::{
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
-// `StatusBarAction`, `ToastStackEvent` and `FormControllerEvent` are
-// `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
-// `Handled<WidgetId>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>` and
-// `FormController::handle_event`/`handle_cached_event`'s
-// `Handled<FormControllerAction>` instead). Allow them here since `pub use`
-// of a deprecated item is itself a use site.
+// `StatusBarAction` and `ToastStackEvent` are `#[deprecated]` (use
+// `StatusBarInteraction::handle_event`'s `Handled<WidgetId>` and
+// `ToastStackController::handle_event`'s `Handled<ToastStackAction>`
+// instead). Allow them here since `pub use` of a deprecated item is itself
+// a use site.
 #[allow(deprecated)]
-pub use compose::{FormControllerEvent, StatusBarAction, ToastStackEvent};
+pub use compose::{StatusBarAction, ToastStackEvent};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,

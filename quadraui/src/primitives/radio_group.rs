@@ -9,7 +9,7 @@
 //! embedded inside a form. `RadioGroup` is additive: a standalone
 //! control for a host that wants a radio group outside a form (a
 //! settings panel, a toolbar dropdown's contents) without pulling in
-//! the whole `Form`/`FormController` machinery. `Form`'s own field
+//! the whole `Form` machinery. `Form`'s own field
 //! kinds are untouched.
 //!
 //! # Focus and activation

@@ -117,11 +117,19 @@ pub(crate) fn paint(
     // The match count is not a hit region (it's status text), so it is
     // painted in the gap between the last find-row toggle (.*) and
     // PrevMatch, the first nav button.
-    let mut regex_end_col: Option<u16> = None;
+    let mut info_start_col: Option<u16> = None;
     let mut prev_match_col: Option<u16> = None;
 
-    for (region, target) in &panel.hit_regions {
+    for (region, target) in panel.regions() {
         let (col, row, width) = (region.col, region.row, region.width);
+        // The count follows the find input and whichever find-row toggles
+        // the panel shows.
+        if matches!(
+            target,
+            T::FindInput(_) | T::ToggleCase | T::ToggleWholeWord | T::ToggleRegex
+        ) {
+            info_start_col = Some(col + width);
+        }
         match target {
             T::Chevron => {
                 let chevron = if panel.show_replace { '▼' } else { '▶' };
@@ -144,7 +152,6 @@ pub(crate) fn paint(
             T::ToggleRegex => {
                 let (t_fg, t_bg) = toggle_colors(panel.use_regex);
                 frame.put_str(cells, col, row, ".*", t_fg, t_bg, width);
-                regex_end_col = Some(col + width);
             }
             T::PrevMatch => {
                 frame.put(cells, col, row, '↑', fg, bg);
@@ -185,8 +192,8 @@ pub(crate) fn paint(
         }
     }
 
-    if let (Some(start_col), Some(end_col)) = (regex_end_col, prev_match_col) {
-        // One-cell gaps after the regex toggle and before PrevMatch.
+    if let (Some(start_col), Some(end_col)) = (info_start_col, prev_match_col) {
+        // One-cell gaps after the last toggle and before PrevMatch.
         let info_col = start_col + 1;
         let info_w = end_col.saturating_sub(info_col + 1);
         if info_w > 0 {

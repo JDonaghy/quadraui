@@ -119,7 +119,7 @@ def test_double_click_on_a_row_emits_row_double_clicked():
     received = []
     app.set_handler(lambda event: received.append(event))
     app.push_event(
-        {"DoubleClick": {"position": {"x": 2.0, "y": 1.0}}}
+        {"DoubleClick": {"button": "Left", "position": {"x": 2.0, "y": 1.0}}}
     )
     app.run(1)
 
@@ -143,7 +143,11 @@ def test_down_arrow_on_a_focused_table_selects_the_next_row():
     )
     app.run(2)
 
-    assert {"DataTable": ("table", {"RowSelected": {"idx": 1}})} in received
+    # The key's event comes from the table's own widget handling, so it
+    # carries the `widget_body` hit every widget-emitted event does.
+    assert {"DataTable": ("table", {"RowSelected": {"idx": 1}})} in [
+        {k: v for k, v in event.items() if k != "hit"} for event in received
+    ]
 
 
 def test_fixed_px_column_degrades_to_a_nominal_cell_count_on_tui():

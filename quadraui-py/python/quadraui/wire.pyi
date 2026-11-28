@@ -217,7 +217,7 @@ CanvasCursor = Literal['Default', 'Text', 'Pointer', 'Grab', 'Grabbing', 'Crossh
 class CanvasEvent(TypedDict):
     """Events a `crate::Canvas` with declared `crate::CanvasRegion`s emits, carried by `UiEvent::Canvas`. A plain `Canvas` with an empty `crate::Canvas::regions` list never produces one of these — a click or hover against it resolves to a bare `crate::CanvasHit::Inside`/ `Outside`, which a binding threads through as the generic extra-body hit it already reports for any other additive primitive with no typed click event of its own."""
     RegionClicked: NotRequired[_CanvasEventRegionClicked]  # A declared region was clicked (any mouse button — see `button`).
-    RegionDoubleClicked: NotRequired[_CanvasEventRegionDoubleClicked]  # A declared region was double-clicked.
+    RegionDoubleClicked: NotRequired[_CanvasEventRegionDoubleClicked]  # A declared region was double-clicked with `button` — the button `UiEvent::DoubleClick` carries.
     RegionHovered: NotRequired[_CanvasEventRegionHovered]  # The hovered region changed, including to/from no region at all.
 
 # Serde-friendly mirror of `crate::FontRole` for `DrawOp::StyledTextRun` — `FontRole` itself has no `Serialize`/`Deserialize` derive (see `crate::font_role`'s module doc), and `Canvas`/`DrawOp` are descriptor types that must round-trip through serde (`PRIMITIVE_RULES.md` rule 8's descriptor-shape guidance). `Self::to_font_role` is the only place this maps back to the real enum, kept private to this module since nothing outside the native-paint seam needs it.
@@ -449,10 +449,14 @@ class DataTable(TypedDict):
     h_scroll: NotRequired[float]  # Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
     min_total_width: NotRequired[Optional[float]]  # Minimum total width for all columns.
     rows: List[DataRow]
     scroll_offset: NotRequired[int]
-    selected_idx: NotRequired[Optional[int]]
+    scroll_px: NotRequired[Optional[float]]  # Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
+    selected_idx: NotRequired[Optional[int]]  # The cursor row, and the anchor a Shift range grows from.
+    selected_indices: NotRequired[List[int]]  # The multi-selection to paint (row indices), usually the last `DataTableEvent::SelectionSet`'s `indices` echoed back.
+    selection_mode: NotRequired[SelectionMode]  # `SelectionMode::Multi` lets Ctrl/Cmd and Shift clicks, Shift+arrow keys, Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection, reported as `DataTableEvent::SelectionSet`.
     show_scrollbar: NotRequired[bool]  # Show a vertical scrollbar when rows exceed the viewport.
     sort: NotRequired[Optional[Tuple[int, SortDirection]]]  # Which column is sorted, and in which direction.
     striped: NotRequired[bool]  # Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
@@ -469,30 +473,12 @@ class DataTableEvent(TypedDict):
     ScrollChanged: NotRequired[_DataTableEventScrollChanged]  # The widget scrolled — a wheel, a scrollbar gesture, or a cursor move brought its row into view.
     ColumnFocused: NotRequired[_DataTableEventColumnFocused]  # Left/Right moved the keyboard's column cursor to `col`.
     ContextMenuRequested: NotRequired[_DataTableEventContextMenuRequested]  # The user asked for row `idx`'s context menu (right-click); `position` is where, in the same coordinates the table was laid out in.
+    RowClicked: NotRequired[_DataTableEventRowClicked]  # Row `idx` was pressed with a button other than the primary and secondary ones — middle (open in a new tab), `X1`/`X2` (back / forward) or a backend-specific button.
 
 class DataTableGlyphs(TypedDict):
     """Optional app-supplied override for the sort-direction glyphs `native_surface_paint` appends to a sorted column's header title."""
     sort_ascending: NotRequired[Optional[Icon]]
     sort_descending: NotRequired[Optional[Icon]]
-
-class DataTableLeaf(TypedDict):
-    bordered: NotRequired[bool]  # Reserve a 1-cell/pixel margin on every edge of the table's viewport for a decorative frame, mirroring `crate::primitives::list::ListView::bordered` and `crate::types::TreeStyle::bordered`.
-    column_overrides: NotRequired[List[Optional[float]]]  # Per-column width overrides from user drag.
-    columns: List[Column]
-    footer: NotRequired[Optional[DataRow]]  # Optional pinned summary/totals row, laid out against the same resolved columns as the body.
-    glyphs: NotRequired[Optional[DataTableGlyphs]]  # Sort-direction glyph overrides for the header — see `DataTableGlyphs`.
-    h_scroll: NotRequired[float]  # Horizontal scroll offset in surface-native units (pixels for GTK, cells for TUI).
-    has_focus: NotRequired[bool]
-    id: WidgetId
-    min_total_width: NotRequired[Optional[float]]  # Minimum total width for all columns.
-    rows: List[DataRow]
-    scroll_offset: NotRequired[int]
-    selected_idx: NotRequired[Optional[int]]
-    show_scrollbar: NotRequired[bool]  # Show a vertical scrollbar when rows exceed the viewport.
-    sort: NotRequired[Optional[Tuple[int, SortDirection]]]  # Which column is sorted, and in which direction.
-    striped: NotRequired[bool]  # Tint every other body row with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute row index so a row keeps its shade while scrolling.
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
 
 # How a `CalendarDate` renders as text.
 DateFormat = Literal['Iso8601', 'UsSlash', 'EuSlash']
@@ -714,6 +700,7 @@ class FindReplacePanel(TypedDict):
     cursor: NotRequired[int]  # Cursor position within the focused field (char offset).
     focus: NotRequired[int]  # Which field has focus: 0 = find, 1 = replace.
     group_bounds: Rect  # Bounding rect of the active editor group, in the surface's own units.
+    hidden_toggles: NotRequired[List[FindReplaceToggle]]  # Toggles this panel does not offer — say regex and preserve-case for a host whose search engine has neither.
     hit_regions: NotRequired[List[Tuple[FrHitRegion, FindReplaceClickTarget]]]  # Hit regions for click handling, in char-cell units relative to the panel content corner (inside borders).
     id: NotRequired[WidgetId]  # This overlay's id — the one its `FindReplaceEvent`s are reported under.
     in_selection: NotRequired[bool]  # Find in selection mode.
@@ -838,7 +825,7 @@ HeaderHit = Union[Literal['Chevron', 'TitleArea'], _HeaderHitDict]
 HelpOverlayAction = Literal['Opened', 'Closed']
 
 # The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailWidgetBody, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailWidgetBody, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 # `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first.
 Icon = Union[_Icon1, _Icon2]
@@ -886,9 +873,9 @@ class InlineInput(TypedDict):
     text: str
 
 class ItemsWindow(TypedDict):
-    """A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/ `"data_table"`/`"text_display"` leaf's own descriptor dict by `items_window_from_value` — `start` is the index, into the widget's true row/item/line count `total`, that this frame's `items`/`rows`/ `lines` payload begins at. Like `crate::scroll_px_from_value`, this is **not** a field any of `ListView`/`TreeView`/`DataTable`/`TextDisplay` declares: a render callback that never sets `"items_window"` is completely unaffected, and one that does only sends the slice of rows currently visible (plus whatever prefetch margin it chooses) instead of every row up front."""
-    start: int
-    total: int
+    """A windowed collection: the descriptor's rows/items/lines are the loaded slice starting at absolute index `start` of `total` real rows."""
+    start: int  # The absolute index of the descriptor's first loaded row.
+    total: int  # How many rows the real collection has.
 
 JustifyValue = Literal['start', 'center', 'end', 'space_between']
 
@@ -968,7 +955,7 @@ LayoutLeafNode = TypedDict(
         "command_center": NotRequired[CommandCenter],
         "command_line": NotRequired[CommandLine],
         "context_menu": NotRequired[ContextMenu],
-        "data_table": NotRequired[Union[DataTable, DataTableLeaf]],
+        "data_table": NotRequired[DataTable],
         "date_picker": NotRequired[DatePicker],
         "diff_view": NotRequired[DiffView],
         "draggable": NotRequired[Optional[bool]],
@@ -979,7 +966,7 @@ LayoutLeafNode = TypedDict(
         "icon_grid": NotRequired[IconGrid],
         "id": str,
         "image": NotRequired[Image],
-        "list": NotRequired[Union[ListView, ListViewLeaf]],
+        "list": NotRequired[ListView],
         "markdown": NotRequired[Markdown],
         "max": NotRequired[Optional[float]],
         "menu_bar": NotRequired[AppMenu],
@@ -1005,12 +992,12 @@ LayoutLeafNode = TypedDict(
         "switch": NotRequired[Switch],
         "tab_bar": NotRequired[TabBar],
         "terminal": NotRequired[Terminal],
-        "text_display": NotRequired[Union[TextDisplay, TextDisplayLeaf]],
+        "text_display": NotRequired[TextDisplay],
         "text_field": NotRequired[TextField],
         "text_input": NotRequired[TextInput],
         "textarea": NotRequired[TextArea],
         "toolbar": NotRequired[Toolbar],
-        "tree": NotRequired[Union[TreeView, TreeViewLeaf]],
+        "tree": NotRequired[TreeView],
         "tree_table": NotRequired[TreeTable],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
         "wire_version": NotRequired[Optional[int]],
@@ -1182,8 +1169,10 @@ class ListView(TypedDict):
     has_focus: NotRequired[bool]  # Whether this list currently holds keyboard focus.
     id: WidgetId
     items: List[ListItem]
+    items_window: NotRequired[Optional[ItemsWindow]]  # Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
     max_content_width: NotRequired[Optional[int]]  # Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
     scroll_offset: NotRequired[int]
+    scroll_px: NotRequired[Optional[float]]  # Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
     selected_idx: int
     show_v_scrollbar: NotRequired[bool]  # When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
     striped: NotRequired[bool]  # Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
@@ -1196,21 +1185,8 @@ class ListViewEvent(TypedDict):
     ItemDoubleClicked: NotRequired[_ListViewEventItemDoubleClicked]  # User double-clicked a row — distinct from `SelectionChanged` (a plain click) so an app can tell "select" apart from "open" without both folding into `ItemActivated`.
     KeyPressed: NotRequired[_ListViewEventKeyPressed]  # A key was pressed while the list had focus and the primitive did not consume it.
     SelectionSet: NotRequired[_ListViewEventSelectionSet]  # The full multi-selection changed (`SelectionMode::Multi`): Ctrl/Cmd click toggled a row, Shift click/extend selected a range, or a keyboard extension grew the set.
-
-class ListViewLeaf(TypedDict):
-    bordered: NotRequired[bool]  # When true, backends draw a `╭─╮ │ │ ╰─╯` frame around the list and inset items by 1 cell on each side.
-    h_scroll: NotRequired[int]  # Horizontal scroll offset in **display cells** (terminal columns — a CJK/emoji glyph counts as 2, matching `crate::text_util::char_cell_width`), not characters.
-    has_focus: NotRequired[bool]  # Whether this list currently holds keyboard focus.
-    id: WidgetId
-    items: List[ListItem]
-    max_content_width: NotRequired[Optional[int]]  # Total width (in **display cells**, not characters — see `crate::text_util::char_cell_width`) of the widest item row, including the 2-cell selection prefix, any icon, and the main text.
-    scroll_offset: NotRequired[int]
-    selected_idx: int
-    show_v_scrollbar: NotRequired[bool]  # When `true`, backends reserve the rightmost column of the list area for a vertical scrollbar and paint a track/thumb there.
-    striped: NotRequired[bool]  # Tint every other non-selected, non-header item with `crate::theme::Theme::row_alt_bg` ("zebra striping"), keyed on the absolute item index so an item keeps its shade while scrolling.
-    title: NotRequired[Optional[StyledText]]  # Optional header row shown above the items.
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
+    ContextMenuRequested: NotRequired[_ListViewEventContextMenuRequested]  # The user asked for item `idx`'s context menu (right-click); `position` is where, in the coordinates the list was laid out in.
+    ItemClicked: NotRequired[_ListViewEventItemClicked]  # Item `idx` was pressed with a button other than the primary and secondary ones — middle, `X1`/`X2` or a backend-specific button.
 
 class Markdown(TypedDict):
     """A scrollable, read-only markdown viewer."""
@@ -1361,6 +1337,7 @@ class Palette(TypedDict):
     query_cursor: NotRequired[int]  # Cursor byte offset in `query`.
     scroll_offset: NotRequired[int]  # How many rows have been scrolled past.
     selected_idx: int  # Index into `items` of the currently highlighted row.
+    show_mode_badge: NotRequired[bool]  # Paint the `[L]`/`[I]` mode badge at the right of the title row.
     show_query: NotRequired[bool]  # When `false`, the query input row and separator are hidden — producing a popup-style list (tab switcher, branch picker).
     title: str  # Header text shown above the query input, e.g.
     total_count: NotRequired[int]  # Total number of items in the underlying source (before filtering).
@@ -1484,7 +1461,7 @@ class RenderFrameDict(TypedDict):
     command_center: NotRequired[Optional[CommandCenter]]
     command_line: NotRequired[Optional[CommandLine]]
     context_menu: NotRequired[Optional[ContextMenu]]
-    data_table: NotRequired[Optional[Union[DataTable, DataTableLeaf]]]
+    data_table: NotRequired[Optional[DataTable]]
     date_picker: NotRequired[Optional[DatePicker]]
     diff_view: NotRequired[Optional[DiffView]]
     editor: NotRequired[Optional[Editor]]
@@ -1492,7 +1469,7 @@ class RenderFrameDict(TypedDict):
     form: NotRequired[Optional[Form]]
     icon_grid: NotRequired[Optional[IconGrid]]
     image: NotRequired[Optional[Image]]
-    list: NotRequired[Optional[Union[ListView, ListViewLeaf]]]
+    list: NotRequired[Optional[ListView]]
     markdown: NotRequired[Optional[Markdown]]
     menu_bar: NotRequired[Optional[AppMenu]]
     message_list: NotRequired[Optional[MessageList]]
@@ -1513,12 +1490,12 @@ class RenderFrameDict(TypedDict):
     switch: NotRequired[Optional[Switch]]
     tab_bar: NotRequired[Optional[TabBar]]
     terminal: NotRequired[Optional[Terminal]]
-    text_display: NotRequired[Optional[Union[TextDisplay, TextDisplayLeaf]]]
+    text_display: NotRequired[Optional[TextDisplay]]
     text_field: NotRequired[Optional[TextField]]
     text_input: NotRequired[Optional[TextInput]]
     textarea: NotRequired[Optional[TextArea]]
     toolbar: NotRequired[Optional[Toolbar]]
-    tree: NotRequired[Optional[Union[TreeView, TreeViewLeaf]]]
+    tree: NotRequired[Optional[TreeView]]
     tree_table: NotRequired[Optional[TreeTable]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
     wire_version: NotRequired[int]
@@ -1528,12 +1505,6 @@ RenderOutput = Union[LayoutNode, RenderFrameDict]
 
 # How an item-bearing `FieldKind`'s items (`ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`) pack within their row's available width — the space between `items_start_x` (from the field's `FormFieldMeasure`) and the row's right edge. Set on `FormSpacing::row_align` as the form-wide default, or on `FormField::row_align` to override a single field.
 RowAlign = Literal['Start', 'Center', 'End', 'Stretch']
-
-class RowsRequestedEvent(TypedDict):
-    """The `{id, start, count}` a binding should ask its app's render callback for next, computed by `rows_requested_for_window` once scrolling moves outside the slice an `ItemsWindow` says is currently loaded."""
-    count: int
-    id: WidgetId
-    start: int
 
 # Orientation of a scrollbar.
 ScrollAxis = Literal['Vertical', 'Horizontal']
@@ -2004,6 +1975,7 @@ class TextDisplay(TypedDict):
     auto_scroll: NotRequired[bool]  # When true, backends auto-scroll to keep the latest line visible.
     has_focus: NotRequired[bool]
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # Where the loaded lines sit in the real collection: when set, the payload holds lines `start..` of `total`, and `scroll_offset` and every line index in this widget's events are absolute indices into those `total` lines.
     lines: List[TextDisplayLine]
     max_lines: NotRequired[int]  # Maximum lines to retain in the ring buffer.
     scroll_offset: NotRequired[int]  # Index of the first visible line.
@@ -2016,17 +1988,6 @@ class TextDisplayEvent(TypedDict):
     AutoScrollToggled: NotRequired[_TextDisplayEventAutoScrollToggled]  # User toggled auto-scroll (typically via a keyboard shortcut or click on a "Follow" indicator).
     Copied: NotRequired[_TextDisplayEventCopied]  # User initiated a copy of selected lines.
     KeyPressed: NotRequired[_TextDisplayEventKeyPressed]  # A key was pressed with the display focused and the primitive did not consume it.
-
-class TextDisplayLeaf(TypedDict):
-    auto_scroll: NotRequired[bool]  # When true, backends auto-scroll to keep the latest line visible.
-    has_focus: NotRequired[bool]
-    id: WidgetId
-    lines: List[TextDisplayLine]
-    max_lines: NotRequired[int]  # Maximum lines to retain in the ring buffer.
-    scroll_offset: NotRequired[int]  # Index of the first visible line.
-    show_scrollbar: NotRequired[bool]  # When true, a vertical scrollbar is rendered at the trailing edge of the viewport.
-    title: NotRequired[Optional[StyledText]]  # Optional title row painted above the body.
-    items_window: NotRequired[Optional[ItemsWindow]]
 
 class TextDisplayLine(TypedDict):
     """One line in a `TextDisplay`. Carries styled spans plus an optional decoration tag (Error/Warning/Muted/Header) for log-level styling and an optional left-aligned timestamp string the backend renders in a dim colour."""
@@ -2115,7 +2076,7 @@ ToolbarVAlign = Literal['Top', 'Center', 'Bottom']
 
 class TreeEvent(TypedDict):
     """Events a `TreeView` emits back to the app."""
-    RowClicked: NotRequired[_TreeEventRowClicked]  # Single-click (or Enter on the keyboard) on a row.
+    RowClicked: NotRequired[_TreeEventRowClicked]  # A press on a row with any button but the secondary (right) one, which asks for `Self::ContextMenuRequested` instead.
     RowDoubleClicked: NotRequired[_TreeEventRowDoubleClicked]  # Double-click on a row (typically "open" / "activate").
     RowToggleExpand: NotRequired[_TreeEventRowToggleExpand]  # The chevron was clicked, or Space/arrow-keys expanded/collapsed a branch.
     SelectionChanged: NotRequired[_TreeEventSelectionChanged]  # Keyboard selection moved to a new row.
@@ -2204,6 +2165,7 @@ class TreeTableEvent(TypedDict):
     ToggleExpanded: NotRequired[_TreeTableEventToggleExpanded]  # The chevron was clicked, or Left/Right/Space resolved to an expand/collapse.
     ChildrenRequested: NotRequired[_TreeTableEventChildrenRequested]  # Expanding a `TreeTableNode::children_pending` branch: the app should load its children and supply them, clearing the flag.
     ContextMenuRequested: NotRequired[_TreeTableEventContextMenuRequested]  # The user asked for row `idx`'s context menu (right-click); `position` is where, in the coordinates the table was laid out in.
+    RowClicked: NotRequired[_TreeTableEventRowClicked]  # Row `idx` was pressed with a button other than the primary and secondary ones.
 
 class TreeTableNode(TypedDict):
     """Per-row tree metadata for one `TreeTable` row, parallel to `DataTable::rows` on `TreeTable::table`."""
@@ -2218,22 +2180,13 @@ class TreeView(TypedDict):
     """Declarative description of a `TreeView` widget."""
     has_focus: NotRequired[bool]  # Whether this tree currently holds keyboard focus.
     id: WidgetId
+    items_window: NotRequired[Optional[ItemsWindow]]  # Where the loaded rows sit in the real collection: when set, the payload holds rows `start..` of `total`, and `scroll_offset`, the selection and every row index in this widget's events are absolute indices into those `total` rows.
     rows: List[TreeRow]  # Pre-flattened, pre-expanded rows in visual order.
     scroll_offset: NotRequired[int]  # How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
+    scroll_px: NotRequired[Optional[float]]  # Scroll position finer than a whole row, in the surface's native units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is one row); when set it wins over `scroll_offset`.
     selected_path: NotRequired[Optional[List[int]]]
     selection_mode: SelectionMode
     style: TreeStyle
-
-class TreeViewLeaf(TypedDict):
-    has_focus: NotRequired[bool]  # Whether this tree currently holds keyboard focus.
-    id: WidgetId
-    rows: List[TreeRow]  # Pre-flattened, pre-expanded rows in visual order.
-    scroll_offset: NotRequired[int]  # How many rows have been scrolled past (app-owned in v1; primitive-owned scroll state with `ScrollState::id(widget_id)` is a later stage per `docs/UI_CRATE_DESIGN.md` §3.1).
-    selected_path: NotRequired[Optional[List[int]]]
-    selection_mode: SelectionMode
-    style: TreeStyle
-    items_window: NotRequired[Optional[ItemsWindow]]
-    scroll_px: NotRequired[float]
 
 # Everything a user (or platform) can do that an app might care about.
 UiEvent = Union[Literal['WindowClose', 'DisplaysChanged', 'ContextMenuDismissed'], _UiEventDict]
@@ -2267,13 +2220,13 @@ WidgetId = str
 WidgetKind = Literal['activity_bar', 'board', 'button', 'canvas', 'cell_grid', 'chart', 'checkbox', 'combo_box', 'command_center', 'command_line', 'context_menu', 'data_table', 'date_picker', 'diff_view', 'editor', 'find_replace', 'form', 'icon_grid', 'image', 'list', 'markdown', 'menu_bar', 'message_list', 'minimap', 'multi_section_view', 'number_input', 'palette', 'password', 'pipeline_view', 'progress', 'radio_group', 'scripted_widget', 'scroll_view', 'scrollbar', 'select', 'slider', 'spinner', 'status_bar', 'switch', 'tab_bar', 'terminal', 'text_display', 'text_field', 'text_input', 'textarea', 'toolbar', 'tree', 'tree_table', 'tree_table_controller']
 
 class WidgetStateSnapshot(TypedDict):
-    """A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once."""
-    active_tab: NotRequired[Optional[int]]  # A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
-    expanded: NotRequired[Optional[List[List[int]]]]  # A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
+    """What a binding's `widget_state(id)` reports for one id: the `quadraui::interactive::StateSummary` the widget painted under `id` keeps in its own state (selection, scroll, active tab, expansion), plus a `Split`'s divider ratio, which the host keeps."""
+    active_tab: NotRequired[Optional[int]]  # A tab bar's resolved active tab.
+    expanded: NotRequired[Optional[List[List[int]]]]  # A tree's expanded branches, when it resolves expansion itself.
     ratio: NotRequired[Optional[float]]  # A `Split`'s stored divider ratio, if `id` is one being tracked by `resolve_split_ratio`.
-    scroll_offset: NotRequired[Optional[int]]  # A `Tree`/`List`/`DataTable`'s stored scroll offset, alongside whichever of `selected_path`/`selected_idx` applies.
-    selected_idx: NotRequired[Optional[int]]  # A `List`/`DataTable`'s stored cursor row, if `id` is one being tracked by `resolve_list_cursor`/`resolve_data_table_cursor`.
-    selected_path: NotRequired[Optional[List[int]]]  # A `Tree`'s stored cursor row, if `id` is a tree being tracked by `resolve_tree_cursor`.
+    scroll_offset: NotRequired[Optional[int]]  # The resolved scroll row (absolute when windowed).
+    selected_idx: NotRequired[Optional[int]]  # A list's or table's resolved selected row (absolute when windowed).
+    selected_path: NotRequired[Optional[List[int]]]  # A tree's resolved selected row.
 
 class WorkspaceEvent(TypedDict):
     """What the workspace just did. Returned from every mutating entry point so the host can react without diffing the workspace."""
@@ -2317,6 +2270,7 @@ class _CanvasEventRegionClicked(TypedDict):
     y: float
 
 class _CanvasEventRegionDoubleClicked(TypedDict):
+    button: MouseButton
     region: WidgetId
     x: float
     y: float
@@ -2442,6 +2396,11 @@ class _DataTableEventHeaderClicked(TypedDict):
 
 class _DataTableEventRowActivated(TypedDict):
     idx: int
+
+class _DataTableEventRowClicked(TypedDict):
+    button: MouseButton
+    idx: int
+    modifiers: Modifiers
 
 class _DataTableEventRowDoubleClicked(TypedDict):
     idx: int
@@ -2820,42 +2779,20 @@ class _FormEventToolbarButtonClicked(TypedDict):
 class _HeaderHitDict(TypedDict):
     Action: str  # Right-aligned action button.
 
-class _HitDetailDataTableFooter(TypedDict):
-    kind: Literal['data_table_footer']
-
-class _HitDetailDataTableHeader(TypedDict):
-    col: int
-    kind: Literal['data_table_header']
-
-class _HitDetailDataTableHeaderDivider(TypedDict):
-    col: int
-    kind: Literal['data_table_header_divider']
-
-class _HitDetailDataTableRow(TypedDict):
-    kind: Literal['data_table_row']
-    row: int
-
-class _HitDetailListItem(TypedDict):
-    index: int
-    kind: Literal['list_item']
-
-class _HitDetailListTitle(TypedDict):
-    kind: Literal['list_title']
-
 class _HitDetailScrollBody(TypedDict):
     """Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets."""
     kind: Literal['scroll_body']
 
 class _HitDetailScrollScrollbarThumb(TypedDict):
-    """Landed on a `Scroll`'s own scrollbar thumb — mirrors `Self::TreeScrollbarThumb`."""
+    """Landed on a `Scroll`'s own scrollbar thumb; arms a drag."""
     kind: Literal['scroll_scrollbar_thumb']
 
 class _HitDetailScrollScrollbarTrackAfter(TypedDict):
-    """Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone) — mirrors `Self::TreeScrollbarTrackAfter`."""
+    """Landed after a `Scroll`'s own scrollbar thumb (page-down/right zone)."""
     kind: Literal['scroll_scrollbar_track_after']
 
 class _HitDetailScrollScrollbarTrackBefore(TypedDict):
-    """Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone) — mirrors `Self::TreeScrollbarTrackBefore`."""
+    """Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone)."""
     kind: Literal['scroll_scrollbar_track_before']
 
 class _HitDetailSplitDivider(TypedDict):
@@ -2871,39 +2808,6 @@ class _HitDetailSplitTreeDivider(TypedDict):
     """Landed on a `quadraui::SplitTree` divider — `split_index` is the pre-order index of the `SplitTree::Split` node being resized (see `quadraui::SplitTreeDivider::split_index`). Arms a drag in the binding's own event handler, mirroring `SplitDivider`'s `crate::drag::ActiveDrag` handling."""
     kind: Literal['split_tree_divider']
     split_index: int
-
-class _HitDetailTextDisplayLine(TypedDict):
-    kind: Literal['text_display_line']
-    line: int
-
-class _HitDetailTextDisplayScrollbarThumb(TypedDict):
-    kind: Literal['text_display_scrollbar_thumb']
-
-class _HitDetailTextDisplayScrollbarTrackAfter(TypedDict):
-    kind: Literal['text_display_scrollbar_track_after']
-
-class _HitDetailTextDisplayScrollbarTrackBefore(TypedDict):
-    kind: Literal['text_display_scrollbar_track_before']
-
-class _HitDetailTreeChevron(TypedDict):
-    kind: Literal['tree_chevron']
-    row: int
-
-class _HitDetailTreeRow(TypedDict):
-    kind: Literal['tree_row']
-    row: int
-
-class _HitDetailTreeScrollbarThumb(TypedDict):
-    """Landed on a tree's vertical scrollbar thumb. Arms a drag in the binding's own event handler (mirroring `SplitDivider`'s `ActiveDrag`); never reaches `semantic_event_for_hit`."""
-    kind: Literal['tree_scrollbar_thumb']
-
-class _HitDetailTreeScrollbarTrackAfter(TypedDict):
-    """Landed after the thumb on a tree's vertical scrollbar track (page-down zone). Handled directly in the binding's own event handler, same as `TreeScrollbarTrackBefore`."""
-    kind: Literal['tree_scrollbar_track_after']
-
-class _HitDetailTreeScrollbarTrackBefore(TypedDict):
-    """Landed before the thumb on a tree's vertical scrollbar track (page-up zone). Handled directly in the binding's own event handler, which replaces the raw click with `UiEvent::ScrollOffsetChanged` — never reaches `semantic_event_for_hit`."""
-    kind: Literal['tree_scrollbar_track_before']
 
 class _HitDetailWidgetBody(TypedDict):
     """Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to."""
@@ -2927,8 +2831,17 @@ class _LayoutLeafNodeScriptedWidget(TypedDict):
     id: str
     props: NotRequired[Any]
 
+class _ListViewEventContextMenuRequested(TypedDict):
+    idx: int
+    position: Point
+
 class _ListViewEventItemActivated(TypedDict):
     idx: int
+
+class _ListViewEventItemClicked(TypedDict):
+    button: MouseButton
+    idx: int
+    modifiers: Modifiers
 
 class _ListViewEventItemDoubleClicked(TypedDict):
     idx: int
@@ -3358,6 +3271,7 @@ class _TreeEventRowActivated(TypedDict):
     path: List[int]
 
 class _TreeEventRowClicked(TypedDict):
+    button: MouseButton
     modifiers: Modifiers
     path: List[int]
 
@@ -3423,6 +3337,12 @@ class _TreeTableEventRowActivated(TypedDict):
     idx: int
     path: List[int]
 
+class _TreeTableEventRowClicked(TypedDict):
+    button: MouseButton
+    idx: int
+    modifiers: Modifiers
+    path: List[int]
+
 class _TreeTableEventRowDoubleClicked(TypedDict):
     idx: int
     path: List[int]
@@ -3467,7 +3387,7 @@ class _UiEventDict(TypedDict):
     MouseMoved: NotRequired[_UiEventMouseMoved]
     MouseEntered: NotRequired[_UiEventMouseEntered]  # Optional capability — hover state is a real, likely-future desktop need (tooltip auto-show, hover highlighting) that has no substitute mechanism.
     MouseLeft: NotRequired[_UiEventMouseLeft]  # See `Self::MouseEntered` — same optional-capability status, same rationale, always emitted/not-emitted as a pair.
-    DoubleClick: NotRequired[_UiEventDoubleClick]
+    DoubleClick: NotRequired[_UiEventDoubleClick]  # The second press of a quick primary-button pair at one spot.
     Scroll: NotRequired[_UiEventScroll]  # Scroll-wheel event.
     WindowResized: NotRequired[_UiEventWindowResized]
     WindowFocused: NotRequired[bool]
@@ -3481,6 +3401,7 @@ class _UiEventDict(TypedDict):
     SystemThemeChanged: NotRequired[SystemTheme]  # The OS-level light/dark/accent/high-contrast preference changed while the app was running — the live counterpart to `PlatformServices::system_theme`'s poll-on-demand query.
     PowerStateChanged: NotRequired[_UiEventPowerStateChanged]  # A power-state transition occurred: the system is suspending or resumed, switched between battery and AC, or the screen locked or unlocked.
     ScrollOffsetChanged: NotRequired[_UiEventScrollOffsetChanged]  # A scrollbar drag or click resolved to a new offset.
+    RowsRequested: NotRequired[_UiEventRowsRequested]  # A windowed list, tree, table or text display (one whose descriptor sets `items_window`) scrolled or moved its cursor outside the rows it has loaded: re-render widget `id` with `items_window.start = start` and the `count` rows from there.
     ScrollbarMoved: NotRequired[_UiEventScrollbarMoved]  # A standalone `crate::Scrollbar` widget resolved a gesture — thumb drag, track page, or wheel — to a new thumb position, expressed as `fraction` of the thumb's available travel (`0.0` = start of the track, `1.0` = end).
     SwitchToggled: NotRequired[_UiEventSwitchToggled]  # A standalone `crate::Switch` flipped, via `crate::Switch::handle_key` (`Enter`/`Space` while focused) or `crate::Switch::click` (a left click, regardless of focus).
     RadioGroupSelectionChanged: NotRequired[_UiEventRadioGroupSelectionChanged]  # A standalone `crate::RadioGroup`'s selection changed, via `crate::RadioGroup::handle_key` (arrow-key cursor movement) or `crate::RadioGroup::select` (a click on a specific option).
@@ -3535,6 +3456,7 @@ class _UiEventDict(TypedDict):
     User: NotRequired[UserPayload]  # An app-defined value delivered from a background thread through `crate::Backend::waker`.
 
 class _UiEventDoubleClick(TypedDict):
+    button: MouseButton
     position: Point
     widget: NotRequired[Optional[WidgetId]]
 
@@ -3582,6 +3504,11 @@ class _UiEventPowerStateChanged(TypedDict):
 class _UiEventRadioGroupSelectionChanged(TypedDict):
     index: int
     widget: WidgetId
+
+class _UiEventRowsRequested(TypedDict):
+    count: int  # How many rows to send from `start`.
+    id: WidgetId  # The windowed widget asking for rows.
+    start: int  # The absolute index of the first row to send, the next `items_window.start`.
 
 class _UiEventScroll(TypedDict):
     delta: ScrollDelta

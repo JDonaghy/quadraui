@@ -109,6 +109,62 @@ pub enum FocusSpec {
     Children(Vec<FocusStop>),
 }
 
+impl FocusSpec {
+    /// Whether `sub`, the focused child of a widget with these stops, is
+    /// its last stop (`forward`) or its first: where Tab (or Shift+Tab)
+    /// leaves the widget for the next stop in the host's tab order instead
+    /// of wrapping round the widget's own children. `false` outside
+    /// [`Self::Children`] and for a `sub` that names none of its stops.
+    pub fn child_at_edge(&self, sub: Option<SubTarget>, forward: bool) -> bool {
+        let FocusSpec::Children(stops) = self else {
+            return false;
+        };
+        let Some(pos) = stops.iter().position(|stop| Some(stop.sub) == sub) else {
+            return false;
+        };
+        if forward {
+            pos + 1 >= stops.len()
+        } else {
+            pos == 0
+        }
+    }
+}
+
+/// Where the host draws the focus ring while a widget holds keyboard
+/// focus — see [`Interactive::focus_ring`].
+///
+/// The ring marks the control, not the layout cell it sits in: a button
+/// laid out in a wide cell paints `[ Add ]` at its natural size, and the
+/// ring follows those glyphs rather than the cell's empty remainder.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FocusIndicator {
+    /// Around the whole rect the widget was painted in.
+    Bounds,
+    /// Around this rect, in the widget's own local space (the same space
+    /// [`Interactive::sub_regions`] answers in).
+    At(crate::Rect),
+    /// No host ring: the widget shows its own focus (a form's focused-row
+    /// highlight), so a ring on top would only cover content.
+    Own,
+}
+
+impl FocusIndicator {
+    /// The absolute rect this ring traces for a widget painted at
+    /// `rect`, or `None` for [`Self::Own`].
+    pub fn resolve(self, rect: crate::Rect) -> Option<crate::Rect> {
+        match self {
+            FocusIndicator::Bounds => Some(rect),
+            FocusIndicator::At(r) => Some(crate::Rect::new(
+                r.x + rect.x,
+                r.y + rect.y,
+                r.width,
+                r.height,
+            )),
+            FocusIndicator::Own => None,
+        }
+    }
+}
+
 /// One focusable stop inside a [`FocusSpec::Children`] list.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FocusStop {
@@ -223,6 +279,30 @@ pub enum RoutedEvent {
         /// What dismissed it.
         reason: crate::popup::DismissReason,
     },
+}
+
+impl RoutedEvent {
+    /// The plain press a double-click also is: `Some(Pointer { kind:
+    /// Down(button), .. })` for a [`PointerKind::DoubleClick`] pointer
+    /// event (same `sub`, `local` and `mods`), `None` for every other
+    /// event. [`crate::primitive::DynWidget::handle`] re-delivers an
+    /// ignored double-click through this.
+    pub fn double_click_as_press(&self) -> Option<RoutedEvent> {
+        match self {
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(button),
+                sub,
+                local,
+                mods,
+            } => Some(RoutedEvent::Pointer {
+                kind: PointerKind::Down(*button),
+                sub: *sub,
+                local: *local,
+                mods: *mods,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The runtime seam [`Interactive::handle`] reaches through [`EventCx`] to
@@ -408,6 +488,17 @@ pub trait Interactive: Primitive {
         Vec::new()
     }
 
+    /// Where the host's focus ring goes while this widget holds keyboard
+    /// focus, resolved against `layout` — see [`FocusIndicator`]. The runners
+    /// read it from the frame's painted record, so the ring tracks the
+    /// geometry that is on screen.
+    ///
+    /// Default: [`FocusIndicator::Bounds`].
+    fn focus_ring(&self, layout: &Self::Layout) -> FocusIndicator {
+        let _ = layout;
+        FocusIndicator::Bounds
+    }
+
     /// The name [`crate::DrawsPrimitives::draw_dyn`] publishes sub-part
     /// `sub` under, as a frame-inventory zone (see
     /// [`crate::Backend::register_zone`]) whose id is `"<widget id>:<name>"`.
@@ -458,6 +549,12 @@ pub trait Interactive: Primitive {
     /// routed.
     const OPENS_POPUPS: bool = false;
 
+    /// Whether this widget scrolls its own rows: it paints a window of its
+    /// content from its own scroll position wherever its rect sits, and
+    /// answers [`Self::scrolled_to_row`]. A widget that sets it overrides
+    /// that method. Default: `false`.
+    const SCROLLS_OWN_ROWS: bool = false;
+
     /// The popups this widget has open, given `state` and `layout` — a
     /// dropdown list, a calendar grid, a submenu. Default: none. Only
     /// asked when [`Self::OPENS_POPUPS`] is set.
@@ -500,6 +597,123 @@ pub trait Interactive: Primitive {
     fn popups(&self, state: &Self::State, layout: &Self::Layout) -> Vec<crate::popup::Popup> {
         let _ = (state, layout);
         Vec::new()
+    }
+
+    /// Content this widget needs loaded before `layout` can paint fully —
+    /// a windowed collection's [`UiEvent::RowsRequested`], a sheet's
+    /// `CellGridEvent::CellsRequested`.
+    ///
+    /// A host calls it after every input the widget handled (any outcome
+    /// but a bare [`Handled::Ignored`]), against a layout taken from the
+    /// state [`Self::handle`] just wrote, and delivers the answer like any
+    /// other event. `None` when everything visible is loaded, or when this
+    /// exact request was already made. Default: `None`.
+    fn data_requested(&self, state: &mut Self::State, layout: &Self::Layout) -> Option<UiEvent> {
+        let _ = (state, layout);
+        None
+    }
+
+    /// Record what laying the widget out just resolved into its own state,
+    /// before it paints — a selection the app moved scrolled into view.
+    /// The host calls it for every frame it paints the widget, after
+    /// `layout`, and lays the widget out again when it answers `true`
+    /// (it changed `state`). Default: nothing to record.
+    fn settle(&self, state: &mut Self::State, layout: &Self::Layout) -> bool {
+        let _ = (state, layout);
+        false
+    }
+
+    /// For a widget that scrolls its own rows — it paints a window of its
+    /// content starting at its own scroll position, wherever its rect
+    /// sits — this widget with its first visible row moved to `row`. A
+    /// host scroll container that holds such a widget keeps its rect on
+    /// the viewport and paints this instead of shifting the rect. Default:
+    /// `None`, for a widget that a container scrolls by moving its rect.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = row;
+        None
+    }
+
+    /// An event that names this widget which its host delivered on the
+    /// app's behalf rather than this widget emitting it — an app or a test
+    /// harness dispatching a `TabActivated` for a tab bar, say. A widget
+    /// whose state is uncontrolled by default follows it as if it had
+    /// produced the event itself, so the next frame shows the activated
+    /// tab without the app echoing it onto the descriptor. A host calls
+    /// this for every painted widget; each ignores an event that does not
+    /// name it. Default: ignore it.
+    fn follow_event(&self, state: &mut Self::State, event: &UiEvent) {
+        let _ = (state, event);
+    }
+
+    /// A host-facing summary of the interaction state this widget keeps —
+    /// the selection, scroll position, active tab or expanded rows it
+    /// resolves for the next frame — for a binding that reports a widget's
+    /// state back to its app. Default: an empty summary.
+    fn state_summary(&self, state: &Self::State) -> StateSummary {
+        let _ = state;
+        StateSummary::default()
+    }
+}
+
+/// What [`Interactive::state_summary`] reports: each field is `Some` only
+/// for a widget that keeps that kind of state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[non_exhaustive]
+pub struct StateSummary {
+    /// A tree's resolved selected row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_path: Option<crate::types::TreePath>,
+    /// A list's or table's resolved selected row (absolute when
+    /// windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_idx: Option<usize>,
+    /// The resolved scroll row (absolute when windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_offset: Option<usize>,
+    /// A tab bar's resolved active tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tab: Option<usize>,
+    /// A tree's expanded branches, when it resolves expansion itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<Vec<crate::types::TreePath>>,
+}
+
+impl StateSummary {
+    /// A summary with only `scroll_offset` set.
+    pub fn scroll(scroll_offset: usize) -> Self {
+        Self {
+            scroll_offset: Some(scroll_offset),
+            ..Self::default()
+        }
+    }
+
+    /// This summary with `selected_idx` set.
+    pub fn with_selected_idx(mut self, idx: Option<usize>) -> Self {
+        self.selected_idx = idx;
+        self
+    }
+
+    /// This summary with `selected_path` set.
+    pub fn with_selected_path(mut self, path: Option<crate::types::TreePath>) -> Self {
+        self.selected_path = path;
+        self
+    }
+
+    /// This summary with `active_tab` set.
+    pub fn with_active_tab(mut self, active: Option<usize>) -> Self {
+        self.active_tab = active;
+        self
+    }
+
+    /// This summary with `expanded` set.
+    pub fn with_expanded(mut self, expanded: Option<Vec<crate::types::TreePath>>) -> Self {
+        self.expanded = expanded;
+        self
     }
 }
 
@@ -553,6 +767,7 @@ mod tests {
         fn into_ui_event(self, id: WidgetId) -> UiEvent {
             UiEvent::DoubleClick {
                 widget: Some(id),
+                button: crate::MouseButton::Left,
                 position: Point::default(),
             }
         }

@@ -19,7 +19,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 // Two `Native(8.0)` columns keep every coordinate below exact: the header
 // occupies row 0 (TUI header height is one cell); body rows start at row 1.
@@ -83,7 +83,7 @@ test("double click on a data table row emits the distinct RowDoubleClicked", () 
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 2.0, y: 1.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 2.0, y: 1.0 } } });
   app.run(1);
 
   assert.ok(
@@ -165,7 +165,7 @@ test("double click on a list item emits ItemDoubleClicked, not ItemActivated", (
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
-  app.pushEvent({ DoubleClick: { position: { x: 0.0, y: 1.0 } } });
+  app.pushEvent({ DoubleClick: { button: "Left", position: { x: 0.0, y: 1.0 } } });
   app.run(1);
 
   assert.ok(

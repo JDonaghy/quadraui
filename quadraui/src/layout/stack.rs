@@ -377,6 +377,30 @@ impl Spacing {
         );
         self.padding.inset(after_margin, char_width, line_height)
     }
+
+    /// The natural size of a box whose content measures `content`: the
+    /// content plus this spacing's padding and margin on each measured
+    /// axis, quantised as [`Self::inset`] quantises them, so `inset` of a
+    /// rect this size gives the content back exactly. An axis `content`
+    /// leaves unmeasured stays `None`.
+    pub fn outset(
+        &self,
+        content: super::NaturalSize,
+        char_width: f32,
+        line_height: f32,
+    ) -> super::NaturalSize {
+        let margin_h = quantise_margin_horizontal(self.margin, char_width) * 2.0;
+        let margin_v = quantise_margin_vertical(self.margin, line_height) * 2.0;
+        let pad = &self.padding;
+        let pad_h =
+            quantise_horizontal(pad.left, char_width) + quantise_horizontal(pad.right, char_width);
+        let pad_v =
+            quantise_vertical(pad.top, line_height) + quantise_vertical(pad.bottom, line_height);
+        super::NaturalSize::new(
+            content.width.map(|w| w + pad_h + margin_h),
+            content.height.map(|h| h + pad_v + margin_v),
+        )
+    }
 }
 
 /// Nominal pixel width of one terminal cell — the pixel reference

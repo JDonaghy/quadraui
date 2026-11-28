@@ -186,9 +186,8 @@ impl NamedKey {
     ///
     /// This is the **single** source of truth for stringifying a
     /// `NamedKey`: [`crate::accelerator::key_to_binding_name`],
-    /// `primitives::list::key_to_event_string`,
-    /// `quadraui-binding-core`'s `key_to_focus_string`, and
-    /// `compose::form_controller::date_picker_key_name` all defer to it so
+    /// `primitives::list::key_to_event_string` and the form's
+    /// `date_picker_key_name` all defer to it so
     /// a `Ctrl+F13` accelerator and a `KeyPressed { key: "F13", .. }` event
     /// agree on the same spelling.
     pub fn name(&self) -> std::borrow::Cow<'static, str> {
@@ -533,9 +532,15 @@ pub enum CanvasEvent {
         x: f32,
         y: f32,
     },
-    /// A declared region was double-clicked. No `button`/`modifiers` field
-    /// — mirrors [`UiEvent::DoubleClick`] itself, which carries neither.
-    RegionDoubleClicked { region: WidgetId, x: f32, y: f32 },
+    /// A declared region was double-clicked with `button` — the button
+    /// [`UiEvent::DoubleClick`] carries. No `modifiers` field: a
+    /// double-click carries none.
+    RegionDoubleClicked {
+        region: WidgetId,
+        button: MouseButton,
+        x: f32,
+        y: f32,
+    },
     /// The hovered region changed, including to/from no region at all.
     /// `None` means the pointer is over the canvas's own body but outside
     /// every declared region, or has left the canvas entirely — the same
@@ -660,8 +665,20 @@ pub enum UiEvent {
     MouseLeft {
         widget: WidgetId,
     },
+    /// The second press of a quick primary-button pair at one spot.
+    /// [`crate::dispatch::DoubleClickDetector`] folds only
+    /// [`MouseButton::Left`] presses, so two quick right-clicks stay two
+    /// `MouseDown`s (two context-menu requests) rather than becoming a
+    /// double-click. `button` names the button that was double-clicked,
+    /// so a consumer matches on it rather than assuming one.
+    ///
+    /// A widget with no double-click meaning of its own receives this as
+    /// a plain press of `button` (see
+    /// [`crate::primitive::DynWidget::handle`]): two quick clicks on a
+    /// `Button` activate it twice.
     DoubleClick {
         widget: Option<WidgetId>,
+        button: MouseButton,
         position: Point,
     },
     /// Scroll-wheel event. **Routes to the widget under the cursor, not
@@ -923,6 +940,28 @@ pub enum UiEvent {
     ScrollOffsetChanged {
         widget: WidgetId,
         new_offset: usize,
+    },
+
+    /// A windowed list, tree, table or text display (one whose descriptor
+    /// sets `items_window`) scrolled or moved its cursor outside the rows
+    /// it has loaded: re-render widget `id` with `items_window.start =
+    /// start` and the `count` rows from there. `count` is bounded by a
+    /// few viewports, never by the collection's total.
+    ///
+    /// Routing: emitted by the widget, after the input that moved it —
+    /// never at paint time, so a first frame or a grown viewport over
+    /// unloaded rows shows placeholders until the app sends them or the
+    /// next input asks. A [`crate::CellGrid`] asks for its cells through
+    /// its own `CellGridEvent::CellsRequested` instead; see
+    /// [`crate::behaviour::row_window`] for how the two map.
+    RowsRequested {
+        /// The windowed widget asking for rows.
+        id: WidgetId,
+        /// The absolute index of the first row to send, the next
+        /// `items_window.start`.
+        start: usize,
+        /// How many rows to send from `start`.
+        count: usize,
     },
 
     /// A standalone [`crate::Scrollbar`] widget resolved a gesture —

@@ -1,11 +1,11 @@
-// Black-box coverage for `js/app/runtime.ts`'s hot reload: an app whose
+// Black-box coverage for the app layer's hot reload: an app whose
 // view code lives in a real module on disk keeps running while that file
 // is rewritten, picks the new code up, and keeps component state, the
 // state on a preserved app object, and framework widget state; a broken
 // edit leaves the last good code running. Mirrors
 // `quadraui-py/tests/test_hot_reload.py`.
 //
-// The app is driven through `../js/testing.ts` -- the app-author test
+// The app is driven through `@quadraui/node/testing` -- the app-author test
 // harness -- so a click is a click and a keypress is a keypress, with no
 // wire event spelled out here. Only the reload calls themselves go
 // straight to `App`: `enableHotReload`/`reloadIfChanged` are the app's own
@@ -17,8 +17,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { App } = require("../js/app/index.ts");
-const { harness } = require("../js/testing.ts");
+const { App } = require("@quadraui/node/app");
+const { harness } = require("@quadraui/node/testing");
 
 const createdTmpDirs: string[] = [];
 const builtHarnesses: any[] = [];
@@ -67,7 +67,7 @@ class Fixture {
   }
 }
 
-const APP_DIR = path.join(__dirname, "..", "js", "app", "index.ts");
+const APP_DIR = require.resolve("@quadraui/node/app");
 
 const COUNTER_V1 = `
 const { Button, Column, Component, TextDisplay } = require(${JSON.stringify(APP_DIR)});
@@ -276,14 +276,11 @@ function loadDemo(): [any, string] {
   createdTmpDirs.push(dir);
   const examples = path.join(__dirname, "..", "examples");
   fs.mkdirSync(path.join(dir, "hot_reload"));
-  // The copies live two directories deeper than the originals did relative
-  // to `js/`, so their own `require("../../js/...")` paths are rewritten to
-  // absolute ones rather than left to resolve against the temp dir.
-  const jsDir = path.join(__dirname, "..", "js");
+  // The copies live outside this package, where `@quadraui/node` does not
+  // resolve to itself, so each `require("@quadraui/node...")` is rewritten
+  // to the absolute path it resolves to from here.
   const rewrite = (source: string) =>
-    source
-      .replaceAll('require("../../js/', `require(${JSON.stringify(jsDir)} + "/`)
-      .replaceAll('require("../js/', `require(${JSON.stringify(jsDir)} + "/`);
+    source.replace(/require\("(@quadraui\/node[^"]*)"\)/g, (_m: string, id: string) => `require(${JSON.stringify(require.resolve(id))})`);
   fs.writeFileSync(
     path.join(dir, "hot_reload", "notes_view.ts"),
     rewrite(fs.readFileSync(path.join(examples, "hot_reload", "notes_view.ts"), "utf8")),

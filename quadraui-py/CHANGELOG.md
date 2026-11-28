@@ -12,6 +12,47 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `examples/windowed_list_demo.py` (#2977): a `list` over a
+  1,000,000-row collection that sends only the rows around its viewport
+  through `items_window` and answers each `RowsRequested`. It shows the two
+  rules a windowed app follows: every index is absolute, and the app sends
+  its first viewport's rows itself, since a windowed widget asks for rows
+  only after input.
+- `App.quit()` ends the run from any callback (a node callback, `on_event`,
+  an async task) or from top-level code; the step that ran it, or the next
+  one, returns `False`, and `run_tui()`/`run_native()`/`run_async()`
+  return (#3107).
+- Default quit keys on `App`: Ctrl-C unless a focused text field takes it,
+  and `q`/Escape when no focused widget consumed the key. `on_event` sees
+  the key first and keeps the app running by returning `True`;
+  `App(quit_keys=False)` turns all three off (#3107).
+- `App(width, height)` is optional and defaults to 80x24; it only sizes a
+  headless run (#3107).
+- `Text("...")`: one unstyled `TextDisplay` line per `\n`-separated line,
+  sized to its content by default (#3107).
+- Per-child `size=`, `min=` and `max=` on every app-layer node constructor
+  except `Slider`: `size` is an `int` (portable pixels; a TUI cell is 8x16),
+  `"N%"`, `"Nfr"`, `"content"` or a raw wire `SectionSize`, and sets how
+  much of its parent `Column`/`Row` the node takes (#3107).
+- Multi-select reaches the app (#2551). `data_table` descriptors take
+  `selection_mode` (`"Single"`/`"Multi"`) and `selected_indices`; in
+  `"Multi"`, Ctrl/Cmd-click, Shift-click, Shift+Up/Down, Ctrl/Cmd+A and
+  Ctrl+Space/Insert emit `DataTable.SelectionSet{indices}` and the set
+  paints back from `selected_indices`. A `list` emits
+  `List.SelectionSet{indices}` for Ctrl/Cmd/Shift clicks, Ctrl/Cmd+A and
+  Ctrl+Space/Insert, and a `"Multi"` `tree` emits `Tree.SelectionSet{paths}`
+  for Ctrl/Cmd/Shift clicks. App layer: `Table(selection_mode=...,
+  selected_indices=..., on_selection=, on_context_menu=, on_click=)`,
+  `List(on_selection=, on_context_menu=, on_click=)` and
+  `Tree(on_selection=, on_context_menu=)`.
+- `TextDisplay(lines, show_scrollbar=True)` paints a scrollbar and makes
+  the pane a Tab stop the keyboard can scroll (#3108). Wire descriptors
+  gain `Palette.show_mode_badge` (default true; false hides the `[L]`/`[I]`
+  badge) and `FindReplacePanel.hidden_toggles` (toggles the panel does not
+  offer: no paint, no click, no Alt shortcut) (#3082). A `cell_grid` leaf
+  scrolls under the mouse wheel, and while a cell is being edited a click
+  on it places the caret and a drag selects (#3082).
+
 - A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
   Fedora 40+, Debian 13+) carrying two builds of the extension,
   `_quadraui_gtk` (linking the system GTK 4, Pango, Cairo and GLib; nothing
@@ -188,6 +229,93 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 - `quadraui.__version__` reports the installed distribution's version.
 
 ### Changed
+
+- Every widget leaf -- `list`, `tree`, `data_table`, `text_display` and
+  `tab_bar` included -- is a generic widget driven by its core widget's own
+  state and input handling (#2977), with these visible changes:
+  - A list, tree, table or text display keeps its own selection, scroll and
+    (tree) expansion, and a windowed one asks for rows itself. A descriptor
+    value wins only when it changed since the widget last saw it: an app
+    that resends the same `scroll_offset`/`selected_idx` every frame leaves
+    the widget uncontrolled, and one that sends a new value moves it.
+    **Breaking:** before, any non-zero `scroll_offset` pinned the scroll.
+    To pin a scroll now, keep it in the app and send each change as a new
+    value.
+  - **Breaking:** a click on a list item, tree row or table row is the widget's own
+    event (`SelectionChanged`, `RowClicked`, `RowSelected`, ...), and a
+    click on a tree row selects it. The raw `MouseDown`/`DoubleClick` with
+    a per-kind `"hit"` (`tree_row`, `list_item`, `data_table_row`,
+    `text_display_line`, ...) is gone: a pointer event on a widget carries
+    `"hit": {"kind": "widget_body"}`, and so does an event a widget emits
+    from a key. Match the `List`/`Tree`/`DataTable`/`TextDisplay` events
+    instead of `hit.kind`.
+  - **Breaking:** a focused tree's Up/Down/Home/End/PageUp/PageDown report `Tree
+    SelectionChanged` (nothing for a windowed tree's unloaded row) instead
+    of a tree-scoped `KeyPressed`; a table's Up/Down come from `DataTable`'s
+    own key handling; a Ctrl/Shift click on a list reports `List
+    SelectionSet`; the tree wheel reports `Tree ScrollChanged` instead of
+    `ScrollOffsetChanged`. Handle those events where the app matched the
+    `KeyPressed` or `ScrollOffsetChanged`.
+  - A focused text display claims its own PageUp/PageDown/Home/End, so an
+    enclosing `scroll` container no longer pages for them.
+  - `widget_state(id)` answers for a widget painted this frame under its
+    leaf id or its own descriptor id, from the state the widget keeps; a
+    tree with branch rows reports `expanded` (`[]` when none is open). The
+    returned keys are unchanged.
+  - A `TabActivated`/`TabClosed`/`RowToggleExpand` the app dispatches for a
+    painted tab bar or tree moves that widget's state as a click would, and
+    a tree, list or table whose app moves its selection (`selected_path`,
+    `selected_idx`) scrolls the new selection into view, windowed or not,
+    unless the app sets a new `scroll_offset` that frame. A windowed tree's
+    keyboard cursor moves to a new `selected_path` the app sends, and
+    keeps to its row's path when the app re-flattens the rows around it.
+  - A tab group's content pane follows the tab its strip activated, and a
+    leaf hidden in an unselected tab or scrolled out of a `scroll`
+    container keeps its widget state until it shows again.
+  - The schema types `ListViewLeaf`, `TreeViewLeaf`, `DataTableLeaf`,
+    `TextDisplayLeaf` and `RowsRequestedEvent` are gone from `wire.pyi`
+    (their descriptors carry `items_window`/`scroll_px` themselves, and
+    `RowsRequested` is a `UiEvent`), as are the per-kind `HitDetail`
+    variants; `RowsRequested`'s wire dict is unchanged.
+
+- `RowsRequested` is now a core `UiEvent` variant, so the typed `UiEvent`
+  union in `wire.pyi` includes `{"RowsRequested": {"id", "start", "count"}}`
+  — the same dict a windowed `list`/`tree`/`data_table`/`text_display`
+  already delivered (#2977). `items_window` and `scroll_px` are typed
+  fields of the `ListView`/`TreeView`/`DataTable`/`TextDisplay` descriptor
+  types rather than leaf-only extra keys; the keys and their meaning are
+  unchanged.
+
+- A `text_display` leaf inside a layout tree registers its selectable text
+  region under the descriptor's own `id`, so `TextSelectionChanged`'s
+  `region` names the display rather than its tree-address id (#2977).
+- **Breaking:** `Tree(on_click=f)` calls `f(path, button)`, matching `List`
+  and `Table`'s `on_click(idx, button)`, so an app can tell a middle or
+  back/forward row press from a left one; `Tree(on_row_click=f)` is gone. Migrate
+  with a callback that takes the button and ignores it, or acts only on
+  `"Left"` (#3080).
+- `h.find(id="form").focus()` in the test harness moves keyboard focus there (a pushed
+  `FocusChanged` now moves it), so typed keys reach the form's first field
+  instead of the last-clicked widget (#3080).
+- The default quit keys are documented as they behave in all three
+  languages: `q`/Escape quit unless the focused widget takes the key, and
+  Ctrl-C quits unless a focused text field takes it (#3080).
+- Mouse events changed shape (#3074, #2555). `DoubleClick` carries a
+  `button` (`{"DoubleClick": {"button": "Left", "position": ...}}`; a pushed
+  `DoubleClick` must now name it), and only the left button folds, so two
+  quick right-clicks are two context-menu requests. Two quick clicks on a
+  `Button` call `on_click` twice. A right-click on a `DataTable`, `List` or
+  `Tree` row emits `ContextMenuRequested{idx|path, position}` instead of a
+  selection, and a middle or back/forward press emits
+  `DataTable.RowClicked`/`List.ItemClicked{idx, button, modifiers}`;
+  `Tree.RowClicked` gains `button`. A header or chevron reacts to the left
+  button only.
+- Focus renders the same as in Rust (#3108): a `TextDisplay` is not a Tab
+  stop unless it shows a scrollbar; the TUI focus ring never covers a
+  control's glyphs (a focused button keeps both brackets, underlined at its
+  natural width, with accent-coloured brackets; a list's ring steps around
+  its rows' text); and a `cell_grid` cursor on a cell filled close to the
+  cursor colour paints inverse so it stays visible (#3082).
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input
@@ -418,6 +546,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
+- From `wire.pyi` (#2977): `ListViewLeaf`, `TreeViewLeaf`,
+  `DataTableLeaf`, `TextDisplayLeaf`, `RowsRequestedEvent`, and the
+  `HitDetail` variants `tree_row`, `tree_chevron`, `list_title`,
+  `list_item`, `data_table_header`, `data_table_header_divider`,
+  `data_table_row`, `data_table_footer`, `text_display_line`,
+  `text_display_scrollbar_*` and `tree_scrollbar_*`. A widget leaf's
+  pointer event carries `widget_body`; see Changed.
+
 - The `"extra_body"` hit detail (#2977). Every widget leaf is a generic
   widget now and reports `"widget_body"`; no leaf produced `"extra_body"`
   any more. The `_HitDetailExtraBody` type is gone from `quadraui.wire`.
@@ -523,6 +659,25 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- The test harness's `find(id=...)` and `walk()` see a node given `size`, `min`
+  or `max`, and everything inside it: those keys hid the node, so a
+  content-sized `Row` of buttons or any `Text` could not be found (#3080).
+- A content-sized `Row`/`Column` with `padding` keeps its children: its
+  measured size now includes the padding, which was then inset from a box
+  sized without it, leaving nothing to paint (#3080).
+- A plain arrow key on a `List` or `Tree` moves the multi-selection to the
+  cursor row, so a following Ctrl-click grows the selection from there, as
+  in Rust, instead of from the row clicked before the arrow keys (#3080).
+- A `List` or `Tree` the app leaves uncontrolled follows its own clicks
+  and arrow keys: a click moves its cursor, the first Down from an untouched
+  list goes to row 1, and a `Tree` with no selected path sends none instead
+  of an empty path that pinned its cursor (#3080).
+- `Text` in a `Row` (sized to its content by default) is as wide as its
+  line plus the gutter a `TextDisplay` row reserves, so each label shows
+  whole instead of wrapping into an empty one-row slot (#3107).
+- A `Column` or `Row` sized `"content"` measures its children (their sizes
+  end to end plus the gaps, and the largest across) instead of collapsing
+  to nothing, the same measure the Rust app layer gives a stack (#3107).
 - While a modal overlay (`show_overlay("message_dialog", ...)` and the
   other modal kinds) is open, a click, pointer move or key it does not use
   no longer reaches the widget painted beside or beneath it.

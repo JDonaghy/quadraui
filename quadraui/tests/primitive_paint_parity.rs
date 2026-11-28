@@ -93,6 +93,8 @@ fn sample_list() -> ListView {
             .collect(),
         selected_idx: 2,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         has_focus: true,
         bordered: false,
         h_scroll: 0,
@@ -126,6 +128,8 @@ fn sample_tree() -> TreeView {
         selection_mode: SelectionMode::Single,
         selected_path: Some(vec![2]),
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         style: TreeStyle::default(),
         has_focus: true,
     }
@@ -133,6 +137,8 @@ fn sample_tree() -> TreeView {
 
 fn sample_table() -> DataTable {
     DataTable {
+        selection_mode: Default::default(),
+        selected_indices: Vec::new(),
         id: WidgetId::new("pods"),
         columns: vec![
             Column {
@@ -157,6 +163,8 @@ fn sample_table() -> DataTable {
             .collect(),
         selected_idx: Some(2),
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: Some((0, SortDirection::Ascending)),
         has_focus: true,
         show_scrollbar: false,

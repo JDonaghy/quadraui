@@ -1,0 +1,392 @@
+=== initial
+| Ship to a different address [ ]                                                                    |
+| I agree to the terms        [ ]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=0 | —                                                                Tab focus / click / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-90 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 91-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-14 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 15-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== ship_on
+| Ship to a different address [x]                                                                    |
+| Shipping address            [123 Main St…                                                         ]|
+| I agree to the terms        [ ]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=0 | ship = true                                                      Tab focus / click / q |
+0: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-41 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 42-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-90 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 91-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-24 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 25-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== address_typed
+| Ship to a different address [x]                                                                    |
+| Shipping address            [1 Main St                                                            ]|
+| I agree to the terms        [ ]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=0 | address = "1 Main St"                                            Tab focus / click / q |
+0: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 29-29 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 30-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 40-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE };
+2: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-90 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 91-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-34 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 35-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== submit_disabled
+| Ship to a different address [x]                                                                    |
+| Shipping address            [1 Main St                                                            ]|
+| I agree to the terms        [ ]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=0 | submit ignored (disabled)                                        Tab focus / click / q |
+0: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 29-29 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 30-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 40-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE };
+2: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-90 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 91-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 39-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== agreed
+| Ship to a different address [x]                                                                    |
+| Shipping address            [1 Main St                                                            ]|
+| I agree to the terms        [x]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=0 | agree = true                                                     Tab focus / click / q |
+0: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 29-29 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 30-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 40-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE };
+2: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-96 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 97-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-25 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 26-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== submitted
+| Ship to a different address [x]                                                                    |
+| Shipping address            [1 Main St                                                            ]|
+| I agree to the terms        [x]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=1 | submitted                                                        Tab focus / click / q |
+0: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 29-29 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 30-38 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 39-39 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 40-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE };
+2: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-96 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 97-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-22 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 23-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== ship_off
+| Ship to a different address [ ]                                                                    |
+| I agree to the terms        [x]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=1 | ship = false                                                     Tab focus / click / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 90-96 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 97-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-25 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 26-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== backtab
+| Ship to a different address [ ]                                                                    |
+| I agree to the terms        [x]                                                                    |
+|                                                                                         < Submit > |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| submits=1 | focus → submit                                                   Tab focus / click / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 29-31 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 32-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-88 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 89-89 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 90-96 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 97-98 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-76 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 77-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };

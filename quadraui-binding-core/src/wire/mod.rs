@@ -103,16 +103,12 @@ pub use layout::LAYOUT_NODE_KEYS;
 pub use value::StaticTabContent;
 
 /// Whether `key` already means something in a layout-tree node dict: the
-/// leaf `"id"`, a layout container, a fixed leaf kind, or a node sibling
-/// key. A widget kind registered under such a name would be
+/// leaf `"id"`, a layout container, or a node sibling key. A widget kind registered under such a name would be
 /// shadowed by that meaning and never decode as the registered kind.
 pub fn is_reserved_node_key(key: &str) -> bool {
     key == "id"
         || LAYOUT_NODE_KEYS.contains(&key)
-        || crate::layout::LEAF_KIND_KEYS.contains(&key)
         || value::UNIVERSAL_NODE_SIBLING_KEYS.contains(&key)
-        || value::WINDOWED_LEAF_EXTRA_KEYS.contains(&key)
-        || value::TEXT_DISPLAY_EXTRA_KEYS.contains(&key)
         || value::DRAG_ROLE_KEYS.contains(&key)
         || value::A11Y_KEYS.contains(&key)
 }
@@ -258,7 +254,7 @@ mod tests {
 
     /// A node dict naming a kind this decoder has never heard of
     /// (`"carousel"`, neither a [`LAYOUT_NODE_KEYS`] container nor a
-    /// [`crate::layout::LEAF_KIND_KEYS`]/widget leaf) is
+    /// widget leaf kind) is
     /// an [`DecodeError::UnknownVariant`] naming both the key and the path
     /// it was found at, under the default (warn) [`DecodeDiagnostics`]
     /// policy -- not a silently blank render, whether the dict is the

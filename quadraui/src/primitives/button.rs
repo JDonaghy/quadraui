@@ -11,7 +11,7 @@
 //! embedded inside a form. `Button` is additive: a standalone control
 //! for a host that wants a button outside a form (a toolbar action, a
 //! dialog's own footer, a palette entry) without pulling in the whole
-//! `Form`/`FormController` machinery. `Form`'s own field kinds are
+//! `Form` machinery. `Form`'s own field kinds are
 //! untouched.
 //!
 //! # Focus and activation
@@ -269,6 +269,21 @@ impl Button {
         ButtonLayout {
             bounds,
             nerd_fonts_enabled: false,
+            label_rect: bounds,
+        }
+    }
+
+    /// The label-driven sizing half of this button, for
+    /// [`ButtonSpec::min_cell_width`].
+    fn spec(&self) -> ButtonSpec {
+        ButtonSpec {
+            label: self.label.clone(),
+            variant: self.variant,
+            icon: self.icon.clone(),
+            icon_position: self.icon_position,
+            icon_gap: self.icon_gap,
+            tooltip: None,
+            disabled: self.disabled,
         }
     }
 
@@ -436,14 +451,14 @@ impl ButtonSpec {
             } else {
                 ((self.icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).max(1)
             };
-            1 + gap_cells
+            gap_cells.saturating_add(1)
         } else {
             0
         };
         if matches!(self.variant, ButtonVariant::Icon) {
             icon_block.max(1) as f32
         } else {
-            (4 + icon_block + label_w) as f32
+            icon_block.saturating_add(4 + label_w) as f32
         }
     }
 }
@@ -470,6 +485,13 @@ pub struct ButtonLayout {
     /// carry it through for the same reason. [`Button::layout`], which
     /// has no `LayoutCtx` to consult, leaves it `false`.
     pub nerd_fonts_enabled: bool,
+    /// Where the button's own chrome sits inside [`Self::bounds`]: on a
+    /// cell grid the `[ Label ]` run at its natural width, on the row the
+    /// cell painter centres it on; on a pixel surface the whole bounds,
+    /// which the button fills. The focus ring traces this rect
+    /// ([`crate::interactive::Interactive::focus_ring`]), so it marks the
+    /// control rather than the layout cell around it.
+    pub label_rect: Rect,
 }
 
 /// Classification of a hit-test result.
@@ -571,6 +593,12 @@ pub(crate) fn cell_button_layout(
 ) -> ButtonLayout {
     let mut layout = button.layout(crate::primitive::cell_grid_rect(rect));
     layout.nerd_fonts_enabled = ctx.nerd_fonts_enabled;
+    let bounds = layout.bounds;
+    // The label row is centred, so a multi-row cell keeps a padding row
+    // above and below it.
+    let row = bounds.y + ((bounds.height - 1.0).max(0.0) / 2.0).floor();
+    let width = button.spec().min_cell_width().min(bounds.width);
+    layout.label_rect = Rect::new(bounds.x, row, width, bounds.height.min(1.0));
     layout
 }
 
@@ -598,15 +626,7 @@ impl crate::primitive::Primitive for Button {
         ctx: &crate::primitive::LayoutCtx,
         _avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
-        let spec = ButtonSpec {
-            label: self.label.clone(),
-            variant: self.variant,
-            icon: self.icon.clone(),
-            icon_position: self.icon_position,
-            icon_gap: self.icon_gap,
-            tooltip: None,
-            disabled: self.disabled,
-        };
+        let spec = self.spec();
         match ctx.units() {
             crate::primitive::Units::Cells => {
                 crate::NaturalSize::new(Some(spec.min_cell_width()), Some(1.0))
@@ -692,6 +712,7 @@ impl crate::primitive::Primitive for Button {
             theme,
             env.is_hovered(&self.id),
             env.is_pressed(&self.id),
+            self.focused || env.state.focus_ring_visible(),
         );
     }
 }
@@ -704,6 +725,18 @@ impl crate::interactive::Interactive for Button {
     /// `Button::focused`'s own doc describes.
     fn focus(&self) -> crate::interactive::FocusSpec {
         crate::interactive::FocusSpec::Stop
+    }
+
+    /// Around [`ButtonLayout::label_rect`]: the `[ Label ]` run at its
+    /// natural width on a cell grid, not the whole layout cell.
+    fn focus_ring(&self, layout: &ButtonLayout) -> crate::interactive::FocusIndicator {
+        let (label, bounds) = (layout.label_rect, layout.bounds);
+        crate::interactive::FocusIndicator::At(Rect::new(
+            label.x - bounds.x,
+            label.y - bounds.y,
+            label.width,
+            label.height,
+        ))
     }
 
     fn a11y_actions(&self, _state: &()) -> Vec<crate::a11y::A11yAction> {
@@ -805,7 +838,8 @@ pub(crate) mod cell_paint {
     /// background via `Theme::button_pressed_bg`/`Theme::button_hover_bg`
     /// when `is_hovered`/`is_pressed` is set — pressed takes priority
     /// over hover, same as the GTK/macOS/Win `native_surface_paint`
-    /// path.
+    /// path. `is_focused` draws the brackets in the accent colour, the
+    /// glyph half of the focus indication the host ring underlines.
     ///
     /// `layout` must be the value [`super::cell_button_layout`] returned
     /// for the same button and rect, so paint and
@@ -817,6 +851,7 @@ pub(crate) mod cell_paint {
         theme: &Theme,
         is_hovered: bool,
         is_pressed: bool,
+        is_focused: bool,
     ) {
         let bounds = layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -826,10 +861,7 @@ pub(crate) mod cell_paint {
         let x0 = bounds.x.round() as u16;
         let w = bounds.width.round() as u16;
         let end = x0.saturating_add(w);
-        let area_height = bounds.height.round() as u16;
-        // Centre the label row so a focus ring's top/bottom border
-        // (painted on the cell's edge rows) never overwrites it.
-        let y = bounds.y.round() as u16 + area_height.saturating_sub(1) / 2;
+        let y = layout.label_rect.y.round() as u16;
 
         let intent_fg = match button.variant {
             ButtonVariant::Danger => Some(theme.error_fg),
@@ -866,7 +898,7 @@ pub(crate) mod cell_paint {
         };
         let brk_fg = if button.disabled {
             theme.muted_fg
-        } else if button.focused {
+        } else if is_focused {
             theme.accent_fg
         } else if let Some(intent) = intent_fg {
             intent
@@ -994,7 +1026,15 @@ pub(crate) mod cell_paint {
                 crate::backend::ColorDepth::TrueColor,
                 &mut cursor_sink,
             );
-            super::paint(button, &layout, &mut surface, theme, is_hovered, is_pressed);
+            super::paint(
+                button,
+                &layout,
+                &mut surface,
+                theme,
+                is_hovered,
+                is_pressed,
+                button.focused,
+            );
             (buf, layout)
         }
 
@@ -1279,7 +1319,7 @@ pub(crate) mod cell_paint {
                     crate::backend::ColorDepth::TrueColor,
                     &mut cursor_sink,
                 );
-                paint(&button, &layout, &mut surface, &theme, false, false);
+                paint(&button, &layout, &mut surface, &theme, false, false, false);
                 (area.x..area.x + area.width)
                     .map(|x| cell_char(&buf, x, area.y))
                     .collect()
@@ -2651,6 +2691,7 @@ mod contract_tests {
         let layout = ButtonLayout {
             bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
             nerd_fonts_enabled: false,
+            label_rect: Rect::new(0.0, 0.0, 6.0, 1.0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(b.id, &mut host);
@@ -2669,6 +2710,7 @@ mod contract_tests {
         let layout = ButtonLayout {
             bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
             nerd_fonts_enabled: false,
+            label_rect: Rect::new(0.0, 0.0, 6.0, 1.0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(b.id, &mut host);
@@ -2684,6 +2726,7 @@ mod contract_tests {
         let layout = ButtonLayout {
             bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
             nerd_fonts_enabled: false,
+            label_rect: Rect::new(0.0, 0.0, 6.0, 1.0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(b.id, &mut host);
@@ -2716,6 +2759,7 @@ mod contract_tests {
         let layout = ButtonLayout {
             bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
             nerd_fonts_enabled: false,
+            label_rect: Rect::new(0.0, 0.0, 6.0, 1.0),
         };
         let mut host = MockHost::default();
         let mut cx = EventCx::new(id, &mut host);

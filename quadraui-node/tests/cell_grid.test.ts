@@ -34,7 +34,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const NO_MODS = { shift: false, ctrl: false, alt: false, cmd: false };
 const PAGE_DOWN = { KeyPressed: { key: { Named: "PageDown" }, modifiers: NO_MODS, repeat: false } };

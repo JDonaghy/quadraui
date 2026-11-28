@@ -231,6 +231,7 @@ fn draw_text_display_paints_in_editor_font() {
                 timestamp: None,
             }],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,

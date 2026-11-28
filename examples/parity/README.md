@@ -12,14 +12,19 @@ written once in each language:
 
 The app is a `New` text field, a list of todos, `Add` and `Clear` buttons and
 a status bar. Typing edits the draft, and Enter or `Add` appends it.
-Clicking a row selects it, and `Clear` empties the list. Every update also
+Clicking a row selects it, and `Clear` empties the list. The script also
+covers keyboard focus and the quit keys: a clicked button, the focused list
+and Tab back into the form each paint their focus the same way in all three
+languages, Tab past the form's field moves on to the list and the buttons,
+Ctrl-C typed into the field leaves the app running, and Escape quits it. Every update also
 appends a line such as `edit Bu`, `add Tea` or `select 1` to the app's `log`,
 the same vocabulary in every language.
 
 Each tracer runs its app headless on the TUI backend at 40x12 cells and drives
-it with [`script.json`](script.json): clicks at cell coordinates, typed text and
-named keys. After the first paint and after every step it records the glyph,
-foreground and background of every cell, plus the log lines that step added.
+it with [`script.json`](script.json): clicks at cell coordinates, typed text,
+named keys and Ctrl chords (`{"ctrl": "c"}`). After the first paint and after
+every step it records the glyph, foreground and background of every cell, plus
+the log lines that step added and `quit` once the app has asked to quit.
 [`scripts/parity_check.py`](../../scripts/parity_check.py) runs all three and
 fails on the first step where Rust or Node differs from Python. It prints both
 frames side by side and lists every differing cell.
@@ -41,32 +46,20 @@ Running each app live: `cargo run -p quadraui-parity --features tui --bin todo`,
 
 ## Known divergences
 
-Python and Node match exactly at every step. Rust does not yet, in three
-places. [`known_divergences.json`](known_divergences.json) records each one
+All three languages match exactly at every step. When one stops matching,
+[`known_divergences.json`](known_divergences.json) records each difference
 with the steps and the cell region where it shows. The check allows a
 difference only there. If a listed step stops differing, the check fails until
 that step is removed from the file, so a fix cannot go unnoticed.
 
-| Id | What differs |
-|---|---|
-| `form-focus-ring` | A focused `Form` gets the runner's focus ring around its whole rect in Rust. The ring covers the field, so typed text is hidden. Python and Node draw no ring on a form. |
-| `button-pressed-after-release` | After a click, Rust paints the button with the pressed colour; Python and Node paint the hover colour. |
-| `controlled-list-ignores-arrow-keys` | Down on a focused list whose selection the app pins moves the selection and fires `SelectionChanged` in Rust. Python and Node do nothing. |
+## How the Rust version is built
 
-## API gaps the Rust version shows
-
-- Rust has no layout tree. Python and Node write `Column(...)`/`Row(...)`,
-  while Rust places rects by hand with a `shares` helper that copies the
-  bindings' equal-share split.
-- `Form`, `FormField`, `ListView` and `ListItem` have no `Default` or
-  builder, so the Rust view spells out every field. The bindings get those
-  defaults from their wire decoder.
-- In Rust the form's focused field is app state. The app sets it from
-  `FormEvent::FocusChanged` and clears it by reading `Backend::focus_tree()`,
-  since nothing reports that focus left the form. In Python and Node the
-  engine owns it.
-- `AppLogic::frame_tree` and `extra_tab_stops` get no `Backend`, so the Rust
-  app builds its view at a fixed 40x12 for routing.
+It uses the Rust app layer (`quadraui::app`), the same shape as the Python
+and Node versions: `column`/`row` with equal shares, `form`/`text_field`,
+`list` and `status_bar` nodes whose handlers map events to a `Msg`, and one
+`update`. The tracer wraps it in `Run`, the `AppLogic` adapter, to drive it
+through `TuiDriver`. As in Python and Node, the form's focused field is left
+to the runner.
 
 ## Limits of the comparison
 
@@ -74,7 +67,9 @@ that step is removed from the file, so a fix cannot go unnoticed.
   the Rust tracer maps those to black too. A default-vs-black difference
   would not show.
 - Only glyph, fg and bg are compared. Bold, italic and underline are not,
-  because the bindings do not expose them.
+  because the bindings do not expose them. A focused button's ring is an
+  underline, so the check sees its focus through the accent-coloured
+  brackets it also paints.
 - Two clicks within 1.5 cells and 400ms fold into a double-click, measured on
   the wall clock. Python and Node cannot turn folding off, so `script.json`
   never puts two clicks that close in a row.

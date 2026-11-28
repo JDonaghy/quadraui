@@ -237,6 +237,7 @@ fn draw_text_display_paints_in_editor_font() {
                 timestamp: None,
             }],
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: true,
             max_lines: 0,
             has_focus: false,
@@ -311,6 +312,8 @@ fn draw_diff_view_paints_in_editor_font() {
 fn draw_data_table_paints_in_chrome_font() {
     assert_paints_in_chrome_font("DataTable", |b, area| {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: id("data-table"),
             columns: vec![Column {
                 title: "col".to_string(),
@@ -323,6 +326,8 @@ fn draw_data_table_paints_in_chrome_font() {
             }],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: false,
             show_scrollbar: false,

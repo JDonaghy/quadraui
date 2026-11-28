@@ -170,11 +170,15 @@ impl DataTableDemo {
                 });
             }
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("gallery:data-table:pods"),
                 columns: self.columns.clone(),
                 rows,
                 selected_idx: self.selected,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: self.sort_col.map(|c| {
                     (
                         c,
@@ -201,6 +205,8 @@ impl DataTableDemo {
             }
         } else {
             DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("gallery:data-table:keybindings"),
                 columns: vec![
                     Column {
@@ -217,6 +223,8 @@ impl DataTableDemo {
                 rows: Self::keybinding_rows(),
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,

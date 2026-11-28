@@ -466,8 +466,8 @@ impl ToolbarDemo {
     /// guard arm is the only caller. Escape clears the field (matching its
     /// clearable `×` button); Enter commits the current value into the
     /// hint line; everything else goes through [`EditOp::from_key`], the
-    /// same raw-key-to-edit mapping `quadraui::compose::form_controller`
-    /// uses for its own text inputs.
+    /// same raw-key-to-edit mapping a `quadraui::Form` text field
+    /// uses.
     fn handle_field_key(&mut self, key: &Key, modifiers: Modifiers) -> Reaction {
         if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.search.value.is_empty() {

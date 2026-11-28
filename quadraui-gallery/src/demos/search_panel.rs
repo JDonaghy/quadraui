@@ -128,6 +128,8 @@ impl SearchPanelDemo {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: self.selected_path[variant].clone(),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: quadraui::TreeStyle::default(),
             has_focus: true,
         };

@@ -211,7 +211,7 @@ pub struct Dialog {
     ///   Description); used when a single [`DialogTextInput`] isn't
     ///   enough. Rendered and driven through
     ///   [`crate::compose::form_dialog::FormDialog`], which
-    ///   composes this `Dialog` with a [`crate::compose::FormController`]
+    ///   composes this `Dialog` with a [`crate::ScrolledForm`]
     ///   so Tab/Shift-Tab traverse the form's fields and then the
     ///   button row.
     ///
@@ -2037,6 +2037,7 @@ pub(crate) mod cell_paint {
                     theme,
                     false,
                     false,
+                    button.focused,
                 );
                 continue;
             }

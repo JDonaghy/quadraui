@@ -490,30 +490,6 @@ dialog uses it too.
 
 ---
 
-## `FormController` — `src/compose/form_controller.rs`
-
-**Owns:** one `Form`'s focus, keyboard editing, validation and built-in
-scrollbar, for a host that routes raw events itself.
-
-**For new code, use the `Form` widget.** `Form` implements the contract
-itself (`primitives/form/`): list it in `AppLogic::frame_tree` and the
-runtime routes Tab traversal and field editing to it, emitting `FormEvent`s.
-
-**Controller:** `FormController::new(id)`; `set_form(form)` each frame;
-`render(backend, rect)`; `handle_event(&event, backend, rect)` →
-`Handled<FormControllerAction>` (`FormAction(FormEvent)` or
-`ScrollChanged`); `handle_cached_event(&event, rect)` when the handler has no
-backend in reach. Tab / Shift+Tab move focus between editable fields and emit
-`FormEvent::FocusChanged { id }`; typed text, Backspace/Delete and arrow
-keys edit the focused text field and emit `FormEvent::TextInputChanged`;
-Enter emits `FormEvent::TextInputCommitted`. The cursor and selection live
-inside the controller; your model keeps only the `String` value.
-
-**Example:** `examples/tui_form_scroll.rs` / `examples/gtk_form_scroll.rs`
-(`examples/common/form_scroll.rs`).
-
----
-
 ## `FormDialog` — `src/compose/form_dialog.rs`
 
 **Owns:** a modal `Dialog` hosting a multi-field `Form`, plus the one thing

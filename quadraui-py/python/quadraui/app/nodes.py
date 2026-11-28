@@ -16,8 +16,8 @@ same way it always has, at the native extension's own decode step.
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Sequence, Union
 
 # `list[...]` (lowercase, PEP 585) rather than `typing.List` throughout this
 # module's own annotations -- `List` is this module's own node constructor
@@ -67,6 +67,7 @@ __all__ = [
     "List",
     "StatusBar",
     "TextDisplay",
+    "Text",
     "Button",
     "Toolbar",
     "Form",
@@ -112,6 +113,8 @@ class Node:
     `build(resolved_id, resolved_children)` returns the wire dict: every
     constructor below supplies its own closure, so a `Node` itself never
     needs to know the wire shape of anything but its own children slots.
+    `layout` holds the `size`/`min`/`max` sibling keys this node carries as
+    a `Column`/`Row` child (see `_sized`), merged into the built dict.
     """
 
     kind: str
@@ -119,6 +122,54 @@ class Node:
     callbacks: Dict[str, Callable[..., None]]
     children: Dict[str, Renderable]
     build: Callable[[str, Dict[str, Any]], Dict[str, Any]]
+    layout: Dict[str, Any] = field(default_factory=dict)
+
+
+# How much of its parent `Column`/`Row` a child takes along the stack's main
+# axis: an `int` is a fixed size in portable pixels (a TUI cell is 8 px wide
+# and 16 px tall, so `size=32` is two rows of a `Column` on TUI),
+# `"30%"` a share of the parent, `"2fr"` a weight shared out of what is left,
+# `"content"` the child's natural size, and `None` (the default) an equal share
+# of what is left. A raw wire `SectionSize` (`{"Weight": 2.0}`, `"Content"`)
+# passes through unchanged.
+SizeSpec = Union[int, str, Dict[str, Any], None]
+
+
+def _size_wire(size: SizeSpec) -> Any:
+    """`SizeSpec` -> the wire `SectionSize` the stack solver reads."""
+    if isinstance(size, bool):
+        raise TypeError(f"size must be an int, a str or a dict, not {size!r}")
+    if isinstance(size, int):
+        return {"Fixed": size}
+    if isinstance(size, dict):
+        return size
+    if isinstance(size, str):
+        text = size.strip()
+        if text in ("Content", "EqualShare"):
+            return text
+        if text == "content":
+            return "Content"
+        try:
+            if text.endswith("%"):
+                return {"Percent": float(text[:-1]) / 100.0}
+            if text.endswith("fr"):
+                return {"Weight": float(text[:-2])}
+        except ValueError:
+            pass
+    raise ValueError(f'size must be an int, "N%", "Nfr", "content" or a wire SectionSize, not {size!r}')
+
+
+def _sized(node: Node, size: SizeSpec, min: Optional[float], max: Optional[float]) -> Node:
+    """Records a node's own `size`/`min`/`max` as a `Column`/`Row` child.
+    `min`/`max` clamp the resolved main-axis size, in the same portable
+    pixels as an `int` size."""
+    if size is not None:
+        node.layout["size"] = _size_wire(size)
+    if min is not None:
+        node.layout["min"] = min
+    if max is not None:
+        node.layout["max"] = max
+    return node
 
 
 def _callbacks(**named: Optional[Callable[..., None]]) -> Dict[str, Callable[..., None]]:
@@ -150,6 +201,9 @@ def Split(
     ratio: float = 0.5,
     first_min: Optional[float] = None,
     second_min: Optional[float] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A resizable two-pane divider. `ratio` is read back as *uncontrolled*
     from the second frame on as long as every render resends the same
@@ -171,10 +225,10 @@ def Split(
             payload["second_min"] = second_min
         return {"split": payload}
 
-    return Node("split", id, {}, {"first": first, "second": second}, build)
+    return _sized(Node("split", id, {}, {"first": first, "second": second}, build), size, min, max)
 
 
-def Column(*items: Renderable, padding: Any = None, margin: Optional[float] = None, gap: Optional[float] = None) -> Node:
+def Column(*items: Renderable, padding: Any = None, margin: Optional[float] = None, gap: Optional[float] = None, size: "SizeSpec" = None, min: Optional[float] = None, max: Optional[float] = None) -> Node:
     """A vertical stack. Unaddressable on the wire (`LayoutColumnNode` has
     no `id` of its own), so it never takes callbacks."""
 
@@ -188,10 +242,10 @@ def Column(*items: Renderable, padding: Any = None, margin: Optional[float] = No
             wire["gap"] = gap
         return wire
 
-    return Node("column", None, {}, {"items": list(items)}, build)
+    return _sized(Node("column", None, {}, {"items": list(items)}, build), size, min, max)
 
 
-def Row(*items: Renderable, padding: Any = None, margin: Optional[float] = None, gap: Optional[float] = None) -> Node:
+def Row(*items: Renderable, padding: Any = None, margin: Optional[float] = None, gap: Optional[float] = None, size: "SizeSpec" = None, min: Optional[float] = None, max: Optional[float] = None) -> Node:
     """A horizontal stack -- `Column`'s sibling, same unaddressable shape."""
 
     def build(_node_id: str, children: Dict[str, Any]) -> Dict[str, Any]:
@@ -204,7 +258,7 @@ def Row(*items: Renderable, padding: Any = None, margin: Optional[float] = None,
             wire["gap"] = gap
         return wire
 
-    return Node("row", None, {}, {"items": list(items)}, build)
+    return _sized(Node("row", None, {}, {"items": list(items)}, build), size, min, max)
 
 
 def SidebarPanel(
@@ -213,6 +267,9 @@ def SidebarPanel(
     id: Optional[str] = None,
     toolbar: Optional["ToolbarDescriptor"] = None,
     toolbar_height: Optional[float] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A reserved-top-slot chrome wrapper -- `toolbar` is a raw
     `ToolbarDescriptor` (build one with `Toolbar(...)`), not a child `Node`:
@@ -226,7 +283,7 @@ def SidebarPanel(
             payload["toolbar_height"] = toolbar_height
         return {"sidebar_panel": payload}
 
-    return Node("sidebar_panel", id, {}, {"content": content}, build)
+    return _sized(Node("sidebar_panel", id, {}, {"content": content}, build), size, min, max)
 
 
 def Scroll(
@@ -237,6 +294,9 @@ def Scroll(
     offset: Optional[float] = None,
     padding: Any = None,
     margin: Optional[float] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A scrollable viewport around a single `content` subtree, built on
     `quadraui::ScrollView`. `axis` picks which dimension scrolls
@@ -262,7 +322,7 @@ def Scroll(
             wire["margin"] = margin
         return wire
 
-    return Node("scroll", id, {}, {"content": content}, build)
+    return _sized(Node("scroll", id, {}, {"content": content}, build), size, min, max)
 
 
 @dataclass
@@ -300,6 +360,9 @@ def Tabs(
     compact: Optional[bool] = None,
     on_close: Optional[Callable[[int], None]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A closable tab strip. Which tab is *active* is framework-owned
     widget state (a click already applies `TabActivated` before this
@@ -337,7 +400,7 @@ def Tabs(
 
     callbacks = _callbacks(on_close=on_close, on_activate=on_activate)
     children = {"tabs": [spec.content for spec in tabs]}
-    return Node("tabs", id, callbacks, children, build)
+    return _sized(Node("tabs", id, callbacks, children, build), size, min, max)
 
 
 def Form(
@@ -353,6 +416,9 @@ def Form(
     control_width: Optional["ControlWidth"] = None,
     min_control_width: Optional[float] = None,
     spacing: Optional["FormSpacing"] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A `Form`: a vertical stack of labeled field rows. `fields`
     is a list of this module's own field-builder `Node`s --
@@ -401,7 +467,7 @@ def Form(
             payload["spacing"] = spacing
         return {"id": node_id, "form": payload}
 
-    return Node("form", id, {}, {"fields": list(fields)}, build)
+    return _sized(Node("form", id, {}, {"fields": list(fields)}, build), size, min, max)
 
 
 def _form_field(
@@ -744,35 +810,47 @@ def Tree(
     selected_path: Optional[list[int]] = None,
     has_focus: bool = False,
     style: Optional["TreeStyle"] = None,
-    on_row_click: Optional[Callable[[list[int]], None]] = None,
+    on_click: Optional[Callable[[list[int], str], None]] = None,
     on_toggle_expand: Optional[Callable[[list[int]], None]] = None,
     on_activate: Optional[Callable[[list[int]], None]] = None,
     on_select: Optional[Callable[[list[int]], None]] = None,
+    on_selection: Optional[Callable[[list[list[int]]], None]] = None,
+    on_context_menu: Optional[Callable[[list[int], Dict[str, float]], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
-    """A `TreeRowDescriptor` list. `on_row_click` fires on `RowClicked`
-    (a row body click -- select it); `on_toggle_expand` on
-    `RowToggleExpand` (the chevron); `on_activate` on `RowDoubleClicked`;
-    `on_select` on `SelectionChanged`. Scroll is framework-owned; nothing
-    here ever needs to read or write it."""
+    """A `TreeRowDescriptor` list. `on_click(path, button)` fires on
+    `RowClicked` (a row body press with any button but the right one;
+    `button` is `"Left"`, `"Middle"`, `"X1"`, ... as for `List` and
+    `Table`); `on_toggle_expand` on `RowToggleExpand`
+    (the chevron); `on_activate` on `RowDoubleClicked`; `on_select` on
+    `SelectionChanged`; `on_selection(paths)` on `SelectionSet` (with
+    `selection_mode="Multi"`, a Ctrl/Cmd or Shift click);
+    `on_context_menu(path, position)` on `ContextMenuRequested` (a
+    right-click). Scroll is framework-owned; nothing here ever needs to
+    read or write it."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "id": node_id,
             "rows": rows,
             "selection_mode": selection_mode,
-            "selected_path": selected_path if selected_path is not None else [],
+            "selected_path": selected_path,
             "has_focus": has_focus,
             "style": style if style is not None else _DEFAULT_TREE_STYLE,
         }
         return {"id": node_id, "tree": payload}
 
     callbacks = _callbacks(
-        on_row_click=on_row_click,
+        on_click=on_click,
         on_toggle_expand=on_toggle_expand,
         on_activate=on_activate,
         on_select=on_select,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
     )
-    return Node("tree", id, callbacks, {}, build)
+    return _sized(Node("tree", id, callbacks, {}, build), size, min, max)
 
 
 def Table(
@@ -780,27 +858,50 @@ def Table(
     rows: list["DataRowDescriptor"],
     *,
     id: Optional[str] = None,
+    selection_mode: str = "Single",
+    selected_indices: Optional[list[int]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
     on_select: Optional[Callable[[int], None]] = None,
     on_header_click: Optional[Callable[[int], None]] = None,
+    on_selection: Optional[Callable[[list[int]], None]] = None,
+    on_context_menu: Optional[Callable[[int, Dict[str, float]], None]] = None,
+    on_click: Optional[Callable[[int, str], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A `DataTable`. `on_activate` fires on either
     `RowDoubleClicked` or `RowActivated` (a mouse double-click and an
     Enter-to-activate both mean "open this row"); `on_select` on
-    `RowSelected`; `on_header_click` on `HeaderClicked`."""
+    `RowSelected`; `on_header_click` on `HeaderClicked`.
+
+    With `selection_mode="Multi"`, Ctrl/Cmd and Shift clicks, Shift+Up/Down,
+    Ctrl/Cmd+A and Ctrl+Space/Insert grow a multi-selection and fire
+    `on_selection(indices)` (`SelectionSet`); pass the set back as
+    `selected_indices` to paint it. `on_context_menu(idx, position)` fires
+    on a right-click (`ContextMenuRequested`), and `on_click(idx, button)`
+    on a middle or back/forward press (`RowClicked`)."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+        table: Dict[str, Any] = {
             "id": node_id,
-            "data_table": {"id": node_id, "columns": columns, "rows": rows},
+            "columns": columns,
+            "rows": rows,
+            "selection_mode": selection_mode,
         }
+        if selected_indices is not None:
+            table["selected_indices"] = selected_indices
+        return {"id": node_id, "data_table": table}
 
     callbacks = _callbacks(
         on_activate=on_activate,
         on_select=on_select,
         on_header_click=on_header_click,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
+        on_click=on_click,
     )
-    return Node("data_table", id, callbacks, {}, build)
+    return _sized(Node("data_table", id, callbacks, {}, build), size, min, max)
 
 
 def List(
@@ -813,6 +914,12 @@ def List(
     bordered: Optional[bool] = None,
     on_select: Optional[Callable[[int], None]] = None,
     on_activate: Optional[Callable[[int], None]] = None,
+    on_selection: Optional[Callable[[list[int]], None]] = None,
+    on_context_menu: Optional[Callable[[int, Dict[str, float]], None]] = None,
+    on_click: Optional[Callable[[int, str], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A `ListView`. `on_select` fires on `SelectionChanged` (a
     plain click, or `j`/`k` moving the keyboard selection); `on_activate`
@@ -826,8 +933,11 @@ def List(
     shape `Tree`'s `selected_path` follows; pass a non-zero `selected` on
     every render only to pin the cursor from app state, and once sent it
     latches as controlled for this widget id and does not go back.
-    `KeyPressed`/`SelectionSet` on a `List` are not routed to either
-    callback and fall through to `on_event` instead."""
+    `on_selection(indices)` fires on `SelectionSet` (a Ctrl/Cmd or Shift
+    click, Ctrl/Cmd+A, Ctrl+Space/Insert), `on_context_menu(idx,
+    position)` on a right-click (`ContextMenuRequested`) and `on_click(idx,
+    button)` on a middle or back/forward press (`ItemClicked`).
+    `KeyPressed` falls through to `on_event`."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -842,8 +952,14 @@ def List(
             payload["bordered"] = bordered
         return {"id": node_id, "list": payload}
 
-    callbacks = _callbacks(on_select=on_select, on_activate=on_activate)
-    return Node("list", id, callbacks, {}, build)
+    callbacks = _callbacks(
+        on_select=on_select,
+        on_activate=on_activate,
+        on_selection=on_selection,
+        on_context_menu=on_context_menu,
+        on_click=on_click,
+    )
+    return _sized(Node("list", id, callbacks, {}, build), size, min, max)
 
 
 def StatusBar(
@@ -852,6 +968,9 @@ def StatusBar(
     *,
     id: Optional[str] = None,
     on_segment_click: Optional[Callable[[str], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A `StatusBar`. `on_segment_click` fires on `SegmentClicked`,
     with that segment's own `id`."""
@@ -867,16 +986,45 @@ def StatusBar(
         }
 
     callbacks = _callbacks(on_segment_click=on_segment_click)
-    return Node("status_bar", id, callbacks, {}, build)
+    return _sized(Node("status_bar", id, callbacks, {}, build), size, min, max)
 
 
-def TextDisplay(lines: list["TextDisplayLineDescriptor"], *, id: Optional[str] = None) -> Node:
-    """A `TextDisplay` leaf -- plain read-only text."""
+def TextDisplay(
+    lines: list["TextDisplayLineDescriptor"],
+    *,
+    id: Optional[str] = None,
+    show_scrollbar: bool = False,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
+) -> Node:
+    """A `TextDisplay` leaf -- plain read-only text. It is not a Tab stop;
+    `show_scrollbar=True` paints a scrollbar and makes the pane a Tab stop
+    the keyboard can scroll, as in Rust."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": node_id, "text_display": {"id": node_id, "lines": lines}}
+        payload: Dict[str, Any] = {"id": node_id, "lines": lines}
+        if show_scrollbar:
+            payload["show_scrollbar"] = True
+        return {"id": node_id, "text_display": payload}
 
-    return Node("text_display", id, {}, {}, build)
+    return _sized(Node("text_display", id, {}, {}, build), size, min, max)
+
+
+def Text(
+    text: str,
+    *,
+    id: Optional[str] = None,
+    size: SizeSpec = "content",
+    min: Optional[float] = None,
+    max: Optional[float] = None,
+) -> Node:
+    """Plain text: a `TextDisplay` with one unstyled line per `\\n`-separated
+    line of `text`. Sized to its content by default, so a label in a
+    `Column` takes one row rather than an equal share; pass `size=None` for
+    an equal share instead."""
+    lines: list["TextDisplayLineDescriptor"] = [{"spans": [{"text": line}]} for line in text.split("\n")]
+    return TextDisplay(lines, id=id, size=size, min=min, max=max)
 
 
 def Button(
@@ -889,6 +1037,9 @@ def Button(
     tooltip: Optional[str] = None,
     focused: Optional[bool] = None,
     disabled: Optional[bool] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A `Button` leaf. `quadraui` hit-tests a press landing on
     the leaf and replaces it outright with a `ButtonActivated` event naming
@@ -913,7 +1064,7 @@ def Button(
         return {"id": node_id, "button": payload}
 
     callbacks = _callbacks(on_click=on_click)
-    return Node("button", id, callbacks, {}, build)
+    return _sized(Node("button", id, callbacks, {}, build), size, min, max)
 
 
 _toolbar_auto_ids = itertools.count()
@@ -958,6 +1109,9 @@ def Checkbox(
     disabled: Optional[bool] = None,
     focused: Optional[bool] = None,
     on_change: Optional[Callable[[bool], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A standalone `Checkbox` leaf -- the `"checkbox"` extra
     kind, `FieldKind::Toggle`'s bare-leaf sibling with no `Form` chrome.
@@ -975,7 +1129,7 @@ def Checkbox(
         return {"id": node_id, "checkbox": payload}
 
     callbacks = _callbacks(on_change=on_change)
-    return Node("checkbox", id, callbacks, {}, build)
+    return _sized(Node("checkbox", id, callbacks, {}, build), size, min, max)
 
 
 def Slider(
@@ -1018,6 +1172,9 @@ def Select(
     disabled: Optional[bool] = None,
     focused: Optional[bool] = None,
     on_change: Optional[Callable[[int], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A standalone `Select` leaf -- `FieldKind::Dropdown`'s
     bare-leaf sibling with no `Form` chrome; unlike `SelectField`,
@@ -1039,7 +1196,7 @@ def Select(
         return {"id": node_id, "select": payload}
 
     callbacks = _callbacks(on_change=on_change)
-    return Node("select", id, callbacks, {}, build)
+    return _sized(Node("select", id, callbacks, {}, build), size, min, max)
 
 
 def Password(
@@ -1051,6 +1208,9 @@ def Password(
     mask_char: Optional[str] = None,
     on_change: Optional[Callable[[str], None]] = None,
     on_submit: Optional[Callable[[str], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A standalone `PasswordInput` leaf -- `FieldKind::
     PasswordInput`'s bare-leaf sibling with no `Form` chrome, masked on
@@ -1070,7 +1230,7 @@ def Password(
         return {"id": node_id, "password": payload}
 
     callbacks = _callbacks(on_change=on_change, on_submit=on_submit)
-    return Node("password", id, callbacks, {}, build)
+    return _sized(Node("password", id, callbacks, {}, build), size, min, max)
 
 
 def TextArea(
@@ -1081,6 +1241,9 @@ def TextArea(
     has_focus: Optional[bool] = None,
     visible_rows: Optional[int] = None,
     on_change: Optional[Callable[[str], None]] = None,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
 ) -> Node:
     """A standalone `TextArea` leaf -- `FieldKind::TextArea`'s
     bare-leaf sibling with no `Form` chrome; `value` may embed `'\\n'`.
@@ -1101,4 +1264,4 @@ def TextArea(
         return {"id": node_id, "textarea": payload}
 
     callbacks = _callbacks(on_change=on_change)
-    return Node("textarea", id, callbacks, {}, build)
+    return _sized(Node("textarea", id, callbacks, {}, build), size, min, max)

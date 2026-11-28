@@ -1,14 +1,14 @@
-//! TUI Form demo showcasing `FieldKind::DatePicker` routed through
-//! `FormController`.
+//! TUI Form demo showcasing `FieldKind::DatePicker` hosted in a
+//! [`ScrolledForm`].
 //!
 //! [`AppLogic`] impl driving the TUI runner; the thin shell in
 //! `examples/tui_form_date_picker.rs` is ~10 lines. TUI-only for now;
 //! a GTK twin can follow once GTK's `DatePicker` rasteriser exists.
 //!
-//! Shape: a one-field form holding a `DatePicker`. `FormController`
-//! forwards arrow/page keys straight into the embedded picker's own
-//! `navigate` method (see `compose::form_controller`'s "Date picker
-//! fields" doc section) — the app never decodes a key itself. Moving
+//! Shape: a one-field form holding a `DatePicker`. The form forwards
+//! arrow/page keys straight into the embedded picker's own `navigate`
+//! method (see `primitives::form::contract`'s "Date picker fields" doc
+//! section) — the app never decodes a key itself. Moving
 //! the focused day only scrubs an in-flight cursor; `Enter` confirms it,
 //! which is when `FormEvent::DateChanged` fires and the app persists the
 //! new value.
@@ -22,12 +22,12 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, CalendarDate, Color, FieldKind, Form, FormController, FormControllerAction,
-    FormField, Handled, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, CalendarDate, Color, FieldKind, Form, FormField, FormState, Handled,
+    Reaction, Rect, ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormDatePickerApp {
-    fc: FormController,
+    form_state: FormState,
     focused: CalendarDate,
     confirmed: Option<CalendarDate>,
     last_action: String,
@@ -35,22 +35,13 @@ pub struct FormDatePickerApp {
 
 impl FormDatePickerApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("due-date-form".into());
-        // This demo has exactly one panel, so the form always has
-        // keyboard focus — `set_has_focus` is what lets
-        // `FormController::handle_cached_event` accept `KeyPressed` at all.
-        fc.set_has_focus(true);
-        let mut app = Self {
-            fc,
+        // This demo has exactly one panel, so every key goes to the form.
+        Self {
+            form_state: FormState::default(),
             focused: CalendarDate::new(2024, 3, 15),
             confirmed: None,
             last_action: "—".into(),
-        };
-        // Seed `fc` with the initial form so the very first `render()`
-        // (before any key is ever pressed) already paints the picker,
-        // rather than relying on `handle()` to populate it.
-        app.fc.set_form(app.build_form());
-        app
+        }
     }
 
     fn build_form(&self) -> Form {
@@ -138,7 +129,7 @@ impl AppLogic for FormDatePickerApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
@@ -156,11 +147,10 @@ impl AppLogic for FormDatePickerApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(fe)) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(fe) => {
                 match fe {
                     quadraui::FormEvent::DateChanged { value, .. } => {
                         self.focused = value;
@@ -172,19 +162,9 @@ impl AppLogic for FormDatePickerApp {
                         self.last_action = format!("{:?}", fe);
                     }
                 }
-                // Re-sync `fc`'s cached form with the just-updated
-                // `self.focused`/`self.confirmed` before the runner's
-                // next `render()` call. Without this, `render` would
-                // paint the field as it was *before* this event
-                // (`fc.set_form` above ran with the pre-event state),
-                // leaving the field one keystroke behind what the
-                // status bar already reports.
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

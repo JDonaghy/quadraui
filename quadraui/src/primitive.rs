@@ -1256,6 +1256,11 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         layout: &dyn PrimitiveLayout,
     ) -> Vec<(Rect, crate::interactive::SubTarget)>;
 
+    /// Where the host's focus ring goes for `layout` — see
+    /// [`Interactive::focus_ring`]. [`crate::interactive::FocusIndicator::Bounds`]
+    /// when `layout` isn't this widget's own layout type.
+    fn focus_ring(&self, layout: &dyn PrimitiveLayout) -> crate::interactive::FocusIndicator;
+
     /// [`Interactive::HOVER_ON_SUB_REGIONS_ONLY`].
     fn hover_on_sub_regions_only(&self) -> bool;
 
@@ -1279,6 +1284,13 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// a programmer error reported as [`Handled::Ignored`] rather than a
     /// panic, mirroring every other "not mine" outcome this method can
     /// return.
+    ///
+    /// A [`crate::interactive::PointerKind::DoubleClick`] the widget
+    /// ignores is delivered again as the plain
+    /// [`crate::interactive::PointerKind::Down`] it also is (see
+    /// [`RoutedEvent::double_click_as_press`]), so a widget with no
+    /// double-click meaning of its own — a `Button`, a `Checkbox` — sees
+    /// both presses of a quick pair.
     fn handle(
         &self,
         state: &mut dyn std::any::Any,
@@ -1304,6 +1316,54 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         state: Option<&dyn std::any::Any>,
         layout: &dyn PrimitiveLayout,
     ) -> Vec<crate::popup::Popup>;
+
+    /// Content this widget needs loaded — see
+    /// [`Interactive::data_requested`]. A `state` or `layout` of the wrong
+    /// type answers `None`.
+    fn data_requested(
+        &self,
+        state: &mut dyn std::any::Any,
+        layout: &dyn PrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let _ = (state, layout);
+        None
+    }
+
+    /// Record what `layout` resolved into this widget's state — see
+    /// [`Interactive::settle`]. A `state` or `layout` of the wrong type
+    /// answers `false`.
+    fn settle(&self, state: &mut dyn std::any::Any, layout: &dyn PrimitiveLayout) -> bool {
+        let _ = (state, layout);
+        false
+    }
+
+    /// Follow an event the host delivered for this widget — see
+    /// [`Interactive::follow_event`]. A `state` of the wrong type is left
+    /// alone.
+    fn follow_event(&self, state: &mut dyn std::any::Any, event: &crate::UiEvent) {
+        let _ = (state, event);
+    }
+
+    /// This widget with its first visible row moved to `row`, for a widget
+    /// that scrolls its own rows — see [`Interactive::scrolled_to_row`].
+    /// `None` for every other widget.
+    /// [`Interactive::SCROLLS_OWN_ROWS`].
+    fn scrolls_own_rows(&self) -> bool {
+        false
+    }
+
+    fn scrolled_to_row(&self, row: usize) -> Option<std::rc::Rc<dyn DynWidget>> {
+        let _ = row;
+        None
+    }
+
+    /// This widget's interaction-state summary — see
+    /// [`Interactive::state_summary`]. A `state` of the wrong type
+    /// answers the summary of `State::default()`.
+    fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {
+        let _ = state;
+        crate::interactive::StateSummary::default()
+    }
 
     /// Clone this widget's content into a serializable [`OwnedContent`]
     /// for [`crate::frame::OwnedFrame::from_layout`]. Default:
@@ -1387,6 +1447,13 @@ where
         }
     }
 
+    fn focus_ring(&self, layout: &dyn PrimitiveLayout) -> crate::interactive::FocusIndicator {
+        match layout.downcast_ref::<W::Layout>() {
+            Some(layout) => Interactive::focus_ring(self, layout),
+            None => crate::interactive::FocusIndicator::Bounds,
+        }
+    }
+
     fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str> {
         Interactive::sub_region_name(self, sub)
     }
@@ -1417,7 +1484,14 @@ where
         ) else {
             return Handled::Ignored;
         };
-        Interactive::handle(self, state, event, layout, cx).map(|action| action.into_ui_event(id))
+        let handled = match Interactive::handle(self, state, event, layout, cx) {
+            Handled::Ignored => match event.double_click_as_press() {
+                Some(press) => Interactive::handle(self, state, &press, layout, cx),
+                None => Handled::Ignored,
+            },
+            handled => handled,
+        };
+        handled.map(|action| action.into_ui_event(id))
     }
 
     fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction> {
@@ -1445,6 +1519,52 @@ where
         match state.and_then(|s| s.downcast_ref::<W::State>()) {
             Some(state) => Interactive::popups(self, state, layout),
             None => Interactive::popups(self, &W::State::default(), layout),
+        }
+    }
+
+    fn data_requested(
+        &self,
+        state: &mut dyn std::any::Any,
+        layout: &dyn PrimitiveLayout,
+    ) -> Option<crate::UiEvent> {
+        let (Some(state), Some(layout)) = (
+            state.downcast_mut::<W::State>(),
+            layout.downcast_ref::<W::Layout>(),
+        ) else {
+            return None;
+        };
+        Interactive::data_requested(self, state, layout)
+    }
+
+    fn settle(&self, state: &mut dyn std::any::Any, layout: &dyn PrimitiveLayout) -> bool {
+        let (Some(state), Some(layout)) = (
+            state.downcast_mut::<W::State>(),
+            layout.downcast_ref::<W::Layout>(),
+        ) else {
+            return false;
+        };
+        Interactive::settle(self, state, layout)
+    }
+
+    fn follow_event(&self, state: &mut dyn std::any::Any, event: &crate::UiEvent) {
+        if let Some(state) = state.downcast_mut::<W::State>() {
+            Interactive::follow_event(self, state, event);
+        }
+    }
+
+    fn scrolls_own_rows(&self) -> bool {
+        W::SCROLLS_OWN_ROWS
+    }
+
+    fn scrolled_to_row(&self, row: usize) -> Option<std::rc::Rc<dyn DynWidget>> {
+        Interactive::scrolled_to_row(self, row)
+            .map(|w| std::rc::Rc::new(w) as std::rc::Rc<dyn DynWidget>)
+    }
+
+    fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {
+        match state.and_then(|s| s.downcast_ref::<W::State>()) {
+            Some(state) => Interactive::state_summary(self, state),
+            None => Interactive::state_summary(self, &W::State::default()),
         }
     }
 
@@ -1594,12 +1714,32 @@ where
         self.widget.sub_regions(layout)
     }
 
+    fn focus_ring(&self, layout: &W::Layout) -> crate::interactive::FocusIndicator {
+        self.widget.focus_ring(layout)
+    }
+
     fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str> {
         self.widget.sub_region_name(sub)
     }
 
     fn popups(&self, state: &W::State, layout: &W::Layout) -> Vec<crate::popup::Popup> {
         self.widget.popups(state, layout)
+    }
+
+    fn data_requested(&self, state: &mut W::State, layout: &W::Layout) -> Option<crate::UiEvent> {
+        self.widget.data_requested(state, layout)
+    }
+
+    fn settle(&self, state: &mut W::State, layout: &W::Layout) -> bool {
+        self.widget.settle(state, layout)
+    }
+
+    fn follow_event(&self, state: &mut W::State, event: &crate::UiEvent) {
+        self.widget.follow_event(state, event)
+    }
+
+    fn state_summary(&self, state: &W::State) -> crate::interactive::StateSummary {
+        self.widget.state_summary(state)
     }
 }
 
@@ -1650,6 +1790,10 @@ pub struct PaintedWidget {
     /// The paint state the widget painted with, which its layout was
     /// resolved against.
     pub paint_state: PaintStateSnapshot,
+    /// The absolute rect the host's focus ring traces while this widget
+    /// holds focus ([`Interactive::focus_ring`] resolved against
+    /// [`Self::rect`]), or `None` when the widget shows its own focus.
+    pub focus_ring: Option<Rect>,
 }
 
 /// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
@@ -1717,6 +1861,18 @@ impl PaintedWidgets {
             .rev()
             .find(|e| &e.id == id)
             .map(|e| (e.rect, e.layout.as_ref()))
+    }
+
+    /// The focus ring `id` recorded this frame: `None` when it didn't
+    /// paint, `Some(None)` when it shows its own focus, `Some(Some(rect))`
+    /// for the absolute rect a host ring traces. Same last-entry-wins rule
+    /// as [`Self::painted_layout`].
+    pub fn painted_focus_ring(&self, id: &WidgetId) -> Option<Option<Rect>> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)
+            .map(|e| e.focus_ring)
     }
 
     /// The paint state `id` painted with this frame, or `None` if it
@@ -1863,6 +2019,12 @@ pub fn painted_state(id: &WidgetId) -> PaintStateSnapshot {
         .unwrap_or_default()
 }
 
+/// The focus ring `id` recorded this frame —
+/// [`PaintedWidgets::painted_focus_ring`] against the live record.
+pub fn painted_focus_ring(id: &WidgetId) -> Option<Option<Rect>> {
+    with_painted_widgets(|p| p.painted_focus_ring(id))
+}
+
 /// The absolute center of `id`'s `sub` sub-part this frame —
 /// [`PaintedWidgets::painted_sub_center`] against the live record.
 pub fn painted_sub_center(id: &WidgetId, sub: crate::interactive::SubTarget) -> Option<(f32, f32)> {
@@ -1935,6 +2097,7 @@ mod tests {
                 paint_state: PaintStateSnapshot::of(
                     &crate::primitives::list::ListPaintState::default().with_scroll_px(scroll_px),
                 ),
+                focus_ring: None,
             });
         }
         assert_eq!(
@@ -2269,6 +2432,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
         painted.record(PaintedWidget {
             id: over,
@@ -2277,6 +2441,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
@@ -2303,6 +2468,7 @@ mod tests {
             ],
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
@@ -2332,6 +2498,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));

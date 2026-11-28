@@ -132,7 +132,10 @@ impl QuiApp {
     /// is outside the current viewport. Exists so a test can prove
     /// `setTheme`/`setStyle` actually changed what gets painted, not just
     /// what `theme()`/`style()` read back.
-    #[napi(js_name = "cellColors")]
+    #[napi(
+        js_name = "cellColors",
+        ts_return_type = "[[number, number, number], [number, number, number]] | null"
+    )]
     pub fn cell_colors(&mut self, env: Env, x: u16, y: u16) -> Result<Option<CellColors>> {
         self.check_not_live()?;
         self.guarded(env, |app| {

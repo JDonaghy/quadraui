@@ -10,9 +10,9 @@ doesn't itself need (it keeps its own cursor via `selected_path`, only
 Exercises both render-callback shapes a binding decodes
 (`quadraui_binding_core::wire::RenderOutput`): a bare flat `{"tree": ...}`
 dict (`RenderOutput::Flat`) and a layout tree wrapping the same leaf in a
-`"row"` (`RenderOutput::Tree`) -- `quadraui_binding_core::resolve_render_refs`
-and `resolve_layout_node_windowed` are two separate resolvers, so each
-needs its own coverage.
+`"row"` (`RenderOutput::Tree`) -- the tree keeps its cursor, scroll and
+expansion in its own widget state either way, and each shape gets its own
+coverage.
 """
 
 import pytest
@@ -23,7 +23,7 @@ _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "meta": False}
 _DOWN = {"KeyPressed": {"key": {"Named": "Down"}, "modifiers": _NO_MODS, "repeat": False}}
 # Nothing is focused on a freshly built `QuiApp` (`FocusManager::new` starts
 # empty -- see `quadraui::focus`'s own doc); a focused tree's own arrow-key
-# navigation (`apply_tree_nav_key`, gated on `backend.focus_manager()`)
+# navigation (its own `Interactive::handle`, reached only when focused)
 # never runs until something is. Tab is the one event
 # `quadraui::runtime::preprocess_event` reserves for cycling it onto the
 # first tab stop, mirroring the real terminal/native keyboard story.
@@ -100,7 +100,7 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_layout_tree_path():
     """A layout-tree render callback (`RenderOutput::Tree`) that never sets
     `selected_path`/`scroll_offset` still has arrow keys move the cursor
     and the view scroll to keep it visible -- with no app code tracking
-    either, purely via `resolve_layout_node_windowed`."""
+    either, purely through the tree's own widget state."""
     rows = _tree_rows(30)
 
     def render():
@@ -127,8 +127,7 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_layout_tree_path():
 
 def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_flat_frame_path():
     """The same behavior as the layout-tree test above, through the flat
-    six-slot render shape (`RenderOutput::Flat`) instead --
-    `resolve_render_refs`'s own call site."""
+    per-kind render shape (`RenderOutput::Flat`) instead."""
     rows = _tree_rows(30)
 
     def render():
@@ -159,8 +158,8 @@ def _branch_tree_rows(n: int) -> list[dict]:
 def test_uncontrolled_tree_expansion_toggles_via_the_layout_tree_path():
     """A layout-tree render callback that never pins any row's `is_expanded`
     away from its own starting value still has a `RowToggleExpand` persist
-    in the store -- `resolve_tree_expansion`'s own layout-tree call site,
-    read back through the `expanded` key `widget_state` exposes."""
+    in the tree's own widget state, read back through the `expanded` key
+    `widget_state` exposes."""
     rows = _branch_tree_rows(3)
 
     def render():
@@ -176,15 +175,14 @@ def test_uncontrolled_tree_expansion_toggles_via_the_layout_tree_path():
     state = app.widget_state("widget-state-test:tree")
     assert state["expanded"] == [[1]]
     # The cursor/scroll fields the two tests above cover are still present
-    # in the same snapshot -- `widget_state_snapshot` merges every shape
-    # that applies to one id, not just whichever a caller asked about.
+    # in the same snapshot -- `widget_state` reports every field the
+    # widget keeps, not just whichever a caller asked about.
     assert state["scroll_offset"] == 0
 
 
 def test_uncontrolled_tree_expansion_toggles_via_the_flat_frame_path():
     """The same behavior as the layout-tree test above, through the flat
-    six-slot render shape (`RenderOutput::Flat`) instead --
-    `resolve_render_refs`'s own call site."""
+    per-kind render shape (`RenderOutput::Flat`) instead."""
     rows = _branch_tree_rows(3)
 
     def render():
@@ -200,34 +198,46 @@ def test_uncontrolled_tree_expansion_toggles_via_the_flat_frame_path():
     assert state["expanded"] == [[2]]
 
 
-def test_controlled_scroll_offset_still_pins_the_scroll():
-    """A render callback that keeps pinning `scroll_offset` to a fixed,
-    non-zero value every frame wins outright over the store's own
-    scroll-to-visible, even while the cursor keeps moving uncontrolled --
-    `resolve_tree_cursor`'s own controlled/uncontrolled contract, and the
-    acceptance bar "existing examples keep working unchanged" relies on."""
+def test_a_changed_scroll_offset_wins_over_the_stored_scroll():
+    """A render callback that sends a NEW `scroll_offset` wins over the
+    scroll the tree's own cursor movement left, while a callback that keeps
+    resending the same value leaves the tree uncontrolled -- the descriptor
+    wins only when it changes since the tree last saw it."""
     rows = _tree_rows(30)
+    pinned = {"scroll_offset": 0}
 
     def render():
-        return {"row": [{"id": "widget-state-test:tree", "tree": _tree_descriptor(rows, scroll_offset=5)}]}
+        return {
+            "row": [
+                {
+                    "id": "widget-state-test:tree",
+                    "tree": _tree_descriptor(rows, scroll_offset=pinned["scroll_offset"]),
+                }
+            ]
+        }
 
     app = QuiApp(20, 6, render=render, on_event=_NOOP_HANDLER)
     _press(app, _TAB)  # focus the tree -- the only tab stop
     # Same "first Down lands on row 0" counting as the two tests above --
-    # 10 presses land on row index 9.
+    # 10 presses land on row index 9, scrolled into view.
     for _ in range(10):
         _press(app, _DOWN)
-
     state = app.widget_state("widget-state-test:tree")
     assert state["selected_path"] == [9]
-    assert state["scroll_offset"] == 5
+    assert state["scroll_offset"] > 0
+
+    pinned["scroll_offset"] = 2
+    app.step()
+    state = app.widget_state("widget-state-test:tree")
+    assert state["selected_path"] == [9]
+    assert state["scroll_offset"] == 2
 
 
 def test_split_ratio_drag_persists_with_no_app_code():
     """A render callback that always resends the same literal `ratio` --
     the shape an app tracking no divider state of its own would send --
     still has a drag persist across every later render, purely via
-    `resolve_split_ratio`."""
+    the host's own stored split ratio."""
 
     def render():
         return {

@@ -5634,6 +5634,8 @@ mod tests {
                 selection_mode: crate::types::SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: crate::types::TreeStyle::default(),
                 has_focus: false,
             };
@@ -5711,6 +5713,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table-glyphs"),
                 columns: vec![crate::Column {
                     title: String::new(),
@@ -5720,6 +5724,8 @@ mod tests {
                 rows: vec![],
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: Some((0, crate::SortDirection::Ascending)),
                 has_focus: false,
                 show_scrollbar: false,
@@ -5789,6 +5795,8 @@ mod tests {
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
             let table = crate::DataTable {
+                selection_mode: Default::default(),
+                selected_indices: Vec::new(),
                 id: WidgetId::new("test:data-table"),
                 columns: vec![crate::Column {
                     title: "col".to_string(),
@@ -5801,6 +5809,8 @@ mod tests {
                 }],
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -5900,6 +5910,8 @@ mod tests {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: 0,
@@ -5953,6 +5965,8 @@ mod tests {
                 }],
                 selected_idx: 0,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: false,
                 bordered: false,
                 h_scroll: 0,
@@ -7867,6 +7881,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         let mut backend = GtkBackend::new();
@@ -7942,6 +7957,7 @@ mod tests {
             replace_one_glyph: "R1".into(),
             replace_all_glyph: "R*".into(),
             hit_regions,
+            hidden_toggles: Vec::new(),
         };
 
         let mut backend = GtkBackend::new();
@@ -8199,6 +8215,7 @@ mod tests {
             id: WidgetId::new("td"),
             lines: (0..lines).map(|i| td_line(&format!("ln{i}"))).collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

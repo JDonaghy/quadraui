@@ -67,6 +67,36 @@ pub fn cycle_index(current: usize, delta: isize, n: usize) -> usize {
     (current + delta).rem_euclid(n) as usize
 }
 
+/// `Some(1)` for Tab, `Some(-1)` for Shift+Tab or `BackTab`, with no
+/// Ctrl/Alt/Cmd held — the keys a focus walk steps on; `None` for every
+/// other key, and for a Tab chord an app keeps for itself.
+pub fn tab_step(key: &crate::Key, modifiers: &crate::Modifiers) -> Option<isize> {
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return None;
+    }
+    match key {
+        crate::Key::Named(crate::NamedKey::Tab) if modifiers.shift => Some(-1),
+        crate::Key::Named(crate::NamedKey::Tab) => Some(1),
+        crate::Key::Named(crate::NamedKey::BackTab) => Some(-1),
+        _ => None,
+    }
+}
+
+/// The child stop after (`delta > 0`) or before (`delta < 0`) `current`
+/// in a [`FocusSpec::Children`] widget's own declared order — the step
+/// Tab/Shift+Tab takes inside a widget that leaves the key to its host.
+/// `None` when `spec` declares no such stops, `current` is not one of
+/// them, or it is already the first/last stop in that direction: Tab
+/// never wraps inside a widget, so it can leave it.
+pub fn step_child_stop(spec: &FocusSpec, current: SubTarget, delta: isize) -> Option<SubTarget> {
+    let FocusSpec::Children(stops) = spec else {
+        return None;
+    };
+    let idx = stops.iter().position(|stop| stop.sub == current)?;
+    let next = idx.checked_add_signed(delta.signum())?;
+    stops.get(next).map(|stop| stop.sub)
+}
+
 // Focus-ring stroke width is not a constant in this module: it is the
 // app-overridable [`crate::Style::focus_ring_width`] token (native
 // units — GTK/macOS/Win-GUI pixels), which every `PaintSurface`-backed
@@ -233,9 +263,10 @@ impl FocusTree {
     /// [`crate::interactive::Interactive`] widgets at all (see the type
     /// doc's "Modal trapping" section). Every stop is addressed
     /// `(id, None)` — the flat shape carries no [`SubTarget`] to
-    /// preserve. If the previously-focused address is still present in
-    /// the rebuilt order, focus (and its focus-visible state) is
-    /// preserved; otherwise focus is cleared.
+    /// preserve. If the previously-focused widget is still present in
+    /// the rebuilt order, focus (its sub-target and focus-visible state
+    /// included) is preserved, and the next [`Self::focus_next`] steps on
+    /// from that widget's stop; otherwise focus is cleared.
     pub fn sync_tab_order(&mut self, stops: &[(WidgetId, Rect)]) {
         let rebuilt: Vec<FocusTreeStop> = stops
             .iter()
@@ -247,7 +278,7 @@ impl FocusTree {
         let keep_focus = self
             .focused
             .as_ref()
-            .is_some_and(|cur| rebuilt.iter().any(|stop| &stop.address == cur));
+            .is_some_and(|cur| rebuilt.iter().any(|stop| stop.address.0 == cur.0));
         self.stops = rebuilt;
         if !keep_focus {
             self.focused = None;
@@ -368,6 +399,7 @@ impl FocusTree {
                     .stops
                     .iter()
                     .position(|stop| &stop.address == cur)
+                    .or_else(|| self.stops.iter().position(|stop| stop.address.0 == cur.0))
                     .unwrap_or(0);
                 cycle_index(idx, dir, len)
             }
@@ -407,6 +439,50 @@ impl FocusTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn children(n: u64) -> FocusSpec {
+        FocusSpec::Children(
+            (0..n)
+                .map(|i| crate::interactive::FocusStop { sub: SubTarget(i) })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn step_child_stop_moves_through_the_declared_children_without_wrapping() {
+        let spec = children(3);
+        assert_eq!(step_child_stop(&spec, SubTarget(0), 1), Some(SubTarget(1)));
+        assert_eq!(step_child_stop(&spec, SubTarget(1), 1), Some(SubTarget(2)));
+        assert_eq!(step_child_stop(&spec, SubTarget(2), 1), None);
+        assert_eq!(step_child_stop(&spec, SubTarget(2), -1), Some(SubTarget(1)));
+        assert_eq!(step_child_stop(&spec, SubTarget(0), -1), None);
+    }
+
+    #[test]
+    fn tab_step_reads_tab_shift_tab_and_back_tab_but_not_chords() {
+        use crate::{Key, Modifiers, NamedKey};
+        let plain = Modifiers::default();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(tab_step(&Key::Named(NamedKey::Tab), &plain), Some(1));
+        assert_eq!(tab_step(&Key::Named(NamedKey::Tab), &shift), Some(-1));
+        assert_eq!(tab_step(&Key::Named(NamedKey::BackTab), &plain), Some(-1));
+        assert_eq!(tab_step(&Key::Named(NamedKey::Tab), &ctrl), None);
+        assert_eq!(tab_step(&Key::Char('t'), &plain), None);
+    }
+
+    #[test]
+    fn step_child_stop_needs_a_declared_child_to_start_from() {
+        assert_eq!(step_child_stop(&children(3), SubTarget(7), 1), None);
+        assert_eq!(step_child_stop(&FocusSpec::Stop, SubTarget(0), 1), None);
+        assert_eq!(step_child_stop(&FocusSpec::None, SubTarget(0), 1), None);
+    }
 
     #[test]
     fn cycle_index_empty_returns_zero() {
@@ -864,6 +940,20 @@ mod tests {
                 Some(&(a, None)),
                 "focus follows the id, not position"
             );
+        }
+
+        /// A widget focused on one of its own children keeps its place in
+        /// the flat order: the next Tab moves on to the stop after it.
+        #[test]
+        fn sync_tab_order_steps_on_from_a_child_focused_widget() {
+            let a = WidgetId::new("a");
+            let b = WidgetId::new("b");
+            let mut tree = FocusTree::new();
+            tree.set_focus(Some((a, Some(SubTarget(1)))));
+            tree.sync_tab_order(&[(a, rect(0.0)), (b, rect(3.0))]);
+            assert_eq!(tree.focused(), Some(&(a, Some(SubTarget(1)))));
+            tree.focus_next();
+            assert_eq!(tree.focused(), Some(&(b, None)));
         }
 
         #[test]

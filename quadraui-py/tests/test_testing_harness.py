@@ -68,7 +68,7 @@ class Demo:
                 ],
                 id="d:tree",
                 selected_path=[0],
-                on_row_click=lambda path: self.log.append(("click", tuple(path))),
+                on_click=lambda path, button: self.log.append(("click", tuple(path))),
                 on_select=lambda path: self.log.append(("select", tuple(path))),
                 on_activate=lambda path: self.log.append(("activate", tuple(path))),
                 on_toggle_expand=lambda path: self.log.append(("toggle", tuple(path))),

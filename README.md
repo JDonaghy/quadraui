@@ -16,20 +16,14 @@ by `scripts/capture_hero.sh` through each backend's headless test driver.*
 If you know **Elm, iced, Textual or React**, you know the shape already:
 **state**, a **view** that turns state into a widget tree each frame, and
 **update** code that changes state when an event arrives. There is no data
-binding and no manual redraw. Here is the same counter in each language.
-Python and Node build the view from `Column` and `Row`; Rust, for now,
-implements a lower-level trait and places each widget itself (third
-below):
+binding and no manual redraw. Here is the same counter in each language,
+built from the same `Column` and `Row` tree:
 
 **Python**
 
 <!-- sample: examples/hero/python/counter.py -->
 ```python
-from quadraui.app import App, Button, Column, Row, TextDisplay, key_name
-
-
-def text(s):
-    return [{"spans": [{"text": s, "fg": None, "bg": None}]}]
+from quadraui.app import App, Button, Column, Row, Text
 
 
 class Counter:
@@ -38,8 +32,12 @@ class Counter:
 
     def view(self):
         return Column(
-            TextDisplay(text(f"Count: {self.count}"), id="count"),
-            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+            Text(f"Count: {self.count}", id="count"),
+            Row(
+                Button("-", id="dec", on_click=self.dec),
+                Button("+", id="inc", on_click=self.inc),
+                size="content",
+            ),
         )
 
     def inc(self):
@@ -48,21 +46,16 @@ class Counter:
     def dec(self):
         self.count -= 1
 
-    def on_key(self, event):
-        if key_name(event) == "q":
-            raise SystemExit
-
 
 if __name__ == "__main__":
-    counter = Counter()
-    App(30, 5, view=counter.view, on_event=counter.on_key).run_tui()  # or .run_native(title="Counter"): same Counter
+    App(view=Counter().view).run_tui()  # q quits; or .run_native(title="Counter"): same Counter
 ```
 
 **TypeScript (JSX)**
 
 <!-- sample: examples/hero/node/counter.tsx -->
 ```tsx
-const { App, keyName } = require("@quadraui/node/app");
+import { App } from "@quadraui/node/app";
 
 class Counter {
   count = 0;
@@ -70,92 +63,64 @@ class Counter {
   view() {
     return (
       <column>
-        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
-        <row>
+        <text id="count">Count: {this.count}</text>
+        <row size="content">
           <button id="dec" label="-" onClick={() => this.count--} />
           <button id="inc" label="+" onClick={() => this.count++} />
         </row>
       </column>
     );
   }
-
-  onKey(event: unknown, quit: () => void) {
-    if (keyName(event) === "q") quit();
-  }
 }
 
 if (require.main === module) {
   const counter = new Counter();
-  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
-  const live = app.runTui(); // or app.runNative("Counter"): same Counter
-  // No App.quit() yet: a key handler calls quit(), which stops the loop and the session once it returns.
-  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+  new App({ view: () => counter.view() }).runTui(); // q quits; or .runNative("Counter"): same Counter
 }
 module.exports = { Counter };
 ```
 
-**Rust**: the same three parts on the lower-level `AppLogic` trait. Rust has
-no declarative `Column`/`Row` yet, so this view places widgets by hand.
+**Rust**: the same tree. A node maps its events to a message, and one
+`update` applies it, as in Elm and iced.
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust
 use quadraui::prelude::*;
-use quadraui::{primitive::DynWidget, Button, FrameTree, StyledSpan};
-use std::cell::Cell;
 
 #[derive(Default)]
 pub struct Counter {
     pub count: i32,
-    cell: Cell<(f32, f32)>,
 }
 
-impl Counter {
-    fn view(&self) -> ScreenLayout {
-        let (w, h) = self.cell.get(); // one character cell, in this backend's units
-        let text = StyledSpan::plain(format!("Count: {}", self.count));
-        let mut label = TextDisplay::new(WidgetId::new("count"));
-        label.lines = vec![TextDisplayLine {
-            spans: vec![text],
-            decoration: Default::default(),
-            timestamp: None,
-        }];
-        let mut ui = ScreenLayout::new();
-        let mut put = |col: f32, row: f32, cols: f32, widget: Box<dyn DynWidget>| {
-            let rect = Rect::new(col * w, row * h, cols * w, h);
-            ui.push(Surface::Widget { rect, widget })
-        };
-        put(0.0, 0.0, 20.0, Box::new(label));
-        put(0.0, 2.0, 5.0, Box::new(Button::new("dec".into(), "-")));
-        put(6.0, 2.0, 5.0, Box::new(Button::new("inc".into(), "+")));
-        ui
-    }
+#[derive(Clone)]
+pub enum Msg {
+    Inc,
+    Dec,
 }
 
-impl AppLogic for Counter {
-    type AreaId = ();
-    fn render(&self, backend: &mut dyn Backend, _: ()) {
-        self.cell.set((backend.char_width(), backend.line_height()));
-        self.view().draw(backend);
+impl View for Counter {
+    type Msg = Msg;
+    fn view(&self) -> Node<Msg> {
+        column([
+            text(format!("Count: {}", self.count)).id("count"),
+            row([
+                button("-").id("dec").on_click(Msg::Dec),
+                button("+").id("inc").on_click(Msg::Inc),
+            ])
+            .content(),
+        ])
     }
-    fn frame_tree(&self, _: ()) -> FrameTree {
-        self.view().into_frame_tree()
-    }
-    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
-            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
-            UiEvent::KeyPressed {
-                key: Key::Char('q'),
-                ..
-            } => return Reaction::Exit,
-            _ => return Reaction::Continue,
+    fn update(&mut self, msg: Msg) -> Command {
+        match msg {
+            Msg::Inc => self.count += 1,
+            Msg::Dec => self.count -= 1,
         }
-        Reaction::Redraw
+        Command::None
     }
 }
 
 fn main() -> Result<(), quadraui::RunError> {
-    quadraui::tui::run(Counter::default()) // or gtk::run, macos::run, win::run: same Counter
+    run_tui(Counter::default()) // or run_native: the same Counter in a window
 }
 ```
 
@@ -164,8 +129,12 @@ All three are run headless in CI with the same clicks (`examples/hero/`).
 ```sh
 cargo add quadraui --features tui   # add gtk, macos or win for a native window
 pip install quadraui
-npm install @quadraui/node
+npm install @quadraui/node          # published with 0.12; until then, build from a clone
 ```
+
+These track `develop`, which becomes 0.12: crates.io and PyPI carry 0.11
+today and npm has no package yet, so each quick start below shows how to
+run it from a clone until 0.12 ships.
 
 📖 **[Docs and quick starts](https://jdonaghy.github.io/quadraui)**
 ([Rust](https://jdonaghy.github.io/quadraui/quick-start/rust.html) ·
@@ -194,16 +163,17 @@ npm install @quadraui/node
   in the 2026-09-26 audit. The runtime is event-driven: an app with
   nothing to do renders nothing.
 - **Declarative, serialisable widgets.** Widgets are plain data
-  (`Serialize`), events are plain data routed by `WidgetId`, and no
-  closures cross the Rust API. That is what makes scripting practical
-  (vimcode lets Lua extensions declare quadraui views) and what the Python
-  and Node.js bindings are built on; their app layers add per-widget
-  callbacks on top.
+  (`Serialize`), events are plain data routed by `WidgetId`, and no widget
+  holds a closure. That is what makes scripting practical (vimcode lets
+  Lua extensions declare quadraui views) and what the Python and Node.js
+  bindings are built on. The app layers in all three languages attach
+  handlers to the view's nodes, outside the widgets: callbacks in Python
+  and Node, event-to-message closures in Rust.
 - **Honest about capabilities.** `BackendCaps` tells an app what the
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 8,500 tests, including headless
+- **Heavily tested.** Around 8,600 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -212,8 +182,8 @@ npm install @quadraui/node
 
 **A good fit:** keyboard-driven developer, ops and data tools (editors,
 dashboards, log viewers, database and HTTP clients) that should run in a
-terminal over SSH *and* as a native window, written in Rust, by people
-comfortable with a pre-1.0 API.
+terminal over SSH *and* as a native window, written in Rust, Python or
+TypeScript, by people comfortable with a pre-1.0 API.
 
 **Not a fit, today:**
 
@@ -281,18 +251,16 @@ tracker.
 quadraui = { version = "0.11", features = ["tui", "gtk"] }
 ```
 
-**Python and Node.js** — `pip install quadraui` and
-`npm install @quadraui/node`. Both bindings are the same Rust renderer
+**Python and Node.js** — `pip install quadraui`, and
+`npm install @quadraui/node` once 0.12 publishes it (until then the Node
+quick start builds it from a clone). Both bindings are the same Rust renderer
 under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
 Node). Each has a five-minute quick start on the docs site:
 [Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
 [Node](https://jdonaghy.github.io/quadraui/quick-start/node.html).
-A binding builds the same widgets a Rust app does: a layout leaf names a
-widget kind (`button`, `form`, `editor`, `tree_table`, `chart` and the
-rest of binding-core's `WIDGET_KINDS`, plus the `text_display`, `list`,
-`tree`, `data_table` and `tab_bar` leaves) and is decoded into that
-widget's own `Primitive` and `Interactive` implementation, so it paints
-and handles input exactly as it does from Rust.
+A render callback builds any widget kind core registers, by its snake_case
+name (`"list"`, `"tree_table"`, `"cell_grid"`, ...); a layout tree's
+`"sidebar_panel"` is a container node rather than a leaf.
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in
@@ -392,6 +360,9 @@ fn paint_swatch(frame: &mut ScreenLayout, rect: Rect) {
 }
 ```
 
+`A11yPrimitive` is the accessibility description every widget declares;
+no backend reads it yet (see "Not a fit, today" above).
+
 `Surface::Widget` paints any widget through `DrawsPrimitives::draw_dyn`,
 on every backend. A widget that reacts to input implements `Interactive`
 itself: it declares its focus stops and sub-regions, handles each
@@ -478,8 +449,7 @@ widget's own input handling lives in its `Interactive` impl, not here:
 | `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
-| `FormController` | A form's focus, editing and validation. |
-| `FormDialog` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
+| `FormDialog` | A modal dialog hosting a multi-field form (laid out as a `ScrolledForm`): field editing plus Tab from the fields onto the dialog's buttons. |
 | `DualModePalette` | A command palette that switches between modes. |
 | `Chat` | A chat overlay: transcript plus input. |
 | `FilePicker` / `FolderPicker` | In-app file and folder pickers for backends without a native dialog. |

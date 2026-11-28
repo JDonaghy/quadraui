@@ -2585,11 +2585,11 @@ pub trait DrawsPrimitives: Backend {
     ) -> Box<dyn PrimitiveLayout> {
         let ctx = primitive_layout_ctx(self);
         let style = self.style();
-        let layout = {
+        let lay_out = |backend: &Self| {
             // See `layout_primitive`'s own measurer comment: a closure over
-            // `self`, scoped so its shared borrow ends before the
+            // the backend, scoped so its shared borrow ends before the
             // `&mut self` paint calls below.
-            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
             w.layout(
                 &ctx.with_measurer(&measurer)
                     .with_style(&style)
@@ -2597,6 +2597,28 @@ pub trait DrawsPrimitives: Backend {
                 rect,
             )
         };
+        let mut layout = lay_out(self);
+        // The widget records what this layout resolved (a selection the app
+        // moved, scrolled into view) before it paints, and paints the
+        // layout of the state it recorded. A widget with no state yet only
+        // gains one when it records something.
+        let settled = w.id().is_some_and(|id| {
+            crate::widget_state::try_with_widget_states(|store| {
+                if store.contains(id) {
+                    return w.settle(store.state_for(*id, w), layout.as_ref());
+                }
+                let mut fresh = w.new_state();
+                let changed = w.settle(fresh.as_mut(), layout.as_ref());
+                if changed {
+                    store.insert(*id, fresh);
+                }
+                changed
+            })
+            .unwrap_or(false)
+        });
+        if settled {
+            layout = lay_out(self);
+        }
         let theme = self.theme();
         let sub_regions: Vec<_> = match w.id() {
             Some(_) => w
@@ -2692,6 +2714,7 @@ pub trait DrawsPrimitives: Backend {
                     .filter(|sub| w.sub_region_name(*sub).is_none())
                     .collect()
             });
+            let focus_ring = w.focus_ring(recorded.as_ref()).resolve(rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
                 id: *id,
                 rect,
@@ -2699,6 +2722,7 @@ pub trait DrawsPrimitives: Backend {
                 sub_regions,
                 hover_targets,
                 paint_state: crate::primitive::PaintStateSnapshot::of(state),
+                focus_ring,
             });
         }
         layout

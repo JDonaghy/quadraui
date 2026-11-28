@@ -93,6 +93,8 @@ mod tests {
 
     fn deep_table(width: ColumnWidth) -> TreeTable {
         let table = DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("tt"),
             columns: vec![Column {
                 title: "N".into(),
@@ -107,6 +109,8 @@ mod tests {
                 .collect(),
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

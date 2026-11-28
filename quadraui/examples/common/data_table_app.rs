@@ -219,11 +219,15 @@ impl DataTableApp {
             });
         }
         DataTable {
+            selection_mode: Default::default(),
+            selected_indices: Vec::new(),
             id: WidgetId::new("pods"),
             columns: self.columns.clone(),
             rows,
             selected_idx: self.selected,
             scroll_offset: self.scroll_offset,
+            items_window: None,
+            scroll_px: None,
             sort: self.sort_col.map(|c| {
                 (
                     c,
