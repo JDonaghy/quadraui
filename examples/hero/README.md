@@ -61,10 +61,14 @@ its width equally, so all three render the identical frame.
   `counter.tsx` under `tsc --strict` (it is listed in
   `quadraui-node/tsconfig.jsx.json`).
 
-Verified on 2026-11-27 against `hand-erg-integ`:
+Verified on 2026-11-28 against `hand-erg-integ`:
 - All three headless runners pass on Linux (precision) and render the
-  identical frame.
-- The Rust version passes the macOS-backend test on the Mac.
+  identical frame, and the parity check (`scripts/parity_ci.sh`) passes.
+- The Rust version passes the macOS-backend test on the Mac and the TUI
+  test on Windows.
+- The captures under `site/src/images/hero-*.png` were redrawn from this
+  layout on all four backends; a live native window was not checked by
+  eye.
 
 ## Screenshots
 
