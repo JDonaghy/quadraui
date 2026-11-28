@@ -993,10 +993,6 @@ impl DataTable {
         }
     }
 
-    fn multi_select(&self) -> bool {
-        self.live_selection_mode() == SelectionMode::Multi
-    }
-
     /// Resolve `scroll_offset` against an optional pixel-precise
     /// [`DataTablePaintState::scroll_px`] into the whole starting row
     /// index a caller slices `self.rows[..]` from and passes to
@@ -3190,7 +3186,7 @@ impl DataTable {
                 other => other,
             };
             let current = self.current_idx(state);
-            let extend = mods.shift && self.multi_select();
+            let extend = mods.shift && self.live_selection_mode() == SelectionMode::Multi;
             return match FlatNav::mv_all(self.row_count(), current, nav, false) {
                 Some(target) => self.move_cursor(state, target, extend, layout, cx),
                 None => Handled::Ignored,

@@ -17,7 +17,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { QuiApp } = require("../js/index.ts");
+const { QuiApp } = require("@quadraui/node");
 
 const TOTAL = 100_000;
 const WINDOW_LEN = 50;
