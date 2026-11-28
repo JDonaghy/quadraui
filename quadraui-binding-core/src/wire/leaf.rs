@@ -5,10 +5,8 @@
 
 use serde_json::Value;
 
-use crate::extra_paint::{
-    decode_extra_primitive_checked, decode_widget_leaf, widget_leaf_kinds, EXTRA_PRIMITIVE_KINDS,
-};
 use crate::layout::{LayoutLeaf, LeafDescriptor, LEAF_KIND_KEYS};
+use crate::widget_kinds::{decode_widget_leaf, widget_leaf_kinds};
 use crate::DecodeError;
 
 use super::value::{
@@ -30,11 +28,10 @@ fn record_items_window(diagnostics: &DecodeDiagnostics, id: &str, body: &Value) 
 }
 
 /// Decodes one `{"id": ..., "<kind>": <descriptor>}` leaf dict. `"id"`
-/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`], an
-/// [`EXTRA_PRIMITIVE_KINDS`] kind, or a [`crate::extra_paint::widget_leaf_kinds`]
-/// kind must be present and hold a `dict` — a leaf with two keys from any
-/// two of the three sets is rejected by the single `found` duplicate
-/// check shared across all three loops below. Also reads this leaf's
+/// must be present and a string; exactly one of [`LEAF_KIND_KEYS`] or a
+/// [`crate::widget_kinds::widget_leaf_kinds`] kind must be present and
+/// hold a `dict` — a leaf with two kind keys is rejected by the single
+/// `found` duplicate check shared across both loops below. Also reads this leaf's
 /// optional
 /// `"draggable"`/`"drop_target"` [`DRAG_ROLE_KEYS`], recording a
 /// [`super::value::DragRole`] against `id` in `diagnostics`'s side table
@@ -55,7 +52,7 @@ pub(super) fn layout_leaf_from_value(
         None => return Err(DecodeError::missing_field(what, "leaf.id")),
     };
     let context = format!("{what} › leaf#{id}");
-    // "id" plus whichever of `LEAF_KIND_KEYS`/`EXTRA_PRIMITIVE_KINDS` holds
+    // "id" plus whichever of `LEAF_KIND_KEYS`/`widget_leaf_kinds()` holds
     // this leaf's one descriptor, plus the sibling keys every layout-tree
     // node dict may carry regardless of its own kind, plus the two
     // leaf-only drag-role keys and the one leaf-only accessibility-override
@@ -64,7 +61,6 @@ pub(super) fn layout_leaf_from_value(
     let widget_kinds = widget_leaf_kinds();
     let known_keys: Vec<&str> = std::iter::once("id")
         .chain(LEAF_KIND_KEYS)
-        .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
         .chain(widget_kinds.iter().copied())
         .chain(UNIVERSAL_NODE_SIBLING_KEYS)
         .chain(DRAG_ROLE_KEYS)
@@ -151,33 +147,9 @@ pub(super) fn layout_leaf_from_value(
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
     }
-    // Additive primitive kinds share the same leaf dict shape and the same
-    // `found` duplicate-detection as the five fixed kinds above; a new
-    // additive primitive only ever adds a line to `extra_paint`'s
-    // `extra_primitives!` table, never a new loop here.
-    for kind in EXTRA_PRIMITIVE_KINDS {
-        let Some(v) = obj_get(value, kind) else {
-            continue;
-        };
-        let value_dict = must_be_dict(&context, v, kind)?;
-        if found.is_some() {
-            return Err(DecodeError::borrow(
-                &context,
-                "has more than one descriptor kind",
-            ));
-        }
-        found = Some(LeafDescriptor::Extra(decode_extra_primitive_checked(
-            diagnostics,
-            &context,
-            kind,
-            value_dict,
-        )?));
-    }
-    // `widget_leaf_kinds()` mirrors `EXTRA_PRIMITIVE_KINDS`'s own loop above,
-    // decoding into `LeafDescriptor::Widget` via `quadraui::decode_widget`
-    // instead of `LeafDescriptor::Extra` via `decode_extra_primitive_checked`
-    // — the two tables never overlap, so a leaf can match at most one kind
-    // across all three loops regardless of which it lands in.
+    // `widget_leaf_kinds()` decodes into `LeafDescriptor::Widget` via
+    // `quadraui::decode_widget`, sharing the fixed kinds' `found`
+    // duplicate check.
     for &kind in &widget_kinds {
         let Some(v) = obj_get(value, kind) else {
             continue;
@@ -198,10 +170,7 @@ pub(super) fn layout_leaf_from_value(
     let descriptor = found.ok_or_else(|| {
         DecodeError::borrow(
             &context,
-            format!(
-                "is missing a descriptor (one of {LEAF_KIND_KEYS:?}, {:?}, or {:?})",
-                EXTRA_PRIMITIVE_KINDS, widget_kinds
-            ),
+            format!("is missing a descriptor (one of {LEAF_KIND_KEYS:?} or {widget_kinds:?})"),
         )
     })?;
 
@@ -549,23 +518,6 @@ mod tests {
         assert!(
             error.to_string().contains("draggable") && error.to_string().contains("leaf"),
             "{error}"
-        );
-    }
-
-    /// An unregistered additive primitive kind is rejected with every
-    /// registered kind named in the error.
-    #[test]
-    fn rejects_an_unknown_extra_primitive_kind() {
-        let err = err(crate::extra_paint::decode_extra_primitive(
-            "test",
-            "not_a_real_kind",
-            json!({}),
-        ));
-        assert!(matches!(err, DecodeError::UnknownVariant { .. }), "{err:?}");
-        assert!(
-            err.to_string().contains("not_a_real_kind"),
-            "{}",
-            err.to_string()
         );
     }
 

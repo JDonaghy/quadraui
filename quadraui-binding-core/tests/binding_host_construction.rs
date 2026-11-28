@@ -74,10 +74,9 @@ fn a_binding_builds_a_host_by_functional_record_update() {
     assert!(host.list.is_none());
 }
 
-/// The five fixed slots a host does hold paint top-to-bottom, and the extras
-/// map the host contributes is empty, so nothing paints after them.
+/// The fixed slots a host does hold paint top-to-bottom.
 #[test]
-fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
+fn a_host_paints_its_fixed_slots() {
     let mut status = TextDisplay::new(WidgetId::new("status"));
     status.append_line(TextDisplayLine {
         spans: vec![StyledSpan::plain("Ready")],
@@ -90,10 +89,6 @@ fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
         text_display: Some(status),
         ..BindingHost::default()
     };
-    assert!(
-        host.render_refs().extra.is_empty(),
-        "a host carries no additive primitive of its own"
-    );
 
     let mut driver = TuiDriver::new(HostApp { host }, 24, 8);
     driver.render();

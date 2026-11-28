@@ -5,7 +5,7 @@ as an additive primitive (`"tree_table" => TreeTable` in `extra_paint.rs`'s
 row's chevron and both rows' labels, and its resolved layout/chevron bounds
 are reachable through the same pure `TreeTable::layout`/`TreeTableLayout`
 API the Rust side tests against -- no new pymethod needed, since
-`EXTRA_PRIMITIVE_KINDS`'s generic registration already covers it.
+the generic widget leaf's registration already covers it.
 
 A click on a branch row's chevron resolves to a typed
 `TreeTableEvent::ToggleExpanded` (via the paint-time layout

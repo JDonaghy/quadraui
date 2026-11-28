@@ -1,283 +1,20 @@
-//! The `ExtraPaint` trait, one impl per additive primitive, and the
-//! `extra_primitives!` table decoding each one — the paint/hit-test and
-//! wire-decode logic for every primitive painted outside the five fixed
-//! slots (`TextDisplay`/`List`/`Tree`/`DataTable`/`TabBar`).
-//! Registering a further additive primitive needs exactly one impl here
-//! plus one appended line in the `extra_primitives!` table at the bottom
-//! of this file — no enum variant, no central match arm, and no second
-//! decode registry in a binding to keep in lockstep with it.
+//! The kinds a layout leaf or a flat render dict decodes into a generic
+//! [`crate::layout::LeafDescriptor::Widget`], and the runtime registration
+//! a binding (or any crate linking this one) adds its own kinds through.
 
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
-use quadraui::{Backend, NaturalSize, Point, Rect, WidgetId};
 
-/// Paints one additive primitive descriptor painted outside the five fixed
-/// slots above. Implemented once per primitive type (see the `impl`s just
-/// below) so that registering a kind in a binding's own `EXTRA_PRIMITIVES`
-/// decode table never needs a central match arm.
-///
-/// [`ExtraPaint::id`] is mechanical (`self.id`) on every impl and backs the
-/// [`crate::hit::PaintedHit::Extra`] entry pushed for this descriptor.
-/// [`ExtraPaint::hit_test`] and [`ExtraPaint::tab_stop`] default to "not
-/// interactive", which most additive primitives keep; [`Form`] overrides
-/// both to route pointer and keyboard focus to itself.
-/// This trait only gets a hit/focus to the binding's own event handler with
-/// `widget` set — the per-kind semantic event synthesis that turns it into a
-/// `FormEvent` lives in `semantic_event_for_hit` and
-/// `focus_scoped_key_event`.
-pub trait ExtraPaint: std::any::Any {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect);
-
-    /// The widget id this descriptor paints under, used to populate
-    /// [`crate::hit::PaintedHit::Extra`] without threading a leaf-tree
-    /// address through.
-    fn id(&self) -> WidgetId;
-
-    /// Whether `point` lands on an interactive region of this descriptor,
-    /// given the ABSOLUTE `area` it was painted into (the same frame
-    /// `point` itself is in — no translation, matching `Split`'s
-    /// own layout convention). `false` by default: most additive
-    /// primitives are pure display and a miss here lets
-    /// [`crate::hit::hit_test_painted`] fall through to whatever painted
-    /// behind them.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        let _ = (area, point);
-        false
-    }
-
-    /// Whether this descriptor should be included in the binding's own tab-stop list.
-    /// `false` by default, matching [`ExtraPaint::hit_test`]'s "not
-    /// interactive unless overridden" default.
-    fn tab_stop(&self) -> bool {
-        false
-    }
-
-    /// Best-effort intrinsic size of this descriptor — the `ExtraPaint`
-    /// counterpart of `crate::render::natural_size`'s per-kind arms for
-    /// the five fixed leaf slots (`TextDisplay`/`List`/`Tree`/
-    /// `DataTable`/`TabBar`). Consulted by
-    /// [`crate::render::layout_container_rects`]'s non-`Stretch`
-    /// `quadraui::Align` so a compact additive leaf (`Checkbox`,
-    /// `Switch`, `ProgressBar`, `Image`, ...) sizes to its own content
-    /// under `Align::Start`/`Center`/`End` instead of always filling the
-    /// cross-axis extent — a `None` on either axis still degrades that
-    /// axis to filling it, same as [`quadraui::NaturalSize`]'s own doc
-    /// describes.
-    ///
-    /// Defaults to [`quadraui::NaturalSize::NONE`], correct for every
-    /// extra with no single natural size to report: a viewport-filling
-    /// primitive (`Editor`, `Canvas`, `ScrollView`, ...), a
-    /// multi-cell grid (`DatePicker`), or a chrome bar meant to span
-    /// its whole axis (`Toolbar`, `MenuBar`, ...). The
-    /// impls below override it for the primitives with a genuinely
-    /// compact or fixed-content shape.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let _ = backend;
-        NaturalSize::NONE
-    }
-}
-
-/// Recovers the concrete descriptor (`Form`, `MenuBar`, ...) kept alive
-/// behind the `Rc<dyn ExtraPaint>` in a [`crate::hit::PaintedHit::Extra`] entry, via
-/// trait-upcasting coercion to [`ExtraPaint`]'s `std::any::Any` supertrait.
-/// Used by [`crate::semantic::semantic_event_for_hit`] and the binding's own
-/// event handler to route a hit/key to the matched extra's own semantics
-/// instead of leaving every extra paint-only.
-pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
-    (extra.as_ref() as &dyn std::any::Any).downcast_ref::<T>()
-}
-
-
-
-/// Counts its `literal` arguments at compile time — the array-length
-/// companion `extra_primitives!` needs so [`EXTRA_PRIMITIVE_KINDS`]'s
-/// size tracks the table below with no hand-maintained length to drift.
-macro_rules! extra_primitive_count {
-    () => (0usize);
-    ($head:literal $(, $tail:literal)* $(,)?) => (1usize + extra_primitive_count!($($tail),*));
-}
-
-/// Generates [`EXTRA_PRIMITIVE_KINDS`] and [`decode_extra_primitive`] from
-/// one `"kind" => Type` table — the single source of truth both the kind
-/// list and its decode dispatch share, so a further additive primitive
-/// needs exactly one appended line here (plus that type's own
-/// [`ExtraPaint`] impl above) and never a second table to keep in
-/// lockstep with it.
-macro_rules! extra_primitives {
-    ($( $kind:literal => $ty:ty ),* $(,)?) => {
-        /// The additive primitive kind names, in [`decode_extra_primitive`]'s
-        /// dispatch order. [`crate::render::draw_bands`] iterates this
-        /// (rather than the `extra` slot `HashMap` itself) so the paint
-        /// order a frame produces is deterministic, independent of the
-        /// map's iteration order.
-        pub const EXTRA_PRIMITIVE_KINDS: [&str; extra_primitive_count!($($kind),*)] =
-            [$($kind),*];
-
-        /// Decodes one additive primitive descriptor, dispatched by `kind`
-        /// through the same table [`EXTRA_PRIMITIVE_KINDS`] names — both
-        /// the layout-tree leaf decode and the flat render-frame extra
-        /// slot route through this. Returns a [`crate::DecodeError`]
-        /// naming every registered kind when `kind` isn't one of them.
-        pub fn decode_extra_primitive<'de, D: serde::Deserializer<'de>>(
-            what: &str,
-            kind: &str,
-            deserializer: D,
-        ) -> Result<Rc<dyn ExtraPaint>, crate::DecodeError> {
-            match kind {
-                $(
-                    $kind => Ok(Rc::new(crate::decode_value::<$ty, D>(what, deserializer)?)
-                        as Rc<dyn ExtraPaint>),
-                )*
-                _ => Err(crate::DecodeError::unknown_variant(
-                    what,
-                    "kind",
-                    kind,
-                    &EXTRA_PRIMITIVE_KINDS,
-                )),
-            }
-        }
-
-        /// Hands each [`EXTRA_PRIMITIVE_KINDS`] entry's descriptor type to
-        /// `visitor`, in table order.
-        pub fn visit_extra_primitive_kinds<V: quadraui::KindVisitor>(visitor: &mut V) {
-            $( visitor.visit::<$ty>($kind); )*
-        }
-
-        /// [`decode_extra_primitive`] against an already-[`serde_json::Value`]
-        /// descriptor body, routing an unrecognized key inside it through
-        /// `diagnostics` the same way [`crate::wire::decode_value_checked`]
-        /// does for a fixed leaf's own body. The layout-tree leaf decode
-        /// (`crate::wire::layout_leaf_from_value`) and the flat render-frame
-        /// extra slot (`crate::wire::extra_slot_entry`) both already hold a
-        /// materialized `Value` and a session to report through, so they
-        /// call this rather than [`decode_extra_primitive`].
-        pub(crate) fn decode_extra_primitive_checked(
-            diagnostics: &crate::wire::DecodeDiagnostics,
-            what: &str,
-            kind: &str,
-            value: &serde_json::Value,
-        ) -> Result<Rc<dyn ExtraPaint>, crate::DecodeError> {
-            match kind {
-                $(
-                    $kind => Ok(Rc::new(crate::wire::decode_value_checked::<$ty>(
-                        diagnostics, what, kind, value, &[],
-                    )?) as Rc<dyn ExtraPaint>),
-                )*
-                _ => Err(crate::DecodeError::unknown_variant(
-                    what,
-                    "kind",
-                    kind,
-                    &EXTRA_PRIMITIVE_KINDS,
-                )),
-            }
-        }
-    };
-}
-
-extra_primitives! {
-}
-
-/// The `widget_kinds!`-registered kind strings this crate decodes into
-/// [`crate::layout::LeafDescriptor::Widget`] rather than
-/// [`crate::layout::LeafDescriptor::Extra`] — the [`DynWidget`] seam's own
-/// kind table, parallel to [`EXTRA_PRIMITIVE_KINDS`] above but never
-/// overlapping it (a kind lives in exactly one of the two tables). Each
-/// entry here must also be a [`quadraui::widget_kinds!`] entry, so
-/// [`quadraui::decode_widget`] actually knows how to decode it —
-/// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
-/// counterpart of [`decode_extra_primitive_checked`].
-///
-/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
-/// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
-/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"`, `"image"`,
-/// `"chart"`, `"canvas"`, `"scroll_view"`, `"board"`, `"pipeline_view"`,
-/// `"diff_view"`, `"checkbox"`, `"slider"`, `"select"` and `"markdown"` are this table's
-/// members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry,
-/// none of [`quadraui::IconGrid`], [`quadraui::CellGrid`],
-/// [`quadraui::Switch`], [`quadraui::RadioGroup`], [`quadraui::Button`],
-/// [`quadraui::CommandCenter`], [`quadraui::Terminal`],
-/// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`],
-/// [`quadraui::ContextMenu`], [`quadraui::Editor`], [`quadraui::Minimap`],
-/// [`quadraui::Image`], [`quadraui::Chart`], [`quadraui::Canvas`], [`quadraui::ScrollView`],
-/// [`quadraui::BoardModel`], [`quadraui::PipelineView`],
-/// [`quadraui::DiffView`], [`quadraui::Checkbox`], [`quadraui::Slider`],
-/// [`quadraui::Select`] or [`quadraui::Markdown`] has a bespoke
-/// [`ExtraPaint`] impl to write
-/// here — painting, whole-area hit testing and [`DynWidget::handle`]
-/// routing are already fully generic (see
-/// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
-/// entire wiring is its one line in this array.
-/// [`quadraui::CellGrid`]'s own [`crate::interactive::Interactive`] impl
-/// (keyboard navigation, inline editing, click-and-drag selection) and
-/// [`quadraui::CellGrid::cells_requested`] (read generically through
-/// [`crate::engine::InteractionEngine::dyn_widget_cells_requested`]'s own
-/// downcast) cover every bit of state a `"cell_grid"` leaf needs;
-/// [`quadraui::Switch`]'s own [`crate::interactive::Interactive`] impl
-/// (Enter/Space/click toggling) covers `"switch"` the same way;
-/// [`quadraui::RadioGroup`]'s own [`crate::interactive::Interactive`] impl
-/// (arrow-key cursor, click-to-select, one [`crate::interactive::FocusStop`]
-/// per option via [`crate::interactive::FocusSpec::Children`]) covers
-/// `"radio_group"`; [`quadraui::Button`]'s own
-/// [`crate::interactive::Interactive`] impl (a single
-/// [`crate::interactive::FocusSpec::Stop`], Enter/Space/click activation)
-/// covers `"button"`; [`quadraui::CommandCenter`]'s own
-/// [`crate::interactive::Interactive`] impl (a press on an arrow or the
-/// search box, Enter/Space on the focused strip) covers
-/// `"command_center"`; [`quadraui::Terminal`]'s own
-/// [`crate::interactive::Interactive`] impl (click-to-focus, selection
-/// drag, wheel scroll) covers `"terminal"`; [`quadraui::StatusBar`]'s own
-/// [`crate::interactive::Interactive`] impl (press and release on one
-/// clickable segment) covers `"status_bar"`;
-/// [`quadraui::ActivityBar`]'s own [`crate::interactive::Interactive`] impl
-/// (click-to-activate, Up/Down cursor, Enter) covers `"activity_bar"`; and
-/// [`quadraui::Palette`]'s own [`crate::interactive::Interactive`] impl
-/// (query editing, list navigation, click-to-select, Enter/Escape) covers
-/// `"palette"`; and [`quadraui::ContextMenu`]'s own
-/// [`crate::interactive::Interactive`] impl (row hover, click-to-activate,
-/// arrow-key selection, Enter) covers a `"context_menu"` placed as a
-/// layout leaf. [`quadraui::Editor`]'s and [`quadraui::Minimap`]'s own
-/// [`crate::interactive::Interactive`] impls hold only gesture state (a
-/// drag anchor, a seek drag), and [`quadraui::Image`] is non-interactive
-/// with its natural size from its own `Primitive::measure`, so `"editor"`,
-/// `"minimap"` and `"image"` need nothing more. [`quadraui::Chart`]'s hover
-/// and crosshair are descriptor fields the app owns and its `State` is
-/// empty, and [`quadraui::ScrollView`]'s offset is a descriptor field with
-/// only the scrollbar drag in its `State`, so `"chart"` and
-/// `"scroll_view"` need nothing more either. [`quadraui::Canvas`]'s own
-/// [`crate::interactive::Interactive`] impl resolves its declared regions
-/// (hover, leave, click and double-click, in canvas-local coordinates),
-/// so `"canvas"` needs nothing more. [`quadraui::BoardModel`],
-/// [`quadraui::PipelineView`] and [`quadraui::DiffView`] keep their
-/// selection, focus and scroll on the descriptor and hold no state at all,
-/// so `"board"`, `"pipeline_view"` and `"diff_view"` need nothing more
-/// either. [`quadraui::Checkbox`], [`quadraui::Slider`] and
-/// [`quadraui::Select`] paint through `Form`'s own per-kind control painter
-/// and report the same `FormEvent` a form row of that kind does;
-/// [`quadraui::Markdown`] composes a `TextDisplay` and reports a link press
-/// as `UiEvent::RichTextLinkClicked` and a wheel notch as the display's own
-/// scroll event. [`quadraui::TextInput`], [`quadraui::TextField`],
-/// [`quadraui::PasswordInput`] and [`quadraui::TextArea`] edit through the
-/// shared text-editing core and keep their caret, selection and undo
-/// history in their own `Interactive::State`, which their painters read,
-/// so `"text_input"`, `"text_field"`, `"password"` and `"textarea"` need
-/// nothing more either.
-/// `"form"` decodes to [`quadraui::Form`], whose
-/// [`quadraui::primitives::form::FormState`] holds the caret, scroll offset and (while the
-/// descriptor leaves `focused_field` unset) field focus, and whose
-/// per-field focus stops ([`quadraui::FocusSpec::Children`]) it walks
-/// itself once focused; `"menu_bar"` decodes to [`quadraui::AppMenu`],
-/// whose dropdown cascade is its own popups and whose open menu and
-/// highlights are descriptor fields the app echoes back from
-/// `UiEvent::AppMenu(id, AppMenuEvent::Changed(view))`.
-/// [`quadraui::TreeTableModel`] keeps the user's expand,
-/// selection, scroll and sort state in its own `Interactive::State`,
-/// which the engine keeps across frames, so `"tree_table_controller"`
-/// needs nothing more either. A further kind joins this table only when it
-/// likewise needs nothing beyond that generic contract; a kind with its
-/// own paint-time chrome state (tab-stop children, chrome click regions,
-/// a custom whole-area-vs-sub-region hit test) still belongs in
-/// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
+/// The [`quadraui::widget_kinds!`] kinds this crate decodes into a generic
+/// [`crate::layout::LeafDescriptor::Widget`]: every static kind except the
+/// ones a layout leaf still carries in a fixed [`crate::layout::LeafDescriptor`]
+/// slot (`"text_display"`, `"list"`, `"tree"`, `"data_table"`) or as a
+/// container node (`"sidebar_panel"`). [`decode_widget_leaf`] decodes each
+/// through [`quadraui::decode_widget`], and each is painted, hit-tested and
+/// routed through the widget's own `Primitive`/`Interactive` contract, its
+/// `Interactive::State` kept across frames by
+/// [`crate::engine::InteractionEngine`].
 pub const WIDGET_KINDS: [&str; 43] = [
     "form",
     "menu_bar",
@@ -381,9 +118,7 @@ fn reject_reserved_kind(kind: &str) -> Result<(), quadraui::widget_kinds::KindEr
 }
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
-/// [`DynWidget`] — the `Widget` counterpart of
-/// [`decode_extra_primitive_checked`], and like it routed through
-/// `diagnostics`, so an unrecognized key inside `value` is a hard
+/// [`DynWidget`], routed through `diagnostics`, so an unrecognized key inside `value` is a hard
 /// `unknown_key` error under `strict` and a one-shot warning under the
 /// default policy rather than being silently ignored.
 pub(crate) fn decode_widget_leaf(
@@ -403,6 +138,7 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::StyledText;
     use quadraui::{AppLogic, FormEvent, Reaction, Toolbar, ToolbarButton, TreeTable, UiEvent};
+    use quadraui::{Backend, Point, Rect, WidgetId};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -424,9 +160,7 @@ mod tests {
         }
     }
 
-    /// A `Switch` placed as a `LeafDescriptor::Widget` (not `Extra` —
-    /// [`Switch`] has no [`ExtraPaint`] impl, see
-    /// [`crate::layout::LeafDescriptor::Widget`]'s own doc) paints through
+    /// A `Switch` placed as a `LeafDescriptor::Widget` paints through
     /// [`quadraui::DrawsPrimitives::draw_dyn`] and a `MouseDown` landing
     /// on it round-trips through
     /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
@@ -723,9 +457,7 @@ mod tests {
         );
     }
 
-    /// An `IconGrid` placed as a `LeafDescriptor::Widget` (not `Extra` —
-    /// [`IconGrid`] has no [`ExtraPaint`] impl at all, see
-    /// [`crate::layout::LeafDescriptor::Widget`]'s own doc) paints through
+    /// An `IconGrid` placed as a `LeafDescriptor::Widget` paints through
     /// [`quadraui::DrawsPrimitives::draw_dyn`] and records a
     /// [`PaintedHit::Widget`], proving the generic seam carries a click
     /// decode-to-paint-to-hit-test-to-dispatch end to end: a `MouseDown`
@@ -1090,7 +822,7 @@ mod tests {
     /// `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"` leaf
     /// tests below — the same shape
     /// [`switch_leaf_click_toggles_through_the_interaction_engine`] builds
-    /// by hand, generalised over any [`ExtraPaint`] so each leaf's own test
+    /// by hand, generalised over any leaf descriptor so each leaf's own test
     /// only needs to build the descriptor and assert on the result.
     struct SingleLeafApp {
         id: WidgetId,
@@ -1178,15 +910,12 @@ mod tests {
             .hit_map()
             .iter()
             .find_map(|hit| match hit {
-                PaintedHit::Extra {
-                    id: hit_id, area, ..
-                }
-                | PaintedHit::Widget {
+                PaintedHit::Widget {
                     id: hit_id, area, ..
                 } if *hit_id == id => Some(*area),
                 _ => None,
             })
-            .expect("leaf should have painted an Extra or Widget hit")
+            .expect("leaf should have painted a Widget hit")
     }
 
     /// Render shows the unchecked glyph; a click toggles it (mouse); Space

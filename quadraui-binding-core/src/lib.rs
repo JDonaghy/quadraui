@@ -18,7 +18,6 @@
 pub mod deferred;
 pub mod drag;
 pub mod engine;
-pub mod extra_paint;
 pub mod hit;
 pub mod host;
 pub mod layout;
@@ -26,12 +25,12 @@ pub mod render;
 pub mod scripted;
 pub mod semantic;
 pub mod services;
+pub mod widget_kinds;
 pub mod wire;
 
 pub use wire::WIRE_VERSION;
 
-/// A wire-decode failure from any decoder in [`wire`] or
-/// [`extra_paint::decode_extra_primitive`] — the core counterpart of a
+/// A wire-decode failure from any decoder in [`wire`] — the core counterpart of a
 /// binding's own descriptor-decode exception taxonomy (`quadraui-py`'s
 /// `InvalidDescriptorError` and its per-variant subclasses). `#[non_exhaustive]`
 /// so a binding match always carries a wildcard arm, and so this crate can add
@@ -254,8 +253,7 @@ impl std::error::Error for DecodeError {}
 
 /// Deserializes `deserializer` into `T`, wrapping any failure as a
 /// [`DecodeError::Borrow`] whose path is `what` — the shared tail every
-/// per-kind decoder in this crate (`wire::decode_layout_node`,
-/// `extra_paint::decode_extra_primitive`, ...) reduces to once it has a
+/// per-kind decoder in this crate (`wire::decode_layout_node`, ...) reduces to once it has a
 /// concrete type and a `serde::Deserializer` in hand. Public so a binding
 /// crate with its own fixed-slot descriptor types (`quadraui-ffi`'s
 /// `qui_<kind>_insert` family) can decode straight into them with the same
@@ -281,10 +279,6 @@ pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
     InteractionEngine,
 };
-pub use extra_paint::{
-    decode_extra_primitive, extra_as, ExtraPaint, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,
-};
-pub use extra_paint::{register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds};
 pub use hit::tree_total_rows_and_viewport;
 pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
@@ -338,6 +332,9 @@ pub use services::{
     resolve_app_path, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
     set_jump_list, set_login_item, update_apply_on_quit, update_check_for_update,
     update_download_and_stage, ServiceError, UpdateInfoWire,
+};
+pub use widget_kinds::{
+    register_widget_kind, register_widget_kind_with_schema, widget_leaf_kinds, WIDGET_KINDS,
 };
 pub use wire::{
     decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,

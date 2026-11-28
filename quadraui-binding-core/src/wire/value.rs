@@ -659,7 +659,7 @@ where
     })
 }
 
-/// [`decode_value_checked`] for a [`crate::extra_paint::WIDGET_KINDS`]
+/// [`decode_value_checked`] for a [`crate::widget_kinds::WIDGET_KINDS`]
 /// descriptor body, whose concrete type is named by the `kind` string
 /// rather than statically by the caller: the same unknown-key policy
 /// applies, because [`quadraui::decode_widget_from`] hands this module's
@@ -987,7 +987,7 @@ mod tests {
             "fit": "Contain",
             "fallback_text": "",
         });
-        crate::extra_paint::decode_widget_leaf(
+        crate::widget_kinds::decode_widget_leaf(
             &DecodeDiagnostics::default(),
             "test",
             "image",

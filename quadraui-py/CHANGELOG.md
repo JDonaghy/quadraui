@@ -279,6 +279,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
+- The `"extra_body"` hit detail (#2977). Every widget leaf is a generic
+  widget now and reports `"widget_body"`; no leaf produced `"extra_body"`
+  any more. The `_HitDetailExtraBody` type is gone from `quadraui.wire`.
+
 - The `"canvas_region"` hit detail (#2978): a script-defined `Widget`
   reports `"widget_body"` like every other generic widget, and its region
   events arrive as `{"Canvas": (id, ..)}`.

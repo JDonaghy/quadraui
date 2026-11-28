@@ -6,12 +6,9 @@ same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
 container) behind that same render callback -- the one other path a
 descriptor can reach the screen through.
 
-These three primitives prove the additive mechanism described in the
-`EXTRA_PRIMITIVES` doc comment in `quadraui-py/src/lib.rs`: registering a new
-one costs an `ExtraPaint` impl (one line for a whole-area primitive like
-these three, a little layout derivation for one that needs a measure pass)
-and one line appended to the `EXTRA_PRIMITIVES` registry slice -- never an
-edit to the six-slot machinery (`LeafDescriptor`'s six-variant set) that
+These three primitives prove the generic widget leaf: registering a new
+kind costs one `widget_kinds!` line -- never an edit to the six-slot
+machinery (`LeafDescriptor`'s six-variant set) that
 `test_descriptors.py` exercises, and never a new pymethod, since a render
 callback dict already covers any registered kind by name.
 
@@ -119,7 +116,7 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
     # The container primitives (`Split`, `Panel`, ...) are plain `LayoutNode`
     # recursion, same as `row`/`column` -- this nests a `split` inside a
     # `panel`'s content, with one pane holding a `scrollbar` (an
-    # `EXTRA_PRIMITIVES` kind, not one of the six original fixed-slot
+    # generic widget kind, not one of the six original fixed-slot
     # leaves) alongside an ordinary `text_display` leaf in the other pane.
     #
     # A `Scrollbar` paints from its own absolute `track` rect rather than
@@ -206,16 +203,14 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
         app.screen()
 
 
-# Parametrised table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry
+# Parametrised table proving every interactive generic widget kind
 # that has a dedicated `FormEvent` (`switch` already has its own dedicated
 # test above, and `progress`/`spinner`/`image` have no event at all)
 # round-trips through a literal inline layout-tree leaf -- a
 # `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape a render
 # callback writes. Each case pushes the events a real app would dispatch (a
 # focusing click, then a key/char where the kind needs one) and asserts the
-# final dispatched event the handler receives. `radio_group` rides the
-# generic `WIDGET_KINDS` seam rather than `ExtraPaint`, but is kept here too
-# for parity coverage of the same literal-leaf shape.
+# final dispatched event the handler receives.
 _INLINE_LEAF_CASES = [
     pytest.param(
         {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
@@ -250,7 +245,7 @@ _INLINE_LEAF_CASES = [
             {"FocusChanged": "rg:1"},
             # `RadioGroup::select` resolves a click straight to the
             # clicked option -- no `Form` wrapper, since `RadioGroup` is a
-            # `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+            # generic widget leaf with its own event.
             {"RadioGroupSelectionChanged": {"widget": "rg:1", "index": 1}},
             # The arrow key routes through `InteractionEngine`'s own
             # dyn-widget-key dispatch, which attaches a `hit` dict even to
@@ -665,8 +660,8 @@ def test_number_input_up_key_increments_the_focused_value():
 
 
 def test_radio_group_arrow_key_changes_the_selection():
-    # `RadioGroup` is a `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS`
-    # one, so `RadioGroupEvent::SelectionChanged` reaches Python as a bare
+    # `RadioGroup` is a generic widget leaf with its own event, so
+    # `RadioGroupEvent::SelectionChanged` reaches Python as a bare
     # `RadioGroupSelectionChanged` event rather than a `Form`-wrapped one.
     app = QuiApp(40, 20)
     app.set_render(
@@ -918,13 +913,8 @@ def test_form_leaf_control_width_min_control_width_prevents_clipping():
 
 
 def test_form_toggle_click_routes_through_form_controller():
-    # `FormEvent::ButtonClicked` was never emitted anywhere -- `"form"`
-    # painted via `Form`'s own plain, non-interactive `ExtraPaint::paint`
-    # with no hit-testing/routing at all. A click on a `Toggle` field now
-    # resolves through the cached `FormController`
-    # (`InteractionEngine::sync_forms`/`handle`'s own dispatch), the same
-    # `FormEvent::ToggleChanged` a `Form`-embedding host driving
-    # `FormController` directly would get.
+    # A click on a `Toggle` field resolves through the form's own
+    # `Interactive::handle` to `FormEvent::ToggleChanged`.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -1183,12 +1173,8 @@ def test_form_text_field_click_then_typing_routes_through_form_controller():
 
 
 def test_form_descriptor_has_focus_seeds_the_controller_highlight():
-    # `FormController::build_form` unconditionally overwrites `has_focus`
-    # with its own cached state -- without `sync_forms` seeding that cached
-    # state from the descriptor first, a form painted with `has_focus:
-    # True` directly (no click, no engine focus at all) would silently
-    # lose its focused-row highlight the moment it's routed through
-    # `FormController` instead of `Form`'s own plain `ExtraPaint::paint`.
+    # A form painted with `has_focus: True` directly (no click, no engine
+    # focus at all) shows its focused-row highlight.
     # `(50, 60, 90)` is `Theme::default()`'s `selected_bg`, paired with the
     # focused row; an unfocused row uses `tab_bar_bg` (`(20, 22, 30)`).
     app = QuiApp(40, 20)
@@ -1269,8 +1255,8 @@ def test_form_focus_highlight_tracks_engine_focus_in_both_directions():
                 ],
             },
             # A second focusable extra to move engine focus onto, banded
-            # right after the form (`EXTRA_PRIMITIVE_KINDS` puts `"form"`
-            # before `"switch"`), so the row below proves the highlight
+            # right after the form (the generic slots paint `"form"` before
+            # `"switch"`), so the row below proves the highlight
             # clears once focus actually leaves the form.
             "switch": {"id": "sw:1", "value": False},
         }
@@ -1626,8 +1612,7 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # last field yields back to the engine's cycle. A sixth `Tab` then
     # wraps the whole lap back to `settings`, proving the cycle is closed.
     # The form's own event arrives with the `widget_body` hit every
-    # generic leaf's event carries. `radio_group` is a
-    # `WIDGET_KINDS` member now, not an `EXTRA_PRIMITIVE_KINDS` one, and a
+    # generic leaf's event carries. A
     # flat render-callback dict's generic-widget slots (`WIDGET_KINDS`) are
     # not wired into this `tab_stops()` traversal, so it is left out of this
     # render tree entirely rather than asserted as an untested no-op.
@@ -2118,8 +2103,7 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
 # `{"row": [{"id", "<kind>": {...}}]}` leaf -- the shape a render callback
 # writes -- instead of a flat `{"<kind>": {...}}` dict, proving the
 # chrome-bar leaf path
-# (`ExtraPaint::paint_chrome`'s `chrome_hits`, and for `menu_bar`,
-# `render_overlays`'s `sync_menu_bar`) carries the same semantic event all
+# (each bar's own `Interactive::handle`) carries the same semantic event all
 # the way to the handler, not just its paint.
 def test_inline_tree_leaf_toolbar_click_emits_toolbar_button_clicked():
     app = QuiApp(40, 20)
@@ -2470,8 +2454,8 @@ def test_palette_renders_item_text():
 # just above `test_activity_bar_renders_item_fallback_glyph`. Each one here
 # mirrors that same descriptor through a literal inline
 # `{"row": [{"id", "<kind>": {...}}]}` leaf instead, proving
-# `layout_leaf_from_value`'s generic `EXTRA_PRIMITIVE_KINDS` decode (and
-# `paint_leaf`'s matching `LeafDescriptor::Extra` paint) covers every
+# `layout_leaf_from_value`'s generic widget decode (and `paint_leaf`'s
+# matching `LeafDescriptor::Widget` paint) covers every
 # data-view kind, not just the two already proven this way.
 def test_inline_tree_leaf_message_list_renders_row_text():
     app = QuiApp(40, 20)
@@ -2629,8 +2613,8 @@ def test_inline_tree_leaf_multi_section_view_renders_section_header_title():
 # paint-and-click coverage in `test_missing_primitives.py` (C17).
 # These three mirror that same click behaviour (click-to-focus for the two
 # tab stops, a bare routed hit for the non-focusable `Canvas`) through a
-# literal inline leaf instead, proving the generic `LeafDescriptor::Extra`
-# path carries `ExtraPaint::hit_test`/`tab_stop` the same way a flat-slot
+# literal inline leaf instead, proving the generic `LeafDescriptor::Widget`
+# path carries hit-testing and tab stops the same way a flat-slot
 # descriptor does.
 def test_inline_tree_leaf_editor_focuses_it_and_routes_the_hit():
     app = QuiApp(40, 20)

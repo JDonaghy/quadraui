@@ -5,8 +5,8 @@
 //! payload itself.
 
 use quadraui::{
-    DataTableEvent, Key, ListViewEvent, Modifiers, NamedKey, TabBar, TabBarEvent,
-    TextDisplayEvent, TreeEvent, UiEvent, WidgetId,
+    DataTableEvent, Key, ListViewEvent, Modifiers, NamedKey, TabBar, TabBarEvent, TextDisplayEvent,
+    TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -118,9 +118,6 @@ fn tab_bar_key_event(
 /// `ListViewEvent::SelectionChanged`) — for which the raw
 /// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
 /// event handler unchanged.
-/// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
-/// semantics; an extra with no recognized click behavior still falls
-/// through to the raw `MouseDown`.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
@@ -195,15 +192,6 @@ pub fn semantic_event_for_hit(
                 ))
             }
         }
-        HitDetail::ExtraBody => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id,
-                extra,
-                area,
-                ..
-            } if *hit_id == id => None,
-            _ => None,
-        }),
         _ => None,
     }
 }
@@ -310,7 +298,7 @@ pub fn key_to_focus_string(key: &Key) -> String {
 /// [`data_table_key_event`]'s `RowSelected`/`RowActivated`; or, for a
 /// focused `List`'s Enter with at least one row, straight into
 /// [`list_key_event`]'s `ItemActivated`). A focused
-/// [`crate::extra_paint::WIDGET_KINDS`] leaf (e.g. `Button`, `Switch`) never
+/// [`crate::widget_kinds::WIDGET_KINDS`] leaf (e.g. `Button`, `Switch`) never
 /// reaches this function at all — `InteractionEngine::handle` claims its
 /// `KeyPressed` earlier, through `DynWidget::handle` directly, the same
 /// generic seam its `MouseDown`/`DoubleClick` routing already goes through.

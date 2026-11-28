@@ -325,17 +325,15 @@ test("extra primitives coexist with the primitive leaves in one render object", 
   assert.ok(app.screenContains("Downloading"));
 });
 
-// Table proving every interactive `EXTRA_PRIMITIVE_KINDS` entry that has a
+// Table proving every interactive generic widget kind that has a
 // dedicated `FormEvent` round-trips through a literal inline layout-tree
 // leaf -- a `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a
 // render callback returns. Each case dispatches the events a real app
 // would push (a focusing click, then a key/char where the kind needs one)
 // and asserts the final event the handler receives. `progress`/`spinner`/
 // `image` have no event at all, so neither appears here. `switch` and
-// `radio_group` ride the generic `WIDGET_KINDS` seam rather than
-// `ExtraPaint`, and emit a bare top-level event instead of a `Form`-wrapped
-// one, but are kept here too for parity coverage of the same literal-leaf
-// shape.
+// `radio_group` emit a bare top-level event instead of a `Form`-wrapped
+// one.
 const INLINE_LEAF_CASES: Array<{
   name: string;
   tree: unknown;
@@ -348,9 +346,9 @@ const INLINE_LEAF_CASES: Array<{
     // `paint_leaf` keys the painted hit by the leaf id specifically
     // because a render callback may reuse the same descriptor id across
     // leaves, so both the click-to-focus `FocusChanged` and the
-    // `SwitchToggled` it emits must agree on "leaf:1". `switch` rides the
-    // generic `WIDGET_KINDS` seam, not `ExtraPaint`, so its click resolves
-    // to a bare `SwitchToggled` event rather than a `Form`-wrapped one.
+    // `SwitchToggled` it emits must agree on "leaf:1". A `switch` click
+    // resolves to a bare `SwitchToggled` event rather than a `Form`-wrapped
+    // one.
     name: "switch",
     tree: { row: [{ id: "leaf:1", switch: { id: "sw:embedded", value: false } }] },
     events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } }],
@@ -394,8 +392,7 @@ const INLINE_LEAF_CASES: Array<{
     expected: [
       { FocusChanged: "rg:1" },
       // `RadioGroup::select` resolves a click straight to the clicked
-      // option -- no `Form` wrapper, since `RadioGroup` is a
-      // `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+      // option -- no `Form` wrapper, since `RadioGroup` has its own event.
       { RadioGroupSelectionChanged: { widget: "rg:1", index: 1 } },
       // The arrow key routes through `InteractionEngine`'s own
       // dyn-widget-key dispatch, which attaches a `hit` dict even to a
@@ -908,8 +905,7 @@ test("inline tree leaf markdown renders formatting and link click emits RichText
 });
 
 test("inline tree leaf find_replace renders its query text", () => {
-  // `FindReplacePanel` carries no `id` field of its own (see
-  // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage
+  // `FindReplacePanel` carries no `id` field of its own, so this is its first coverage
   // in this file, via an inline leaf. `hit_regions` drives both click
   // routing AND which content the TUI rasteriser paints
   // (the cell painter walks it to place the find/replace input
@@ -996,9 +992,8 @@ test("inline tree leaf palette renders its item text", () => {
 // paint-only inline leaf proof: a literal
 // `{ row: [{ id, <kind>: {...} }] }` object, the exact shape a render
 // callback returns, decodes through `layout_leaf_from_value`'s generic
-// `EXTRA_PRIMITIVE_KINDS` loop and paints through the matching
-// `ExtraPaint` impl, same as it already does for the eight chrome-bar
-// kinds just above.
+// widget loop and paints through the widget's own contract, same as it
+// already does for the eight chrome-bar kinds just above.
 test("inline tree leaf message_list renders a row's text", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
@@ -1191,7 +1186,7 @@ test("inline tree leaf chart renders its x_label", () => {
 });
 
 // `editor`/`canvas` are a tab stop and a bare hit target (`canvas`, which
-// `ExtraPaint::tab_stop` leaves non-focusable) with no dedicated semantic
+// takes no focus) with no dedicated semantic
 // event of their own -- a click reaches the handler as the raw `MouseDown`
 // with `widget` resolved to the leaf's id, same as a render callback's
 // flat-slot path. `terminal` is a widget-contract kind whose own

@@ -763,7 +763,7 @@ unsafe fn insert_descriptor(
         }
 
         match slot {
-            // `Button` is a `quadraui_binding_core::extra_paint::WIDGET_KINDS`
+            // `Button` is a `quadraui_binding_core::widget_kinds::WIDGET_KINDS`
             // member, not its own `BindingHost` field, so it decodes into
             // `host.widgets`'s `"button"` entry instead of `decode_into!`'s
             // single-named-field shape every other slot below still uses.

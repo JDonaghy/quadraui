@@ -17,7 +17,6 @@ use quadraui::{
 use quadraui::layout::{grid_cell_rects, GridTrack};
 use quadraui::primitive::DynWidget;
 
-use crate::extra_paint::ExtraPaint;
 use crate::DecodeError;
 
 /// One node of a render callback's layout tree: a `Row`/`Column` container
@@ -199,9 +198,8 @@ pub struct LayoutStyled {
 /// `$setter` being the [`quadraui::Style`] `with_*` builder
 /// [`StyleOverride::apply_style`] calls and `$decode` the
 /// `crate::wire::value` reader `crate::wire::style::style_override_fields`
-/// calls) exactly once, then hands that table to a callback macro — the
-/// same X-macro shape `crate::extra_paint::extra_primitives` already uses
-/// for its own `"kind" => Type` dispatch table. `define_style_override`
+/// calls) exactly once, then hands that table to a callback macro.
+/// `define_style_override`
 /// below is this struct's own callback.
 macro_rules! style_override_tokens {
     ($callback:ident $(, $extra:tt)*) => {
@@ -991,30 +989,15 @@ pub enum LeafDescriptor {
     Tree(TreeView),
     DataTable(DataTable),
     TabBar(TabBar),
-    /// Any additive primitive kind registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table. Unlike the five variants above, it
-    /// never adds a new `LeafDescriptor` variant — every such kind routes
-    /// through this one.
-    Extra(Rc<dyn ExtraPaint>),
-    /// A kind registered in [`crate::extra_paint::WIDGET_KINDS`], decoded
-    /// through [`quadraui::decode_widget`] into a type-erased
-    /// [`quadraui::primitive::DynWidget`] rather than an [`ExtraPaint`] —
-    /// the generic seam a binding kind joins when its `quadraui::Primitive`
-    /// has no bespoke paint/hit-test/event wiring of its own to write
-    /// here, only the decode a [`WIDGET_KINDS`] entry adds (both as a
-    /// layout-tree leaf, this variant, and as a flat
-    /// [`crate::render::RenderFrame::widgets`] slot, which carries the
-    /// same decoded `DynWidget` without going through `LeafDescriptor` at
-    /// all). Painted via [`quadraui::DrawsPrimitives::draw_dyn`]
-    /// (see [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
+    /// A kind registered in [`crate::widget_kinds::WIDGET_KINDS`] or at
+    /// runtime, decoded through [`quadraui::decode_widget`] into a
+    /// type-erased [`quadraui::primitive::DynWidget`]. Painted via
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] (see
+    /// [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
     /// whole area (see [`crate::hit::PaintedHit::Widget`]), and routed to
-    /// [`DynWidget::handle`] on a click (see
+    /// [`DynWidget::handle`] (see
     /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
-    /// arm). `kind` is the matched [`WIDGET_KINDS`] string, kept for
-    /// diagnostics — nothing in this generic path downcasts on it, unlike
-    /// [`Self::Extra`]'s own kind-specific arms.
-    ///
-    /// [`WIDGET_KINDS`]: crate::extra_paint::WIDGET_KINDS
+    /// arm). `kind` is the matched kind string, kept for diagnostics.
     Widget {
         kind: &'static str,
         widget: Rc<dyn DynWidget>,

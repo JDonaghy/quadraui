@@ -74,7 +74,7 @@
 //!   newtype-struct identifier (see [`decode_via_json`]).
 //! - [`decode_via_core`] first materializes the JS value into one
 //!   [`serde_json::Value`] via [`to_descriptor_value`], then hands `&value`
-//!   to a kind-dispatched core decoder (`decode_extra_primitive` today;
+//!   to a kind-dispatched core decoder (`decode_overlay` today;
 //!   `decode_layout_node`/`decode_render_output` are exercised directly
 //!   against a hand-built `serde_json::Value` by this module's own tests,
 //!   with no napi-visible method routing JS input through them yet, since

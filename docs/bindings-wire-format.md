@@ -786,7 +786,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailDataTableHeader`](#wire-_hitdetaildatatableheader)
 - [`_HitDetailDataTableHeaderDivider`](#wire-_hitdetaildatatableheaderdivider)
 - [`_HitDetailDataTableRow`](#wire-_hitdetaildatatablerow)
-- [`_HitDetailExtraBody`](#wire-_hitdetailextrabody)
 - [`_HitDetailListItem`](#wire-_hitdetaillistitem)
 - [`_HitDetailListTitle`](#wire-_hitdetaillisttitle)
 - [`_HitDetailScrollBody`](#wire-_hitdetailscrollbody)
@@ -2379,7 +2378,7 @@ Alias for `"Opened" | "Closed"`.
 
 The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-icon"></a>
 #### `Icon`
@@ -5690,15 +5689,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"data_table_row"` | yes |  |
 | `row` | `number` | yes |  |
 
-<a id="wire-_hitdetailextrabody"></a>
-#### `_HitDetailExtraBody`
-
-Landed on an additive primitive's interactive region (currently `quadraui::Form`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"extra_body"` | yes |  |
-
 <a id="wire-_hitdetaillistitem"></a>
 #### `_HitDetailListItem`
 
@@ -5717,7 +5707,7 @@ Landed on an additive primitive's interactive region (currently `quadraui::Form`
 <a id="wire-_hitdetailscrollbody"></a>
 #### `_HitDetailScrollBody`
 
-Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::ExtraBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets.
+Landed inside a `crate::layout::LayoutNode::Scroll`'s viewport but on no more specific descendant hit — e.g. empty space between stacked content items. Carries no sub-region detail, mirroring `Self::WidgetBody`; the binding's own wheel routing uses this to resolve which `Scroll` a wheel event targets.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5893,7 +5883,7 @@ Landed before the thumb on a tree's vertical scrollbar track (page-up zone). Han
 <a id="wire-_hitdetailwidgetbody"></a>
 #### `_HitDetailWidgetBody`
 
-Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area — the `Widget` counterpart of `Self::ExtraBody`. Carries no sub-region detail, same reason: a `DynWidget` has no `ExtraPaint::hit_test`-style sub-region test to resolve one finer than "landed somewhere on the widget" against. Routed through `DynWidget::handle` (not `semantic_event_for_hit`, which has no arm for this detail and falls through to `None`) by `crate::engine::InteractionEngine::handle`.
+Landed on a `crate::layout::LeafDescriptor::Widget`'s whole painted area. Carries no sub-region detail: the widget resolves its own sub-regions in `DynWidget::handle`, which `crate::engine::InteractionEngine::handle` routes the event to.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

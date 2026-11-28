@@ -15,7 +15,6 @@ use quadraui::{
 
 use quadraui::primitive::DynWidget;
 
-use crate::extra_paint::ExtraPaint;
 use crate::wire::DragRole;
 
 /// Which absolute slice of a windowed `List`/`Tree`/`DataTable`/
@@ -245,36 +244,16 @@ pub enum PaintedHit {
         id: WidgetId,
         layout: SplitTreeLayout,
     },
-    /// One additive primitive (anything registered in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table),
-    /// painted by `draw_bands`'s extras loop or by a
-    /// [`crate::layout::LeafDescriptor::Extra`]
-    /// leaf. `area` is the ABSOLUTE rect it was painted into — the same frame
-    /// [`ExtraPaint::hit_test`] expects, so no translation is needed before
-    /// calling it (matching `Button`/`Checkbox`'s own layout convention: no
-    /// local-frame remap). `extra` is an [`Rc`] clone of the slot's/leaf's
-    /// descriptor, kept alive past this frame's render so a later `handle`
-    /// call can still hit-test and tab-stop against it.
-    Extra {
-        id: WidgetId,
-        area: Rect,
-        extra: Rc<dyn ExtraPaint>,
-    },
     /// One [`crate::layout::LeafDescriptor::Widget`], painted by
     /// [`crate::render::paint_leaf`]'s `Widget` arm. `area` is the
-    /// ABSOLUTE rect it was painted into, exactly like [`Self::Extra`]'s
-    /// own `area` — hit-tested the same whole-area way
-    /// ([`HitDetail::WidgetBody`] on any `area.contains(point)`), since
-    /// [`DynWidget`] carries no `ExtraPaint::hit_test`-style sub-region
-    /// test of its own yet. `widget` is an [`Rc`] clone of the leaf's own
-    /// descriptor, kept alive past this frame's render the same reason
-    /// [`Self::Extra`]'s `extra` is — so a later click can resolve
-    /// `DynWidget::handle` against it — but, unlike `Extra`, no layout is
-    /// stashed alongside it: [`DynWidget::layout`] is cheap to recompute
-    /// against `area` at click time, and always reproduces exactly what
-    /// [`quadraui::DrawsPrimitives::draw_dyn`] painted this frame (see
-    /// that method's own doc), so there is nothing a stored layout would
-    /// save.
+    /// ABSOLUTE rect it was painted into, hit-tested as a whole
+    /// ([`HitDetail::WidgetBody`] on any `area.contains(point)`): the
+    /// widget resolves its own sub-regions in [`DynWidget::handle`].
+    /// `widget` is an [`Rc`] clone of the leaf's own descriptor, kept alive
+    /// past this frame's render so a later event can resolve
+    /// `DynWidget::handle` against it; its layout is recomputed against
+    /// `area` at event time, which reproduces exactly what
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] painted this frame.
     Widget {
         id: WidgetId,
         area: Rect,
@@ -360,8 +339,7 @@ pub struct ScrollChildHit {
 ///
 /// Only the hit kinds whose containment test lives in a plain field this
 /// module can reach are narrowed, via [`primary_bounds_mut`]:
-/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Extra`]'s
-/// `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
+/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
 /// [`PaintedHit::DataTable`]/[`PaintedHit::TabBar`]/
 /// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
 /// [`PaintedHit::Tree`]'s own doc for why moving a local-frame kind's
@@ -406,7 +384,7 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
 }
 
 /// The hit kind's own containment-test rect — [`PaintedHit::Widget`]'s
-/// `area`, [`PaintedHit::Extra`]'s `area`, the local-frame kinds'
+/// `area`, the local-frame kinds'
 /// own `clip` (see [`PaintedHit::Tree`]'s doc), and a nested
 /// [`PaintedHit::Scroll`]'s own `viewport` — or `None` for a chrome-layout
 /// kind with no single outer bounds. The one place [`clip_hits_to_viewport`]
@@ -420,7 +398,6 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         | PaintedHit::DataTable { clip, .. }
         | PaintedHit::TabBar { clip, .. }
         | PaintedHit::TextDisplay { clip, .. } => Some(clip),
-        PaintedHit::Extra { area, .. } => Some(area),
         PaintedHit::Widget { area, .. } => Some(area),
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
         PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
@@ -526,26 +503,15 @@ pub enum HitDetail {
     /// (page-down zone). Handled directly in the binding's own event handler, same as
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
-    /// Landed on an additive primitive's interactive region (currently
-    /// [`quadraui::Form`]). Carries no sub-region detail yet —
-    /// just enough for the binding's own event handler to set `widget` and
-    /// attach this as `hit`, so it sees the click reached the primitive.
-    /// Per-kind sub-region detail (e.g. which combo-box row) is a later,
-    /// separate extension of this variant.
-    ExtraBody,
     /// Landed on a [`crate::layout::LeafDescriptor::Widget`]'s whole
-    /// painted area — the `Widget` counterpart of [`Self::ExtraBody`].
-    /// Carries no sub-region detail, same reason: a [`DynWidget`] has no
-    /// `ExtraPaint::hit_test`-style sub-region test to resolve one finer
-    /// than "landed somewhere on the widget" against. Routed through
-    /// [`DynWidget::handle`] (not `semantic_event_for_hit`, which has no
-    /// arm for this detail and falls through to `None`) by
-    /// [`crate::engine::InteractionEngine::handle`].
+    /// painted area. Carries no sub-region detail: the widget resolves its
+    /// own sub-regions in [`DynWidget::handle`], which
+    /// [`crate::engine::InteractionEngine::handle`] routes the event to.
     WidgetBody,
     /// Landed inside a [`crate::layout::LayoutNode::Scroll`]'s viewport but
     /// on no more specific descendant hit — e.g. empty space between
     /// stacked content items. Carries no sub-region detail, mirroring
-    /// [`Self::ExtraBody`]; the binding's own wheel routing uses this to
+    /// [`Self::WidgetBody`]; the binding's own wheel routing uses this to
     /// resolve which `Scroll` a wheel event targets.
     ScrollBody,
     /// Landed before a `Scroll`'s own scrollbar thumb (page-up/left zone)
@@ -728,11 +694,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                 // thicker visual grab target.
                 if let Some(split_index) = layout.hit_test_divider(point, 1.0) {
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
-                }
-            }
-            PaintedHit::Extra { id, area, extra } => {
-                if extra.hit_test(*area, point) {
-                    return Some((*id, HitDetail::ExtraBody));
                 }
             }
             PaintedHit::Widget { id, area, .. } => {

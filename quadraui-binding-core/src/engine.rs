@@ -15,8 +15,7 @@ use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormDialog, FormDialogState, Handled,
-    MessageDialog,
+    ContextMenuController, ContextMenuOutcome, FormDialog, FormDialogState, Handled, MessageDialog,
 };
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
@@ -25,11 +24,11 @@ use quadraui::{
     wheel_row_delta, Backend, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
     CompletionItemMeasure, Completions, CompletionsLayout, ContextMenu, ContextMenuItem,
     ContextMenuPlacement, DataTableEvent, Dialog, EventCx, EventHost, Float, FloatLayout,
-    FloatMeasure, FormEvent, Key, KeyEvent, ListViewEvent, MessageDialogButton, Modifiers, MouseButton,
-    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupLayout,
-    RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, Toast,
-    ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure,
-    TreeEvent, UiEvent, WidgetId,
+    FloatMeasure, FormEvent, Key, KeyEvent, ListViewEvent, MessageDialogButton, Modifiers,
+    MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup,
+    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent,
+    Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout,
+    TooltipMeasure, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -313,9 +312,7 @@ impl LayoutContent {
 /// different `hits` slice. `Split`/`SplitTree` are chrome around other
 /// content, not focusable leaves themselves, so they are skipped; a
 /// `SidebarPanel`'s header is a [`PaintedHit::Widget`] whose
-/// `FocusSpec::None` keeps it out too; `Extra` is a tab stop only when its
-/// descriptor opts in via [`crate::extra_paint::ExtraPaint::tab_stop`]
-/// (currently `TextInput`); `TextDisplay` is always one
+/// `FocusSpec::None` keeps it out too; `TextDisplay` is always one
 /// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
 /// every other variant yields its id and bounding `Rect`.
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
@@ -332,12 +329,8 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             // leaves are the tab stops, reached via their own
             // `PaintedHit` arms once scrolled into view.
             PaintedHit::Scroll { .. } => None,
-            PaintedHit::Extra {
-                id, area, extra, ..
-            } => extra.tab_stop().then_some((*id, *area)),
-            // Mirrors `Extra`'s own opt-in above, through `DynWidget`'s
-            // own focus contract rather than a bespoke `tab_stop` bool: a
-            // widget that takes focus at all is one stop as a whole. One
+            // Through `DynWidget`'s own focus contract: a widget that
+            // takes focus at all is one stop as a whole. One
             // with per-child stops (`FocusSpec::Children`, a form's
             // fields) walks those itself once focused — see
             // `stops_around_focused_children`.
@@ -1148,7 +1141,7 @@ pub struct InteractionEngine {
     toast_corner: ToastCorner,
     /// The id of the [`PaintedHit::Widget`] leaf currently holding a
     /// [`quadraui::interactive::EventHost::capture_pointer`] request, if
-    /// any — the generic [`crate::extra_paint::WIDGET_KINDS`] seam's own
+    /// any — the generic [`crate::widget_kinds::WIDGET_KINDS`] seam's own
     /// counterpart of [`Self::active_drag`]/[`Self::scrollbar_drag`]/
     /// [`Self::column_drag`]/[`Self::scroll_drag`]. Set by
     /// [`Self::dyn_widget_dispatch`] when a `DynWidget::handle` call
@@ -1157,7 +1150,7 @@ pub struct InteractionEngine {
     /// every `MouseUp` — mirroring those four fields' own "`MouseUp`
     /// always ends it" reset.
     dyn_widget_capture: RefCell<Option<WidgetId>>,
-    /// The [`crate::extra_paint::WIDGET_KINDS`] leaf the pointer was last
+    /// The [`crate::widget_kinds::WIDGET_KINDS`] leaf the pointer was last
     /// over, so a move that leaves it routes a `Leave` there and one that
     /// arrives on another routes an `Enter` (see
     /// [`Self::route_dyn_widget_hover`]).
@@ -1676,7 +1669,8 @@ impl InteractionEngine {
             .modal_stack_handle()
             .borrow_mut()
             .push(dialog.dialog.id, bounds);
-        self.widget_states.with(|states| states.remove(&dialog.dialog.id));
+        self.widget_states
+            .with(|states| states.remove(&dialog.dialog.id));
         self.push_overlay(Overlay::Widget(WidgetOverlay::new(
             WidgetOverlayKind::MessageDialog,
             dialog,
@@ -2286,10 +2280,7 @@ impl InteractionEngine {
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
     /// `Split`/`SplitTree` are chrome around other content, not focusable
     /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
-    /// pointer-only header contributes none; `Extra` is a tab stop only when its
-    /// descriptor opts in via
-    /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently
-    /// `TextInput`); `TextDisplay` is always one (scroll/copy need
+    /// pointer-only header contributes none; `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
     ///
@@ -2400,7 +2391,7 @@ impl InteractionEngine {
     /// the frozen/loaded-window fields a probe would have to reconstruct,
     /// but the real, just-decoded [`CellGrid`] already has every one of
     /// them. `None` for anything that isn't a `CellGrid` (including every
-    /// other [`crate::extra_paint::WIDGET_KINDS`] member, and an `id` not
+    /// other [`crate::widget_kinds::WIDGET_KINDS`] member, and an `id` not
     /// painted this frame at all), and for a `CellGrid` whose loaded
     /// window already covers the resolved viewport.
     /// `pending` is the semantic event [`Self::dyn_widget_dispatch`] is
@@ -2827,10 +2818,7 @@ impl InteractionEngine {
     /// Routes a non-double-click-aware `MouseDown`/`DoubleClick` landing
     /// on `HitDetail::WidgetBody` through the matched
     /// [`crate::layout::LeafDescriptor::Widget`]'s own
-    /// [`DynWidget::handle`] — the generic seam's counterpart of
-    /// [`Self::handle`]'s own `HitDetail::ExtraBody` arm, which instead
-    /// special-cases each [`crate::extra_paint::ExtraPaint`] kind it
-    /// recognizes by downcast. Resolves `widget`'s layout fresh against
+    /// [`DynWidget::handle`]. Resolves `widget`'s layout fresh against
     /// `area` rather than reusing anything from paint time — see
     /// [`PaintedHit::Widget`]'s own doc for why nothing is stashed to
     /// reuse. An empty [`DynWidgetClickOutcome`] (no-op) when `id` doesn't
@@ -3495,7 +3483,7 @@ impl InteractionEngine {
         }
 
         // A `KeyPressed`/`CharTyped`/`ClipboardPaste` landing on a
-        // focused [`crate::extra_paint::WIDGET_KINDS`] leaf (e.g. a
+        // focused [`crate::widget_kinds::WIDGET_KINDS`] leaf (e.g. a
         // `"cell_grid"`) routes through its own [`DynWidget::handle`] —
         // `DynWidget::handle` reports [`Handled::Ignored`] for anything
         // it doesn't recognize, so trying this unconditionally is safe
@@ -3530,7 +3518,7 @@ impl InteractionEngine {
             widget_key_reaction = outcome.reaction;
         }
 
-        // A wheel `Scroll` over a [`crate::extra_paint::WIDGET_KINDS`]
+        // A wheel `Scroll` over a [`crate::widget_kinds::WIDGET_KINDS`]
         // leaf goes to the topmost painted widget under the pointer as a
         // [`RoutedEvent::Wheel`], the same hit-under-cursor rule the Rust
         // runtime's widget wheel routing follows. A widget that ignores
@@ -3571,7 +3559,7 @@ impl InteractionEngine {
         // a no-op.
         //
         // A move with the left button held continues whichever
-        // [`crate::extra_paint::WIDGET_KINDS`] leaf's own in-progress
+        // [`crate::widget_kinds::WIDGET_KINDS`] leaf's own in-progress
         // drag (if any) a prior `MouseDown` armed via
         // [`EventHost::capture_pointer`] — the generic counterpart of the
         // scrollbar-drag-continuation block above, routed through [`Self::dispatch_dyn_widget_captured_move`]
@@ -4064,22 +4052,7 @@ impl InteractionEngine {
                 _ => None,
             };
             if let Some((modifiers, double_click, button)) = modifiers_and_double_click {
-                // A non-double click on any extra's body resolves through
-                // `semantic_event_for_hit`'s `ExtraBody` arm. Keeping every
-                // `ExtraBody` outcome in this one arm means two of them can
-                // never fire for the same click.
-                if !double_click && matches!(detail, HitDetail::ExtraBody) {
-                    if let Some(semantic) = semantic_event_for_hit(
-                        *id,
-                        detail,
-                        modifiers,
-                        double_click,
-                        &self.hit_map.borrow(),
-                    ) {
-                        event = semantic;
-                        attach_hit = false;
-                    }
-                } else if matches!(detail, HitDetail::WidgetBody) {
+                if matches!(detail, HitDetail::WidgetBody) {
                     if let Some(position) = event_position(&event) {
                         let outcome = self.dispatch_dyn_widget_click(
                             *id,
@@ -4501,7 +4474,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("button".to_string(), Rc::new(self.button.clone()));
             draw_bands(
@@ -4512,7 +4484,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -4558,7 +4529,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &HashMap::new(),
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -4607,7 +4577,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &HashMap::new(),
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -4945,7 +4914,7 @@ mod tests {
     }
 
     /// Mirrors [`TreeTableModelLogic`], for the generic
-    /// [`crate::extra_paint::WIDGET_KINDS`] seam's `"cell_grid"` member
+    /// [`crate::widget_kinds::WIDGET_KINDS`] seam's `"cell_grid"` member
     /// instead: `self.grid` is the single
     /// source of truth a real host would keep, and [`Self::apply`]
     /// round-trips every dispatched [`CellGridEvent`] back onto it after
@@ -6103,7 +6072,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("command_center".to_string(), Rc::new(self.cc.clone()));
             draw_bands(
@@ -6114,7 +6082,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -6866,7 +6833,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert("terminal".to_string(), Rc::new(self.term.clone()));
             draw_bands(
@@ -6877,7 +6843,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -7022,7 +6987,7 @@ mod tests {
     }
 
     /// Mirrors [`CommandCenterLogic`], painting one generic-widget leaf
-    /// of any [`crate::extra_paint::WIDGET_KINDS`] kind.
+    /// of any [`crate::widget_kinds::WIDGET_KINDS`] kind.
     struct WidgetLeafLogic {
         kind: &'static str,
         widget: Rc<dyn DynWidget>,
@@ -7046,7 +7011,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
             widgets.insert(self.kind.to_string(), self.widget.clone());
             draw_bands(
@@ -7057,7 +7021,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -8971,7 +8934,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -8980,7 +8942,6 @@ mod tests {
                     tree: None,
                     data_table: Some(&self.data_table),
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -9430,7 +9391,6 @@ mod tests {
                 resolve_tree_cursor(self.engine.widget_state(), &self.tree, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -9439,7 +9399,6 @@ mod tests {
                     tree: Some(&resolved),
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -9624,7 +9583,6 @@ mod tests {
                 resolve_list_cursor(self.engine.widget_state(), &self.list, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -9633,7 +9591,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -9860,7 +9817,6 @@ mod tests {
                 resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
 
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -9869,7 +9825,6 @@ mod tests {
                     tree: None,
                     data_table: Some(&resolved),
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -10039,7 +9994,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -10048,7 +10002,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -10305,7 +10258,6 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            let extra = HashMap::new();
             draw_bands(
                 backend,
                 RenderRefs {
@@ -10314,7 +10266,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &extra,
                     widgets: crate::render::no_widgets(),
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -11148,7 +11099,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: crate::render::no_extras(),
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
@@ -11352,7 +11302,6 @@ mod tests {
                     tree: None,
                     data_table: None,
                     tab_bar: None,
-                    extra: &HashMap::new(),
                     widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,

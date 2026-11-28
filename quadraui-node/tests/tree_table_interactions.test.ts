@@ -4,7 +4,7 @@
 // `TreeTable` (a `DataTable` plus per-row tree metadata), renders its branch
 // row's chevron and both rows' labels, and coexists with a fixed-slot leaf
 // inside a `row` container -- no new napi method needed, since
-// `EXTRA_PRIMITIVE_KINDS`'s generic registration already covers it. Ports
+// the generic widget leaf's registration already covers it. Ports
 // `quadraui-py/tests/test_tree_table_interactions.py`.
 //
 // A click on a branch row's chevron resolves to a typed

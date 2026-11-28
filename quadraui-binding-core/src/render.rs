@@ -22,7 +22,6 @@ use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize}
 use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::DrawsPrimitives;
 
-use crate::extra_paint::ExtraPaint;
 use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit};
 use crate::layout::{
     LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutStyled,
@@ -57,11 +56,8 @@ pub struct RenderFrame {
     // an area and no sub-region detail. Folding needs a hit seam on
     // [`DynWidget`] first, which is that issue's own first deliverable.
     pub tab_bar: Option<TabBar>,
-    /// Additive primitive slots present in this frame, keyed by kind name.
-    pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
-    /// Generic-widget ([`crate::extra_paint::WIDGET_KINDS`]) slots present
-    /// in this frame, keyed by kind name — the [`DynWidget`] counterpart
-    /// of `extra` above.
+    /// Generic-widget ([`crate::widget_kinds::widget_leaf_kinds`]) slots
+    /// present in this frame, keyed by kind name.
     pub widgets: HashMap<String, Rc<dyn DynWidget>>,
     /// Optional pixel-precise scroll position lifted out of the `"list"`
     /// slot's raw dict by [`crate::scroll_px_from_value`] — `None` unless
@@ -109,7 +105,6 @@ impl RenderFrame {
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
-            extra: &self.extra,
             widgets: &self.widgets,
             list_scroll_px: self.list_scroll_px,
             tree_scroll_px: self.tree_scroll_px,
@@ -128,12 +123,9 @@ pub struct RenderRefs<'a> {
     pub tree: Option<&'a TreeView>,
     pub data_table: Option<&'a DataTable>,
     pub tab_bar: Option<&'a TabBar>,
-    /// Additive primitive slots, keyed by kind name. Painted after the five
-    /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
-    pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
-    /// Generic-widget slots, keyed by kind name — the [`DynWidget`]
-    /// counterpart of `extra` above. Painted last, after every `extra`
-    /// slot, in canonical [`crate::extra_paint::WIDGET_KINDS`] order.
+    /// Generic-widget slots, keyed by kind name. Painted after the fixed
+    /// bands above, in canonical [`crate::widget_kinds::widget_leaf_kinds`]
+    /// order.
     pub widgets: &'a HashMap<String, Rc<dyn DynWidget>>,
     /// See [`RenderFrame::list_scroll_px`]. `None` for a `RenderRefs` a
     /// binding builds by hand from its own static fields (no dict to
@@ -146,26 +138,8 @@ pub struct RenderRefs<'a> {
     pub data_table_scroll_px: Option<f32>,
 }
 
-/// The additive-primitive map a [`RenderRefs`] borrows when its source
-/// carries only the five fixed descriptors — one empty map per thread, so a
-/// caller with nothing to paint after the fixed bands has a map that
-/// outlives any `RenderRefs<'_>` it builds without keeping a permanently
-/// empty field of its own. [`crate::host::BindingHost::render_refs`] is
-/// that caller.
-pub(crate) fn no_extras() -> &'static HashMap<String, Rc<dyn ExtraPaint>> {
-    thread_local! {
-        static NO_EXTRAS: &'static HashMap<String, Rc<dyn ExtraPaint>> =
-            Box::leak(Box::new(HashMap::new()));
-    }
-    NO_EXTRAS.with(|map| *map)
-}
-
-/// [`no_extras`]'s [`DynWidget`] counterpart — the empty map a
-/// [`RenderRefs`] borrows for its `widgets` field when its source carries
-/// only the five fixed descriptors (plus, today, no `extra` either). Unlike
-/// [`no_extras`], every production caller now has a real `"button"` entry to
-/// carry (`Button` joined [`crate::extra_paint::WIDGET_KINDS`]), so only
-/// this file's and `crate::engine`'s own tests still reach for an empty one.
+/// The empty generic-widget map a [`RenderRefs`] borrows for its
+/// `widgets` field in this file's and `crate::engine`'s own tests.
 #[cfg(test)]
 pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
     thread_local! {
@@ -377,28 +351,13 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
             });
         }
     }
-    // Additive primitives, painted in canonical `EXTRA_PRIMITIVE_KINDS`
-    // order so the output is deterministic regardless of `HashMap`
-    // iteration order.
-    for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
-        if let Some(extra) = refs.extra.get(kind) {
-            if let Some(rect) = band(3.0) {
-                extra.paint(backend, rect);
-                hits.push(PaintedHit::Extra {
-                    id: extra.id(),
-                    area: rect,
-                    extra: Rc::clone(extra),
-                });
-            }
-        }
-    }
-    // Generic-widget (`WIDGET_KINDS`) slots, painted last in canonical
-    // order, same reason as the `extra` loop just above. `widget.id()` is
+    // Generic-widget slots, painted last in canonical order so the output
+    // is deterministic regardless of `HashMap` iteration order. `widget.id()` is
     // `None` for any future `WIDGET_KINDS` member that doesn't carry its
     // own id field (see `quadraui::primitive::Primitive::id`'s own doc);
     // falling back to the slot's own `kind` string keeps this painted hit
     // addressable either way, rather than needing a sentinel id of its own.
-    for kind in crate::extra_paint::widget_leaf_kinds() {
+    for kind in crate::widget_kinds::widget_leaf_kinds() {
         if let Some(widget) = refs.widgets.get(kind) {
             if let Some(rect) = band(3.0) {
                 if paint_widget_leaf(backend, rect, widget.as_ref()) {
@@ -855,8 +814,8 @@ fn pop_styled_scope(backend: &mut dyn Backend, pushes: Vec<StyledPush>) {
 /// painted, hence from getting a [`PaintedHit`], at all), and paints the
 /// shared scrollbar ([`quadraui::ScrollView::scrollbar`] +
 /// `Backend::draw_scrollbar`, the same geometry
-/// `crate::extra_paint`'s standalone `ScrollView` leaf paints into its own
-/// fixed `line_height`-wide track). `scroll_node.offset` is read as-is —
+/// a standalone `"scroll_view"` leaf paints into its own fixed
+/// `line_height`-wide track). `scroll_node.offset` is read as-is —
 /// already resolved against [`quadraui::WidgetStateStore`] by
 /// [`crate::host::resolve_layout_node`], which must run on this tree before
 /// this function does (same ordering [`crate::layout`]'s own `Split`/
@@ -1064,9 +1023,7 @@ fn offset_windowed_leaf_scrolled_to_offset(
             shadow.scroll_offset = row;
             LeafDescriptor::DataTable(shadow)
         }
-        LeafDescriptor::TabBar(_) | LeafDescriptor::Extra(_) | LeafDescriptor::Widget { .. } => {
-            return None
-        }
+        LeafDescriptor::TabBar(_) | LeafDescriptor::Widget { .. } => return None,
     };
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),
@@ -1103,8 +1060,7 @@ pub(crate) fn scroll_view_at(
 /// Splits a [`LayoutNode::Scroll`]'s own inset area into the content
 /// viewport and the scrollbar gutter: a fixed `line_height`-wide strip
 /// along the scrolling axis's trailing edge, same convention
-/// `crate::extra_paint`'s standalone `ScrollView` leaf already paints its
-/// own track into. Reserved unconditionally (not only when
+/// a standalone `"scroll_view"` leaf already paints its own track into. Reserved unconditionally (not only when
 /// [`quadraui::ScrollView::scrollbar`] actually returns `Some`) so the
 /// viewport a frame paints into never changes shape between a frame with
 /// nothing to scroll and one with something to — [`ScrollView::scrollbar`]
@@ -1154,8 +1110,8 @@ pub(crate) struct ScrollMetrics {
 /// Natural main-axis length of `node` along `axis`: for a `Leaf`, its own
 /// per-kind intrinsic size via [`natural_size`] (falling back to one
 /// `line_height`/`char_width`-scaled unit when that reports `None` — a
-/// `List`/`Tree`/`DataTable`'s width, and whichever axis an `Extra`
-/// leaf's own `ExtraPaint::natural_size` has no cheap measurement for);
+/// `List`/`Tree`/`DataTable`'s width, and whichever axis a generic
+/// widget's own `Primitive::measure` leaves open);
 /// for a `Row`/`Column` whose own main axis matches `axis` (a `Column` under a
 /// vertical scroll, a `Row` under a horizontal one), the sum of every
 /// child's own natural length along `axis` plus the quantised gap between
@@ -1510,12 +1466,7 @@ fn clip_main_axis(
 /// menu_system` already leans on for its own label widths), `TextDisplay`
 /// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
 /// own row count (height only — none of the three has a cheap intrinsic
-/// width), and an `Extra` additive primitive via its own
-/// `crate::extra_paint::ExtraPaint::natural_size` (most additive
-/// primitives have a real answer on at least one axis — see that
-/// method's own impls — the handful of viewport-filling/multi-cell-grid
-/// ones that don't fall back to that method's own `(None, None)`
-/// default). Every other node kind (a nested `Row`/`Column`/`Split`/
+/// width), and a generic widget via its own `Primitive::measure`. Every other node kind (a nested `Row`/`Column`/`Split`/
 /// `Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement
 /// at this layer and reports [`None`] on both axes — see
 /// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
@@ -1585,13 +1536,6 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             NaturalSize {
                 width: Some(width),
                 height: Some(BORDER_LABEL_BORDER_ROWS * line_height),
-            }
-        }
-        LeafDescriptor::Extra(extra) => {
-            let natural = extra.natural_size(backend);
-            NaturalSize {
-                width: natural.width,
-                height: natural.height,
             }
         }
         LeafDescriptor::Widget { widget, .. } => {
@@ -2575,14 +2519,6 @@ pub fn paint_leaf_windowed(
                 tab_count: tab_bar.tabs.len(),
             });
         }
-        LeafDescriptor::Extra(extra) => {
-            extra.paint(backend, area);
-            hits.push(PaintedHit::Extra {
-                id,
-                area,
-                extra: Rc::clone(extra),
-            });
-        }
         LeafDescriptor::Widget { widget, .. } => {
             if paint_widget_leaf(backend, area, widget.as_ref()) {
                 hits.push(PaintedHit::Widget {
@@ -2630,8 +2566,7 @@ mod tests {
     /// [`draw_bands`]'s generic-widget (`WIDGET_KINDS`) loop paints a flat
     /// `RenderRefs::widgets` slot through [`quadraui::DrawsPrimitives::draw_dyn`]
     /// and records a [`PaintedHit::Widget`] under the descriptor's own id
-    /// — the flat-frame counterpart of the `extra` loop just above it,
-    /// and the paint-time half of
+    /// — the paint-time half of
     /// [`crate::wire::frame::tests::decodes_a_flat_render_frame_with_a_generic_widget_slot`]'s
     /// decode-time coverage.
     #[test]
@@ -2667,7 +2602,6 @@ mod tests {
                 tree: None,
                 data_table: None,
                 tab_bar: None,
-                extra: no_extras(),
                 widgets: &widgets,
                 list_scroll_px: None,
                 tree_scroll_px: None,
@@ -3874,9 +3808,8 @@ mod tests {
     /// cell truncates the last label character under a non-`Stretch`
     /// `Column` align. Both resolve through
     /// [`quadraui::primitive::Primitive::measure`] (the generic
-    /// [`crate::extra_paint::WIDGET_KINDS`] seam, not [`ExtraPaint`]), so
-    /// this test builds a cells-mode `LayoutCtx` from the same backend's
-    /// own metrics rather than calling `ExtraPaint::natural_size`.
+    /// [`crate::widget_kinds::WIDGET_KINDS`] seam), so this test builds a
+    /// cells-mode `LayoutCtx` from the same backend's own metrics.
     #[test]
     fn switch_and_radio_group_natural_width_matches_what_tui_paints() {
         use quadraui::primitive::{LayoutCtx, Primitive};

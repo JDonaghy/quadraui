@@ -80,7 +80,7 @@ pub struct BindingHost {
     /// [`quadraui::primitive::DynWidget`] entry (keyed `"button"`) rather
     /// than its own typed field — [`SLOT_BUTTON`] reads/writes this
     /// entry specifically, the same single-slot shape a `Button` had as a
-    /// dedicated field before it joined [`crate::extra_paint::WIDGET_KINDS`].
+    /// dedicated field before it joined [`crate::widget_kinds::WIDGET_KINDS`].
     pub widgets: HashMap<String, std::rc::Rc<dyn quadraui::primitive::DynWidget>>,
     pub text_display: Option<TextDisplay>,
     pub list: Option<ListView>,
@@ -265,11 +265,7 @@ impl BindingHost {
 
     /// Borrows this host's five fixed slots (plus its own `"button"`
     /// [`Self::widgets`] entry) as the [`RenderRefs`] shape
-    /// [`crate::render::draw_bands`] paints from. A host carries no
-    /// additive primitives of its own, so [`RenderRefs::extra`] borrows an
-    /// empty map and nothing paints after the fixed bands; an additive
-    /// primitive reaches a backend as a layout-tree leaf or through a
-    /// decoded [`crate::render::RenderFrame`] instead.
+    /// [`crate::render::draw_bands`] paints from.
     pub fn render_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
             text_display: self.text_display.as_ref(),
@@ -277,7 +273,6 @@ impl BindingHost {
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
-            extra: crate::render::no_extras(),
             widgets: &self.widgets,
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
@@ -1607,9 +1602,7 @@ pub fn resolve_tab_bar_active(
 /// a decoded `TreeView` needs [`resolve_tree_cursor`] called on it first.
 ///
 /// Mutates `tabs` in place rather than returning a new one:
-/// [`crate::layout::LayoutNode`] holds content that isn't [`Clone`] (an
-/// `Rc<dyn crate::extra_paint::ExtraPaint>` extra primitive, an arbitrarily
-/// nested subtree), so rebuilding `LayoutTabs::entries` wholesale the way
+/// [`crate::layout::LayoutNode`] holds an arbitrarily nested subtree, so rebuilding `LayoutTabs::entries` wholesale the way
 /// [`resolve_tab_bar_active`] rebuilds a bare [`TabBar`] isn't an option
 /// here.
 pub fn resolve_layout_tabs_active(widget_state: &RefCell<WidgetStateStore>, tabs: &mut LayoutTabs) {
@@ -1790,7 +1783,7 @@ pub fn resolve_tree_expansion(
 /// Resolves whichever of `refs`'s `list`/`tree`/`data_table`/`tab_bar`
 /// slots are present against `widget_state` — `text_display`
 /// carries no widget-state of its own and passes through unresolved, as do
-/// any `extra`/`widgets` slots. Walks [`crate::render::next_band`] in the exact same
+/// any `widgets` slots. Walks [`crate::render::next_band`] in the exact same
 /// top-to-bottom order and fixed line counts [`crate::render::draw_bands`]
 /// itself paints into, so an occupied slot gets the same `viewport_rows`
 /// its own `resolve_tree_cursor`/`resolve_list_cursor`/
@@ -1870,7 +1863,6 @@ pub fn resolve_render_refs(
         tree,
         data_table,
         tab_bar,
-        extra: refs.extra.clone(),
         widgets: refs.widgets.clone(),
         list_scroll_px: refs.list_scroll_px,
         tree_scroll_px: refs.tree_scroll_px,
@@ -2030,9 +2022,7 @@ pub fn resolve_layout_node_windowed(
                     tab_bar.id = widget_id;
                     *tab_bar = resolve_tab_bar_active(widget_state, tab_bar);
                 }
-                LeafDescriptor::TextDisplay(_)
-                | LeafDescriptor::Extra(_)
-                | LeafDescriptor::Widget { .. } => {}
+                LeafDescriptor::TextDisplay(_) | LeafDescriptor::Widget { .. } => {}
             }
         }
         LayoutNode::Split(split) => {
@@ -3177,7 +3167,7 @@ mod tests {
     /// A [`BindingHost::widgets`] map holding just `button` under its
     /// `"button"` key — the test fixtures' own shorthand for the single
     /// slot [`BindingHost`] carries today, now that `Button` is a generic
-    /// [`crate::extra_paint::WIDGET_KINDS`] entry rather than its own
+    /// [`crate::widget_kinds::WIDGET_KINDS`] entry rather than its own
     /// typed field.
     fn button_widgets(button: Button) -> HashMap<String, Rc<dyn quadraui::primitive::DynWidget>> {
         let mut widgets = HashMap::new();
