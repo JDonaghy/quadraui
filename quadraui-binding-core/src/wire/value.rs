@@ -17,7 +17,6 @@ use quadraui::DrawsPrimitives;
 use quadraui::{A11yInfo, A11yLive, Backend, BackendWidget, Rect, WidgetId};
 
 use crate::host::text_display_from_lines;
-use crate::render::ItemsWindow;
 use crate::DecodeError;
 
 /// Minimal [`BackendWidget`] painted into a `run_shell` bottom-panel tab's
@@ -188,25 +187,6 @@ impl<'de> Visitor<'de> for ValueVisitor {
 pub(super) const UNIVERSAL_NODE_SIBLING_KEYS: [&str; 6] =
     ["style", "class", "size", "min", "max", "wire_version"];
 
-/// The two wire keys [`decode_value_checked`] accepts inside a `"list"`/
-/// `"tree"`/`"data_table"` descriptor body despite neither being a
-/// `ListView`/`TreeView`/`DataTable` field: `"scroll_px"` (read by
-/// [`crate::scroll_px_from_value`]) and `"items_window"` (read by
-/// [`crate::render::items_window_from_value`]) — both lifted straight out
-/// of the same `Value` dict, so neither may land in the unknown-key
-/// check's reject set for exactly those three kinds. Every other
-/// descriptor-body kind but `"text_display"` (see [`TEXT_DISPLAY_EXTRA_KEYS`])
-/// passes `&[]` instead.
-pub(super) const WINDOWED_LEAF_EXTRA_KEYS: [&str; 2] = ["scroll_px", "items_window"];
-
-/// The one wire key [`decode_value_checked`] accepts inside a
-/// `"text_display"` descriptor body despite `TextDisplay` having no field
-/// for it — [`crate::render::items_window_from_value`] reads it straight
-/// out of the same `Value` dict, mirroring [`WINDOWED_LEAF_EXTRA_KEYS`] for
-/// the three scrollable kinds. `TextDisplay` has no `"scroll_px"`
-/// equivalent, so this is `items_window` alone.
-pub(super) const TEXT_DISPLAY_EXTRA_KEYS: [&str; 1] = ["items_window"];
-
 /// The two leaf-only drag-role wire keys [`drag_role_from_leaf_value`]
 /// reads: `"draggable"` (this leaf can be picked up and dragged) and
 /// `"drop_target"` (this leaf accepts a drop). Both are optional and
@@ -331,7 +311,6 @@ pub struct DecodeDiagnostics {
     hook: RefCell<Option<UnknownKeyHook>>,
     drag_roles: RefCell<HashMap<String, DragRole>>,
     a11y_overrides: RefCell<HashMap<String, A11yInfo>>,
-    items_windows: RefCell<HashMap<String, ItemsWindow>>,
 }
 
 /// [`DecodeDiagnostics::set_hook`]'s registered callback, named so the
@@ -348,7 +327,6 @@ impl DecodeDiagnostics {
             hook: RefCell::new(None),
             drag_roles: RefCell::new(HashMap::new()),
             a11y_overrides: RefCell::new(HashMap::new()),
-            items_windows: RefCell::new(HashMap::new()),
         }
     }
 
@@ -432,29 +410,6 @@ impl DecodeDiagnostics {
     /// it directly.
     pub fn a11y_overrides(&self) -> HashMap<String, A11yInfo> {
         self.a11y_overrides.borrow().clone()
-    }
-
-    /// Records leaf `id`'s decoded [`ItemsWindow`] — called by
-    /// [`super::leaf::layout_leaf_from_value`] once per `"list"`/`"tree"`/
-    /// `"data_table"`/`"text_display"` leaf dict whose descriptor body sets
-    /// an `"items_window"` key, mirroring [`Self::record_drag_role`]: a
-    /// later call for the same `id` overwrites the earlier entry.
-    pub(super) fn record_items_window(&self, id: &str, window: ItemsWindow) {
-        self.items_windows
-            .borrow_mut()
-            .insert(id.to_string(), window);
-    }
-
-    /// The id-keyed side table [`Self::record_items_window`] has built up
-    /// over this session's decode(s) so far — every leaf id whose
-    /// descriptor body set an `"items_window"` key, mapped to its resolved
-    /// [`ItemsWindow`]. A leaf that never set the key has no entry here at
-    /// all. [`crate::render::paint_layout_windowed`] reads this to pad each
-    /// windowed leaf's painted payload out to its real `total`, so a
-    /// binding calls this once per decode and passes the result straight
-    /// through to that function.
-    pub fn items_windows(&self) -> HashMap<String, ItemsWindow> {
-        self.items_windows.borrow().clone()
     }
 
     /// Applies this session's policy to one finding: `key`, found on the
@@ -550,25 +505,19 @@ pub(super) fn check_node_sibling_keys(
 }
 
 /// A one-shot [`serde::Deserializer`] wrapping a `&Value` object, used only
-/// by [`decode_value_checked`]: every method but [`Self::deserialize_struct`]
+/// by [`decode_widget_checked`]: every method but [`Self::deserialize_struct`]
 /// forwards straight through to `value`'s own `Deserializer` impl, and that
-/// one method diffs `value`'s own keys against the field-name list `T`'s
-/// derived `Deserialize` impl hands it, unioned with `extra_keys` (a
-/// call-site-supplied allow-list for wire keys `T` deliberately has no
-/// field for, e.g. `"scroll_px"` on `list`/`tree`/`data_table` — see
-/// [`crate::scroll_px_from_value`]), reporting anything outside that union
-/// through `diagnostics` before continuing the real decode. A `T` whose
-/// derive reaches this instead through `deserialize_map` (a `#[serde(flatten)]`
-/// field, a hand-written `Deserialize` impl) skips the check silently rather
-/// than tripping it falsely — for every key in `fields` union `extra_keys`,
-/// this adds a finding only for keys outside both, never for a key either
-/// one already accepts.
+/// one method diffs `value`'s own keys against the field-name list the
+/// descriptor's derived `Deserialize` impl hands it, reporting anything
+/// outside it through `diagnostics` before continuing the real decode. A
+/// descriptor whose derive reaches this instead through `deserialize_map`
+/// (a `#[serde(flatten)]` field, a hand-written `Deserialize` impl) skips
+/// the check silently rather than tripping it falsely.
 struct DescriptorBodyDeserializer<'de, 'b> {
     value: &'de Value,
     diagnostics: &'b DecodeDiagnostics,
     path: &'b str,
     field: &'b str,
-    extra_keys: &'b [&'b str],
     unknown_key: &'b Cell<Option<DecodeError>>,
 }
 
@@ -585,11 +534,7 @@ impl<'de, 'b> serde::Deserializer<'de> for DescriptorBodyDeserializer<'de, 'b> {
         V: Visitor<'de>,
     {
         if let Some(obj) = self.value.as_object() {
-            let known: Vec<&str> = fields
-                .iter()
-                .copied()
-                .chain(self.extra_keys.iter().copied())
-                .collect();
+            let known: Vec<&str> = fields.to_vec();
             for key in obj.keys() {
                 if !known.contains(&key.as_str()) {
                     if let Err(err) = self
@@ -621,51 +566,14 @@ impl<'de, 'b> serde::Deserializer<'de> for DescriptorBodyDeserializer<'de, 'b> {
     }
 }
 
-/// [`decode_value`] for a descriptor *body* dict -- a leaf's `"button"`/
-/// `"slider"`/... value, decoded straight into its fixed or additive-primitive
-/// type -- except an unrecognized key inside that dict goes through
-/// `diagnostics` exactly like a layout-tree node's own sibling keys already
-/// do via [`check_unknown_keys`], rather than decoding silently either way.
-/// `field` is the descriptor-body's own kind name (`"button"`, `"slider"`,
-/// ...), reported alongside `path` the same way [`check_unknown_keys`]'s
-/// callers already name their own dict. `extra_keys` names wire keys this
-/// kind's dict accepts outside of `T`'s own derived fields -- e.g.
-/// `"scroll_px"` for `"list"`/`"tree"`/`"data_table"`, which
-/// [`crate::scroll_px_from_value`] reads out of this same dict rather than
-/// `T` ever having a field for it; `&[]` for every kind with no such key.
-pub(crate) fn decode_value_checked<'de, T>(
-    diagnostics: &DecodeDiagnostics,
-    path: &str,
-    field: &str,
-    value: &'de Value,
-    extra_keys: &[&str],
-) -> Result<T, DecodeError>
-where
-    T: serde::Deserialize<'de>,
-{
-    let unknown_key: Cell<Option<DecodeError>> = Cell::new(None);
-    let guard = DescriptorBodyDeserializer {
-        value,
-        diagnostics,
-        path,
-        field,
-        extra_keys,
-        unknown_key: &unknown_key,
-    };
-    T::deserialize(guard).map_err(|err| {
-        unknown_key
-            .replace(None)
-            .unwrap_or_else(|| DecodeError::borrow(path, format!("invalid descriptor: {err}")))
-    })
-}
-
-/// [`decode_value_checked`] for a [`crate::widget_kinds::WIDGET_KINDS`]
-/// descriptor body, whose concrete type is named by the `kind` string
-/// rather than statically by the caller: the same unknown-key policy
-/// applies, because [`quadraui::decode_widget_from`] hands this module's
-/// own wrapping deserializer to the descriptor type's derived
-/// `Deserialize`, which reports its field list through `deserialize_struct`
-/// exactly as a `T::deserialize` call does.
+/// Decodes a widget descriptor body -- a leaf's `"button"`/`"list"`/...
+/// value -- into the kind `kind` names, except an unrecognized key inside
+/// that dict goes through `diagnostics` exactly like a layout-tree node's
+/// own sibling keys already do via [`check_unknown_keys`], rather than
+/// decoding silently either way: [`quadraui::decode_widget_from`] hands
+/// this module's own wrapping deserializer to the descriptor type's
+/// derived `Deserialize`, which reports its field list through
+/// `deserialize_struct`.
 pub(crate) fn decode_widget_checked(
     diagnostics: &DecodeDiagnostics,
     path: &str,
@@ -678,7 +586,6 @@ pub(crate) fn decode_widget_checked(
         diagnostics,
         path,
         field: kind,
-        extra_keys: &[],
         unknown_key: &unknown_key,
     };
     quadraui::decode_widget_from(kind, guard).map_err(|err| {

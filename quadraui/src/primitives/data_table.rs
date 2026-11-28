@@ -2766,6 +2766,18 @@ impl crate::primitive::Primitive for DataTable {
         Some(&self.id)
     }
 
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this table to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+    }
+
     /// The table resolves through its own state first
     /// ([`DataTable::live`]), and a windowed one
     /// ([`DataTable::items_window`]) lays out only the band its viewport

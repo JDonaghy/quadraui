@@ -7,7 +7,7 @@
 //! sets the key paints exactly as before.
 //!
 //! Covers both wire shapes `decode_render_output` recognizes: the flat
-//! per-slot dict (`RenderFrame`/`draw_bands`) and the layout-tree dict
+//! per-kind dict (`RenderFrame`/`draw_bands`) and the layout-tree dict
 //! (`LayoutNode`/`paint_layout`).
 
 use quadraui::tui::testing::TuiDriver;
@@ -26,7 +26,7 @@ impl AppLogic for DictApp {
         let mut hits = Vec::new();
         match decode_render_output("test", &self.value).expect("valid render payload") {
             RenderOutput::Flat(frame) => {
-                draw_bands(backend, frame.as_refs(), &mut hits);
+                draw_bands(backend, &frame.widgets, &mut hits);
             }
             RenderOutput::Tree(node) => {
                 let viewport = backend.viewport();

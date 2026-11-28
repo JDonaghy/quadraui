@@ -6,16 +6,20 @@ use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
 
-/// The [`quadraui::widget_kinds!`] kinds this crate decodes into a generic
+/// The [`quadraui::widget_kinds!`] kinds this crate decodes into a
 /// [`crate::layout::LeafDescriptor::Widget`]: every static kind except the
-/// ones a layout leaf still carries in a fixed [`crate::layout::LeafDescriptor`]
-/// slot (`"text_display"`, `"list"`, `"tree"`, `"data_table"`) or as a
-/// container node (`"sidebar_panel"`). [`decode_widget_leaf`] decodes each
-/// through [`quadraui::decode_widget`], and each is painted, hit-tested and
-/// routed through the widget's own `Primitive`/`Interactive` contract, its
-/// `Interactive::State` kept across frames by
-/// [`crate::engine::InteractionEngine`].
-pub const WIDGET_KINDS: [&str; 43] = [
+/// one a layout tree carries as a container node (`"sidebar_panel"`), in
+/// the order a flat render dict's bands paint ([`crate::render::draw_bands`]).
+/// [`decode_widget_leaf`] decodes each through [`quadraui::decode_widget`],
+/// and each is painted, hit-tested and routed through the widget's own
+/// `Primitive`/`Interactive` contract, its `Interactive::State` kept
+/// across frames by [`crate::engine::InteractionEngine`].
+pub const WIDGET_KINDS: [&str; 48] = [
+    "text_display",
+    "list",
+    "tree",
+    "data_table",
+    "tab_bar",
     "form",
     "menu_bar",
     "tree_table",
@@ -193,7 +197,6 @@ mod tests {
                             kind: "switch",
                             widget: Rc::new(Switch::new(WidgetId::new("sw:1"))),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -291,7 +294,6 @@ mod tests {
                             kind: "toolbar",
                             widget: Rc::new(toolbar),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -400,7 +402,6 @@ mod tests {
                             kind: "toolbar",
                             widget: Rc::new(toolbar),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -530,7 +531,6 @@ mod tests {
                             kind: "icon_grid",
                             widget: Rc::new(grid),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -624,7 +624,6 @@ mod tests {
                             kind: "markdown",
                             widget: Rc::new(markdown),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -772,7 +771,6 @@ mod tests {
                             kind: "markdown",
                             widget: Rc::new(markdown),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -843,7 +841,6 @@ mod tests {
                 vec![LayoutNode::Leaf(LayoutLeaf {
                     id: self.id.as_str().to_string(),
                     descriptor: (self.leaf)(),
-                    scroll_px: None,
                 })],
                 Spacing::default(),
             ));

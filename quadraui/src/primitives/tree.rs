@@ -2547,6 +2547,18 @@ impl crate::primitive::Primitive for TreeView {
         Some(&self.id)
     }
 
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this tree to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+    }
+
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::Tree(self.clone())
     }

@@ -29,8 +29,8 @@ fn button_widgets(button: Button) -> HashMap<String, Rc<dyn DynWidget>> {
     widgets
 }
 
-/// Paints whatever fixed descriptors its host holds, through the exact
-/// `BindingHost::render_refs` -> `draw_bands` path a binding's own
+/// Paints whatever widgets its host holds, through the exact
+/// `BindingHost::widgets` -> `draw_bands` path a binding's own
 /// `AppLogic::render` drives.
 struct HostApp {
     host: BindingHost,
@@ -41,7 +41,7 @@ impl AppLogic for HostApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
-        draw_bands(backend, self.host.render_refs(), &mut hits);
+        draw_bands(backend, &self.host.widgets, &mut hits);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -50,7 +50,7 @@ impl AppLogic for HostApp {
 }
 
 /// A binding builds a host by naming only the fields it populates and
-/// deferring the rest to `Default` — the fixed descriptor slots and the
+/// deferring the rest to `Default` — the widget map and the
 /// backend-settings replay store are all reachable from another crate.
 #[test]
 fn a_binding_builds_a_host_by_functional_record_update() {
@@ -71,10 +71,10 @@ fn a_binding_builds_a_host_by_functional_record_update() {
 
     assert!(host.widgets.contains_key("button"));
     assert_eq!(host.accelerators.len(), 1);
-    assert!(host.list.is_none());
+    assert!(!host.widgets.contains_key("list"));
 }
 
-/// The fixed slots a host does hold paint top-to-bottom.
+/// The widgets a host does hold paint top-to-bottom.
 #[test]
 fn a_host_paints_its_fixed_slots() {
     let mut status = TextDisplay::new(WidgetId::new("status"));
@@ -84,9 +84,10 @@ fn a_host_paints_its_fixed_slots() {
         timestamp: None,
     });
 
+    let mut widgets = button_widgets(Button::new(WidgetId::new("save"), "Save"));
+    widgets.insert("text_display".to_string(), Rc::new(status));
     let host = BindingHost {
-        widgets: button_widgets(Button::new(WidgetId::new("save"), "Save")),
-        text_display: Some(status),
+        widgets,
         ..BindingHost::default()
     };
 

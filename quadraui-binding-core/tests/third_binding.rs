@@ -22,15 +22,14 @@
 //! registered through `register_scripted_widget`) takes the same route.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Once;
 
 use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{AppLogic, Backend, FormEvent, Reaction, Rect, UiEvent, WidgetId};
 use quadraui_binding_core::{
-    apply_deferred_action, decode_layout_node, decode_overlay, paint_layout_windowed,
-    render_overlays, resolve_layout_node_windowed, widget_leaf_kinds, BindingHost, EventSink,
+    apply_deferred_action, decode_layout_node, decode_overlay, paint_layout,
+    render_overlays, resolve_layout_node, widget_leaf_kinds, BindingHost, EventSink,
     HitDetail, InteractionEngine, LayoutNode,
 };
 
@@ -94,18 +93,10 @@ impl AppLogic for HostApp {
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let mut node = self.decode();
-        let windows = HashMap::new();
-        resolve_layout_node_windowed(
-            self.engine.widget_state(),
-            backend,
-            area,
-            &mut node,
-            &windows,
-        );
+        resolve_layout_node(&self.engine, backend, area, &mut node);
         let mut hits = Vec::new();
-        self.engine.paint_with_widget_state(|| {
-            paint_layout_windowed(backend, area, &node, &mut hits, &windows)
-        });
+        self.engine
+            .paint_with_widget_state(|| paint_layout(backend, area, &node, &mut hits));
         render_overlays(&self.engine, backend, hits);
     }
 
@@ -185,10 +176,10 @@ fn a_host_view_decodes_a_runtime_kind_as_a_generic_widget_leaf() {
         .children
         .iter()
         .map(|child| match &child.node {
-            LayoutNode::Leaf(leaf) => match &leaf.descriptor {
-                quadraui_binding_core::LeafDescriptor::Widget { kind, .. } => *kind,
-                _ => "not a generic widget",
-            },
+            LayoutNode::Leaf(leaf) => {
+                let quadraui_binding_core::LeafDescriptor::Widget { kind, .. } = &leaf.descriptor;
+                *kind
+            }
             _ => "not a leaf",
         })
         .collect();

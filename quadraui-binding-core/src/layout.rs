@@ -10,9 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use quadraui::{
-    Align, CellOverflow, Color, DataTable, Justify, ListView, Rect, ScrollAxis, SectionSize,
-    SidebarPanel, Spacing, Split, SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
-};
+    Align, CellOverflow, Color, Justify, Rect, ScrollAxis, SectionSize,
+    SidebarPanel, Spacing, Split, SplitTree, Style, TabBar, Theme, };
 
 use quadraui::layout::{grid_cell_rects, GridTrack};
 use quadraui::primitive::DynWidget;
@@ -971,43 +970,24 @@ pub struct LayoutSplitTree {
 pub struct LayoutLeaf {
     pub id: String,
     pub descriptor: LeafDescriptor,
-    /// Optional pixel-precise scroll position lifted out of this leaf's
-    /// raw `"list"`/`"tree"`/`"data_table"` descriptor dict by
-    /// [`crate::scroll_px_from_value`] — `None` unless the dict set a
-    /// numeric `"scroll_px"` key, and always `None` for a `descriptor`
-    /// that isn't one of those three kinds. [`crate::render::paint_leaf`]
-    /// passes it in the paint state the leaf is painted with; a dict that
-    /// never sets the key paints exactly as before.
-    pub scroll_px: Option<f32>,
 }
 
-/// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per
-/// primitive kind a layout tree leaf may wrap.
+/// The decoded descriptor carried by a [`LayoutLeaf`]: a kind registered
+/// in [`quadraui::widget_kinds!`] or at runtime, decoded through
+/// [`quadraui::decode_widget`] into a type-erased
+/// [`quadraui::primitive::DynWidget`]. Painted via
+/// [`quadraui::DrawsPrimitives::draw_dyn`] (see
+/// [`crate::render::paint_leaf`]), hit-tested as a whole area (see
+/// [`crate::hit::PaintedHit::Widget`]), and routed to [`DynWidget::handle`]
+/// (see [`crate::engine::InteractionEngine::handle`]'s
+/// `HitDetail::WidgetBody` arm). `kind` is the matched kind string, kept
+/// for diagnostics.
 pub enum LeafDescriptor {
-    TextDisplay(TextDisplay),
-    List(ListView),
-    Tree(TreeView),
-    DataTable(DataTable),
-    TabBar(TabBar),
-    /// A kind registered in [`crate::widget_kinds::WIDGET_KINDS`] or at
-    /// runtime, decoded through [`quadraui::decode_widget`] into a
-    /// type-erased [`quadraui::primitive::DynWidget`]. Painted via
-    /// [`quadraui::DrawsPrimitives::draw_dyn`] (see
-    /// [`crate::render::paint_leaf`]'s `Widget` arm), hit-tested as a
-    /// whole area (see [`crate::hit::PaintedHit::Widget`]), and routed to
-    /// [`DynWidget::handle`] (see
-    /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
-    /// arm). `kind` is the matched kind string, kept for diagnostics.
     Widget {
         kind: &'static str,
         widget: Rc<dyn DynWidget>,
     },
 }
-
-/// The descriptor keys a layout tree leaf dict may carry — the five names
-/// [`crate::render::RenderFrame`]'s own flat-slot `Deserialize` impl uses
-/// for its slots, each mapping to its own [`LeafDescriptor`] variant.
-pub const LEAF_KIND_KEYS: [&str; 5] = ["text_display", "list", "tree", "data_table", "tab_bar"];
 
 /// Builds the [`DecodeError::Borrow`] [`validate_unique_leaf_ids`]'s walk
 /// raises on the first repeated id, naming both the offending `kind` (the
@@ -1390,7 +1370,6 @@ mod tests {
                     kind: "button",
                     widget: Rc::new(Button::new(quadraui::WidgetId::new("a"), "A")),
                 },
-                scroll_px: None,
             })),
         });
         assert!(validate_unique_leaf_ids("test", &node).is_ok());
@@ -1409,7 +1388,6 @@ mod tests {
                     kind: "button",
                     widget: Rc::new(Button::new(quadraui::WidgetId::new(id), id)),
                 },
-                scroll_px: None,
             })
         };
         let node = LayoutNode::Row(LayoutContainer {
@@ -1442,7 +1420,6 @@ mod tests {
                     kind: "button",
                     widget: Rc::new(Button::new(quadraui::WidgetId::new(id), id)),
                 },
-                scroll_px: None,
             })
         };
         let panel = LayoutNode::SidebarPanel(LayoutSidebarPanel {

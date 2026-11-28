@@ -1,8 +1,8 @@
 //! Language-neutral interaction wiring shared by every native `quadraui`
-//! binding: hit routing for the fixed and additive primitives,
-//! [`semantic::semantic_event_for_hit`] synthesis, the text-input/focus/
-//! drag controllers, the retained [`layout::LayoutNode`] descriptor model,
-//! and the render -> frame assembly ([`render::draw_bands`]/
+//! binding: the generic widget leaf (every kind in `quadraui`'s
+//! `widget_kinds!` registry, plus any registered at runtime), hit routing
+//! and container drags, the retained [`layout::LayoutNode`] descriptor
+//! model, and the render -> frame assembly ([`render::draw_bands`]/
 //! [`render::paint_layout`]).
 //!
 //! This crate carries zero dependency on any host-language FFI layer. A
@@ -23,7 +23,6 @@ pub mod host;
 pub mod layout;
 pub mod render;
 pub mod scripted;
-pub mod semantic;
 pub mod services;
 pub mod widget_kinds;
 pub mod wire;
@@ -273,58 +272,38 @@ pub use deferred::{
     decode_overlay, overlay_anchor_from_value, ContextMenuOverlayDescriptor,
     MessageDialogOverlayDescriptor, OVERLAY_KINDS,
 };
-pub use drag::{find_split_layout, tree_row_path, tree_scroll_state};
-pub use drag::{ActiveDrag, ScrollbarDrag};
+pub use drag::find_split_layout;
+pub use drag::{ActiveDrag, DragGestureWireEvent};
 pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
     InteractionEngine,
 };
-pub use hit::tree_total_rows_and_viewport;
-pub use hit::{data_table_rows_and_viewport, list_rows_and_viewport, tree_rows_and_viewport};
 pub use hit::{event_position, hit_test_painted, set_event_widget};
-pub use hit::{loaded_row_path, windowed_leaf_extent, LoadedRows};
 pub use hit::{HitDetail, PaintedHit, ScrollChildHit};
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 pub use host::NativeExitPolicy;
 pub use host::{
-    app_path_kind, apply_data_table_nav_key, apply_list_nav_key, apply_split_divider_drag,
-    apply_tab_activated, apply_tab_closed, apply_tree_nav_key, apply_tree_nav_key_windowed,
-    apply_tree_toggle_expand, callback_reaction, callback_reaction_for_render, caret_shape,
-    click_down_up_events, color_depth_name, dialog_severity, font_role, guarded, key_pressed_event,
-    menu_for_surface, merge_overrides, panic_message, pointer_shape, power_save_kind,
-    record_pending_error, reentrant_call_message, render_overlays, resize_edge,
-    resolve_data_table_cursor, resolve_layout_node, resolve_layout_node_windowed,
-    resolve_layout_tabs_active, resolve_list_cursor, resolve_render_refs, resolve_scroll_offset,
-    resolve_split_ratio, resolve_tab_bar_active, resolve_tree_cursor, resolve_tree_cursor_windowed,
-    resolve_tree_expansion, step_driver, stored_cursor_scroll_offset, take_pending_error,
-    text_display_from_lines, theme_color_value, toast_corner, widget_state_snapshot,
-    window_close_reaction, with_tray, with_window, BindingHost, ErasedShellDriver, GuardedFailure,
-    OverrideError, WidgetStateSnapshot, WindowCloseHandling, SLOT_BUTTON, SLOT_DATA_TABLE,
-    SLOT_LIST, SLOT_TAB_BAR, SLOT_TEXT_DISPLAY, SLOT_TREE,
+    app_path_kind, apply_split_divider_drag, callback_reaction, callback_reaction_for_render,
+    caret_shape, click_down_up_events, color_depth_name, dialog_severity, font_role, guarded,
+    key_pressed_event, menu_for_surface, merge_overrides, panic_message, pointer_shape,
+    power_save_kind, record_pending_error, reentrant_call_message, render_overlays, resize_edge,
+    resolve_layout_node, resolve_layout_tabs_active, resolve_scroll_offset, resolve_split_ratio,
+    step_driver, take_pending_error, text_display_from_lines, theme_color_value, toast_corner,
+    widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost,
+    ErasedShellDriver, GuardedFailure, OverrideError, WidgetStateSnapshot, WindowCloseHandling,
 };
 pub use layout::LayoutGrid;
 pub use layout::{validate_unique_leaf_ids, LayoutContainer, LayoutLeaf, LayoutNode};
 pub use layout::{FontWeight, InteractionState, StyleOverride, StyleSets, BUILTIN_STYLE_SET_NAMES};
 pub use layout::{LayoutScroll, LayoutSidebarPanel, LayoutSplit, LayoutSplitTree};
-pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor, LEAF_KIND_KEYS};
-pub use render::{
-    collect_leaf_tooltips, draw_bands, draw_tree_with_scrollbar, paint_layout, paint_leaf,
-};
-pub use render::{
-    data_table_viewport_rows, list_viewport_rows, tree_viewport_rows, RenderFrame, RenderRefs,
-};
-pub use render::{
-    draw_tree_with_scrollbar_and_state_windowed, items_window_from_value, paint_layout_windowed,
-    paint_leaf_windowed, rows_requested_for_window, ItemsWindow, RowsRequestedEvent,
-    WindowedTreeExtent,
-};
+pub use layout::{LayoutTabEntry, LayoutTabs, LeafDescriptor};
+pub use render::{collect_leaf_tooltips, draw_bands, paint_layout, paint_leaf, RenderFrame};
 pub use scripted::{
     ensure_scripted_widget_kind, register_scripted_widget, unregister_scripted_widget,
     ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedLayout,
     ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
     ScriptedWidgetDescriptor, SCRIPTED_WIDGET_KIND,
 };
-pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
     add_recent_document, app_identifier, begin_drag_out, begin_power_save_block,
     clear_recent_documents, end_power_save_block, install_crash_handler,
@@ -342,61 +321,3 @@ pub use wire::{
     decode_style_overrides, validate_style_set_name, DecodeDiagnostics, OverlayContent,
     RenderOutput, StaticTabContent, StyleContext, LAYOUT_NODE_KEYS,
 };
-
-/// Lift an optional `"scroll_px"` number out of a `list`/`tree`/
-/// `data_table` leaf's own descriptor dict (the nested value under its
-/// `LEAF_KIND_KEYS` key — e.g. the `{...}` in `{"id": ..., "list":
-/// {...}}`) into the paint-time `scroll_px` a binding passes to a
-/// `ListPaintState`/`TreePaintState`/`DataTablePaintState` builder.
-///
-/// `scroll_px` is **not** a field [`wire::decode_layout_node`] (or any
-/// `ListView`/`TreeView`/`DataTable` decoder) reads — those types have
-/// no such field, by design (see `quadraui`'s `CHANGELOG.md`
-/// `[Unreleased]` → `Added` entry for `ListPaintState`/`TreePaintState`/
-/// `DataTablePaintState`). This function instead reads the key directly
-/// out of the raw `serde_json::Value` a binding already holds
-/// before/alongside decoding, so a descriptor dict that sets
-/// `"scroll_px"` doesn't need a Rust struct field to carry it, and a
-/// dict that never sets it is completely unaffected (`None`, same as
-/// if the key didn't exist).
-///
-/// Returns `None` when the key is absent, not a JSON number, or the
-/// value isn't a plain object — never an error: a malformed or missing
-/// `scroll_px` degrades to the pre-existing whole-row behaviour rather
-/// than failing the whole leaf's decode.
-pub fn scroll_px_from_value(value: &serde_json::Value) -> Option<f32> {
-    value
-        .as_object()?
-        .get("scroll_px")?
-        .as_f64()
-        .map(|v| v as f32)
-}
-
-#[cfg(test)]
-mod scroll_px_tests {
-    use super::scroll_px_from_value;
-    use serde_json::json;
-
-    #[test]
-    fn present_numeric_scroll_px_is_lifted_out() {
-        let dict = json!({"scroll_offset": 0, "scroll_px": 12.5});
-        assert_eq!(scroll_px_from_value(&dict), Some(12.5));
-    }
-
-    #[test]
-    fn absent_scroll_px_is_none_and_leaves_the_dict_unaffected() {
-        let dict = json!({"scroll_offset": 3});
-        assert_eq!(scroll_px_from_value(&dict), None);
-    }
-
-    #[test]
-    fn non_numeric_scroll_px_is_none_not_an_error() {
-        let dict = json!({"scroll_px": "not a number"});
-        assert_eq!(scroll_px_from_value(&dict), None);
-    }
-
-    #[test]
-    fn non_object_value_is_none() {
-        assert_eq!(scroll_px_from_value(&json!([1, 2, 3])), None);
-    }
-}

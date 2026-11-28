@@ -3243,6 +3243,23 @@ impl crate::primitive::Primitive for TabBar {
         Some(&self.id)
     }
 
+    /// Every tab label's width side by side, three rows tall (top border,
+    /// labels, bottom border) — what a container sizing this bar to its
+    /// content gives it.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        let width = self
+            .tabs
+            .iter()
+            .map(|tab| tab.label.chars().count() as f32 * ctx.char_width.max(1.0))
+            .sum::<f32>();
+        crate::NaturalSize::new(Some(width), Some(3.0 * ctx.line_height.max(1.0)))
+    }
+
     /// Round-trips through [`crate::frame::OwnedContent::TabBar`], so a
     /// `TabBar` reached through [`crate::frame::Surface::Widget`] replays
     /// through [`crate::backend::DrawsPrimitives::draw_primitive`] and

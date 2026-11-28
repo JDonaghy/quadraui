@@ -1652,16 +1652,17 @@ impl crate::primitive::Primitive for TextDisplay {
     }
 
     /// One row per buffer line (unwrapped) plus a title row when one is
-    /// set — what a container sizing this display to its content would
-    /// give it.
+    /// set — what a container sizing this display to its content gives
+    /// it; the container clamps it to the room it has.
     fn measure(
         &self,
         ctx: &crate::primitive::LayoutCtx,
         avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
+        let _ = avail;
         let row_h = ctx.line_height.max(1.0);
-        let rows = self.lines.len() as f32 + f32::from(u8::from(self.title.is_some()));
-        crate::NaturalSize::new(None, Some((rows * row_h).min(avail.height)))
+        let rows = self.row_count() as f32 + f32::from(u8::from(self.title.is_some()));
+        crate::NaturalSize::new(None, Some(rows * row_h))
     }
 
     /// `rect` is the display's own area, title row included. On a cell

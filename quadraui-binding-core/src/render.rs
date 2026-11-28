@@ -1,26 +1,23 @@
-//! Render-to-frame assembly: paints either the five-fixed-slot
-//! [`RenderFrame`]/[`RenderRefs`] shape ([`draw_bands`]) or a decoded
+//! Render-to-frame assembly: paints either a flat [`RenderFrame`]
+//! ([`draw_bands`]) or a decoded
 //! [`crate::layout::LayoutNode`] tree ([`paint_layout`]) into a
 //! [`quadraui::Backend`], recording a [`PaintedHit`] per primitive painted
 //! so a later pointer event can be hit-tested against this frame.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
-    ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
-    Style, StyledText, TabBar, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout,
-    TextDisplayLine, Theme, TreePath, TreeRow, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Backend, Button, DataTable, ListView, Rect, ScrollAxis, ScrollView, SectionSize, Split, SplitDirection,
+    Style, TabBar, TabChrome, TextDisplay, Theme, TreeView, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
 use quadraui::DrawsPrimitives;
 
-use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit};
+use crate::hit::{PaintedHit, ScrollChildHit};
 use crate::layout::{
     LayoutChild, LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutStyled,
     LeafDescriptor,
@@ -31,51 +28,25 @@ use quadraui::layout::stack::{
 };
 use quadraui::layout::NaturalSize;
 
-/// Owned decode of a render callback's returned descriptor set — one
-/// optional descriptor per slot, keyed by `"text_display"`,
-/// `"list"`, `"tree"`, `"data_table"`, and `"tab_bar"`. A binding decodes
-/// its own wire format (a Python `dict`, a JS object, ...) into this type;
-/// [`RenderFrame::as_refs`] is the one shape [`draw_bands`] paints from,
-/// regardless of which path produced it.
+/// Owned decode of a flat render callback dict: one optional descriptor
+/// per widget kind, keyed by kind name. A binding decodes its own wire
+/// format (a Python `dict`, a JS object, ...) into this type, and
+/// [`draw_bands`] paints [`Self::widgets`].
 #[derive(Default)]
 pub struct RenderFrame {
-    pub text_display: Option<TextDisplay>,
-    pub list: Option<ListView>,
-    pub tree: Option<TreeView>,
-    pub data_table: Option<DataTable>,
-    /// Painted and routed as a generic widget (see [`paint_tab_bar`]);
-    /// the slot itself stays so the host can resolve its uncontrolled
-    /// active tab before painting.
-    pub tab_bar: Option<TabBar>,
-    /// Generic-widget ([`crate::widget_kinds::widget_leaf_kinds`]) slots
-    /// present in this frame, keyed by kind name.
+    /// The widget kinds present in this frame, keyed by kind name.
     pub widgets: HashMap<String, Rc<dyn DynWidget>>,
-    /// Optional pixel-precise scroll position lifted out of the `"list"`
-    /// slot's raw dict by [`crate::scroll_px_from_value`] — `None` unless
-    /// the dict set a numeric `"scroll_px"` key, in which case it wins
-    /// over [`ListView::scroll_offset`] in [`draw_bands`].
-    pub list_scroll_px: Option<f32>,
-    /// Same as `list_scroll_px`, for the `"tree"` slot.
-    pub tree_scroll_px: Option<f32>,
-    /// Same as `list_scroll_px`, for the `"data_table"` slot.
-    pub data_table_scroll_px: Option<f32>,
 }
 
-/// Decodes a render callback's returned `dict` into a [`RenderFrame`] —
-/// the flat five-slot wire shape (`"text_display"`, `"list"`,
-/// `"tree"`, `"data_table"`, `"tab_bar"`, plus any additive primitive
-/// kind) is a contract of this type, not of any one binding's own decode.
-/// A missing key or a `null` value both mean "draw nothing in this slot
-/// this frame"; every error is labeled `"render"` — the only context a
-/// `RenderFrame` is ever decoded in.
+/// Decodes a render callback's returned `dict` into a [`RenderFrame`]:
+/// each [`crate::widget_kinds::widget_leaf_kinds`] key holds that kind's
+/// descriptor; a missing key or a `null` value both mean "draw nothing in
+/// this slot this frame". Every error is labeled `"render"`.
 ///
 /// Builds a fresh warn-mode [`crate::wire::DecodeDiagnostics`] per call
 /// (unlike [`crate::wire::decode_render_output_with_styles`], which takes a
 /// session-scoped one), so an unknown optional key found through this impl
-/// can never warn-once across calls or honour a binding's `strict` setting.
-/// No binding calls this `Deserialize` impl directly today — each decodes
-/// through `decode_render_output_with_styles` instead — so the gap is
-/// latent, not currently user-visible.
+/// never warns once across calls or honours a binding's `strict` setting.
 impl<'de> Deserialize<'de> for RenderFrame {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -88,64 +59,9 @@ impl<'de> Deserialize<'de> for RenderFrame {
     }
 }
 
-impl RenderFrame {
-    pub fn as_refs(&self) -> RenderRefs<'_> {
-        RenderRefs {
-            text_display: self.text_display.as_ref(),
-            list: self.list.as_ref(),
-            tree: self.tree.as_ref(),
-            data_table: self.data_table.as_ref(),
-            tab_bar: self.tab_bar.as_ref(),
-            widgets: &self.widgets,
-            list_scroll_px: self.list_scroll_px,
-            tree_scroll_px: self.tree_scroll_px,
-            data_table_scroll_px: self.data_table_scroll_px,
-        }
-    }
-}
-
-/// One descriptor reference per slot, borrowed either from a binding's own
-/// static fields or from a [`RenderFrame`] just decoded from a render
-/// callback's return value — the one shape [`draw_bands`] paints from,
-/// regardless of which path produced it.
-pub struct RenderRefs<'a> {
-    pub text_display: Option<&'a TextDisplay>,
-    pub list: Option<&'a ListView>,
-    pub tree: Option<&'a TreeView>,
-    pub data_table: Option<&'a DataTable>,
-    pub tab_bar: Option<&'a TabBar>,
-    /// Generic-widget slots, keyed by kind name. Painted after the fixed
-    /// bands above, in canonical [`crate::widget_kinds::widget_leaf_kinds`]
-    /// order.
-    pub widgets: &'a HashMap<String, Rc<dyn DynWidget>>,
-    /// See [`RenderFrame::list_scroll_px`]. `None` for a `RenderRefs` a
-    /// binding builds by hand from its own static fields (no dict to
-    /// lift a `scroll_px` out of) — [`draw_bands`] paints exactly as
-    /// before in that case.
-    pub list_scroll_px: Option<f32>,
-    /// See [`RenderFrame::tree_scroll_px`].
-    pub tree_scroll_px: Option<f32>,
-    /// See [`RenderFrame::data_table_scroll_px`].
-    pub data_table_scroll_px: Option<f32>,
-}
-
-/// The empty generic-widget map a [`RenderRefs`] borrows for its
-/// `widgets` field in this file's and `crate::engine`'s own tests.
-#[cfg(test)]
-pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
-    thread_local! {
-        static NO_WIDGETS: &'static HashMap<String, Rc<dyn DynWidget>> =
-            Box::leak(Box::new(HashMap::new()));
-    }
-    NO_WIDGETS.with(|map| *map)
-}
-
-/// Paints `tab_bar` into `rect` through the widget contract and records
-/// it as a [`PaintedHit::Widget`], so a click or key on it routes through
-/// [`TabBar`]'s own [`quadraui::Interactive`] impl. Every tab-bar paint
-/// path here (the fixed `"tab_bar"` slot in [`draw_bands`],
-/// [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
-/// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) shares this one call.
+/// Paints a [`LayoutNode::Tabs`]'s strip into `rect` through the widget
+/// contract and records it as a [`PaintedHit::Widget`], so a click or key
+/// on it routes through [`TabBar`]'s own [`quadraui::Interactive`] impl.
 fn paint_tab_bar(
     backend: &mut dyn Backend,
     rect: Rect,
@@ -197,14 +113,9 @@ fn paint_sidebar_panel(
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
 /// starting at the mutable cursor `*y` and never exceeding `viewport`'s
 /// remaining height — the sequential top-to-bottom allocation [`draw_bands`]
-/// uses for each of its five fixed slots plus every additive primitive.
-/// [`crate::host::resolve_render_refs`] calls this directly too, so it
-/// computes each occupied slot's pre-paint rect from the exact same band
-/// order and sizes `draw_bands` itself paints into, rather than a second,
-/// independently-drifting copy of this sequence. Returns `None` once the
-/// viewport has run out of vertical room; `*y` is only advanced when a
-/// band is actually returned.
-pub(crate) fn next_band(
+/// uses for each present kind. Returns `None` once the viewport has run out
+/// of vertical room; `*y` is only advanced when a band is actually returned.
+fn next_band(
     y: &mut f32,
     viewport_width: f32,
     viewport_height: f32,
@@ -221,126 +132,57 @@ pub(crate) fn next_band(
     Some(rect)
 }
 
-/// Paints each present slot top-to-bottom in a fixed-height band, skipping
-/// any slot once the viewport runs out of room. Appends a [`PaintedHit`] to
-/// `hits` for every slot painted, so a later pointer event can be routed to
-/// it.
-#[allow(deprecated)]
-pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<PaintedHit>) {
+/// How many text lines tall [`draw_bands`] makes `kind`'s band: the row
+/// collections get four, every other kind three.
+fn flat_band_lines(kind: &str) -> f32 {
+    if matches!(kind, "list" | "tree" | "data_table") {
+        4.0
+    } else {
+        3.0
+    }
+}
+
+/// Paints each present kind of a flat frame top-to-bottom in a
+/// fixed-height band ([`flat_band_lines`]), in
+/// [`crate::widget_kinds::widget_leaf_kinds`] order so the output is
+/// deterministic regardless of `HashMap` iteration order, skipping any
+/// kind once the viewport runs out of room. Appends a
+/// [`PaintedHit::Widget`] to `hits` for every widget painted, keyed by the
+/// widget's own id (or its kind, for a widget with no id), so a later
+/// pointer event can be routed to it.
+pub fn draw_bands(
+    backend: &mut dyn Backend,
+    widgets: &HashMap<String, Rc<dyn DynWidget>>,
+    hits: &mut Vec<PaintedHit>,
+) {
     let viewport = backend.viewport();
-    // Band heights below are given in text LINES, not raw viewport units: a
-    // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
-    // the backend's own unit (cells on TUI, where `line_height` is 1.0;
-    // device pixels on the native backends, where it is the font's pixel line
-    // height), so scaling the line count by `line_height` lays the bands out
-    // correctly on every backend instead of collapsing them to a few pixels
-    // tall on native.
+    // Band heights are given in text LINES, not raw viewport units:
+    // `viewport` and `line_height` share the backend's own unit (cells on
+    // TUI, where `line_height` is 1.0; device pixels on the native
+    // backends), so scaling the line count by `line_height` lays the bands
+    // out correctly on every backend.
     let line_height = backend.line_height();
     let mut y = 0.0_f32;
-    let mut band = |lines: f32| -> Option<Rect> {
-        next_band(&mut y, viewport.width, viewport.height, line_height, lines)
-    };
-
-    if let Some(text_display) = refs.text_display {
-        if let Some(rect) = band(3.0) {
-            hits.push(draw_text_display_hit(
-                backend,
-                text_display.id,
-                rect,
-                text_display,
-            ));
-        }
-    }
-    if let Some(list) = refs.list {
-        if let Some(rect) = band(4.0) {
-            let state = quadraui::ListPaintState::default().with_scroll_px(refs.list_scroll_px);
-            let _ = backend.draw_dyn(rect, list, &state);
-            let layout = backend.layout_primitive(rect, list).layout;
-            let viewport_rows = list_viewport_rows(backend, rect, list);
-            hits.push(PaintedHit::List {
-                id: list.id,
-                area: rect,
-                clip: rect,
-                layout,
-                selected_idx: list.selected_idx,
-                total_items: list.items.len(),
-                scroll_offset: list.scroll_offset,
-                viewport_rows,
-                // The flat six-slot path carries no `ItemsWindow`: the
-                // only decode that records one is a layout-tree leaf's
-                // (`crate::wire::decode_leaf`), so every slot painted here
-                // holds its whole collection.
-                loaded_rows: None,
-            });
-        }
-    }
-    if let Some(tree) = refs.tree {
-        if let Some(rect) = band(4.0) {
-            let (content_rect, scrollbar, viewport_rows, layout) =
-                draw_tree_with_scrollbar_and_state(backend, rect, tree, refs.tree_scroll_px);
-            hits.push(PaintedHit::Tree {
-                id: tree.id,
-                area: content_rect,
-                clip: content_rect,
-                layout,
-                row_paths: tree.rows.iter().map(|row| row.path.clone()).collect(),
-                scrollbar,
-                scroll_offset: tree.scroll_offset,
-                total_rows: tree.rows.len(),
-                viewport_rows,
-                editing: tree
-                    .rows
-                    .iter()
-                    .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
-                // See the `List` slot above.
-                loaded_rows: None,
-            });
-        }
-    }
-    if let Some(data_table) = refs.data_table {
-        if let Some(rect) = band(4.0) {
-            let state =
-                quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
-            let _ = backend.draw_dyn(rect, data_table, &state);
-            let layout = backend.layout_primitive(rect, data_table).layout;
-            let viewport_rows = layout.visible_rows;
-            hits.push(PaintedHit::DataTable {
-                id: data_table.id,
-                area: rect,
-                clip: rect,
-                layout,
-                scroll_offset: data_table.scroll_offset,
-                total_rows: data_table.rows.len(),
-                selected_idx: data_table.selected_idx,
-                viewport_rows,
-                // See the `List` slot above.
-                loaded_rows: None,
-            });
-        }
-    }
-    if let Some(tab_bar) = refs.tab_bar {
-        if let Some(rect) = band(3.0) {
-            paint_tab_bar(backend, rect, tab_bar.clone(), hits);
-        }
-    }
-    // Generic-widget slots, painted last in canonical order so the output
-    // is deterministic regardless of `HashMap` iteration order. `widget.id()` is
-    // `None` for any future `WIDGET_KINDS` member that doesn't carry its
-    // own id field (see `quadraui::primitive::Primitive::id`'s own doc);
-    // falling back to the slot's own `kind` string keeps this painted hit
-    // addressable either way, rather than needing a sentinel id of its own.
     for kind in crate::widget_kinds::widget_leaf_kinds() {
-        if let Some(widget) = refs.widgets.get(kind) {
-            if let Some(rect) = band(3.0) {
-                if paint_widget_leaf(backend, rect, widget.as_ref()) {
-                    let id = widget.id().cloned().unwrap_or_else(|| WidgetId::new(kind));
-                    hits.push(PaintedHit::Widget {
-                        id,
-                        area: rect,
-                        widget: Rc::clone(widget),
-                    });
-                }
-            }
+        let Some(widget) = widgets.get(kind) else {
+            continue;
+        };
+        let Some(rect) = next_band(
+            &mut y,
+            viewport.width,
+            viewport.height,
+            line_height,
+            flat_band_lines(kind),
+        ) else {
+            continue;
+        };
+        if paint_widget_leaf(backend, rect, widget.as_ref()) {
+            let id = widget.id().cloned().unwrap_or_else(|| WidgetId::new(kind));
+            hits.push(PaintedHit::Widget {
+                id,
+                area: rect,
+                widget: Rc::clone(widget),
+            });
         }
     }
 }
@@ -371,59 +213,6 @@ fn paint_widget_leaf(backend: &mut dyn Backend, area: Rect, widget: &dyn DynWidg
         .is_some_and(|id| backend.focus_tree().focused_id() == Some(id));
     backend.draw_dyn(area, widget, &LeafFocus(focused));
     true
-}
-
-/// How many lines of `td` fit in `rect` at a zero scroll offset — mirrors
-/// [`tree_viewport_rows`] for the same reason: [`quadraui::TextDisplayLayout::visible_lines`]
-/// at `td`'s ACTUAL offset can be shorter near the end of a long buffer, so
-/// the wheel-scroll `max_offset` clamp needs the viewport's true line
-/// capacity instead. Only queries `Backend::text_display_layout` against a
-/// scratch clone — paints nothing — so `draw_text_display_hit` calling it
-/// after its own real `text_display_layout` call means every frame lays
-/// out `td` twice.
-fn text_display_viewport_lines(backend: &mut dyn Backend, rect: Rect, td: &TextDisplay) -> usize {
-    let mut shadow = td.clone();
-    shadow.scroll_offset = 0;
-    shadow.auto_scroll = false;
-    backend
-        .layout_primitive(rect, &shadow)
-        .layout
-        .visible_lines
-        .len()
-}
-
-/// Paints `td` into `area` under hit-map id `id` and records its
-/// [`PaintedHit::TextDisplay`] — shared by [`draw_bands`] (which passes
-/// `td.id`) and `paint_leaf`'s `LeafDescriptor::TextDisplay` arm (which,
-/// like every other leaf, passes the leaf's own tree-address id instead),
-/// so the two paint paths can't drift apart on what gets stored.
-fn draw_text_display_hit(
-    backend: &mut dyn Backend,
-    id: WidgetId,
-    area: Rect,
-    td: &TextDisplay,
-) -> PaintedHit {
-    backend.draw_dyn(area, td, &());
-    let layout = backend.layout_primitive(area, td).layout;
-    let viewport_lines = text_display_viewport_lines(backend, area, td);
-    let body_offset = if td.title.is_some() {
-        backend.line_height()
-    } else {
-        0.0
-    };
-    PaintedHit::TextDisplay {
-        id,
-        area,
-        clip: area,
-        layout,
-        body_offset,
-        total_lines: td.lines.len(),
-        viewport_lines,
-        // Overwritten by `paint_leaf_windowed` for a windowed leaf; `None`
-        // is right for every other caller (`draw_bands`, an unwindowed
-        // layout-tree leaf).
-        loaded_rows: None,
-    }
 }
 
 /// Paints a layout tree into `area`. A `Row`/`Column` first shrinks `area`
@@ -460,27 +249,6 @@ pub fn paint_layout(
     node: &LayoutNode,
     hits: &mut Vec<PaintedHit>,
 ) {
-    paint_layout_windowed(backend, area, node, hits, &HashMap::new());
-}
-
-/// [`paint_layout`], additionally honoring each windowed leaf's `{start,
-/// total}` from `windows` — an id-keyed map built from
-/// [`crate::wire::DecodeDiagnostics::items_windows`] against the same
-/// decode that produced `node`. Honoring it means [`paint_leaf_windowed`]
-/// paints that leaf from the band of its collection the viewport actually
-/// shows (see [`WindowedBand`]), reports the collection's real extent on
-/// the leaf's own [`PaintedHit`] rather than the painted band's length, and
-/// leaves an empty placeholder at every band position the app hasn't
-/// supplied a row for yet. [`paint_layout`] itself is this function with an
-/// empty `windows` map, so a caller that never decodes an `"items_window"`
-/// key paints exactly as before.
-pub fn paint_layout_windowed(
-    backend: &mut dyn Backend,
-    area: Rect,
-    node: &LayoutNode,
-    hits: &mut Vec<PaintedHit>,
-    windows: &HashMap<String, ItemsWindow>,
-) {
     match node {
         LayoutNode::Row(container) => {
             let char_width = backend.char_width();
@@ -488,7 +256,7 @@ pub fn paint_layout_windowed(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, true);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout_windowed(backend, rect, &child.node, hits, windows);
+                paint_layout(backend, rect, &child.node, hits);
             }
         }
         LayoutNode::Column(container) => {
@@ -497,16 +265,16 @@ pub fn paint_layout_windowed(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, false);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout_windowed(backend, rect, &child.node, hits, windows);
+                paint_layout(backend, rect, &child.node, hits);
             }
         }
         LayoutNode::Grid(grid) => {
             let rects = grid.cell_rects(area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter().zip(rects) {
-                paint_layout_windowed(backend, rect, child, hits, windows);
+                paint_layout(backend, rect, child, hits);
             }
         }
-        LayoutNode::Leaf(leaf) => paint_leaf_windowed(backend, area, leaf, hits, windows),
+        LayoutNode::Leaf(leaf) => paint_leaf(backend, area, leaf, hits),
         LayoutNode::Split(split) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
@@ -553,8 +321,8 @@ pub fn paint_layout_windowed(
             hits.push(PaintedHit::Split {
                 layout: layout.clone(),
             });
-            paint_layout_windowed(backend, layout.first_bounds, &split.first, hits, windows);
-            paint_layout_windowed(backend, layout.second_bounds, &split.second, hits, windows);
+            paint_layout(backend, layout.first_bounds, &split.first, hits);
+            paint_layout(backend, layout.second_bounds, &split.second, hits);
         }
         LayoutNode::Tabs(tabs) => {
             let char_width = backend.char_width();
@@ -577,19 +345,17 @@ pub fn paint_layout_windowed(
                 (area.height - strip_height).max(0.0),
             );
             if let Some(selected) = tabs.entries.get(tabs.selected) {
-                paint_layout_windowed(backend, content_rect, &selected.content, hits, windows);
+                paint_layout(backend, content_rect, &selected.content, hits);
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
             let panel = &sidebar_node.sidebar_panel;
             let content_bounds = paint_sidebar_panel(backend, area, panel, hits);
-            paint_layout_windowed(
+            paint_layout(
                 backend,
                 content_bounds,
                 &sidebar_node.content,
-                hits,
-                windows,
-            );
+                hits);
         }
         LayoutNode::SplitTree(split_tree) => {
             let layout = backend.draw_primitive(area, &split_tree.tree);
@@ -598,14 +364,14 @@ pub fn paint_layout_windowed(
                 layout: layout.clone(),
             });
             for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
-                paint_layout_windowed(backend, *rect, content, hits, windows);
+                paint_layout(backend, *rect, content, hits);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
-            paint_scroll(backend, area, scroll_node, hits, windows);
+            paint_scroll(backend, area, scroll_node, hits);
         }
         LayoutNode::Styled(styled) => {
-            paint_styled(backend, area, styled, hits, windows);
+            paint_styled(backend, area, styled, hits);
         }
     }
 }
@@ -624,10 +390,9 @@ fn paint_styled(
     area: Rect,
     styled: &LayoutStyled,
     hits: &mut Vec<PaintedHit>,
-    windows: &HashMap<String, ItemsWindow>,
 ) {
     let push = push_styled_override(backend, &styled.style);
-    paint_layout_windowed(backend, area, &styled.node, hits, windows);
+    paint_layout(backend, area, &styled.node, hits);
     pop_styled_override(backend, push);
 }
 
@@ -742,7 +507,6 @@ fn paint_scroll(
     area: Rect,
     scroll_node: &LayoutScroll,
     hits: &mut Vec<PaintedHit>,
-    windows: &HashMap<String, ItemsWindow>,
 ) {
     let metrics = ScrollMetrics {
         char_width: backend.char_width(),
@@ -843,7 +607,7 @@ fn paint_scroll(
             if let LayoutNode::Row(container) | LayoutNode::Column(container) = content {
                 for (child, slot) in container.children.iter().zip(slots) {
                     if slot.visible {
-                        paint_layout_windowed(backend, slot.rect, &child.node, hits, windows);
+                        paint_layout(backend, slot.rect, &child.node, hits);
                     }
                 }
             }
@@ -865,10 +629,10 @@ fn paint_scroll(
                 match offset_windowed_leaf_scrolled_to_offset(content, offset, metrics.line_height)
                 {
                     Some(shadow) => {
-                        paint_layout_windowed(backend, rect, &shadow, hits, windows);
+                        paint_layout(backend, rect, &shadow, hits);
                     }
                     None => {
-                        paint_layout_windowed(backend, rect, content, hits, windows);
+                        paint_layout(backend, rect, content, hits);
                     }
                 }
             }
@@ -884,32 +648,25 @@ fn paint_scroll(
     }
 }
 
-/// `content`, when it is a bare `TextDisplay`/`List`/`Tree`/`DataTable`
-/// leaf — the same four kinds [`scroll_content_slots`]'s own
-/// `is_offset_windowed_leaf` singles out — with a locally mutated clone of
-/// its own descriptor whose `scroll_offset` is advanced to the whole row/
-/// line `offset` native units lands on (`TextDisplay` also gets
-/// `auto_scroll` disabled, so it can't override that). `None` for any
-/// other leaf kind, or a non-leaf node (a `Row`/`Column` reaches
-/// [`ScrollSlots::Children`] instead, never `Atomic`).
+/// `content`, when it is a bare text display, list, tree or table leaf —
+/// the kinds [`is_offset_windowed_leaf`] singles out — with a clone of its
+/// widget whose `scroll_offset` is advanced to the whole row/line `offset`
+/// native units lands on (a text display also gets `auto_scroll`
+/// disabled, so it can't override that). `None` for any other leaf kind,
+/// or a non-leaf node (a `Row`/`Column` reaches [`ScrollSlots::Children`]
+/// instead, never `Atomic`).
 ///
-/// Each of these four kinds renders its own `scroll_offset`-relative
-/// window into its data regardless of where its own rect sits on screen
-/// (`quadraui::TextDisplay`/`ListView`/`TreeView`/`DataTable`'s own doc:
-/// render `items`/`rows`/`lines[scroll_offset..]`) — unlike every other
-/// `Atomic` leaf kind, whose rect `scroll_content_slots` positions by
-/// shifting it `-offset` along the scroll axis, repainting a shadow of
-/// this shape instead is what lets [`paint_scroll`]'s own
-/// `ScrollSlots::Atomic` arm show the right row/line first. `leaf`'s own
-/// `id`/`scroll_px` are threaded through unchanged, so the shadow node
-/// keeps the same hit-map id and (for `List`/`Tree`/`DataTable`, whose
-/// `with_scroll_px` paint states already read it) the same pixel-smooth
-/// sub-row remainder a plain, unscrolled leaf would get. Matches via
-/// [`LayoutNode::unstyled`], so a `Styled` leaf gets the same shadow
-/// treatment as an unstyled one -- the returned shadow carries no
-/// `Styled` wrapper of its own, since [`paint_scroll`]'s own
-/// `push_styled_scope` call already has the matching override active on
-/// `backend` by the time this shadow paints.
+/// Each of these kinds renders its own `scroll_offset`-relative window
+/// into its data regardless of where its own rect sits on screen — unlike
+/// every other `Atomic` leaf kind, whose rect `scroll_content_slots`
+/// positions by shifting it `-offset` along the scroll axis, repainting a
+/// clone scrolled this way is what lets [`paint_scroll`]'s own
+/// `ScrollSlots::Atomic` arm show the right row/line first. The leaf's
+/// `id` is kept, so the clone has the same hit-map id. Matches via
+/// [`LayoutNode::unstyled`], so a `Styled` leaf gets the same treatment as
+/// an unstyled one -- the returned node carries no `Styled` wrapper of its
+/// own, since [`paint_scroll`]'s own `push_styled_scope` call already has
+/// the matching override active on `backend` by the time it paints.
 fn offset_windowed_leaf_scrolled_to_offset(
     content: &LayoutNode,
     offset: f32,
@@ -918,35 +675,35 @@ fn offset_windowed_leaf_scrolled_to_offset(
     let LayoutNode::Leaf(leaf) = content.unstyled() else {
         return None;
     };
+    let LeafDescriptor::Widget { kind, widget } = &leaf.descriptor;
     let row = (offset / line_height.max(1.0)).floor().max(0.0) as usize;
-    let descriptor = match &leaf.descriptor {
-        LeafDescriptor::TextDisplay(td) => {
-            let mut shadow = td.clone();
-            shadow.scroll_offset = row;
-            shadow.auto_scroll = false;
-            LeafDescriptor::TextDisplay(shadow)
-        }
-        LeafDescriptor::List(list) => {
-            let mut shadow = list.clone();
-            shadow.scroll_offset = row;
-            LeafDescriptor::List(shadow)
-        }
-        LeafDescriptor::Tree(tree) => {
-            let mut shadow = tree.clone();
-            shadow.scroll_offset = row;
-            LeafDescriptor::Tree(shadow)
-        }
-        LeafDescriptor::DataTable(table) => {
-            let mut shadow = table.clone();
-            shadow.scroll_offset = row;
-            LeafDescriptor::DataTable(shadow)
-        }
-        LeafDescriptor::TabBar(_) | LeafDescriptor::Widget { .. } => return None,
+    let widget: Rc<dyn DynWidget> = if let Some(td) = widget.downcast_ref::<TextDisplay>() {
+        Rc::new(TextDisplay {
+            scroll_offset: row,
+            auto_scroll: false,
+            ..td.clone()
+        })
+    } else if let Some(list) = widget.downcast_ref::<ListView>() {
+        Rc::new(ListView {
+            scroll_offset: row,
+            ..list.clone()
+        })
+    } else if let Some(tree) = widget.downcast_ref::<TreeView>() {
+        Rc::new(TreeView {
+            scroll_offset: row,
+            ..tree.clone()
+        })
+    } else if let Some(table) = widget.downcast_ref::<DataTable>() {
+        Rc::new(DataTable {
+            scroll_offset: row,
+            ..table.clone()
+        })
+    } else {
+        return None;
     };
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),
-        descriptor,
-        scroll_px: leaf.scroll_px,
+        descriptor: LeafDescriptor::Widget { kind, widget },
     }))
 }
 
@@ -1349,13 +1106,11 @@ fn is_offset_windowed_leaf(content: &LayoutNode) -> bool {
     let LayoutNode::Leaf(leaf) = content.unstyled() else {
         return false;
     };
-    matches!(
-        leaf.descriptor,
-        LeafDescriptor::TextDisplay(_)
-            | LeafDescriptor::List(_)
-            | LeafDescriptor::Tree(_)
-            | LeafDescriptor::DataTable(_)
-    )
+    let LeafDescriptor::Widget { widget, .. } = &leaf.descriptor;
+    widget.downcast_ref::<TextDisplay>().is_some()
+        || widget.downcast_ref::<ListView>().is_some()
+        || widget.downcast_ref::<TreeView>().is_some()
+        || widget.downcast_ref::<DataTable>().is_some()
 }
 
 /// Clips a scroll slot's main-axis span (`origin`, `extent`) to fit
@@ -1378,15 +1133,11 @@ fn clip_main_axis(
 /// Best-effort intrinsic size of `node`, consulted by
 /// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
 /// child's main-axis size and for a non-`Stretch`
-/// [`quadraui::Align`]'s cross-axis size. Measured directly off the
-/// descriptor already decoded for painting: `TabBar` via
-/// `Backend::measure_text` (the same measurer `quadraui::compose::
-/// menu_system` already leans on for its own label widths), `TextDisplay`
-/// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
-/// own row count (height only — none of the three has a cheap intrinsic
-/// width), and a generic widget via its own `Primitive::measure`. Every other node kind (a nested `Row`/`Column`/`Split`/
-/// `Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement
-/// at this layer and reports [`None`] on both axes — see
+/// [`quadraui::Align`]'s cross-axis size, and by [`natural_main_length`]
+/// for a `Scroll`'s content. A leaf measures through its widget's own
+/// `Primitive::measure`; every other node kind (a nested `Row`/`Column`/
+/// `Split`/`Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement at
+/// this layer and reports [`None`] on both axes — see
 /// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
 /// degrades a `None`.
 fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) -> NaturalSize {
@@ -1408,77 +1159,19 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             height: None,
         };
     };
-    match &leaf.descriptor {
-        LeafDescriptor::TextDisplay(text) => {
-            let width = text
-                .lines
-                .iter()
-                .map(|line| {
-                    let line_text: String =
-                        line.spans.iter().map(|span| span.text.as_str()).collect();
-                    // `TextDisplay` is an `EditorClassPrimitive` (see
-                    // `quadraui::font_role`) -- its own lines paint in
-                    // `FontRole::Editor`, not the chrome font a `Button`/
-                    // `TabBar` label uses.
-                    backend.measure_text(&line_text, FontRole::Editor).0
-                })
-                .fold(0.0_f32, f32::max);
-            NaturalSize {
-                width: Some(width),
-                height: Some(text.lines.len() as f32 * line_height),
-            }
-        }
-        LeafDescriptor::List(list) => NaturalSize {
-            width: None,
-            height: Some(list.items.len() as f32 * line_height),
-        },
-        LeafDescriptor::Tree(tree) => NaturalSize {
-            width: None,
-            height: Some(tree.rows.len() as f32 * line_height),
-        },
-        LeafDescriptor::DataTable(table) => NaturalSize {
-            width: None,
-            height: Some(table.rows.len() as f32 * line_height),
-        },
-        LeafDescriptor::TabBar(tab_bar) => {
-            let width = tab_bar
-                .tabs
-                .iter()
-                .map(|tab| backend.measure_text(&tab.label, FontRole::Chrome).0)
-                .sum::<f32>();
-            // Top border + one row of labels + bottom border, TUI's own
-            // tab-strip chrome frame -- three line-heights
-            // regardless of backend, since no pixel backend reports a
-            // narrower natural height for the same chrome today.
-            const BORDER_LABEL_BORDER_ROWS: f32 = 3.0;
-            NaturalSize {
-                width: Some(width),
-                height: Some(BORDER_LABEL_BORDER_ROWS * line_height),
-            }
-        }
-        LeafDescriptor::Widget { widget, .. } => {
-            // No final rect exists yet at measurement time — same
-            // "nothing to pass" `avail` DynWidget::measure's own default
-            // (`NaturalSize::NONE`, ignoring both arguments) already
-            // documents for a widget with no genuinely size-dependent
-            // answer. `IconGrid` is one of those (it doesn't override
-            // `measure`), so it always degrades to `NaturalSize::NONE`
-            // here; `Button`/`Switch`/`RadioGroup` each override `measure`
-            // with their own label/option-driven answer instead, and a
-            // future `WIDGET_KINDS` entry that genuinely needs `avail`
-            // still gets a real measurement once this leaf's own
-            // container passes one through here.
-            let ctx = DynLayoutCtx::new(
-                line_height,
-                backend.char_width(),
-                backend.nerd_fonts_enabled(),
-            );
-            let natural = widget.measure(&ctx, DynSize::new(0.0, 0.0));
-            NaturalSize {
-                width: natural.width,
-                height: natural.height,
-            }
-        }
+    let LeafDescriptor::Widget { widget, .. } = &leaf.descriptor;
+    // No final rect exists yet at measurement time, so there is no
+    // `avail` to pass: a widget reports its content's own size, and the
+    // container clamps it.
+    let ctx = DynLayoutCtx::new(
+        line_height,
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    );
+    let natural = widget.measure(&ctx, DynSize::new(0.0, 0.0));
+    NaturalSize {
+        width: natural.width,
+        height: natural.height,
     }
 }
 
@@ -1537,573 +1230,6 @@ fn inset_for_spacing(
     container.spacing.inset(area, char_width, line_height)
 }
 
-/// How many rows of `tree` fit in `rect` at a zero scroll offset — the
-/// viewport's true row capacity, as distinct from `TreeViewLayout`'s own
-/// `visible_rows.len()` at the tree's ACTUAL offset, which can be shorter
-/// near the end of a long list. Paints into a scratch clone rather than
-/// `tree` itself, so computing this never disturbs the real paint below.
-pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView) -> usize {
-    let mut shadow = tree.clone();
-    shadow.scroll_offset = 0;
-    backend
-        .layout_primitive(rect, &shadow)
-        .layout
-        .visible_rows
-        .len()
-}
-
-/// How many items of `list` fit in `rect` at a zero scroll offset — the
-/// viewport's true row capacity, mirroring [`tree_viewport_rows`] for the
-/// identical reason: `ListViewLayout::visible_items.len()` at `list`'s
-/// ACTUAL offset can be shorter near the end of a long list. Paints into
-/// no backend at all — only lays out a scratch clone — so computing this
-/// never disturbs the real paint.
-pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView) -> usize {
-    let mut shadow = list.clone();
-    shadow.scroll_offset = 0;
-    backend
-        .layout_primitive(rect, &shadow)
-        .layout
-        .visible_items
-        .len()
-}
-
-/// How many rows of `table` fit in `rect` at a zero scroll offset,
-/// mirroring [`tree_viewport_rows`]/[`list_viewport_rows`] for the
-/// identical reason: [`quadraui::DataTableLayout::visible_rows`] at
-/// `table`'s ACTUAL offset can be shorter near the end of a long table.
-/// Paints into no backend at all — only lays out a scratch clone — so
-/// computing this never disturbs the real paint.
-pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &DataTable) -> usize {
-    let mut shadow = table.clone();
-    shadow.scroll_offset = 0;
-    backend.layout_primitive(rect, &shadow).layout.visible_rows
-}
-
-/// A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/
-/// `"data_table"`/`"text_display"` leaf's own descriptor dict by
-/// [`items_window_from_value`] — core's own [`quadraui::ItemsWindow`].
-pub use quadraui::ItemsWindow;
-
-/// Lifts an optional `"items_window": {"start": ..., "total": ...}` object
-/// out of a `list`/`tree`/`data_table`/`text_display` leaf's own descriptor
-/// dict (the nested value under its `LEAF_KIND_KEYS` key, e.g. the `{...}`
-/// in `{"id": ..., "data_table": {...}}`) — mirrors
-/// [`crate::scroll_px_from_value`]'s own extraction, reading straight out of
-/// the raw [`serde_json::Value`] a binding already holds rather than
-/// requiring a dedicated struct field. Returns `None` when the key is
-/// absent, isn't an object, or either `start`/`total` is missing or not a
-/// non-negative integer — a malformed or missing `items_window` degrades to
-/// "this frame's payload holds every row" rather than failing the leaf's
-/// decode.
-pub fn items_window_from_value(value: &serde_json::Value) -> Option<ItemsWindow> {
-    let window = value.as_object()?.get("items_window")?.as_object()?;
-    let start = usize::try_from(window.get("start")?.as_u64()?).ok()?;
-    let total = usize::try_from(window.get("total")?.as_u64()?).ok()?;
-    Some(ItemsWindow { start, total })
-}
-
-/// The `{id, start, count}` a binding should ask its app's render callback
-/// for next, computed by [`rows_requested_for_window`] once scrolling moves
-/// outside the slice an [`ItemsWindow`] says is currently loaded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct RowsRequestedEvent {
-    pub id: WidgetId,
-    pub start: usize,
-    pub count: usize,
-}
-
-/// Computes the [`RowsRequestedEvent`] a virtualised `list`/`tree`/
-/// `data_table`/`text_display` leaf needs for its next frame, given
-/// `window` (this frame's [`ItemsWindow`]), `loaded_len` (how many rows the
-/// current payload actually carries — `ListView::items.len()`,
-/// `TreeView::rows.len()`, `DataTable::rows.len()`, or
-/// `TextDisplay::lines.len()`), and `scroll_offset`/`viewport_rows`.
-///
-/// `viewport_rows` is the viewport's true row capacity. A windowed leaf's
-/// own `PaintedHit::*.viewport_rows` field is that capacity directly —
-/// its band is painted from offset `0` (see [`WindowedLeaf`]), so even
-/// `PaintedHit::DataTable`'s `DataTableLayout::visible_rows` is measured
-/// against a band that starts at the first visible row rather than
-/// degrading toward zero near the end of the collection. For an
-/// UNWINDOWED leaf, whose descriptor is painted at its real offset, that
-/// same field does degrade near the end, so a caller passing one must use
-/// [`list_viewport_rows`]/[`tree_viewport_rows`]/[`data_table_viewport_rows`]
-/// (the capacity at a *zero* offset) instead, or the margin below starves
-/// into a near-empty request.
-///
-/// `scroll_offset` is **absolute**: an index into the widget's full
-/// `window.total` collection, not the loaded payload alone — the same
-/// value [`paint_layout_windowed`] leaves on this leaf's `PaintedHit` this
-/// frame (e.g. `PaintedHit::DataTable::scroll_offset`), which is absolute
-/// whether or not a window is in play. [`crate::InteractionEngine::handle`]
-/// is what pairs the two in production: it reads this leaf's
-/// [`crate::hit::LoadedRows`] off the hit the last frame painted and calls
-/// this with the absolute offset the scroll input it just handled resolved
-/// to.
-///
-/// Returns `None` once the loaded slice `[window.start, window.start +
-/// loaded_len)` already covers the visible range `[scroll_offset,
-/// scroll_offset + viewport_rows)` — a render callback that already sent
-/// enough rows re-renders unchanged. Otherwise returns a request covering
-/// the visible range plus one viewport's worth of prefetch margin on each
-/// side, clamped to `[0, window.total)`: bounded by a small multiple of
-/// `viewport_rows`, never by `window.total`, so a 100k-row window never
-/// asks for more than a few hundred rows at once. Returns `None` instead of
-/// a zero-`count` request when the clamp leaves nothing to ask for (e.g.
-/// `scroll_offset >= window.total`).
-pub fn rows_requested_for_window(
-    id: WidgetId,
-    window: ItemsWindow,
-    loaded_len: usize,
-    scroll_offset: usize,
-    viewport_rows: usize,
-) -> Option<RowsRequestedEvent> {
-    quadraui::behaviour::row_window::rows_requested(
-        window,
-        loaded_len,
-        scroll_offset,
-        viewport_rows,
-    )
-    .map(|(start, count)| RowsRequestedEvent { id, start, count })
-}
-
-/// The contiguous slice of a windowed collection that one frame actually
-/// materialises for painting: `len` rows starting at absolute index
-/// `start`, which is the row painted at the very top of the viewport.
-///
-/// Virtualisation exists to make a large collection cheap, so the band is
-/// sized off the viewport — NOT off `ItemsWindow::total`, which is both
-/// unbounded (a wire field: a `"total": 10000000000` payload would attempt
-/// a multi-hundred-GB allocation, and Rust aborts on allocation failure)
-/// and, at a 100,000-row scale, far more per-frame allocation and cloning
-/// than painting a few dozen visible rows can justify. The collection's
-/// real extent reaches the scrollbar arithmetic and the keyboard navigation
-/// through [`crate::hit::PaintedHit`]'s own `total_rows`/`total_items`/
-/// `total_lines` + [`crate::hit::LoadedRows`] fields instead, never through
-/// the materialised `Vec`'s own `len()`.
-type WindowedBand = quadraui::behaviour::row_window::Band;
-
-/// How many rows a leaf painted into `area` needs materialised: an upper
-/// bound on the viewport's own row capacity (`area.height` over
-/// [`Backend::line_height`], which is what every `*_viewport_rows` probe
-/// resolves against) plus
-/// [`quadraui::behaviour::row_window::BAND_PAD_ROWS`].
-fn windowed_band_rows(backend: &mut dyn Backend, area: Rect) -> usize {
-    quadraui::behaviour::row_window::band_rows_for(area.height, backend.line_height())
-}
-
-/// The band `band_rows` rows wide that paints a windowed collection
-/// scrolled to absolute `scroll_offset`.
-///
-/// `start` is `scroll_offset` clamped into `[0, real_total)` — the same
-/// clamp every primitive's own layout applies to a descriptor's
-/// `scroll_offset` (`ListViewLayout::resolved_scroll_offset`'s own doc),
-/// so a band near the end of the collection paints the same short tail an
-/// unwindowed one does. `real_total` widens past `window.total` when a
-/// stale or malformed total understates `window.start + loaded_len`, so a
-/// bad total never truncates real loaded data.
-fn windowed_band(
-    window: ItemsWindow,
-    loaded_len: usize,
-    scroll_offset: usize,
-    band_rows: usize,
-) -> WindowedBand {
-    quadraui::behaviour::row_window::band(window, loaded_len, scroll_offset, band_rows)
-}
-
-/// Everything painting one windowed leaf needs that its descriptor can't
-/// carry: which band to materialise, and the absolute geometry its
-/// [`crate::hit::PaintedHit`] must report in place of the band-relative
-/// values the backend sees.
-///
-/// A windowed leaf is painted from a descriptor whose `items`/`rows`/
-/// `lines` is only [`Self::band`] (see [`WindowedBand`]'s own doc for why),
-/// so its own `scroll_offset` is rewritten to `0` and every index the
-/// backend's returned layout reports is band-relative. [`shift_list_layout`]/
-/// [`shift_tree_layout`]/[`shift_text_display_layout`] shift those indices
-/// back by `band.start` before they reach a hit, so nothing downstream of
-/// paint ever sees a band-relative index.
-#[derive(Debug, Clone, Copy)]
-struct WindowedLeaf {
-    band: WindowedBand,
-    /// The absolute row index the band's own row `0` sits at — what the
-    /// leaf's hit reports as its `scroll_offset`.
-    scroll_offset: usize,
-    /// `LayoutLeaf::scroll_px` rebased onto the band: the sub-row pixel
-    /// remainder of the absolute pixel offset, so a pixel-smooth backend
-    /// still paints a partially-clipped first row.
-    scroll_px: Option<f32>,
-    /// The collection's real extent — `ItemsWindow::total`, widened to
-    /// cover the loaded slice when a stale total understates it.
-    total: usize,
-    loaded: LoadedRows,
-}
-
-/// Resolves a windowed leaf's band and absolute geometry, from `window`,
-/// the loaded payload's own length, the descriptor's own `scroll_offset`,
-/// and the leaf's optional pixel-precise `scroll_px`.
-///
-/// `scroll_px`, when set, is the authority on where the leaf is scrolled to
-/// (it is what every backend's own layout resolves its first visible row
-/// from, ignoring `scroll_offset`), so the absolute row index comes from
-/// `scroll_px / line_height` in that case and only the sub-row remainder is
-/// handed on to the backend.
-fn windowed_leaf(
-    window: ItemsWindow,
-    loaded_len: usize,
-    descriptor_offset: usize,
-    scroll_px: Option<f32>,
-    line_height: f32,
-    band_rows: usize,
-) -> WindowedLeaf {
-    let (scroll_offset, scroll_px) =
-        quadraui::behaviour::row_window::split_scroll_px(descriptor_offset, scroll_px, line_height);
-    let band = windowed_band(window, loaded_len, scroll_offset, band_rows);
-    WindowedLeaf {
-        band,
-        scroll_offset: band.start,
-        scroll_px,
-        total: window.row_count(loaded_len),
-        loaded: LoadedRows {
-            start: window.start,
-            len: loaded_len,
-        },
-    }
-}
-
-/// Materialises `band` out of `loaded` — this frame's payload, covering the
-/// half-open absolute range `[window.start, window.start + loaded.len())` —
-/// filling every band position the payload has no row for with
-/// `placeholder(absolute_index)`.
-///
-/// Every one of `ListView::items`/`TreeView::rows`/`DataTable::rows`/
-/// `TextDisplay::lines` needs this same shape before it reaches a
-/// `Backend::draw_*` call: each backend's own paint loop indexes straight
-/// into the `Vec` at whatever row its layout decides is visible, so a
-/// position past the loaded slice needs an empty placeholder row to land on
-/// instead of indexing off the end.
-///
-/// The returned `Vec` is exactly `band.len` long — a viewport's worth (see
-/// [`WindowedBand`]'s own doc), never `window.total` — so the band's row
-/// `0` is the collection's row `band.start`, not its row `0`. A caller
-/// needs the collection's true extent (a scrollbar's thumb size, Home/End
-/// navigation, the next `RowsRequestedEvent`) read off
-/// [`WindowedLeaf::total`]/[`WindowedLeaf::loaded`] rather than this
-/// `Vec`'s own `len()`.
-fn windowed_vec<T: Clone>(
-    loaded: &[T],
-    window: ItemsWindow,
-    band: WindowedBand,
-    placeholder: impl FnMut(usize) -> T,
-) -> Vec<T> {
-    quadraui::behaviour::row_window::materialise(loaded, window, band, placeholder)
-}
-
-/// [`windowed_vec`] for a [`DataTable`]'s own `rows` — an empty-`cells`
-/// [`DataRow`] at every band position outside the loaded slice. Safe
-/// because every cell read goes through `Vec::get` (see `DataTableLayout`'s
-/// own paint code), never a direct index, so a short `cells` paints as
-/// blank columns rather than panicking.
-///
-/// `selected_idx` is rebased onto the band and dropped outright when the
-/// selected row isn't in it — a selection outside the painted band has no
-/// row to highlight.
-fn windowed_data_table(table: &DataTable, window: ItemsWindow, leaf: WindowedLeaf) -> DataTable {
-    let rows = windowed_vec(&table.rows, window, leaf.band, |_| DataRow {
-        cells: Vec::new(),
-        decoration: Decoration::default(),
-    });
-    DataTable {
-        rows,
-        scroll_offset: 0,
-        items_window: None,
-        scroll_px: None,
-        selected_idx: band_relative(table.selected_idx, leaf.band),
-        ..table.clone()
-    }
-}
-
-/// [`windowed_vec`] for a [`ListView`]'s own `items` — an empty-text
-/// [`ListItem`] at every band position outside the loaded slice.
-///
-/// `ListView::selected_idx` is a plain `usize` with no "nothing selected"
-/// value, so a selection outside the band is rebased to `band.len` — one
-/// past the last materialised row, an index no painted row ever matches.
-fn windowed_list(list: &ListView, window: ItemsWindow, leaf: WindowedLeaf) -> ListView {
-    let items = windowed_vec(&list.items, window, leaf.band, |_| ListItem {
-        text: StyledText::plain(""),
-        icon: None,
-        detail: None,
-        decoration: Decoration::default(),
-    });
-    ListView {
-        items,
-        scroll_offset: 0,
-        items_window: None,
-        scroll_px: None,
-        selected_idx: band_relative(Some(list.selected_idx), leaf.band).unwrap_or(leaf.band.len),
-        ..list.clone()
-    }
-}
-
-/// [`windowed_vec`] for a [`TreeView`]'s own `rows` — an empty-text leaf
-/// [`TreeRow`] at every band position outside the loaded slice, each
-/// carrying a synthetic single-level path built from its own absolute
-/// index.
-///
-/// That path is **not** a stable identity: `TreePath` is an app-chosen
-/// `Vec<u16>` (`quadraui::types::TreePath`) with no value range reserved
-/// for this module, so a synthetic `[idx]` can and does collide with a
-/// real loaded row's own path (a tree whose top-level node `0` expands 100
-/// children puts a real row at path `[1]` sitting at flattened index 101,
-/// colliding with the placeholder generated for index 1 — and every index
-/// past `u16::MAX` saturates to the same `[u16::MAX]`). Painting a
-/// collided path is harmless (nothing compares two placeholders' paths
-/// against each other), but [`paint_leaf_windowed`] must never let one of
-/// these synthetic paths escape into [`crate::hit::PaintedHit::Tree::row_paths`]
-/// as if it identified a real row — see that field's own doc for how only
-/// the loaded slice's own paths are recorded instead.
-///
-/// `selected_path` needs no rebasing: it is matched by value against the
-/// band's own rows, so a selection outside the band simply matches
-/// nothing.
-fn windowed_tree(tree: &TreeView, window: ItemsWindow, leaf: WindowedLeaf) -> TreeView {
-    let rows = windowed_vec(&tree.rows, window, leaf.band, |idx| TreeRow {
-        path: vec![u16::try_from(idx).unwrap_or(u16::MAX)] as TreePath,
-        indent: 0,
-        icon: None,
-        text: StyledText::plain(""),
-        badge: None,
-        is_expanded: None,
-        decoration: Decoration::default(),
-        edit: None,
-    });
-    TreeView {
-        rows,
-        scroll_offset: 0,
-        items_window: None,
-        scroll_px: None,
-        ..tree.clone()
-    }
-}
-
-/// [`windowed_vec`] for a [`TextDisplay`]'s own `lines` — an empty-spans
-/// [`TextDisplayLine`] at every band position outside the loaded slice.
-///
-/// `auto_scroll` is left exactly as the app set it: the band a windowed
-/// display paints with it set is the collection's own tail (see
-/// [`windowed_text_display_band`]), so "keep the last line visible"
-/// resolves against the real last line rather than the band's.
-fn windowed_text_display(td: &TextDisplay, window: ItemsWindow, leaf: WindowedLeaf) -> TextDisplay {
-    let lines = windowed_vec(&td.lines, window, leaf.band, |_| TextDisplayLine {
-        spans: Vec::new(),
-        decoration: Decoration::default(),
-        timestamp: None,
-    });
-    TextDisplay {
-        lines,
-        scroll_offset: 0,
-        items_window: None,
-        ..td.clone()
-    }
-}
-
-/// [`windowed_leaf`] for a [`TextDisplay`], which has one scroll input
-/// neither of the other three kinds does: [`TextDisplay::auto_scroll`]
-/// pins the viewport to the collection's last line regardless of
-/// `scroll_offset`. The band is therefore anchored at the tail — the last
-/// `band_rows` rows of the real extent — so the primitive's own
-/// "last line visible" resolution lands on the collection's final line and
-/// the rows requested next are the tail's, not row `0`'s.
-fn windowed_text_display_band(
-    td: &TextDisplay,
-    window: ItemsWindow,
-    scroll_px: Option<f32>,
-    line_height: f32,
-    band_rows: usize,
-) -> WindowedLeaf {
-    let loaded_len = td.lines.len();
-    if !td.auto_scroll {
-        return windowed_leaf(
-            window,
-            loaded_len,
-            td.scroll_offset,
-            scroll_px,
-            line_height,
-            band_rows,
-        );
-    }
-    let tail_start = window
-        .row_count(loaded_len)
-        .saturating_sub(band_rows.max(1));
-    windowed_leaf(window, loaded_len, tail_start, None, line_height, band_rows)
-}
-
-/// `idx` rebased from an absolute collection index onto `band`, or `None`
-/// when it isn't inside the band at all.
-fn band_relative(idx: Option<usize>, band: WindowedBand) -> Option<usize> {
-    quadraui::behaviour::row_window::band_relative(idx, band)
-}
-
-/// Shifts every row index a list's `Primitive::layout` resolved against a
-/// windowed list's band back into the collection's own absolute indexing,
-/// so a hit test or a selection read downstream of paint never sees a
-/// band-relative index — see [`WindowedLeaf`]'s own doc.
-fn shift_list_layout(layout: &mut ListViewLayout, by: usize) {
-    for item in &mut layout.visible_items {
-        item.item_idx = item.item_idx.saturating_add(by);
-    }
-    for (_, hit) in &mut layout.hit_regions {
-        if let ListViewHit::Item(idx) = hit {
-            *idx = idx.saturating_add(by);
-        }
-    }
-    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
-}
-
-/// [`shift_list_layout`] for a windowed tree's painted [`TreeViewLayout`].
-fn shift_tree_layout(layout: &mut TreeViewLayout, by: usize) {
-    for row in &mut layout.visible_rows {
-        row.row_idx = row.row_idx.saturating_add(by);
-    }
-    for (_, hit) in &mut layout.hit_regions {
-        match hit {
-            TreeViewHit::Row(idx) | TreeViewHit::Chevron(idx) => {
-                *idx = idx.saturating_add(by);
-            }
-            TreeViewHit::Empty => {}
-        }
-    }
-    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
-}
-
-/// [`shift_list_layout`] for a windowed display's
-/// [`Backend::text_display_layout`].
-fn shift_text_display_layout(layout: &mut TextDisplayLayout, by: usize) {
-    for line in &mut layout.visible_lines {
-        line.line_idx = line.line_idx.saturating_add(by);
-    }
-    for (_, hit) in &mut layout.hit_regions {
-        if let TextDisplayHit::Line(idx) = hit {
-            *idx = idx.saturating_add(by);
-        }
-    }
-    layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
-}
-
-/// Paints `tree` into `area` through its own `Primitive` and returns
-/// `(content_rect, scrollbar, viewport_rows, layout)` so the caller can
-/// hit-test against the SAME geometry that was actually painted and
-/// drive drag/page/wheel scrolling without re-touching the backend.
-///
-/// `content_rect` is the rect the rows were laid out into: on a cell
-/// grid the widget gives the rightmost column to its scrollbar when the
-/// rows overflow, on a pixel surface the scrollbar overlays the rows and
-/// `content_rect` is the whole `area`. `layout` is tree-local to
-/// `content_rect`. The scrollbar is `None` when every row fits.
-pub fn draw_tree_with_scrollbar(
-    backend: &mut dyn Backend,
-    area: Rect,
-    tree: &TreeView,
-) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
-    draw_tree_with_scrollbar_and_state(backend, area, tree, None)
-}
-
-/// [`draw_tree_with_scrollbar`], plus an optional pixel-precise
-/// `scroll_px` (lifted out of the leaf's raw descriptor dict by
-/// [`crate::scroll_px_from_value`]) handed to the widget's paint as its
-/// [`quadraui::TreePaintState`]. `scroll_px: None` paints exactly as
-/// [`draw_tree_with_scrollbar`] does; `Some(px)` paints the first row
-/// partially clipped and moves the scrollbar thumb to the same
-/// continuous position (`px / row pitch`, not quantised to a whole row).
-///
-/// [`draw_tree_with_scrollbar_and_state_windowed`] with `extent: None`.
-pub fn draw_tree_with_scrollbar_and_state(
-    backend: &mut dyn Backend,
-    area: Rect,
-    tree: &TreeView,
-    scroll_px: Option<f32>,
-) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
-    draw_tree_with_scrollbar_and_state_windowed(backend, area, tree, scroll_px, None)
-}
-
-/// A windowed tree's real scrollbar geometry, which its painted descriptor
-/// can no longer carry: `total_rows` is the collection's own extent
-/// (`ItemsWindow::total`) rather than the band's length, and
-/// `scroll_offset` is the band's own absolute start rather than the `0` the
-/// band-relative descriptor paints from — see [`WindowedBand`]'s own doc
-/// for why the painted `rows` is only a band.
-#[derive(Debug, Clone, Copy)]
-pub struct WindowedTreeExtent {
-    pub total_rows: usize,
-    pub scroll_offset: usize,
-}
-
-/// [`draw_tree_with_scrollbar_and_state`], plus an optional
-/// [`WindowedTreeExtent`] — [`paint_leaf_windowed`] passes a windowed
-/// tree's own real total and absolute offset here, every other caller
-/// passes `None`.
-///
-/// A windowed tree's painted `rows` is only the band it actually shows
-/// (see [`WindowedBand`]'s own doc), so a scrollbar sized off
-/// `tree.rows.len()` would shrink the thumb to a viewport's worth and pin
-/// it to the top. On a cell grid the tree is therefore painted with its
-/// own scrollbar off, into a rect one gutter narrower, and the scrollbar
-/// is built from `extent`'s real numbers and painted into the gutter
-/// through its own widget. On a pixel surface the widget's overlay
-/// scrollbar still reflects the painted band.
-pub fn draw_tree_with_scrollbar_and_state_windowed(
-    backend: &mut dyn Backend,
-    area: Rect,
-    tree: &TreeView,
-    scroll_px: Option<f32>,
-    extent: Option<WindowedTreeExtent>,
-) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
-    let state = quadraui::TreePaintState::default().with_scroll_px(scroll_px);
-    let cells = backend.cell_surface().is_some();
-    let Some(extent) = extent.filter(|_| cells) else {
-        let layout = backend.layout_primitive(area, tree);
-        backend.draw_dyn(area, tree, &state);
-        let scrollbar = match (layout.vscrollbar, scroll_px) {
-            (Some(sb), Some(px)) => tree
-                .vscrollbar_with_scroll_px(area, layout.row_pitch, sb.track.width, Some(px))
-                .or(Some(sb)),
-            (sb, _) => sb,
-        };
-        return (layout.area, scrollbar, layout.viewport_rows, layout.layout);
-    };
-    let mut unbarred = tree.clone();
-    unbarred.style.show_scrollbar = false;
-    let track_width = backend.line_height();
-    let viewport_rows = tree_viewport_rows(backend, area, &unbarred);
-    if area.width <= track_width || extent.total_rows <= viewport_rows {
-        let layout = backend.layout_primitive(area, &unbarred);
-        backend.draw_dyn(area, &unbarred, &state);
-        return (area, None, viewport_rows, layout.layout);
-    }
-    let content_rect = Rect::new(area.x, area.y, area.width - track_width, area.height);
-    let layout = backend.layout_primitive(content_rect, &unbarred);
-    backend.draw_dyn(content_rect, &unbarred, &state);
-    let track_rect = Rect::new(
-        area.x + content_rect.width,
-        area.y,
-        track_width,
-        area.height,
-    );
-    let scrollbar = Scrollbar::vertical(
-        format!("{}-scrollbar", tree.id),
-        track_rect,
-        extent.scroll_offset as f32,
-        extent.total_rows as f32,
-        viewport_rows as f32,
-        track_width.max(1.0),
-    );
-    backend.draw_dyn(track_rect, &scrollbar, &());
-    (content_rect, Some(scrollbar), viewport_rows, layout.layout)
-}
-
 /// Walks `node`'s layout tree collecting the tree-address `id` ->
 /// `Button::tooltip` text of every `"button"`-kind
 /// [`LeafDescriptor::Widget`] leaf that sets one. [`paint_leaf`] keys a
@@ -2131,12 +1257,11 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
             }
         }
         LayoutNode::Leaf(leaf) => {
-            if let LeafDescriptor::Widget { kind, widget } = &leaf.descriptor {
-                if *kind == "button" {
-                    if let Some(button) = widget.as_ref().downcast_ref::<Button>() {
-                        if let Some(tooltip) = &button.tooltip {
-                            out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
-                        }
+            let LeafDescriptor::Widget { kind, widget } = &leaf.descriptor;
+            if *kind == "button" {
+                if let Some(button) = widget.as_ref().downcast_ref::<Button>() {
+                    if let Some(tooltip) = &button.tooltip {
+                        out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
                     }
                 }
             }
@@ -2161,238 +1286,29 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
     }
 }
 
-/// Paints one leaf's descriptor into the whole `area` its container gave
-/// it. Appends a [`PaintedHit`] for it, keyed by the leaf's own tree-address
-/// `id` (not the descriptor's embedded `id`, which a render callback may
-/// leave at its default and reuse across leaves) so a later pointer event
-/// can be routed back to this exact slot in the layout tree.
-///
-/// [`paint_leaf_windowed`] with an empty `windows` map, so a leaf whose
-/// decode never recorded an `ItemsWindow` paints exactly as this always
-/// has.
+/// Paints one leaf's widget into the whole `area` its container gave it.
+/// Appends a [`PaintedHit::Widget`] for it, keyed by the leaf's own
+/// tree-address `id` (not the descriptor's embedded `id`, which a render
+/// callback may leave at its default and reuse across leaves) so a later
+/// pointer event can be routed back to this exact slot in the layout tree.
 pub fn paint_leaf(
     backend: &mut dyn Backend,
     area: Rect,
     leaf: &LayoutLeaf,
     hits: &mut Vec<PaintedHit>,
 ) {
-    paint_leaf_windowed(backend, area, leaf, hits, &HashMap::new());
-}
-
-/// [`paint_leaf`], additionally painting this leaf's `List`/`Tree`/
-/// `DataTable`/`TextDisplay` from the band of its collection the viewport
-/// actually shows, when `windows` (keyed by this leaf's own `id`) has an
-/// entry for it — see [`WindowedBand`]'s own doc for why only a band is
-/// ever materialised, and [`WindowedLeaf`]'s for how the collection's real
-/// extent reaches the hit instead. A leaf with no entry in `windows` (every
-/// leaf, on a tree decoded without any `"items_window"` key) paints
-/// `leaf.descriptor` verbatim, identically to [`paint_leaf`].
-pub fn paint_leaf_windowed(
-    backend: &mut dyn Backend,
-    area: Rect,
-    leaf: &LayoutLeaf,
-    hits: &mut Vec<PaintedHit>,
-    windows: &HashMap<String, ItemsWindow>,
-) {
-    let id = WidgetId::new(leaf.id.clone());
-    let window = windows.get(&leaf.id).copied();
-    match &leaf.descriptor {
-        LeafDescriptor::TextDisplay(text_display) => {
-            let windowed = window.map(|w| {
-                windowed_text_display_band(
-                    text_display,
-                    w,
-                    leaf.scroll_px,
-                    backend.line_height(),
-                    windowed_band_rows(backend, area),
-                )
-            });
-            let painted: Cow<TextDisplay> = match (window, windowed) {
-                (Some(w), Some(windowed)) => {
-                    Cow::Owned(windowed_text_display(text_display, w, windowed))
-                }
-                _ => Cow::Borrowed(text_display),
-            };
-            let mut hit = draw_text_display_hit(backend, id, area, painted.as_ref());
-            // `draw_text_display_hit` reports `td.lines.len()` and a
-            // layout resolved against the painted descriptor — both correct
-            // for an unwindowed leaf, but a windowed one only ever paints
-            // its own band (see [`WindowedBand`]'s doc), so the real total
-            // and the band's absolute offset are threaded in here instead.
-            if let (
-                Some(windowed),
-                PaintedHit::TextDisplay {
-                    layout,
-                    total_lines,
-                    loaded_rows,
-                    ..
-                },
-            ) = (windowed, &mut hit)
-            {
-                shift_text_display_layout(layout, windowed.band.start);
-                *total_lines = windowed.total;
-                *loaded_rows = Some(windowed.loaded);
-            }
-            hits.push(hit);
-        }
-        LeafDescriptor::List(list) => {
-            let windowed = window.map(|w| {
-                windowed_leaf(
-                    w,
-                    list.items.len(),
-                    list.scroll_offset,
-                    leaf.scroll_px,
-                    backend.line_height(),
-                    windowed_band_rows(backend, area),
-                )
-            });
-            let painted: Cow<ListView> = match (window, windowed) {
-                (Some(w), Some(windowed)) => Cow::Owned(windowed_list(list, w, windowed)),
-                _ => Cow::Borrowed(list),
-            };
-            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
-            let painted_list = painted.as_ref();
-            let state = quadraui::ListPaintState::default().with_scroll_px(scroll_px);
-            let _ = backend.draw_dyn(area, painted_list, &state);
-            let mut layout = backend.layout_primitive(area, painted_list).layout;
-            let viewport_rows = list_viewport_rows(backend, area, painted_list);
-            // The collection's own numbers, not the painted band's — see
-            // [`WindowedLeaf`]'s own doc.
-            if let Some(windowed) = windowed {
-                shift_list_layout(&mut layout, windowed.band.start);
-            }
-            hits.push(PaintedHit::List {
-                id,
-                area,
-                clip: area,
-                layout,
-                selected_idx: list.selected_idx,
-                total_items: windowed.map_or(painted_list.items.len(), |windowed| windowed.total),
-                scroll_offset: windowed.map_or(painted_list.scroll_offset, |windowed| {
-                    windowed.scroll_offset
-                }),
-                viewport_rows,
-                loaded_rows: windowed.map(|windowed| windowed.loaded),
-            });
-        }
-        LeafDescriptor::Tree(tree) => {
-            let windowed = window.map(|w| {
-                windowed_leaf(
-                    w,
-                    tree.rows.len(),
-                    tree.scroll_offset,
-                    leaf.scroll_px,
-                    backend.line_height(),
-                    windowed_band_rows(backend, area),
-                )
-            });
-            let painted: Cow<TreeView> = match (window, windowed) {
-                (Some(w), Some(windowed)) => Cow::Owned(windowed_tree(tree, w, windowed)),
-                _ => Cow::Borrowed(tree),
-            };
-            let painted_tree = painted.as_ref();
-            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
-            let (content_rect, scrollbar, viewport_rows, mut layout) =
-                draw_tree_with_scrollbar_and_state_windowed(
-                    backend,
-                    area,
-                    painted_tree,
-                    scroll_px,
-                    windowed.map(|windowed| WindowedTreeExtent {
-                        total_rows: windowed.total,
-                        scroll_offset: windowed.scroll_offset,
-                    }),
-                );
-            if let Some(windowed) = windowed {
-                shift_tree_layout(&mut layout, windowed.band.start);
-            }
-            // Only the rows this frame actually loaded, in visual order —
-            // a placeholder's own synthetic path (see [`windowed_tree`]'s
-            // own doc for why it can collide with a real row's path) never
-            // escapes into this field, so a path-keyed lookup downstream
-            // can't resolve a click or a cursor to the wrong row. Taken
-            // from the ORIGINAL descriptor, not the painted band, since the
-            // loaded slice and the band only partly overlap.
-            let row_paths: Vec<TreePath> = tree.rows.iter().map(|row| row.path.clone()).collect();
-            hits.push(PaintedHit::Tree {
-                id,
-                area: content_rect,
-                clip: content_rect,
-                layout,
-                row_paths,
-                scrollbar,
-                scroll_offset: windowed.map_or(painted_tree.scroll_offset, |windowed| {
-                    windowed.scroll_offset
-                }),
-                total_rows: windowed.map_or(painted_tree.rows.len(), |windowed| windowed.total),
-                viewport_rows,
-                editing: tree
-                    .rows
-                    .iter()
-                    .find_map(|row| row.edit.clone().map(|edit| (row.path.clone(), edit))),
-                loaded_rows: windowed.map(|windowed| windowed.loaded),
-            });
-        }
-        LeafDescriptor::DataTable(data_table) => {
-            let windowed = window.map(|w| {
-                windowed_leaf(
-                    w,
-                    data_table.rows.len(),
-                    data_table.scroll_offset,
-                    leaf.scroll_px,
-                    backend.line_height(),
-                    windowed_band_rows(backend, area),
-                )
-            });
-            let painted: Cow<DataTable> = match (window, windowed) {
-                (Some(w), Some(windowed)) => {
-                    Cow::Owned(windowed_data_table(data_table, w, windowed))
-                }
-                _ => Cow::Borrowed(data_table),
-            };
-            let painted_table = painted.as_ref();
-            let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
-            let state = quadraui::DataTablePaintState::default().with_scroll_px(scroll_px);
-            // `DataTableLayout` carries no row indices of its own — a row
-            // hit resolves through `DataTableLayout::hit_test`'s own
-            // `scroll_offset`/`total_rows` arguments, which a caller reads
-            // off this hit's absolute fields — so unlike the `List`/`Tree`/
-            // `TextDisplay` arms there is no layout index to shift back.
-            let _ = backend.draw_dyn(area, painted_table, &state);
-            let layout = backend.layout_primitive(area, painted_table).layout;
-            let viewport_rows = layout.visible_rows;
-            hits.push(PaintedHit::DataTable {
-                id,
-                area,
-                clip: area,
-                layout,
-                scroll_offset: windowed.map_or(painted_table.scroll_offset, |windowed| {
-                    windowed.scroll_offset
-                }),
-                total_rows: windowed.map_or(painted_table.rows.len(), |windowed| windowed.total),
-                selected_idx: data_table.selected_idx,
-                viewport_rows,
-                loaded_rows: windowed.map(|windowed| windowed.loaded),
-            });
-        }
-        LeafDescriptor::TabBar(tab_bar) => {
-            paint_tab_bar(backend, area, tab_bar.clone(), hits);
-        }
-        LeafDescriptor::Widget { widget, .. } => {
-            if paint_widget_leaf(backend, area, widget.as_ref()) {
-                hits.push(PaintedHit::Widget {
-                    id,
-                    area,
-                    widget: Rc::clone(widget),
-                });
-            }
-        }
+    let LeafDescriptor::Widget { widget, .. } = &leaf.descriptor;
+    if paint_widget_leaf(backend, area, widget.as_ref()) {
+        hits.push(PaintedHit::Widget {
+            id: WidgetId::new(leaf.id.clone()),
+            area,
+            widget: Rc::clone(widget),
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use super::*;
@@ -2420,63 +1336,6 @@ mod tests {
                 .collect(),
             spacing,
         )
-    }
-
-    /// [`draw_bands`]'s generic-widget (`WIDGET_KINDS`) loop paints a flat
-    /// `RenderRefs::widgets` slot through [`quadraui::DrawsPrimitives::draw_dyn`]
-    /// and records a [`PaintedHit::Widget`] under the descriptor's own id
-    /// — the paint-time half of
-    /// [`crate::wire::frame::tests::decodes_a_flat_render_frame_with_a_generic_widget_slot`]'s
-    /// decode-time coverage.
-    #[test]
-    fn draw_bands_paints_a_generic_widget_slot_and_records_its_hit() {
-        use quadraui::tui::TuiBackend;
-        use quadraui::{IconGrid, IconGridItem};
-
-        let grid = IconGrid {
-            id: WidgetId::new("icons:1"),
-            items: vec![IconGridItem {
-                id: WidgetId::new("item:0"),
-                icon: quadraui::Icon::new("\u{f15b}", "F"),
-                image: None,
-                label: quadraui::StyledText::plain("README.md"),
-                detail: None,
-                decoration: Decoration::Normal,
-            }],
-            selected_idx: 0,
-            has_focus: false,
-            scroll_offset: 0,
-            tile_size: None,
-        };
-        let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
-        widgets.insert("icon_grid".to_string(), Rc::new(grid));
-
-        let mut backend = TuiBackend::new();
-        let mut hits = Vec::new();
-        draw_bands(
-            &mut backend,
-            RenderRefs {
-                text_display: None,
-                list: None,
-                tree: None,
-                data_table: None,
-                tab_bar: None,
-                widgets: &widgets,
-                list_scroll_px: None,
-                tree_scroll_px: None,
-                data_table_scroll_px: None,
-            },
-            &mut hits,
-        );
-
-        let widget_hit_id = hits
-            .iter()
-            .find_map(|hit| match hit {
-                PaintedHit::Widget { id, .. } => Some(*id),
-                _ => None,
-            })
-            .expect("a PaintedHit::Widget is recorded for the flat icon_grid slot");
-        assert_eq!(widget_hit_id.as_str(), "icons:1");
     }
 
     #[test]
@@ -2702,7 +1561,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(Button::new(WidgetId::new(id), label)),
                     },
-                    scroll_px: None,
                 })
             };
             let row = LayoutNode::Row(LayoutContainer::new(
@@ -2811,7 +1669,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(button),
                     },
-                    scroll_px: None,
                 })
             };
             let row = LayoutNode::Row(LayoutContainer::new(
@@ -2920,7 +1777,6 @@ mod tests {
                             kind: "button",
                             widget: Rc::new(Button::new(WidgetId::new(id), label)),
                         },
-                        scroll_px: None,
                     })
                 };
                 let row = LayoutNode::Row(LayoutContainer::new(
@@ -3212,7 +2068,6 @@ mod tests {
                     kind: "button",
                     widget: Rc::new(Button::new(WidgetId::new(id), id)),
                 },
-                scroll_px: None,
             }),
             size,
             min,
@@ -3421,7 +2276,6 @@ mod tests {
                         kind: "button",
                         widget: Rc::new(Button::new(WidgetId::new("x"), "x")),
                     },
-                    scroll_px: None,
                 }))]
             };
 
@@ -3605,7 +2459,6 @@ mod tests {
                         kind: name,
                         widget: widget.clone(),
                     },
-                    scroll_px: None,
                 })
             };
             let child = || vec![LayoutChild::new(leaf())];
@@ -3730,7 +2583,6 @@ mod tests {
                             kind: "button",
                             widget: Rc::new(Button::new(WidgetId::new("a"), "a")),
                         },
-                        scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "b".to_string(),
@@ -3738,7 +2590,6 @@ mod tests {
                             kind: "button",
                             widget: Rc::new(Button::new(WidgetId::new("b"), "b")),
                         },
-                        scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "c".to_string(),
@@ -3746,7 +2597,6 @@ mod tests {
                             kind: "button",
                             widget: Rc::new(Button::new(WidgetId::new("c"), "c")),
                         },
-                        scroll_px: None,
                     }),
                 ],
                 Spacing::default(),
@@ -3777,7 +2627,6 @@ mod tests {
                             kind: "button",
                             widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
                         },
-                        scroll_px: None,
                     })
                 })
                 .collect(),
@@ -3942,37 +2791,6 @@ mod tests {
         assert_eq!(ids, want);
     }
 
-    /// A two-line `TextDisplay`, labelled `id` — the shared multi-row
-    /// (but non-reflowing: it always paints from its own line `0`,
-    /// however many rows the rect it's given can fit) child the non-
-    /// boundary scroll test below stacks, unlike [`button_column`]'s
-    /// one-line-tall buttons.
-    fn two_line_text_display(id: &str) -> LayoutNode {
-        let mut td = TextDisplay::new(WidgetId::new(id));
-        for text in ["a", "b"] {
-            td.append_line(TextDisplayLine {
-                spans: vec![StyledSpan::plain(text)],
-                decoration: Decoration::default(),
-                timestamp: None,
-            });
-        }
-        td.auto_scroll = false;
-        LayoutNode::Leaf(LayoutLeaf {
-            id: id.to_string(),
-            descriptor: LeafDescriptor::TextDisplay(td),
-            scroll_px: None,
-        })
-    }
-
-    fn text_display_column(count: usize) -> LayoutNode {
-        LayoutNode::Column(LayoutContainer::new(
-            (0..count)
-                .map(|i| two_line_text_display(&i.to_string()))
-                .collect(),
-            Spacing::default(),
-        ))
-    }
-
     struct ScrollTextColumnLogic {
         child_count: usize,
         offset: f32,
@@ -4006,66 +2824,40 @@ mod tests {
         }
     }
 
-    fn painted_text_displays(hits: &[PaintedHit]) -> Vec<(String, Rect)> {
-        hits.iter()
-            .filter_map(|hit| match hit {
-                PaintedHit::TextDisplay { id, area, .. } => Some((id.as_str().to_string(), *area)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// A column of five 2-line `TextDisplay`s (ids `"0"`..`"4"`) in a
-    /// 5-row viewport at offset `3` — a non-boundary offset, since each
-    /// child is 2 rows tall and `3` isn't a multiple of `2`. Child `"1"`
-    /// (rows `[2, 4)` globally) straddles the viewport's own top edge
-    /// (global row `3`): its painted `area` is cut to the one row still
-    /// inside the viewport, not the full two, and doesn't overlap `"2"`'s
-    /// own area painted right after it — `clip_main_axis`'s own
-    /// `cell_grid` clamp-and-shrink, not just a plain clamp to the
-    /// viewport's top edge, which would paint `"1"` at its full two-row
-    /// height there and overlap `"2"`.
-    #[test]
-    fn scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping() {
-        use quadraui::tui::testing::TuiDriver;
-
-        let logic = ScrollTextColumnLogic {
-            child_count: 5,
-            offset: 3.0,
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-        let hits = driver.app().engine.hit_map();
-        let painted = painted_text_displays(&hits);
-
-        // `width` is 19, not the driver's own 20 -- `scroll_viewport_and_track`
-        // reserves a one-cell scrollbar gutter on the trailing edge of a
-        // vertical scroll's own cross axis (width) whenever there's
-        // anything to scroll, which this 10-row content in a 5-row
-        // viewport always has.
-        let want = vec![
-            ("1".to_string(), Rect::new(0.0, 0.0, 19.0, 1.0)),
-            ("2".to_string(), Rect::new(0.0, 1.0, 19.0, 2.0)),
-            ("3".to_string(), Rect::new(0.0, 3.0, 19.0, 2.0)),
-        ];
-        assert_eq!(painted, want);
-
-        for i in 1..painted.len() {
-            let prev = painted[i - 1].1;
-            let next = painted[i].1;
-            assert!(
-                prev.y + prev.height <= next.y,
-                "{:?} overlaps {:?}",
-                prev,
-                next
-            );
-        }
-    }
-
     struct ScrollTextAtomicLogic {
         offset: f32,
         line_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    /// [`ScrollTextAtomicLogic`]'s `List` counterpart: a 20-item `List` AS
+    /// the scroll's entire content, in a 5-row viewport at offset `7` —
+    /// the issue's own acceptance scenario for the kind it names
+    /// explicitly. Mirrors [`scroll_atomic_text_display_at_offset_shows_the_offset_line_first`]
+    /// for the same reason: `ListView`'s own backend contract renders
+    /// `items[scroll_offset..]` regardless of where its rect sits on
+    /// screen, so the shadow clone must show item `7` first, not item `0`.
+    struct ScrollListAtomicLogic {
+        offset: f32,
+        item_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    /// [`ScrollListAtomicLogic`]'s `Tree` counterpart — same scenario, a
+    /// 20-row `Tree` AS the scroll's entire content, in a 5-row viewport
+    /// at offset `7`.
+    struct ScrollTreeAtomicLogic {
+        offset: f32,
+        row_count: usize,
+        engine: crate::engine::InteractionEngine,
+    }
+
+    /// [`ScrollListAtomicLogic`]'s `DataTable` counterpart — same scenario,
+    /// a 20-row `DataTable` AS the scroll's entire content, in a 5-row
+    /// viewport at offset `7`.
+    struct ScrollDataTableAtomicLogic {
+        offset: f32,
+        row_count: usize,
         engine: crate::engine::InteractionEngine,
     }
 
@@ -4090,8 +2882,10 @@ mod tests {
                 offset: Some(self.offset),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "log".to_string(),
-                    descriptor: LeafDescriptor::TextDisplay(td),
-                    scroll_px: None,
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "text_display",
+                        widget: Rc::new(td),
+                    },
                 })),
                 spacing: Spacing::default(),
             });
@@ -4107,51 +2901,6 @@ mod tests {
         ) -> quadraui::Reaction {
             quadraui::Reaction::Continue
         }
-    }
-
-    /// A single 20-line `TextDisplay` AS the scroll's entire content (not
-    /// wrapped in a `Row`/`Column` — `scroll_content_slots`'s `Atomic`
-    /// branch) in a 5-row viewport at offset `7`: a cell-grid backend's
-    /// `Atomic` leaf rect clamps a negative main-axis origin to `0`
-    /// without shrinking (`q_rect_to_ratatui`'s own `.max(0.0)`), so
-    /// shifting the rect by `-offset` the way a plain leaf is positioned
-    /// would always repaint line `0` at the viewport's top regardless of
-    /// `offset`. `TextDisplay`'s own backend contract
-    /// (`quadraui::TextDisplay`'s doc: render `lines[scroll_offset..]`) is
-    /// what lets the shadow clone `offset_windowed_leaf_scrolled_to_offset`
-    /// builds show the right line instead.
-    #[test]
-    fn scroll_atomic_text_display_at_offset_shows_the_offset_line_first() {
-        use quadraui::tui::testing::TuiDriver;
-
-        let logic = ScrollTextAtomicLogic {
-            offset: 7.0,
-            line_count: 20,
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-        let hits = driver.app().engine.hit_map();
-        let first_visible_line = hits.iter().find_map(|hit| match hit {
-            PaintedHit::TextDisplay { layout, .. } => {
-                layout.visible_lines.first().map(|l| l.line_idx)
-            }
-            _ => None,
-        });
-        assert_eq!(first_visible_line, Some(7));
-    }
-
-    /// [`ScrollTextAtomicLogic`]'s `List` counterpart: a 20-item `List` AS
-    /// the scroll's entire content, in a 5-row viewport at offset `7` —
-    /// the issue's own acceptance scenario for the kind it names
-    /// explicitly. Mirrors [`scroll_atomic_text_display_at_offset_shows_the_offset_line_first`]
-    /// for the same reason: `ListView`'s own backend contract renders
-    /// `items[scroll_offset..]` regardless of where its rect sits on
-    /// screen, so the shadow clone must show item `7` first, not item `0`.
-    struct ScrollListAtomicLogic {
-        offset: f32,
-        item_count: usize,
-        engine: crate::engine::InteractionEngine,
     }
 
     impl quadraui::AppLogic for ScrollListAtomicLogic {
@@ -4188,8 +2937,10 @@ mod tests {
                 offset: Some(self.offset),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "list".to_string(),
-                    descriptor: LeafDescriptor::List(list),
-                    scroll_px: None,
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "list",
+                        widget: Rc::new(list),
+                    },
                 })),
                 spacing: Spacing::default(),
             });
@@ -4205,41 +2956,6 @@ mod tests {
         ) -> quadraui::Reaction {
             quadraui::Reaction::Continue
         }
-    }
-
-    #[test]
-    fn scroll_atomic_list_at_offset_shows_the_offset_item_first() {
-        use quadraui::tui::testing::TuiDriver;
-
-        let logic = ScrollListAtomicLogic {
-            offset: 7.0,
-            item_count: 20,
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-        let hits = driver.app().engine.hit_map();
-        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
-            PaintedHit::List { scroll_offset, .. } => Some(*scroll_offset),
-            _ => None,
-        });
-        assert_eq!(painted_scroll_offset, Some(7));
-        let first_visible_item = hits.iter().find_map(|hit| match hit {
-            PaintedHit::List { layout, .. } => {
-                layout.visible_items.first().map(|item| item.item_idx)
-            }
-            _ => None,
-        });
-        assert_eq!(first_visible_item, Some(7));
-    }
-
-    /// [`ScrollListAtomicLogic`]'s `Tree` counterpart — same scenario, a
-    /// 20-row `Tree` AS the scroll's entire content, in a 5-row viewport
-    /// at offset `7`.
-    struct ScrollTreeAtomicLogic {
-        offset: f32,
-        row_count: usize,
-        engine: crate::engine::InteractionEngine,
     }
 
     impl quadraui::AppLogic for ScrollTreeAtomicLogic {
@@ -4276,8 +2992,10 @@ mod tests {
                 offset: Some(self.offset),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "tree".to_string(),
-                    descriptor: LeafDescriptor::Tree(tree),
-                    scroll_px: None,
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "tree",
+                        widget: Rc::new(tree),
+                    },
                 })),
                 spacing: Spacing::default(),
             });
@@ -4293,39 +3011,6 @@ mod tests {
         ) -> quadraui::Reaction {
             quadraui::Reaction::Continue
         }
-    }
-
-    #[test]
-    fn scroll_atomic_tree_at_offset_shows_the_offset_row_first() {
-        use quadraui::tui::testing::TuiDriver;
-
-        let logic = ScrollTreeAtomicLogic {
-            offset: 7.0,
-            row_count: 20,
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-        let hits = driver.app().engine.hit_map();
-        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Tree { scroll_offset, .. } => Some(*scroll_offset),
-            _ => None,
-        });
-        assert_eq!(painted_scroll_offset, Some(7));
-        let first_visible_row_idx = hits.iter().find_map(|hit| match hit {
-            PaintedHit::Tree { layout, .. } => layout.visible_rows.first().map(|r| r.row_idx),
-            _ => None,
-        });
-        assert_eq!(first_visible_row_idx, Some(7));
-    }
-
-    /// [`ScrollListAtomicLogic`]'s `DataTable` counterpart — same scenario,
-    /// a 20-row `DataTable` AS the scroll's entire content, in a 5-row
-    /// viewport at offset `7`.
-    struct ScrollDataTableAtomicLogic {
-        offset: f32,
-        row_count: usize,
-        engine: crate::engine::InteractionEngine,
     }
 
     impl quadraui::AppLogic for ScrollDataTableAtomicLogic {
@@ -4370,8 +3055,10 @@ mod tests {
                 offset: Some(self.offset),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "table".to_string(),
-                    descriptor: LeafDescriptor::DataTable(table),
-                    scroll_px: None,
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "data_table",
+                        widget: Rc::new(table),
+                    },
                 })),
                 spacing: Spacing::default(),
             });
@@ -4389,171 +3076,71 @@ mod tests {
         }
     }
 
+    /// A 20-line/row collection AS a `Scroll`'s entire content (not
+    /// wrapped in a `Row`/`Column` — `scroll_content_slots`'s `Atomic`
+    /// branch) in a 5-row viewport at offset `7`: a cell-grid backend's
+    /// `Atomic` leaf rect clamps a negative main-axis origin to `0`
+    /// without shrinking, so shifting the rect by `-offset` the way a
+    /// plain leaf is positioned would always repaint row `0` at the
+    /// viewport's top regardless of `offset`. Each of these kinds renders
+    /// its own `scroll_offset..` window, which is what lets the clone
+    /// `offset_windowed_leaf_scrolled_to_offset` builds show row `7`
+    /// first instead.
+    fn assert_scrolled_to_row_seven<A: quadraui::AppLogic<AreaId = ()>>(logic: A, label: &str) {
+        let mut driver = quadraui::tui::testing::TuiDriver::new(logic, 20, 5);
+        driver.render();
+        assert!(
+            driver.screen_contains(&format!("{label} 7")),
+            "row 7 must paint inside the viewport:\n{}",
+            driver.screen()
+        );
+        assert!(
+            !driver.screen_contains(&format!("{label} 0")),
+            "row 0 is scrolled out of view:\n{}",
+            driver.screen()
+        );
+    }
+
+    #[test]
+    fn scroll_atomic_text_display_at_offset_shows_the_offset_line_first() {
+        let logic = ScrollTextAtomicLogic {
+            offset: 7.0,
+            line_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        assert_scrolled_to_row_seven(logic, "line");
+    }
+
+    #[test]
+    fn scroll_atomic_list_at_offset_shows_the_offset_item_first() {
+        let logic = ScrollListAtomicLogic {
+            offset: 7.0,
+            item_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        assert_scrolled_to_row_seven(logic, "item");
+    }
+
+    #[test]
+    fn scroll_atomic_tree_at_offset_shows_the_offset_row_first() {
+        let logic = ScrollTreeAtomicLogic {
+            offset: 7.0,
+            row_count: 20,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        assert_scrolled_to_row_seven(logic, "row");
+    }
+
     #[test]
     fn scroll_atomic_data_table_at_offset_shows_the_offset_row_first() {
-        use quadraui::tui::testing::TuiDriver;
-
         let logic = ScrollDataTableAtomicLogic {
             offset: 7.0,
             row_count: 20,
             engine: crate::engine::InteractionEngine::new(),
         };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-        let hits = driver.app().engine.hit_map();
-        let painted_scroll_offset = hits.iter().find_map(|hit| match hit {
-            PaintedHit::DataTable { scroll_offset, .. } => Some(*scroll_offset),
-            _ => None,
-        });
-        assert_eq!(painted_scroll_offset, Some(7));
+        assert_scrolled_to_row_seven(logic, "row");
     }
 
-    /// A single-line `TextDisplay` child, labelled `id` — `natural_size`'s
-    /// `TextDisplay` arm sizes it to `lines.len() as f32 * line_height`
-    /// using the `line_height` it's PASSED (unlike its `Button`/`TabBar`
-    /// arms, which measure through `Backend::measure_text` against
-    /// whatever real backend is driving the call) — so under a faked
-    /// pixel `ScrollMetrics` this is `1.0 * 16.0 = 16.0` regardless of
-    /// `tui()`'s own real `line_height` of `1.0`.
-    fn one_line_text_display(id: &str) -> LayoutNode {
-        let mut td = TextDisplay::new(WidgetId::new(id));
-        td.append_line(TextDisplayLine {
-            spans: vec![StyledSpan::plain("x")],
-            decoration: Decoration::default(),
-            timestamp: None,
-        });
-        LayoutNode::Leaf(LayoutLeaf {
-            id: id.to_string(),
-            descriptor: LeafDescriptor::TextDisplay(td),
-            scroll_px: None,
-        })
-    }
-
-    /// A pixel backend's own metrics (`char_width`/`line_height` both
-    /// `> 1.0`) keep [`scroll_content_slots`]'s unclipped, negative-origin
-    /// rect for a `Children` slot — the contract
-    /// [`crate::hit::clip_hits_to_viewport`]'s own pixel-metrics
-    /// regression test (`hit::tests::clip_hits_to_viewport_keeps_a_local_frame_hits_translation_origin_unmoved`)
-    /// relies on `scroll_content_slots` itself upholding. A `Column` of
-    /// two 16px-tall children in a 50px viewport at `offset: 10.0`: the
-    /// second child's rect keeps its real (not yet negative, but still
-    /// un-clamped) `y`, `16.0 - 10.0 = 6.0`, computed the same way
-    /// whether or not it happens to land inside `viewport` — a
-    /// `cell_grid` backend's slot would instead clamp/shrink a span that
-    /// does stick out past the viewport's own edge, which this one, at
-    /// this particular offset, does not; `scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping`
-    /// above already covers that clamp on the `cell_grid` side.
-    #[test]
-    fn scroll_content_slots_keeps_the_unclipped_rect_on_a_pixel_backend() {
-        let viewport = Rect::new(0.0, 0.0, 100.0, 50.0);
-        let metrics = ScrollMetrics {
-            char_width: 8.0,
-            line_height: 16.0,
-        };
-        let content = LayoutNode::Column(LayoutContainer::new(
-            vec![one_line_text_display("a"), one_line_text_display("b")],
-            Spacing::default(),
-        ));
-        let mut tui = tui();
-        let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Vertical, metrics);
-        assert_eq!(content_len, 32.0);
-        let slots = scroll_content_slots(
-            &mut tui,
-            viewport,
-            ScrollAxis::Vertical,
-            10.0,
-            &content,
-            content_len,
-            metrics,
-        );
-        let ScrollSlots::Children(slots) = slots else {
-            panic!("a Column matching the scroll's own axis yields Children slots");
-        };
-        assert_eq!(slots[1].rect, Rect::new(0.0, 6.0, 100.0, 16.0));
-    }
-
-    /// A `List` leaf's own `natural_size` never reports a width (only a
-    /// row-count-driven height), so a `Row` matching a horizontal
-    /// `Scroll`'s axis, holding two `SectionSize::Fixed` `List` children,
-    /// must still measure `content_len` as the sum of their two declared
-    /// `Fixed` widths — not `natural_main_length`'s one-unit placeholder
-    /// for an unmeasurable leaf, which would collapse the whole row far
-    /// enough below the viewport that nothing is left to scroll to. Two
-    /// `Fixed(500)` `List`s plus a `20`-wide gap must report `1020.0`, well
-    /// past the `100`-wide viewport this test's `Scroll` would sit inside.
-    #[test]
-    fn container_natural_main_length_honors_a_fixed_list_childs_own_width() {
-        fn fixed_list_child(id: &str, width: u16) -> LayoutChild {
-            LayoutChild {
-                node: LayoutNode::Leaf(LayoutLeaf {
-                    id: id.to_string(),
-                    descriptor: LeafDescriptor::List(ListView {
-                        id: WidgetId::new(id),
-                        title: None,
-                        items: vec![quadraui::ListItem {
-                            text: quadraui::StyledText::plain("item"),
-                            icon: None,
-                            detail: None,
-                            decoration: Decoration::default(),
-                        }],
-                        selected_idx: 0,
-                        scroll_offset: 0,
-                        items_window: None,
-                        scroll_px: None,
-                        has_focus: false,
-                        bordered: false,
-                        h_scroll: 0,
-                        max_content_width: None,
-                        show_v_scrollbar: false,
-                        striped: false,
-                    }),
-                    scroll_px: None,
-                }),
-                size: SectionSize::Fixed(width),
-                min: None,
-                max: None,
-            }
-        }
-
-        let metrics = ScrollMetrics {
-            char_width: 8.0,
-            line_height: 16.0,
-        };
-        let content = LayoutNode::Row(LayoutContainer {
-            children: vec![
-                fixed_list_child("left", 500),
-                fixed_list_child("right", 500),
-            ],
-            spacing: Spacing {
-                padding: EdgeInsets::default(),
-                margin: 0.0,
-                gap: 20.0,
-            },
-            justify: Justify::default(),
-            align: Align::default(),
-            wrap: false,
-        });
-        let mut tui = tui();
-        let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Horizontal, metrics);
-        assert_eq!(content_len, 1020.0);
-
-        let viewport = Rect::new(0.0, 0.0, 100.0, 20.0);
-        let slots = scroll_content_slots(
-            &mut tui,
-            viewport,
-            ScrollAxis::Horizontal,
-            0.0,
-            &content,
-            content_len,
-            metrics,
-        );
-        let ScrollSlots::Children(slots) = slots else {
-            panic!("a Row matching the scroll's own axis yields Children slots");
-        };
-        assert_eq!(slots[0].len, 500.0);
-        assert_eq!(slots[1].len, 500.0);
-        assert_eq!(slots[1].start, 520.0);
-    }
     /// Minimal [`quadraui::AppLogic`] that decodes a `"grid"` wire node
     /// dict and paints it -- the end-to-end path a Python/TypeScript
     /// render callback returning that dict actually takes
@@ -4640,1072 +3227,144 @@ mod tests {
 
     // ── virtualised `items_window` decode + `rows_requested_for_window` ──
 
-    /// [`items_window_from_value`]'s documented `None` paths -- mirrors
-    /// `scroll_px_tests`'s own coverage of
-    /// [`crate::scroll_px_from_value`]'s identical set of degrade-to-`None`
-    /// cases for the sibling extension key.
-    #[test]
-    fn items_window_from_value_none_paths() {
-        use serde_json::json;
 
-        assert_eq!(
-            items_window_from_value(&json!({"rows": []})),
-            None,
-            "key absent"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": "not an object"})),
-            None,
-            "items_window present but not an object"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": {"total": 10}})),
-            None,
-            "start missing"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": {"start": 0}})),
-            None,
-            "total missing"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": {"start": -1, "total": 10}})),
-            None,
-            "start is negative, not a non-negative integer"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": {"start": 0, "total": 1.5}})),
-            None,
-            "total is not an integer"
-        );
-        assert_eq!(
-            items_window_from_value(&json!([1, 2, 3])),
-            None,
-            "non-object value"
-        );
-        assert_eq!(
-            items_window_from_value(&json!({"items_window": {"start": 0, "total": 10}})),
-            Some(ItemsWindow {
-                start: 0,
-                total: 10
-            }),
-            "the happy path still decodes"
-        );
-    }
-
-    /// The app-side state the windowed-leaf driver tests below share: the
-    /// `start` of the slice the "app" currently has loaded, and every
-    /// [`RowsRequestedEvent`] the engine has asked it for.
-    ///
-    /// Shared by `Rc` with [`WindowedRequestSink`], which is what actually
-    /// answers a request — a real binding's own handler mutates its app
-    /// state from inside `EventSink::dispatch_rows_requested` the same way,
-    /// so the next frame renders the newly requested slice.
-    #[derive(Clone)]
-    struct WindowedHarness {
-        window_start: Rc<Cell<usize>>,
-        requests: Rc<RefCell<Vec<RowsRequestedEvent>>>,
-        /// Every `UiEvent` the engine dispatched, so a test can assert on
-        /// a click resolving to the right ABSOLUTE row of a windowed
-        /// collection.
-        dispatched: Rc<RefCell<Vec<quadraui::UiEvent>>>,
-    }
-
-    impl WindowedHarness {
-        fn new(window_start: usize) -> Self {
-            Self {
-                window_start: Rc::new(Cell::new(window_start)),
-                requests: Rc::new(RefCell::new(Vec::new())),
-                dispatched: Rc::new(RefCell::new(Vec::new())),
-            }
+    /// A `"text_display"` leaf `id` holding one line per entry of `texts`.
+    fn text_display_leaf(id: &str, texts: &[&str]) -> LayoutNode {
+        let mut td = TextDisplay::new(WidgetId::new(id));
+        for text in texts {
+            td.append_line(TextDisplayLine {
+                spans: vec![StyledSpan::plain(*text)],
+                decoration: Decoration::default(),
+                timestamp: None,
+            });
         }
-
-        fn sink(&self) -> WindowedRequestSink {
-            WindowedRequestSink {
-                harness: self.clone(),
-            }
-        }
-
-        /// The one request the engine made, panicking if it made none or
-        /// more than one — "scrolling past the loaded slice emits exactly
-        /// one `RowsRequested`" is the acceptance bar, so a duplicate is a
-        /// failure, not noise.
-        fn only_request(&self) -> RowsRequestedEvent {
-            let requests = self.requests.borrow();
-            assert_eq!(
-                requests.len(),
-                1,
-                "a scroll past the loaded slice must emit exactly one \
-                 RowsRequested: {requests:?}"
-            );
-            requests[0].clone()
-        }
-    }
-
-    /// Stands in for a binding's own event callback: records every
-    /// `UiEvent`, and answers a [`RowsRequestedEvent`] by moving the app's
-    /// loaded window to the rows the engine asked for.
-    struct WindowedRequestSink {
-        harness: WindowedHarness,
-    }
-
-    impl crate::engine::EventSink for WindowedRequestSink {
-        fn dispatch(
-            &mut self,
-            event: &quadraui::UiEvent,
-            _hit_detail: Option<&crate::hit::HitDetail>,
-        ) -> quadraui::Reaction {
-            self.harness.dispatched.borrow_mut().push(event.clone());
-            quadraui::Reaction::Continue
-        }
-
-        fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> quadraui::Reaction {
-            self.harness.window_start.set(event.start);
-            self.harness.requests.borrow_mut().push(event);
-            quadraui::Reaction::Redraw
-        }
-    }
-
-    /// A `data_table` leaf whose `items_window` says its 50 `rows` are only
-    /// a slice of a 100,000-row total: [`paint_layout_windowed`] threads the
-    /// real total through to the leaf's own hit, so the scrollbar extent
-    /// ([`PaintedHit::DataTable::total_rows`]) reflects `100_000`, not the
-    /// 50 rows this frame's payload actually carries. A real keyboard
-    /// scroll (`End`, dispatched through the exact same
-    /// `InteractionEngine::handle`/`crate::host::resolve_layout_node` path
-    /// a binding's own render loop drives — unmodified production code,
-    /// not a hand-poked field) that lands past the loaded slice produces
-    /// exactly one [`rows_requested_for_window`] request, and once the
-    /// harness answers it with a freshly windowed payload, the row
-    /// actually scrolled to renders its own absolute content.
-    #[test]
-    fn windowed_data_table_scrollbar_extent_and_real_scroll_request_more_rows() {
-        use quadraui::tui::testing::TuiDriver;
-        use quadraui::{Key, Modifiers, NamedKey};
-
-        const TOTAL: usize = 100_000;
-        const WINDOW_LEN: usize = 50;
-        const WINDOW_START: usize = 35;
-
-        fn leaf_value(window_start: usize) -> serde_json::Value {
-            // Never claims more rows than actually remain in the
-            // collection — a window near the very end of `TOTAL` sends a
-            // shorter-than-`WINDOW_LEN` tail, matching what a real app's
-            // own data source would hand back.
-            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
-            let rows: Vec<_> = (0..len)
-                .map(|i| {
-                    let absolute = window_start + i;
-                    serde_json::json!({"cells": [{"spans": [{"text": format!("row-{absolute}")}]}]})
-                })
-                .collect();
-            serde_json::json!({
-                "id": "table",
-                "data_table": {
-                    "id": "table",
-                    "columns": [{"title": "col"}],
-                    "rows": rows,
-                    "items_window": {"start": window_start, "total": TOTAL},
-                },
-            })
-        }
-
-        fn decode_table(value: &serde_json::Value) -> DataTable {
-            let node = crate::wire::decode_layout_node("test", value)
-                .expect("a data_table leaf with items_window must decode");
-            let LayoutNode::Leaf(leaf) = node else {
-                panic!("expected a leaf node");
-            };
-            let LeafDescriptor::DataTable(table) = leaf.descriptor else {
-                panic!("expected a DataTable descriptor");
-            };
-            table
-        }
-
-        fn row_text(table: &DataTable, row: usize) -> &str {
-            &table.rows[row].cells[0].spans[0].text
-        }
-
-        let value = leaf_value(WINDOW_START);
-        let table = decode_table(&value);
-        assert_eq!(
-            table.rows.len(),
-            WINDOW_LEN,
-            "the decoded payload must stay bounded to the loaded window, \
-             never the full 100k-row total"
-        );
-        assert_eq!(
-            row_text(&table, 0),
-            format!("row-{WINDOW_START}"),
-            "the first loaded row is the window's own start, not row 0"
-        );
-
-        struct WindowedTableLogic {
-            harness: WindowedHarness,
-            engine: crate::engine::InteractionEngine,
-        }
-
-        impl quadraui::AppLogic for WindowedTableLogic {
-            type AreaId = ();
-
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let viewport = backend.viewport();
-                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.harness.window_start.get());
-                let diagnostics = crate::wire::DecodeDiagnostics::warn();
-                let sets = crate::layout::StyleSets::new();
-                let theme = Theme::default();
-                let mut node = crate::wire::decode_layout_node_with_styles(
-                    "test",
-                    &value,
-                    crate::wire::StyleContext::new(&sets, &theme),
-                    &diagnostics,
-                )
-                .expect("a data_table leaf with items_window must decode");
-                // Resolves the uncontrolled cursor/scroll this frame's
-                // keyboard navigation already moved in `self.engine`'s own
-                // `WidgetStateStore` -- the same call a binding's render loop
-                // makes before `paint_layout_windowed`, unmodified by
-                // windowing.
-                crate::host::resolve_layout_node(
-                    self.engine.widget_state(),
-                    backend,
-                    area,
-                    &mut node,
-                );
-                let windows = diagnostics.items_windows();
-                let mut hits = Vec::new();
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
-                self.engine.set_hits(hits);
-            }
-
-            fn handle(
-                &mut self,
-                event: quadraui::UiEvent,
-                backend: &mut dyn Backend,
-            ) -> quadraui::Reaction {
-                self.engine.handle(event, backend, &mut self.harness.sink())
-            }
-        }
-
-        fn painted_data_table(driver: &TuiDriver<WindowedTableLogic>) -> (usize, usize, usize) {
-            driver
-                .app()
-                .engine
-                .hit_map()
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::DataTable {
-                        scroll_offset,
-                        total_rows,
-                        viewport_rows,
-                        ..
-                    } => Some((*scroll_offset, *total_rows, *viewport_rows)),
-                    _ => None,
-                })
-                .expect("the data_table should have painted a hit")
-        }
-
-        let harness = WindowedHarness::new(WINDOW_START);
-        let logic = WindowedTableLogic {
-            harness: harness.clone(),
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-
-        let (_, total_rows, viewport_rows) = painted_data_table(&driver);
-        assert_eq!(
-            total_rows, TOTAL,
-            "the scrollbar extent must reflect the full collection, not the \
-             50 loaded rows"
-        );
-        assert!(viewport_rows > 0, "a 5-row area must fit at least one row");
-
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("table"))),
-                "the data table is a tab stop and must accept focus"
-            );
-        }
-
-        // Real scroll input: `End` jumps the uncontrolled cursor straight to
-        // the bottom of the full `TOTAL`-row collection.
-        // `crate::host::apply_data_table_nav_key` (unmodified production
-        // code, reached through `InteractionEngine::handle`) clamps against
-        // `total_rows` read straight off this frame's own
-        // `PaintedHit::DataTable` -- `TOTAL`, not the 50 loaded rows.
-        driver.dispatch(quadraui::UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::End),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-        driver.render();
-
-        let (scroll_offset, total_rows, viewport_rows) = painted_data_table(&driver);
-        assert_eq!(total_rows, TOTAL);
-        assert!(
-            scroll_offset + viewport_rows >= TOTAL,
-            "End must scroll all the way to the bottom of the full {TOTAL}-row \
-             collection, not just the loaded window: scroll_offset={scroll_offset} \
-             viewport_rows={viewport_rows}"
-        );
-
-        // The ENGINE asked the app for the rows that scroll brought into
-        // view, through `EventSink::dispatch_rows_requested` -- nothing in
-        // this test computes the request itself.
-        let request = harness.only_request();
-        assert_eq!(request.id, WidgetId::new("table"));
-        assert!(
-            request.count < WINDOW_LEN * 10,
-            "a bounded request must stay a small multiple of the viewport, \
-             nowhere near the widget's own {TOTAL}-row total -- got {}",
-            request.count
-        );
-        assert!(
-            request.start + request.count >= TOTAL,
-            "the requested window must reach the very end of the collection"
-        );
-
-        // End-to-end: the harness answered the request from inside
-        // `dispatch_rows_requested` (the way a real app's handler does),
-        // so the next frame renders the right absolute content at the row
-        // actually scrolled to.
-        assert_eq!(
-            harness.window_start.get(),
-            request.start,
-            "answering the request moves the app's own loaded window"
-        );
-        driver.render();
-
-        let (scroll_offset_after, total_rows_after, _) = painted_data_table(&driver);
-        assert_eq!(total_rows_after, TOTAL);
-        let new_table = decode_table(&leaf_value(request.start));
-        assert_eq!(
-            row_text(&new_table, scroll_offset_after - request.start),
-            format!("row-{scroll_offset_after}"),
-            "the row actually scrolled to must render its own absolute content \
-             after the window update, not stale or wrong-offset content"
-        );
-        assert!(
-            driver.screen_contains(&format!("row-{scroll_offset_after}")),
-            "the requested rows must actually paint at the scrolled-to \
-             position:\n{}",
-            driver.screen()
-        );
-
-        // Re-dispatching the same key at the same position asks for
-        // nothing further: the answered window now covers the viewport.
-        driver.dispatch(quadraui::UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::End),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-        assert_eq!(
-            harness.requests.borrow().len(),
-            1,
-            "a covered viewport must never re-request a slice it already has"
-        );
-    }
-
-    /// [`windowed_data_table_scrollbar_extent_and_real_scroll_request_more_rows`],
-    /// for a `list` leaf instead of a `data_table` one — the same windowed
-    /// paint, scrollbar extent, and real-`End`-key `RowsRequested` round
-    /// trip, driven through `crate::host::apply_list_nav_key` (unmodified
-    /// production code) instead of `apply_data_table_nav_key`.
-    #[test]
-    fn windowed_list_scrollbar_extent_and_real_scroll_request_more_rows() {
-        use quadraui::tui::testing::TuiDriver;
-        use quadraui::{Key, Modifiers, NamedKey};
-
-        const TOTAL: usize = 100_000;
-        const WINDOW_LEN: usize = 50;
-        const WINDOW_START: usize = 35;
-
-        fn leaf_value(window_start: usize) -> serde_json::Value {
-            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
-            let items: Vec<_> = (0..len)
-                .map(|i| {
-                    let absolute = window_start + i;
-                    serde_json::json!({"text": {"spans": [{"text": format!("row-{absolute}")}]}})
-                })
-                .collect();
-            serde_json::json!({
-                "id": "list",
-                "list": {
-                    "id": "list",
-                    "items": items,
-                    "selected_idx": 0,
-                    "items_window": {"start": window_start, "total": TOTAL},
-                },
-            })
-        }
-
-        struct WindowedListLogic {
-            harness: WindowedHarness,
-            engine: crate::engine::InteractionEngine,
-        }
-
-        impl quadraui::AppLogic for WindowedListLogic {
-            type AreaId = ();
-
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let viewport = backend.viewport();
-                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.harness.window_start.get());
-                let diagnostics = crate::wire::DecodeDiagnostics::warn();
-                let sets = crate::layout::StyleSets::new();
-                let theme = Theme::default();
-                let mut node = crate::wire::decode_layout_node_with_styles(
-                    "test",
-                    &value,
-                    crate::wire::StyleContext::new(&sets, &theme),
-                    &diagnostics,
-                )
-                .expect("a list leaf with items_window must decode");
-                crate::host::resolve_layout_node(
-                    self.engine.widget_state(),
-                    backend,
-                    area,
-                    &mut node,
-                );
-                let windows = diagnostics.items_windows();
-                let mut hits = Vec::new();
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
-                self.engine.set_hits(hits);
-            }
-
-            fn handle(
-                &mut self,
-                event: quadraui::UiEvent,
-                backend: &mut dyn Backend,
-            ) -> quadraui::Reaction {
-                self.engine.handle(event, backend, &mut self.harness.sink())
-            }
-        }
-
-        fn painted_list(driver: &TuiDriver<WindowedListLogic>) -> (usize, usize, usize) {
-            driver
-                .app()
-                .engine
-                .hit_map()
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::List {
-                        scroll_offset,
-                        total_items,
-                        viewport_rows,
-                        ..
-                    } => Some((*scroll_offset, *total_items, *viewport_rows)),
-                    _ => None,
-                })
-                .expect("the list should have painted a hit")
-        }
-
-        let harness = WindowedHarness::new(WINDOW_START);
-        let logic = WindowedListLogic {
-            harness: harness.clone(),
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-
-        let (_, total_items, viewport_rows) = painted_list(&driver);
-        assert_eq!(
-            total_items, TOTAL,
-            "the scrollbar extent must reflect the full collection, not the \
-             50 loaded items"
-        );
-        assert!(viewport_rows > 0, "a 5-row area must fit at least one item");
-
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("list"))),
-                "the list is a tab stop and must accept focus"
-            );
-        }
-
-        driver.dispatch(quadraui::UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::End),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-        driver.render();
-
-        let (scroll_offset, total_items, viewport_rows) = painted_list(&driver);
-        assert_eq!(total_items, TOTAL);
-        assert!(
-            scroll_offset + viewport_rows >= TOTAL,
-            "End must scroll all the way to the bottom of the full {TOTAL}-item \
-             collection, not just the loaded window"
-        );
-
-        // The ENGINE asked the app for the items that scroll brought into
-        // view -- see the `data_table` test above.
-        let request = harness.only_request();
-        assert_eq!(request.id, WidgetId::new("list"));
-        assert!(
-            request.start + request.count >= TOTAL,
-            "the requested window must reach the very end of the collection"
-        );
-        assert_eq!(harness.window_start.get(), request.start);
-
-        driver.render();
-
-        let (scroll_offset_after, total_items_after, _) = painted_list(&driver);
-        assert_eq!(total_items_after, TOTAL);
-        assert!(
-            driver.screen_contains(&format!("row-{scroll_offset_after}")),
-            "the requested items must actually paint at the scrolled-to \
-             position:\n{}",
-            driver.screen()
-        );
-
-        // A click on a visible item resolves to its ABSOLUTE index -- the
-        // `ListViewLayout` indices the backend reports against the painted
-        // band are shifted back into the collection's own indexing before
-        // they reach the hit.
-        let (click_point, clicked_idx) = {
-            let hit_map = driver.app().engine.hit_map();
-            let (area, layout) = hit_map
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::List { area, layout, .. } => Some((*area, layout.clone())),
-                    _ => None,
-                })
-                .expect("the list should have painted a hit");
-            let item = layout
-                .visible_items
-                .first()
-                .expect("a scrolled-to list paints at least one item");
-            assert_eq!(
-                item.item_idx, scroll_offset_after,
-                "the first visible item's index must be the ABSOLUTE item \
-                 painted at the top of the viewport"
-            );
-            (
-                (area.x + item.bounds.x + 1.0, area.y + item.bounds.y + 0.5),
-                item.item_idx,
-            )
-        };
-        harness.dispatched.borrow_mut().clear();
-        driver.click(click_point.0, click_point.1);
-        assert!(
-            harness.dispatched.borrow().iter().any(|event| matches!(
-                event,
-                quadraui::UiEvent::List(id, quadraui::ListViewEvent::SelectionChanged { idx })
-                    if *id == WidgetId::new("list") && *idx == clicked_idx
-            )),
-            "clicking the top visible item of a windowed list must resolve \
-             to absolute item {clicked_idx}: {:?}",
-            harness.dispatched.borrow()
-        );
-    }
-
-    /// A `tree` leaf whose `items_window` says its 50 `rows` are only a
-    /// slice of a 100,000-row total: [`paint_layout_windowed`] threads the
-    /// real total through to the scrollbar (`PaintedHit::Tree::total_rows`),
-    /// not the loaded slice's own length, and a real `End` keypress scrolls
-    /// all the way to the bottom of the full collection.
-    ///
-    /// Driven entirely through production code — `InteractionEngine::handle`
-    /// for the key (which routes a windowed tree to
-    /// [`crate::host::apply_tree_nav_key_windowed`] itself, the
-    /// absolute-index counterpart `apply_tree_nav_key` can't stand in for
-    /// because a placeholder row's path has no identity stable across a
-    /// window update) and [`crate::host::resolve_layout_node_windowed`]
-    /// for the resolve that paints the moved cursor. The request reaching
-    /// the app comes from the engine's own
-    /// `EventSink::dispatch_rows_requested` call, not from this test.
-    #[test]
-    fn windowed_tree_scrollbar_extent_and_real_scroll_request_more_rows() {
-        use quadraui::tui::testing::TuiDriver;
-        use quadraui::{Key, Modifiers, NamedKey};
-
-        const TOTAL: usize = 100_000;
-        const WINDOW_LEN: usize = 50;
-        const WINDOW_START: usize = 35;
-
-        fn leaf_value(window_start: usize) -> serde_json::Value {
-            let len = WINDOW_LEN.min(TOTAL.saturating_sub(window_start));
-            let rows: Vec<_> = (0..len)
-                .map(|i| {
-                    let absolute = window_start + i;
-                    // `TreePath` is `Vec<u16>` -- `TOTAL` is well past
-                    // `u16::MAX`, so each real row's path is split across
-                    // two `u16` levels (`absolute` fits in neither alone)
-                    // rather than truncating. Only needs to stay unique
-                    // per row; nothing downstream reads it as a real
-                    // hierarchy.
-                    serde_json::json!({
-                        "path": [absolute / 60_000, absolute % 60_000],
-                        "indent": 0,
-                        "icon": null,
-                        "text": {"spans": [{"text": format!("row-{absolute}")}]},
-                        "badge": null,
-                        "is_expanded": null,
-                    })
-                })
-                .collect();
-            serde_json::json!({
-                "id": "tree",
-                "tree": {
-                    "id": "tree",
-                    "rows": rows,
-                    "selection_mode": "Single",
-                    "selected_path": null,
-                    "style": {
-                        "indent": 2,
-                        "show_chevrons": true,
-                        "chevron_expanded": "v",
-                        "chevron_collapsed": ">",
-                    },
-                    "items_window": {"start": window_start, "total": TOTAL},
-                },
-            })
-        }
-
-        struct WindowedTreeLogic {
-            harness: WindowedHarness,
-            engine: crate::engine::InteractionEngine,
-        }
-
-        impl quadraui::AppLogic for WindowedTreeLogic {
-            type AreaId = ();
-
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let viewport = backend.viewport();
-                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let value = leaf_value(self.harness.window_start.get());
-                let diagnostics = crate::wire::DecodeDiagnostics::warn();
-                let sets = crate::layout::StyleSets::new();
-                let theme = Theme::default();
-                let mut node = crate::wire::decode_layout_node_with_styles(
-                    "test",
-                    &value,
-                    crate::wire::StyleContext::new(&sets, &theme),
-                    &diagnostics,
-                )
-                .expect("a tree leaf with items_window must decode");
-                let windows = diagnostics.items_windows();
-                // The windowed resolve a binding's own render loop makes
-                // before `paint_layout_windowed` -- unmodified production
-                // code, with no hand-poked cursor state.
-                crate::host::resolve_layout_node_windowed(
-                    self.engine.widget_state(),
-                    backend,
-                    area,
-                    &mut node,
-                    &windows,
-                );
-                let mut hits = Vec::new();
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
-                self.engine.set_hits(hits);
-            }
-
-            fn handle(
-                &mut self,
-                event: quadraui::UiEvent,
-                backend: &mut dyn Backend,
-            ) -> quadraui::Reaction {
-                self.engine.handle(event, backend, &mut self.harness.sink())
-            }
-        }
-
-        fn painted_tree(driver: &TuiDriver<WindowedTreeLogic>) -> (usize, usize, usize) {
-            driver
-                .app()
-                .engine
-                .hit_map()
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Tree {
-                        scroll_offset,
-                        total_rows,
-                        viewport_rows,
-                        ..
-                    } => Some((*scroll_offset, *total_rows, *viewport_rows)),
-                    _ => None,
-                })
-                .expect("the tree should have painted a hit")
-        }
-
-        let harness = WindowedHarness::new(WINDOW_START);
-        let logic = WindowedTreeLogic {
-            harness: harness.clone(),
-            engine: crate::engine::InteractionEngine::new(),
-        };
-        let mut driver = TuiDriver::new(logic, 20, 5);
-        driver.render();
-
-        let (_, total_rows, viewport_rows) = painted_tree(&driver);
-        assert_eq!(
-            total_rows, TOTAL,
-            "the scrollbar extent must reflect the full collection, not the \
-             50 loaded rows"
-        );
-        assert!(viewport_rows > 0, "a 5-row area must fit at least one row");
-
-        {
-            let (backend, _app) = driver.parts_mut();
-            assert!(
-                backend.set_focus(Some(WidgetId::new("tree"))),
-                "the tree is a tab stop and must accept focus"
-            );
-        }
-
-        driver.dispatch(quadraui::UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::End),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-        driver.render();
-
-        let (scroll_offset, total_rows, viewport_rows) = painted_tree(&driver);
-        assert_eq!(total_rows, TOTAL);
-        assert!(
-            scroll_offset + viewport_rows >= TOTAL,
-            "End must scroll all the way to the bottom of the full {TOTAL}-row \
-             collection, not just the loaded window"
-        );
-
-        // The ENGINE asked the app for the rows that keypress brought
-        // into view, through `EventSink::dispatch_rows_requested`.
-        let request = harness.only_request();
-        assert_eq!(request.id, WidgetId::new("tree"));
-        assert!(
-            request.start + request.count >= TOTAL,
-            "the requested window must reach the very end of the collection"
-        );
-        assert!(
-            request.count < WINDOW_LEN * 10,
-            "a bounded request must stay a small multiple of the viewport, \
-             nowhere near the widget's own {TOTAL}-row total -- got {}",
-            request.count
-        );
-        assert_eq!(harness.window_start.get(), request.start);
-
-        // End-to-end: the harness answered the request from inside
-        // `dispatch_rows_requested` (the way a real app's handler does),
-        // so the next frame renders the right absolute content at the row
-        // actually scrolled to.
-        driver.render();
-
-        let (scroll_offset_after, total_rows_after, _) = painted_tree(&driver);
-        assert_eq!(total_rows_after, TOTAL);
-        assert!(
-            scroll_offset_after + viewport_rows >= TOTAL,
-            "the absolute scroll position must survive the window update"
-        );
-        assert!(
-            driver.screen_contains(&format!("row-{scroll_offset_after}")),
-            "the requested rows must actually paint at the scrolled-to \
-             position:\n{}",
-            driver.screen()
-        );
-
-        // A click on a visible row resolves to that row's ABSOLUTE path,
-        // not a band-relative one: `paint_leaf_windowed` shifts every
-        // index the backend's own layout reports back into the
-        // collection's indexing before it reaches the hit.
-        let (click_point, clicked_row) = {
-            let hit_map = driver.app().engine.hit_map();
-            let (area, layout) = hit_map
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Tree { area, layout, .. } => Some((*area, layout.clone())),
-                    _ => None,
-                })
-                .expect("the tree should have painted a hit");
-            let row = layout
-                .visible_rows
-                .first()
-                .expect("a scrolled-to tree paints at least one row");
-            assert_eq!(
-                row.row_idx, scroll_offset_after,
-                "the first visible row's index must be the ABSOLUTE row \
-                 painted at the top of the viewport"
-            );
-            (
-                quadraui::Point {
-                    x: area.x + row.bounds.x + 1.0,
-                    y: area.y + row.bounds.y + 0.5,
-                },
-                row.row_idx,
-            )
-        };
-        harness.dispatched.borrow_mut().clear();
-        driver.click(click_point.x, click_point.y);
-        let clicked_path: Vec<u16> =
-            vec![(clicked_row / 60_000) as u16, (clicked_row % 60_000) as u16];
-        assert!(
-            harness.dispatched.borrow().iter().any(|event| matches!(
-                event,
-                quadraui::UiEvent::Tree(id, quadraui::TreeEvent::RowClicked { path, .. })
-                    if *id == WidgetId::new("tree") && *path == clicked_path
-            )),
-            "clicking the top visible row of a windowed tree must resolve to \
-             absolute row {clicked_row}: {:?}",
-            harness.dispatched.borrow()
-        );
-
-        // `Home` goes back to the very first row, which this window no
-        // longer holds -- so the engine asks for row 0's slice too.
-        driver.dispatch(quadraui::UiEvent::KeyPressed {
-            key: Key::Named(NamedKey::Home),
-            modifiers: Modifiers::default(),
-            repeat: false,
-        });
-        driver.render();
-        assert_eq!(
-            harness.requests.borrow().len(),
-            2,
-            "Home at the far end of a windowed tree must request the head \
-             of the collection"
-        );
-        assert_eq!(
-            harness.requests.borrow()[1].start,
-            0,
-            "Home's request must start at the collection's own first row"
-        );
-        let (scroll_offset_home, _, _) = painted_tree(&driver);
-        assert_eq!(
-            scroll_offset_home, 0,
-            "Home must scroll a windowed tree back to its first row"
-        );
-        assert!(
-            driver.screen_contains("row-0"),
-            "the head of the collection must paint after Home:\n{}",
-            driver.screen()
-        );
-
-        // Pointer input reaches the same request dispatch the keyboard
-        // does: `InteractionEngine::handle` translates a wheel notch over
-        // the tree body into an absolute `ScrollOffsetChanged` against the
-        // full extent, then asks for the rows that offset landed on.
-        const WHEEL_ROWS: usize = 120;
-        let wheel_point = {
-            let hit_map = driver.app().engine.hit_map();
-            let (area, layout) = hit_map
-                .iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Tree { area, layout, .. } => Some((*area, layout.clone())),
-                    _ => None,
-                })
-                .expect("the tree should have painted a hit");
-            let row = layout
-                .visible_rows
-                .first()
-                .expect("a tree at its head paints at least one row");
-            quadraui::Point {
-                x: area.x + row.bounds.x + 1.0,
-                y: area.y + row.bounds.y + 0.5,
-            }
-        };
-        driver.dispatch(quadraui::UiEvent::Scroll {
-            widget: None,
-            delta: quadraui::ScrollDelta::new(0.0, -(WHEEL_ROWS as f32)),
-            position: wheel_point,
-        });
-        let wheel_request = harness
-            .requests
-            .borrow()
-            .last()
-            .cloned()
-            .expect("a wheel past the loaded window must request rows");
-        assert_eq!(
-            harness.requests.borrow().len(),
-            3,
-            "a wheel notch landing outside the loaded window must produce \
-             its own request"
-        );
-        assert!(
-            wheel_request.start <= WHEEL_ROWS
-                && WHEEL_ROWS < wheel_request.start + wheel_request.count,
-            "the wheeled-to row {WHEEL_ROWS} must fall inside the requested \
-             window: {wheel_request:?}"
-        );
-        assert!(
-            wheel_request.count < WINDOW_LEN * 10,
-            "a wheel's request must stay bounded too -- got {}",
-            wheel_request.count
-        );
-    }
-
-    /// A `text_display` leaf shares the exact same windowed paint path
-    /// every other windowed kind goes through ([`paint_leaf_windowed`]'s
-    /// `LeafDescriptor::TextDisplay` arm calls the same
-    /// [`windowed_text_display`]/[`windowed_vec`] every other kind does),
-    /// so its own `PaintedHit::TextDisplay::total_lines` reflects
-    /// `window.total` rather than the 10 lines this frame's payload
-    /// actually carries — no keyboard-nav-key story to exercise here
-    /// (`TextDisplay` has none, controlled or not), so this only covers the
-    /// paint-time extent; a windowed display's own wheel scroll reaches the
-    /// same `RowsRequested` dispatch every other kind does, through
-    /// `TextDisplayEvent::Scrolled`.
-    #[test]
-    fn windowed_text_display_total_lines_reflects_window_total() {
-        use quadraui::tui::testing::TuiDriver;
-
-        const TOTAL: usize = 5_000;
-        const WINDOW_LEN: usize = 10;
-        const WINDOW_START: usize = 3;
-
-        let lines: Vec<_> = (0..WINDOW_LEN)
-            .map(|i| {
-                let absolute = WINDOW_START + i;
-                serde_json::json!({"spans": [{"text": format!("line-{absolute}")}]})
-            })
-            .collect();
-        let value = serde_json::json!({
-            "id": "log",
-            "text_display": {
-                "id": "log",
-                "lines": lines,
-                "items_window": {"start": WINDOW_START, "total": TOTAL},
+        td.auto_scroll = false;
+        LayoutNode::Leaf(LayoutLeaf {
+            id: id.to_string(),
+            descriptor: LeafDescriptor::Widget {
+                kind: "text_display",
+                widget: Rc::new(td),
             },
-        });
+        })
+    }
 
-        struct WindowedTextDisplayLogic {
-            value: serde_json::Value,
-        }
+    fn two_line_text_display(id: &str) -> LayoutNode {
+        text_display_leaf(id, &["a", "b"])
+    }
 
-        impl quadraui::AppLogic for WindowedTextDisplayLogic {
-            type AreaId = ();
+    fn one_line_text_display(id: &str) -> LayoutNode {
+        text_display_leaf(id, &["x"])
+    }
 
-            fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let viewport = backend.viewport();
-                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let diagnostics = crate::wire::DecodeDiagnostics::warn();
-                let sets = crate::layout::StyleSets::new();
-                let theme = Theme::default();
-                let node = crate::wire::decode_layout_node_with_styles(
-                    "test",
-                    &self.value,
-                    crate::wire::StyleContext::new(&sets, &theme),
-                    &diagnostics,
-                )
-                .expect("a text_display leaf with items_window must decode");
-                let windows = diagnostics.items_windows();
-                let mut hits = Vec::new();
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
-                assert!(
-                    hits.iter().any(|hit| matches!(
-                        hit,
-                        PaintedHit::TextDisplay { total_lines, .. } if *total_lines == TOTAL
-                    )),
-                    "the text_display's own total_lines must reflect window.total, got: {:?}",
-                    hits.iter().find_map(|hit| match hit {
-                        PaintedHit::TextDisplay { total_lines, .. } => Some(*total_lines),
-                        _ => None,
-                    })
-                );
-            }
+    /// The `(leaf id, area)` of every text display painted into `hits`.
+    fn painted_text_displays(hits: &[PaintedHit]) -> Vec<(String, Rect)> {
+        hits.iter()
+            .filter_map(|hit| match hit {
+                PaintedHit::Widget { id, area, widget } if widget.downcast_ref::<TextDisplay>().is_some() => {
+                    Some((id.as_str().to_string(), *area))
+                }
+                _ => None,
+            })
+            .collect()
+    }
 
-            fn handle(
-                &mut self,
-                _event: quadraui::UiEvent,
-                _backend: &mut dyn Backend,
-            ) -> quadraui::Reaction {
-                quadraui::Reaction::Continue
-            }
-        }
+    fn text_display_column(count: usize) -> LayoutNode {
+        LayoutNode::Column(LayoutContainer::new(
+            (0..count)
+                .map(|i| two_line_text_display(&i.to_string()))
+                .collect(),
+            Spacing::default(),
+        ))
+    }
 
-        let mut driver = TuiDriver::new(WindowedTextDisplayLogic { value }, 20, 5);
+    /// A column of five 2-line `TextDisplay`s (ids `"0"`..`"4"`) in a
+    /// 5-row viewport at offset `3` — a non-boundary offset, since each
+    /// child is 2 rows tall and `3` isn't a multiple of `2`. Child `"1"`
+    /// (rows `[2, 4)` globally) straddles the viewport's own top edge
+    /// (global row `3`): its painted `area` is cut to the one row still
+    /// inside the viewport, not the full two, and doesn't overlap `"2"`'s
+    /// own area painted right after it — `clip_main_axis`'s own
+    /// `cell_grid` clamp-and-shrink, not just a plain clamp to the
+    /// viewport's top edge, which would paint `"1"` at its full two-row
+    /// height there and overlap `"2"`.
+    #[test]
+    fn scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping() {
+        use quadraui::tui::testing::TuiDriver;
+
+        let logic = ScrollTextColumnLogic {
+            child_count: 5,
+            offset: 3.0,
+            engine: crate::engine::InteractionEngine::new(),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 5);
         driver.render();
-    }
+        let hits = driver.app().engine.hit_map();
+        let painted = painted_text_displays(&hits);
 
-    /// [`windowed_vec`]'s own documented shape: the band it materialises
-    /// starts at the absolute row the viewport is scrolled to, carries
-    /// this frame's loaded rows wherever the two overlap, and a
-    /// placeholder everywhere else.
-    #[test]
-    fn windowed_vec_materialises_the_band_with_the_loaded_slice_spliced_in() {
-        let loaded = vec!["a", "b", "c"];
-        let window = ItemsWindow {
-            start: 5,
-            total: 12,
-        };
-        let band = windowed_band(window, loaded.len(), 4, 5);
-        assert_eq!(band, WindowedBand { start: 4, len: 5 });
-        let out = windowed_vec(&loaded, window, band, |_| "_");
-        assert_eq!(out, vec!["_", "a", "b", "c", "_"]);
-    }
+        // `width` is 19, not the driver's own 20 -- `scroll_viewport_and_track`
+        // reserves a one-cell scrollbar gutter on the trailing edge of a
+        // vertical scroll's own cross axis (width) whenever there's
+        // anything to scroll, which this 10-row content in a 5-row
+        // viewport always has.
+        let want = vec![
+            ("1".to_string(), Rect::new(0.0, 0.0, 19.0, 1.0)),
+            ("2".to_string(), Rect::new(0.0, 1.0, 19.0, 2.0)),
+            ("3".to_string(), Rect::new(0.0, 3.0, 19.0, 2.0)),
+        ];
+        assert_eq!(painted, want);
 
-    /// A band near the end of the collection is short rather than
-    /// over-running it — the same clamp a primitive's own layout applies
-    /// to a descriptor's `scroll_offset`.
-    #[test]
-    fn windowed_band_clamps_to_the_collections_own_tail() {
-        let window = ItemsWindow {
-            start: 90,
-            total: 100,
-        };
-        let band = windowed_band(window, 10, 97, 32);
-        assert_eq!(band, WindowedBand { start: 97, len: 3 });
-        // An offset past the end still lands on a real row.
-        let band = windowed_band(window, 10, 500, 32);
-        assert_eq!(band, WindowedBand { start: 99, len: 1 });
-    }
-
-    /// A `window.total` that understates `window.start + loaded.len()`
-    /// never truncates the real loaded payload — the extent widens to fit
-    /// it instead.
-    #[test]
-    fn windowed_vec_widens_past_a_stale_undersized_total() {
-        let loaded = vec![1, 2, 3];
-        let window = ItemsWindow { start: 2, total: 3 };
-        let band = windowed_band(window, loaded.len(), 0, 8);
-        assert_eq!(band, WindowedBand { start: 0, len: 5 });
-        let out = windowed_vec(&loaded, window, band, |_| 0);
-        assert_eq!(out, vec![0, 0, 1, 2, 3]);
-    }
-
-    /// Neither an adversarial `window.total` nor a scroll offset deep
-    /// inside one drives the materialised `Vec` past a viewport's worth of
-    /// rows — the whole point of materialising a band instead of padding
-    /// out to `window.total`, and what keeps `Vec::with_capacity` off an
-    /// unbounded wire field.
-    #[test]
-    fn windowed_vec_never_materialises_more_than_the_band() {
-        let loaded = vec![0_u8; 10];
-        let window = ItemsWindow {
-            start: 0,
-            total: 10_000_000_000,
-        };
-        for scroll_offset in [0, 9_999_999_000] {
-            let band = windowed_band(window, loaded.len(), scroll_offset, 32);
-            assert_eq!(band.len, 32, "band stays bounded at {scroll_offset}");
-            let out = windowed_vec(&loaded, window, band, |_| 1_u8);
-            assert_eq!(out.len(), 32, "materialised rows at {scroll_offset}");
+        for i in 1..painted.len() {
+            let prev = painted[i - 1].1;
+            let next = painted[i].1;
+            assert!(
+                prev.y + prev.height <= next.y,
+                "{:?} overlaps {:?}",
+                prev,
+                next
+            );
         }
     }
 
-    /// [`windowed_band_rows`] bounds the band by the viewport's own row
-    /// capacity plus [`WINDOWED_BAND_PAD_ROWS`], so a 100,000-row
-    /// collection materialises a few dozen rows per frame rather than
-    /// 100,000 — on a cell-grid backend (TUI, `line_height == 1.0`) and a
-    /// pixel one alike.
+    /// A pixel backend's own metrics (`char_width`/`line_height` both
+    /// `> 1.0`) keep [`scroll_content_slots`]'s unclipped, negative-origin
+    /// rect for a `Children` slot — the contract
+    /// [`crate::hit::clip_hits_to_viewport`]'s own pixel-metrics
+    /// regression test (`hit::tests::clip_hits_to_viewport_keeps_a_local_frame_hits_translation_origin_unmoved`)
+    /// relies on `scroll_content_slots` itself upholding. A `Column` of
+    /// two 16px-tall children in a 50px viewport at `offset: 10.0`: the
+    /// second child's rect keeps its real (not yet negative, but still
+    /// un-clamped) `y`, `16.0 - 10.0 = 6.0`, computed the same way
+    /// whether or not it happens to land inside `viewport` — a
+    /// `cell_grid` backend's slot would instead clamp/shrink a span that
+    /// does stick out past the viewport's own edge, which this one, at
+    /// this particular offset, does not; `scroll_multi_row_child_at_non_boundary_offset_is_cut_not_overlapping`
+    /// above already covers that clamp on the `cell_grid` side.
     #[test]
-    fn windowed_band_rows_track_the_viewport_not_the_collection() {
-        assert_eq!(
-            quadraui::behaviour::row_window::band_rows_for(24.0, TUI_LINE_HEIGHT),
-            24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
+    fn scroll_content_slots_keeps_the_unclipped_rect_on_a_pixel_backend() {
+        let viewport = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let metrics = ScrollMetrics {
+            char_width: 8.0,
+            line_height: 16.0,
+        };
+        let content = LayoutNode::Column(LayoutContainer::new(
+            vec![one_line_text_display("a"), one_line_text_display("b")],
+            Spacing::default(),
+        ));
+        let mut tui = tui();
+        let content_len = natural_main_length(&mut tui, &content, ScrollAxis::Vertical, metrics);
+        assert_eq!(content_len, 32.0);
+        let slots = scroll_content_slots(
+            &mut tui,
+            viewport,
+            ScrollAxis::Vertical,
+            10.0,
+            &content,
+            content_len,
+            metrics,
         );
-        assert_eq!(
-            quadraui::behaviour::row_window::band_rows_for(
-                24.0 * PIXEL_LINE_HEIGHT,
-                PIXEL_LINE_HEIGHT
-            ),
-            24 + quadraui::behaviour::row_window::BAND_PAD_ROWS
-        );
-        // A degenerate `line_height` can't divide by zero into an
-        // unbounded band.
-        assert_eq!(
-            quadraui::behaviour::row_window::band_rows_for(1_000.0, 0.0),
-            quadraui::behaviour::row_window::BAND_PAD_ROWS
-        );
+        let ScrollSlots::Children(slots) = slots else {
+            panic!("a Column matching the scroll's own axis yields Children slots");
+        };
+        assert_eq!(slots[1].rect, Rect::new(0.0, 6.0, 100.0, 16.0));
     }
 }

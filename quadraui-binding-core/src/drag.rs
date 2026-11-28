@@ -1,30 +1,26 @@
-//! Divider and tree-scrollbar drag state, plus the small hit-map lookups
-//! ([`find_split_layout`], [`find_data_table_layout`], [`tree_row_path`],
-//! [`tree_scroll_state`]) that arm and drive
-//! them. A binding arms [`ActiveDrag`]/[`ScrollbarDrag`]/
-//! [`DataTableColumnDrag`]/[`ScrollDrag`] on the matching `MouseDown` and
-//! clears it on the matching `MouseUp`; while armed, every `MouseMoved`
-//! becomes a synthesized `UiEvent::SplitDividerDragged`/
-//! `ScrollOffsetChanged`/`UiEvent::DataTable(.., ColumnResized)` instead of
-//! the raw move. [`scroll_view_at`]/[`scroll_scrollbar`]/
-//! [`enclosing_scroll_child`] are the `LayoutNode::Scroll` counterpart of
-//! [`tree_scroll_state`] — a generic container has no row-indexed geometry
-//! of its own, so these rebuild a [`quadraui::ScrollView`] (for the
-//! wheel/keyboard delta math) and hand back the already-painted
-//! [`quadraui::Scrollbar`] separately, rather than one combined tuple.
+//! Container drag state, plus the small hit-map lookups
+//! ([`find_split_layout`], [`find_split_tree_layout`], [`scroll_view_at`],
+//! [`scroll_scrollbar`], [`enclosing_scroll_child`]) that arm and drive
+//! them. A binding arms [`ActiveDrag`]/[`ScrollDrag`] on the matching
+//! `MouseDown` and clears it on the matching `MouseUp`; while armed, every
+//! `MouseMoved` becomes a synthesized `UiEvent::SplitDividerDragged`/
+//! `ScrollOffsetChanged` instead of the raw move. A widget's own drags (a
+//! table's column divider, a list's or tree's scrollbar thumb) are the
+//! widget's: it captures the pointer through its `Interactive::handle`.
 //! [`GestureDrag`] is a different shape entirely: a generic draggable/
 //! drop-target gesture over ANY leaf `InteractionEngine::drag_roles`
-//! marks, rather than a fixed-geometry divider/thumb — see its own doc.
+//! marks, rather than a fixed-geometry divider/thumb — see its own doc,
+//! and [`DragGestureWireEvent`] for what it reports.
 
 use std::collections::HashMap;
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
-    DataTableLayout, Point, Rect, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout,
-    SplitTreeLayout, TreePath, WidgetId,
+    Point, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout,
+    SplitTreeLayout, WidgetId,
 };
 
-use crate::hit::{hit_test_painted, loaded_row_path, HitDetail, PaintedHit};
+use crate::hit::{hit_test_painted, HitDetail, PaintedHit};
 use crate::wire::DragRole;
 
 /// A divider drag in progress: armed by the binding's own event handler on a
@@ -124,149 +120,9 @@ pub fn find_split_tree_layout(hit_map: &[PaintedHit], id: WidgetId) -> Option<Sp
     })
 }
 
-/// A column-resize drag in progress: armed by the binding's own event
-/// handler on a `MouseDown` landing on `HitDetail::DataTableHeaderDivider`,
-/// and cleared on the matching `MouseUp` — mirrors [`ActiveDrag`]'s divider
-/// bookkeeping. `area`/`layout` are the `DataTable`'s own paint geometry as
-/// painted the frame the drag started, snapshotted (rather than re-read each
-/// move) for the same reason `ActiveDrag::layout` is: a drag stays anchored
-/// to the geometry the user actually grabbed even if a handler-driven
-/// re-render shifts the divider under the cursor mid-drag. `col` is the
-/// column to the LEFT of the dragged divider, per
-/// [`quadraui::DataTableHit::HeaderDivider`].
-pub struct DataTableColumnDrag {
-    pub widget: WidgetId,
-    pub col: usize,
-    pub area: Rect,
-    pub layout: DataTableLayout,
-}
-
-impl DataTableColumnDrag {
-    /// Floor a dragged column is clamped to, so a drag can never collapse it
-    /// (or, by underflow, the divider past it) to nothing.
-    const MIN_WIDTH: f32 = 4.0;
-
-    /// The width `col` should resize to for a pointer now at `point` (same
-    /// absolute frame as `area`), per the "`App should update
-    /// column_overrides[col]`" contract [`quadraui::DataTableEvent::ColumnResized`]
-    /// documents — a single column's width, not the paired
-    /// last-column-absorbs model [`DataTableLayout::drag_divider`] computes
-    /// for a Rust app driving the primitive directly.
-    pub fn width_at(&self, point: Point) -> f32 {
-        let local_x = point.x - self.area.x;
-        let content_x = (local_x - self.layout.inset_x) + self.layout.h_scroll;
-        let col_x = self.layout.columns[self.col].x;
-        (content_x - col_x).max(Self::MIN_WIDTH)
-    }
-}
-
-/// Re-finds the `(area, layout)` of the `DataTable` hit painted under id
-/// `id` this frame, so a `MouseDown` landing on
-/// `HitDetail::DataTableHeaderDivider` can snapshot it into a
-/// [`DataTableColumnDrag`].
-pub fn find_data_table_layout(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(Rect, DataTableLayout)> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::DataTable {
-            id: hit_id,
-            area,
-            layout,
-            ..
-        } if *hit_id == id => Some((*area, layout.clone())),
-        _ => None,
-    })
-}
-
-/// The [`TreePath`] of the row at ABSOLUTE index `row` within the `Tree`
-/// hit painted under id `id` this frame, or `None` if that tree isn't in
-/// the current hit map (e.g. the frame that produced this hit test is
-/// stale) or `row` is a windowed tree's not-yet-loaded position — see
-/// [`crate::hit::loaded_row_path`], which this delegates the
-/// loaded-slice-relative lookup to.
-pub fn tree_row_path(hit_map: &[PaintedHit], id: WidgetId, row: usize) -> Option<TreePath> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Tree {
-            id: hit_id,
-            row_paths,
-            loaded_rows,
-            ..
-        } if *hit_id == id => loaded_row_path(row_paths, *loaded_rows, row).cloned(),
-        _ => None,
-    })
-}
-
-/// A tree scrollbar thumb drag in progress: armed by the binding's own event handler
-/// on a `MouseDown` landing on `HitDetail::TreeScrollbarThumb`, and cleared
-/// on the matching `MouseUp` — mirrors [`ActiveDrag`]'s divider-drag
-/// bookkeeping. `drag` is the [`ThumbDrag`] snapshotted the frame the drag
-/// started, so a later re-render shifting the thumb under the cursor never
-/// retargets a drag already in progress.
-pub struct ScrollbarDrag {
-    pub widget: WidgetId,
-    pub drag: ThumbDrag,
-}
-
-/// The `(Scrollbar, total_rows, viewport_rows, scroll_offset)` of the
-/// `Tree` hit painted under id `id` this frame, or `None` if that tree
-/// isn't in the current hit map or has no scrollbar (its rows fit without
-/// scrolling). Used both to arm a thumb drag (needs [`Scrollbar::travel`]
-/// and the current `scroll_offset` as the drag's origin) and to compute a
-/// track-click page or a wheel notch (needs `total_rows`/`viewport_rows`
-/// for the `max_offset` clamp and `scroll_offset` as the value to move
-/// from). `total_rows` comes straight off [`PaintedHit::Tree::total_rows`]
-/// rather than `row_paths.len()`: on a windowed tree the two can differ
-/// (`row_paths` only ever spans the loaded slice, while `total_rows` is the
-/// collection's real, possibly much larger, extent), and a scrollbar drag
-/// needs the real one.
-pub fn tree_scroll_state(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(Scrollbar, usize, usize, usize)> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Tree {
-            id: hit_id,
-            scrollbar,
-            total_rows,
-            viewport_rows,
-            scroll_offset,
-            ..
-        } if *hit_id == id => scrollbar
-            .clone()
-            .map(|sb| (sb, *total_rows, *viewport_rows, *scroll_offset)),
-        _ => None,
-    })
-}
-
-/// The `(total_lines, viewport_lines, scroll_offset)` of the `TextDisplay`
-/// hit painted under id `id` this frame, or `None` if that display isn't in
-/// the current hit map — mirrors [`tree_scroll_state`], minus the
-/// `Scrollbar` (a wheel notch over a `TextDisplay` scrolls it whether or not
-/// `show_scrollbar` painted one).
-pub fn text_display_scroll_state(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-) -> Option<(usize, usize, usize)> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::TextDisplay {
-            id: hit_id,
-            layout,
-            total_lines,
-            viewport_lines,
-            ..
-        } if *hit_id == id => Some((*total_lines, *viewport_lines, layout.resolved_scroll_offset)),
-        _ => None,
-    })
-}
-
 /// A `Scroll` scrollbar thumb drag in progress: armed by the binding's own
 /// event handler on a `MouseDown` landing on `HitDetail::ScrollScrollbarThumb`,
-/// and cleared on the matching `MouseUp` — mirrors [`ScrollbarDrag`]'s own
-/// bookkeeping, kept as a separate field/type rather than reused outright
-/// because a `Scroll` can scroll along either axis (a `Tree`'s own
-/// scrollbar is always vertical, so [`ScrollbarDrag`]'s own `MouseMoved`
-/// continuation only ever reads `position.y`). `axis` is the dragged
+/// and cleared on the matching `MouseUp`. `axis` is the dragged
 /// scrollbar's own [`ScrollAxis`] — [`Self`]'s own `MouseMoved`
 /// continuation reads `position.y` for [`ScrollAxis::Vertical`],
 /// `position.x` for [`ScrollAxis::Horizontal`].
@@ -307,8 +163,8 @@ pub fn scroll_view_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<ScrollView
 
 /// The [`Scrollbar`] [`crate::render::paint_scroll`] painted this frame for
 /// the `Scroll` hit under id `id`, or `None` when that scroll isn't in the
-/// current hit map or has nothing to scroll (no scrollbar painted, same as
-/// [`tree_scroll_state`]'s own `None` case) — used both to arm a thumb drag
+/// current hit map or has nothing to scroll (no scrollbar painted) — used
+/// both to arm a thumb drag
 /// ([`Scrollbar::travel`], feeding [`ThumbDrag::begin`]'s own `travel`) and
 /// to page the track ([`Scrollbar::press_zone`]).
 pub fn scroll_scrollbar(hit_map: &[PaintedHit], id: WidgetId) -> Option<Scrollbar> {
@@ -408,4 +264,56 @@ pub fn gesture_target_at(
     } else {
         None
     }
+}
+
+/// Wire-shaped drag-gesture event [`crate::engine::InteractionEngine::handle`]
+/// dispatches through [`crate::engine::EventSink::dispatch_drag_gesture`],
+/// a default method on that trait: it defaults to ignoring the event and
+/// reporting [`quadraui::Reaction::Continue`], so every existing
+/// [`crate::engine::EventSink`] impl keeps compiling unchanged until a
+/// binding deliberately overrides it to thread this to its own callback.
+/// Derives `Serialize` only, not `Deserialize`: [`HitDetail`] — the shape
+/// every `*_detail` field below reuses rather than inventing a second
+/// drag-specific hit description — has no `Deserialize` of its own either,
+/// since neither type has a reverse (host -> engine) decode path.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DragGestureWireEvent {
+    /// A `MouseDown` landed on a leaf
+    /// [`crate::engine::InteractionEngine::drag_roles`] marks
+    /// [`crate::wire::DragRole::draggable`] — the gesture's own arming
+    /// moment. Dispatched before the leaf's own ordinary click/selection
+    /// semantics (if any) also fire through [`crate::engine::EventSink::dispatch`]
+    /// for the same `MouseDown` — the two are independent effects of one
+    /// press, not alternatives.
+    DragStarted {
+        source: WidgetId,
+        source_detail: HitDetail,
+    },
+    /// The pointer moved onto a NEW leaf `drag_roles` marks
+    /// [`crate::wire::DragRole::drop_target`] while the gesture above is
+    /// still armed — dispatched once per target change (including back to
+    /// the same leaf under a different [`HitDetail`], e.g. a different
+    /// `List` row), never on every `MouseMoved` pixel that lands on the
+    /// unchanged target.
+    DragOver {
+        source: WidgetId,
+        source_detail: HitDetail,
+        target: WidgetId,
+        target_detail: HitDetail,
+    },
+    /// The gesture ended (`MouseUp`) while hovering a valid drop target —
+    /// the host applies whatever mutation `source`/`source_detail` dropped
+    /// onto `target`/`target_detail` stands for (e.g. reordering a
+    /// `List`'s own backing collection from `source_detail`'s row index to
+    /// `target_detail`'s). A `MouseUp` with no drop target under the
+    /// pointer ends the gesture silently instead — no `Dropped` is
+    /// dispatched at all.
+    Dropped {
+        source: WidgetId,
+        source_detail: HitDetail,
+        target: WidgetId,
+        target_detail: HitDetail,
+    },
 }

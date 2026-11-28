@@ -7,12 +7,12 @@
 //! `DataTable`, `TabBar`), one descriptor per type — but the boundary itself
 //! is meant to be shippable: every entry point is panic-guarded, every
 //! failure maps to a documented integer code, and every pointer handed out
-//! has a stated owner. The six-slot model and its band painter are
-//! [`quadraui_binding_core::BindingHost`] and
-//! [`quadraui_binding_core::draw_bands`] — the same language-neutral slot
-//! store and painter `quadraui-py` is a leaf over — so this crate decodes
-//! JSON into `quadraui`'s own descriptor types and leaves the slot
-//! bookkeeping and layout to that shared crate.
+//! has a stated owner. Each slot id names one widget kind ([`slot_kind`]);
+//! a descriptor decodes through `quadraui`'s own kind registry
+//! ([`quadraui::decode_widget`]) into [`quadraui_binding_core::BindingHost`]'s
+//! per-kind widget map, and [`quadraui_binding_core::draw_bands`] — the
+//! same language-neutral band painter `quadraui-py` is a leaf over — lays
+//! them out.
 //!
 //! The original, larger half of this surface runs on the headless `tui`
 //! backend ([`quadraui::tui::testing::TuiDriver`]), so a consumer gets a real
@@ -164,8 +164,8 @@ use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, Key, ListView, ListViewHit, Modifiers, NamedKey, Point,
-    Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
+    AppLogic, Backend, Key, ListView, ListViewHit, Modifiers, NamedKey, Point, Reaction, Rect,
+    UiEvent, Viewport,
 };
 use quadraui_binding_core::{draw_bands, panic_message, BindingHost};
 
@@ -532,8 +532,8 @@ fn reaction_from_code(code: i32) -> Reaction {
 }
 
 /// The [`AppLogic`] the C side drives: a thin leaf around
-/// [`BindingHost`] — the same six-fixed-slot model `quadraui-py` is a leaf
-/// over — plus the host's callbacks. This crate exposes only the six fixed
+/// [`BindingHost`] — whose per-kind widget map holds one descriptor per
+/// slot — plus the host's callbacks. This crate exposes only the six
 /// slots over the C ABI, so the backend-settings replay fields stay
 /// empty/unused here.
 struct FfiApp {
@@ -542,25 +542,27 @@ struct FfiApp {
 }
 
 impl FfiApp {
-    fn slot_occupied(&self, slot: i32) -> bool {
-        self.host.slot_occupied(i64::from(slot))
+    fn slot_occupied(&self, kind: &str) -> bool {
+        self.host.widgets.contains_key(kind)
     }
 
     /// Empties one slot, returning whether it held anything.
-    fn clear_slot(&mut self, slot: i32) -> bool {
-        self.host.clear_slot(i64::from(slot))
+    fn clear_slot(&mut self, kind: &str) -> bool {
+        self.host.widgets.remove(kind).is_some()
     }
 }
 
-/// Name of the primitive a slot id holds, or `None` for an unknown id.
-fn slot_label(slot: i32) -> Option<&'static str> {
+/// The widget kind a slot id holds (the key `quadraui`'s kind registry
+/// decodes it under) and the primitive's name for error messages, or
+/// `None` for an unknown id.
+fn slot_kind(slot: i32) -> Option<(&'static str, &'static str)> {
     Some(match slot {
-        QUI_SLOT_BUTTON => "Button",
-        QUI_SLOT_TEXT_DISPLAY => "TextDisplay",
-        QUI_SLOT_LIST => "ListView",
-        QUI_SLOT_TREE => "TreeView",
-        QUI_SLOT_DATA_TABLE => "DataTable",
-        QUI_SLOT_TAB_BAR => "TabBar",
+        QUI_SLOT_BUTTON => ("button", "Button"),
+        QUI_SLOT_TEXT_DISPLAY => ("text_display", "TextDisplay"),
+        QUI_SLOT_LIST => ("list", "ListView"),
+        QUI_SLOT_TREE => ("tree", "TreeView"),
+        QUI_SLOT_DATA_TABLE => ("data_table", "DataTable"),
+        QUI_SLOT_TAB_BAR => ("tab_bar", "TabBar"),
         _ => return None,
     })
 }
@@ -587,7 +589,7 @@ impl AppLogic for FfiApp {
         // hit-testing feature of its own, so the painted hits it collects
         // are discarded rather than fed to an `InteractionEngine`.
         let mut hits = Vec::new();
-        draw_bands(backend, self.host.render_refs(), &mut hits);
+        draw_bands(backend, &self.host.widgets, &mut hits);
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -710,13 +712,13 @@ unsafe fn insert_descriptor(
             Ok(text) => text,
             Err(code) => return i64::from(code),
         };
-        let Some(label) = slot_label(slot) else {
+        let Some((kind, label)) = slot_kind(slot) else {
             return fail_i64(
                 QUI_ERR_UNKNOWN_SLOT,
                 format!("{name}: unknown slot id {slot}"),
             );
         };
-        if app.driver.app().slot_occupied(slot) {
+        if app.driver.app().slot_occupied(kind) {
             return fail_i64(
                 QUI_ERR_SLOT_OCCUPIED,
                 format!(
@@ -742,52 +744,18 @@ unsafe fn insert_descriptor(
             }
         };
 
-        // One arm per slot rather than a generic helper: every slot that
-        // calls this macro stores into its own named `BindingHost` field
-        // (`QUI_SLOT_BUTTON` below is the one exception, decoding into
-        // `host.widgets` instead), so there's no single `field: Option<T>`
-        // to be generic over even though the decode itself —
-        // `quadraui_binding_core::decode_value` — is shared with every
-        // other binding's fixed-slot descriptor decode.
-        macro_rules! decode_into {
-            ($ty:ty, $field:ident) => {
-                match quadraui_binding_core::decode_value::<$ty, _>(label, &value) {
-                    Ok(decoded) => app.driver.app_mut().host.$field = Some(decoded),
-                    // `decode_value`'s error already reads "{label}: invalid
-                    // descriptor: {err}", so this doesn't repeat "{label}"
-                    // itself — just the entry point name for a host grepping
-                    // `qui_last_error()`.
-                    Err(err) => return fail_i64(QUI_ERR_INVALID_JSON, format!("{name}: {err}")),
-                }
-            };
-        }
-
-        match slot {
-            // `Button` is a `quadraui_binding_core::widget_kinds::WIDGET_KINDS`
-            // member, not its own `BindingHost` field, so it decodes into
-            // `host.widgets`'s `"button"` entry instead of `decode_into!`'s
-            // single-named-field shape every other slot below still uses.
-            QUI_SLOT_BUTTON => {
-                match quadraui_binding_core::decode_value::<Button, _>(label, &value) {
-                    Ok(decoded) => {
-                        app.driver
-                            .app_mut()
-                            .host
-                            .widgets
-                            .insert("button".to_string(), std::rc::Rc::new(decoded));
-                    }
-                    Err(err) => return fail_i64(QUI_ERR_INVALID_JSON, format!("{name}: {err}")),
-                }
+        match quadraui::decode_widget(kind, value) {
+            Ok(decoded) => {
+                app.driver
+                    .app_mut()
+                    .host
+                    .widgets
+                    .insert(kind.to_string(), std::rc::Rc::from(decoded));
             }
-            QUI_SLOT_TEXT_DISPLAY => decode_into!(TextDisplay, text_display),
-            QUI_SLOT_LIST => decode_into!(ListView, list),
-            QUI_SLOT_TREE => decode_into!(TreeView, tree),
-            QUI_SLOT_DATA_TABLE => decode_into!(DataTable, data_table),
-            QUI_SLOT_TAB_BAR => decode_into!(TabBar, tab_bar),
-            _ => {
+            Err(err) => {
                 return fail_i64(
-                    QUI_ERR_UNKNOWN_SLOT,
-                    format!("{name}: unknown slot id {slot}"),
+                    QUI_ERR_INVALID_JSON,
+                    format!("{name}: {label}: invalid descriptor: {err}"),
                 )
             }
         }
@@ -930,13 +898,13 @@ pub unsafe extern "C" fn qui_slot_clear(app: *mut QuiApp, slot: i32) -> i32 {
     const NAME: &str = "qui_slot_clear";
     clear_last_error();
     with_handle_mut(NAME, app, |app| {
-        if slot_label(slot).is_none() {
+        let Some((kind, _)) = slot_kind(slot) else {
             return fail(
                 QUI_ERR_UNKNOWN_SLOT,
                 format!("{NAME}: unknown slot id {slot}"),
             );
-        }
-        app.driver.app_mut().clear_slot(slot);
+        };
+        app.driver.app_mut().clear_slot(kind);
         app.driver.render();
         QUI_OK
     })

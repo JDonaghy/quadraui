@@ -2676,6 +2676,18 @@ impl crate::primitive::Primitive for ListView {
         Some(&self.id)
     }
 
+    /// One line-height row per row of the real collection — what a
+    /// container sizing this list to its content gives it. No intrinsic
+    /// width.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let _ = avail;
+        crate::NaturalSize::new(None, Some(self.row_count() as f32 * ctx.line_height.max(1.0)))
+    }
+
     /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so
     /// a `ListView` reached through [`crate::frame::Surface::Widget`]
     /// replays through [`crate::backend::DrawsPrimitives::draw_primitive`]

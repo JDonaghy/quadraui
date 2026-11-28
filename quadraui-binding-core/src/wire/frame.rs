@@ -10,16 +10,13 @@ use serde_json::Value;
 
 use quadraui::primitive::DynWidget;
 
-use crate::layout::{LayoutNode, LEAF_KIND_KEYS};
+use crate::layout::LayoutNode;
 use crate::render::RenderFrame;
 use crate::widget_kinds::{decode_widget_leaf, widget_leaf_kinds};
 use crate::DecodeError;
 
 use super::layout::LAYOUT_NODE_KEYS;
-use super::value::{
-    check_unknown_keys, decode_value_checked, obj_get, DecodeDiagnostics, TEXT_DISPLAY_EXTRA_KEYS,
-    UNIVERSAL_NODE_SIBLING_KEYS, WINDOWED_LEAF_EXTRA_KEYS,
-};
+use super::value::{check_unknown_keys, obj_get, DecodeDiagnostics, UNIVERSAL_NODE_SIBLING_KEYS};
 
 // ─── Render output (flat frame vs. layout tree) ────────────────────────────
 
@@ -56,13 +53,11 @@ pub(super) fn is_layout_tree(value: &Value) -> bool {
 }
 
 /// Every key [`layout_node_from_value_inner`] dispatches a node or leaf
-/// kind on: every [`LAYOUT_NODE_KEYS`] container, every fixed
-/// [`crate::layout::LEAF_KIND_KEYS`] leaf, and every generic
+/// kind on: every [`LAYOUT_NODE_KEYS`] container and every
 /// [`crate::widget_kinds::widget_leaf_kinds`] leaf.
 pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
     LAYOUT_NODE_KEYS
         .iter()
-        .chain(LEAF_KIND_KEYS.iter())
         .copied()
         .chain(widget_leaf_kinds())
         .collect()
@@ -82,9 +77,7 @@ pub(super) fn unknown_node_kind_key(value: &Value) -> Option<&str> {
     let obj = value.as_object()?;
     let widget_kinds = widget_leaf_kinds();
     let has_recognized_kind = obj.keys().any(|k| {
-        LAYOUT_NODE_KEYS.contains(&k.as_str())
-            || LEAF_KIND_KEYS.contains(&k.as_str())
-            || widget_kinds.contains(&k.as_str())
+        LAYOUT_NODE_KEYS.contains(&k.as_str()) || widget_kinds.contains(&k.as_str())
     });
     if has_recognized_kind {
         return None;
@@ -120,43 +113,11 @@ pub(super) fn check_wire_version(what: &str, value: &Value) -> Result<(), Decode
     Ok(())
 }
 
-/// Reads and decodes one optional slot entry from a render callback's
-/// returned `dict`: a missing key or a `null` value both mean "draw
-/// nothing in this slot this frame"; anything else must be a `dict`
-/// decodable into `T`. An unrecognized key inside that dict routes through
-/// `diagnostics` via [`decode_value_checked`], the same strict/warn policy
-/// a layout-tree leaf's own body already gets. `extra_keys` is forwarded
-/// straight to [`decode_value_checked`] — `&WINDOWED_LEAF_EXTRA_KEYS` for
-/// `"list"`/`"tree"`/`"data_table"`, `&TEXT_DISPLAY_EXTRA_KEYS` for
-/// `"text_display"`, `&[]` for every other slot.
-fn slot_entry<T: serde::de::DeserializeOwned>(
-    diagnostics: &DecodeDiagnostics,
-    what: &str,
-    value: &Value,
-    key: &str,
-    extra_keys: &[&str],
-) -> Result<Option<T>, DecodeError> {
-    match obj_get(value, key) {
-        Some(v) => {
-            if !v.is_object() {
-                return Err(DecodeError::type_mismatch(what, key, "an object or null"));
-            }
-            Ok(Some(decode_value_checked(
-                diagnostics,
-                what,
-                key,
-                v,
-                extra_keys,
-            )?))
-        }
-        None => Ok(None),
-    }
-}
-
 /// Reads and decodes one optional generic-widget slot entry, keyed by
 /// `kind` (one of [`crate::widget_kinds::widget_leaf_kinds`]), from a render
-/// callback's returned `dict`. Mirrors [`slot_entry`]'s missing/
-/// `null`/dict-or-error shape, dispatching the decode through
+/// callback's returned `dict`: a missing key or a `null` value both mean
+/// "draw nothing in this slot this frame"; anything else must be a `dict`,
+/// decoded through
 /// [`decode_widget_leaf`] — the flat-frame counterpart of [`crate::wire::leaf::layout_leaf_from_value`]'s
 /// own `widget_leaf_kinds()` loop.
 fn widget_slot_entry(
@@ -185,17 +146,9 @@ pub(crate) fn render_frame_from_value(
     diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderFrame, DecodeError> {
     let widget_kinds = widget_leaf_kinds();
-    let known_keys: Vec<&str> = [
-        "text_display",
-        "list",
-        "tree",
-        "data_table",
-        "tab_bar",
-        "wire_version",
-    ]
-    .into_iter()
-    .chain(widget_kinds.iter().copied())
-    .collect();
+    let known_keys: Vec<&str> = std::iter::once("wire_version")
+        .chain(widget_kinds.iter().copied())
+        .collect();
     check_unknown_keys(diagnostics, what, "render output", value, &known_keys)?;
     let mut widgets = HashMap::new();
     for kind in widget_kinds {
@@ -203,32 +156,7 @@ pub(crate) fn render_frame_from_value(
             widgets.insert(kind.to_string(), v);
         }
     }
-    let list_scroll_px = obj_get(value, "list").and_then(crate::scroll_px_from_value);
-    let tree_scroll_px = obj_get(value, "tree").and_then(crate::scroll_px_from_value);
-    let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
-    Ok(RenderFrame {
-        text_display: slot_entry(
-            diagnostics,
-            what,
-            value,
-            "text_display",
-            &TEXT_DISPLAY_EXTRA_KEYS,
-        )?,
-        list: slot_entry(diagnostics, what, value, "list", &WINDOWED_LEAF_EXTRA_KEYS)?,
-        tree: slot_entry(diagnostics, what, value, "tree", &WINDOWED_LEAF_EXTRA_KEYS)?,
-        data_table: slot_entry(
-            diagnostics,
-            what,
-            value,
-            "data_table",
-            &WINDOWED_LEAF_EXTRA_KEYS,
-        )?,
-        tab_bar: slot_entry(diagnostics, what, value, "tab_bar", &[])?,
-        widgets,
-        list_scroll_px,
-        tree_scroll_px,
-        data_table_scroll_px,
-    })
+    Ok(RenderFrame { widgets })
 }
 
 #[cfg(test)]
@@ -259,8 +187,8 @@ mod tests {
             panic!("expected a flat frame");
         };
         assert!(frame.widgets.contains_key("button"));
-        assert!(frame.list.is_none());
-        assert!(frame.text_display.is_none());
+        assert!(!frame.widgets.contains_key("list"));
+        assert!(!frame.widgets.contains_key("text_display"));
     }
 
     /// A render callback's flat `dict` carrying a [`crate::widget_kinds::WIDGET_KINDS`]
