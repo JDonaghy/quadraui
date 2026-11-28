@@ -56,21 +56,34 @@ pub trait View {
     }
 
     /// Whether an event that produced no message closes the app. By
-    /// default `q`, Escape and Ctrl-C do, once no focused widget took the
-    /// key (typing `q` into a text field types it). Return `false` to
-    /// keep running on every key.
+    /// default `q` and Escape do when no focused widget took or reported
+    /// the key (typing `q` into a text field types it, and a focused list
+    /// keeps `q` for itself), and Ctrl-C does unless a focused widget
+    /// consumed it (a text field takes it as copy). Return `false` to keep
+    /// running on every key.
     fn quits_on(&self, event: &UiEvent) -> bool {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
             return false;
         };
         let plain = !(modifiers.ctrl || modifiers.alt || modifiers.cmd);
         match key {
-            Key::Char('q') => plain,
-            Key::Char('c') => modifiers.ctrl && !modifiers.alt && !modifiers.cmd,
-            Key::Named(NamedKey::Escape) => plain,
-            _ => false,
+            Key::Char('q') | Key::Named(NamedKey::Escape) => plain,
+            _ => is_ctrl_c(event),
         }
     }
+}
+
+/// Ctrl-C, the quit key a focused widget's report of the key does not
+/// hold back.
+pub(crate) fn is_ctrl_c(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::KeyPressed {
+            key: Key::Char('c' | 'C'),
+            modifiers,
+            ..
+        } if modifiers.ctrl && !modifiers.alt && !modifiers.cmd
+    )
 }
 
 /// What the runner does after [`View::update`].

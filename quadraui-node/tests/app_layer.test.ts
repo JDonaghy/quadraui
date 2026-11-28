@@ -86,7 +86,7 @@ test("every id-bearing node constructor accepts an omitted id", () => {
 test("auto ids from every node constructor are stable across re-render", () => {
   const app = new App(20, 5, {
     view: () =>
-      Split(Tree([], { onRowClick: () => {} }), Table([], [], { onSelect: () => {} })),
+      Split(Tree([], { onClick: () => {} }), Table([], [], { onSelect: () => {} })),
   });
   const idsBefore = Object.keys(app._registry).sort();
   app.step();
@@ -116,7 +116,7 @@ test("tree row click and toggle-expand dispatch to their own callback", () => {
         [{ path: [0], indent: 0, icon: null, text: { spans: [] }, badge: null, is_expanded: false }],
         {
           id: "t:tree",
-          onRowClick: (path: unknown) => clicked.push(path),
+          onClick: (path: unknown, button: unknown) => clicked.push([path, button]),
           onToggleExpand: (path: unknown) => toggled.push(path),
         },
       ),
@@ -124,7 +124,7 @@ test("tree row click and toggle-expand dispatch to their own callback", () => {
 
   app.pushEvent({ Tree: ["t:tree", { RowClicked: { path: [0], button: "Left", modifiers: NO_MODS } }] });
   app.step();
-  assert.deepEqual(clicked, [[0]]);
+  assert.deepEqual(clicked, [[[0], "Left"]]);
   assert.deepEqual(toggled, []);
 
   app.pushEvent({ Tree: ["t:tree", { RowToggleExpand: { path: [0] } }] });

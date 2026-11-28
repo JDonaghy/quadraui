@@ -810,7 +810,7 @@ def Tree(
     selected_path: Optional[list[int]] = None,
     has_focus: bool = False,
     style: Optional["TreeStyle"] = None,
-    on_row_click: Optional[Callable[[list[int]], None]] = None,
+    on_click: Optional[Callable[[list[int], str], None]] = None,
     on_toggle_expand: Optional[Callable[[list[int]], None]] = None,
     on_activate: Optional[Callable[[list[int]], None]] = None,
     on_select: Optional[Callable[[list[int]], None]] = None,
@@ -820,9 +820,10 @@ def Tree(
     min: Optional[float] = None,
     max: Optional[float] = None,
 ) -> Node:
-    """A `TreeRowDescriptor` list. `on_row_click` fires on `RowClicked`
-    (a row body press with any button but the right one -- the event's
-    `button` tells them apart); `on_toggle_expand` on `RowToggleExpand`
+    """A `TreeRowDescriptor` list. `on_click(path, button)` fires on
+    `RowClicked` (a row body press with any button but the right one;
+    `button` is `"Left"`, `"Middle"`, `"X1"`, ... as for `List` and
+    `Table`); `on_toggle_expand` on `RowToggleExpand`
     (the chevron); `on_activate` on `RowDoubleClicked`; `on_select` on
     `SelectionChanged`; `on_selection(paths)` on `SelectionSet` (with
     `selection_mode="Multi"`, a Ctrl/Cmd or Shift click);
@@ -842,7 +843,7 @@ def Tree(
         return {"id": node_id, "tree": payload}
 
     callbacks = _callbacks(
-        on_row_click=on_row_click,
+        on_click=on_click,
         on_toggle_expand=on_toggle_expand,
         on_activate=on_activate,
         on_select=on_select,

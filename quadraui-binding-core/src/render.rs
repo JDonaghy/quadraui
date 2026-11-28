@@ -1415,8 +1415,9 @@ fn clip_main_axis(
 /// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
 /// own row count (height only — none of the three has a cheap intrinsic
 /// width), a generic widget via its own `Primitive::measure`, and a nested
-/// `Row`/`Column` as [`NaturalSize::stacked`] over its children, the same
-/// measure the Rust app layer gives a stack. Every other node kind
+/// `Row`/`Column` as [`NaturalSize::stacked`] over its children grown by
+/// its own padding and margin ([`quadraui::Spacing::outset`]),
+/// the same measure the Rust app layer gives a stack. Every other node kind
 /// (`Split`/`Tabs`/`SidebarPanel`/`SplitTree`) has no cheap measurement at
 /// this layer and reports [`None`] on both axes — see
 /// [`NaturalSize::main`]/[`NaturalSize::cross`]'s callers for how each
@@ -1451,7 +1452,10 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             .iter()
             .map(|child| natural_size(backend, &child.node, line_height))
             .collect();
-        return NaturalSize::stacked(children, horizontal, gap);
+        let content = NaturalSize::stacked(children, horizontal, gap);
+        return container
+            .spacing
+            .outset(content, backend.char_width(), line_height);
     }
     let LayoutNode::Leaf(leaf) = node else {
         return NaturalSize::NONE;

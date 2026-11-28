@@ -243,7 +243,8 @@ function keyPressed(event: unknown): [Record<string, unknown>, boolean] | null {
 }
 
 /**
- * Ctrl-C in any key shape; `q` or Escape only as a bare `KeyPressed`, which
+ * Ctrl-C in any key shape that reaches the app (a focused text field
+ * consumes it, so it never arrives); `q` or Escape only as a bare `KeyPressed`, which
  * no focused widget claimed (a focused widget's keys arrive wrapped in its
  * own event, and a focused text field turns `q` into an edit).
  */
@@ -283,7 +284,7 @@ const CONTAINER_EVENT_MAP: Record<
   Record<string, [string, (payload: Record<string, unknown>) => unknown[]]>
 > = {
   Tree: {
-    RowClicked: ["on_row_click", (p) => [p.path]],
+    RowClicked: ["on_click", (p) => [p.path, p.button]],
     RowToggleExpand: ["on_toggle_expand", (p) => [p.path]],
     RowDoubleClicked: ["on_activate", (p) => [p.path]],
     SelectionChanged: ["on_select", (p) => [p.path]],
@@ -390,8 +391,9 @@ export interface AppOptions {
    */
   onEvent?(event: unknown): boolean | void;
   /**
-   * Ctrl-C always quits, and `q` or Escape quit when no focused widget
-   * consumed the key. `false` turns all three off. Defaults to `true`.
+   * `q` or Escape quit unless the focused widget takes the key, and Ctrl-C
+   * quits unless a focused text field takes it. `false` turns all three
+   * off. Defaults to `true`.
    */
   quitKeys?: boolean;
   /**

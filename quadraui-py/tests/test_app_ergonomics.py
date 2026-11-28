@@ -270,3 +270,61 @@ def test_an_unknown_size_spelling_raises(size):
 def test_a_child_without_size_carries_no_layout_keys():
     built = _wire(Column(Button("b", id="b")))
     assert set(built["column"][0]) == {"id", "button"}
+
+
+def test_a_padded_content_sized_row_keeps_its_children():
+    app = App(30, 8, view=lambda: Column(Row(Button("ok", id="ok", size="content"), padding=16, size="content"), Text("below", size=None)))
+    screen = app.screen()
+    assert "[ ok ]" in screen, screen
+    assert _row_of(screen, "[ ok ]") >= 1, screen
+    assert _row_of(screen, "below") > _row_of(screen, "[ ok ]") + 1, screen
+
+
+def test_ctrl_c_typed_into_a_focused_text_field_is_the_fields_and_does_not_quit():
+    app, h, _ = _draft_form_app()
+    h.press("c", ctrl=True)
+    assert app.step() is True
+
+
+def test_focusing_a_form_sends_typed_keys_to_its_field_not_the_last_clicked_button():
+    draft = [""]
+    clicks = []
+
+    def edit(text):
+        draft[0] = text
+
+    def view():
+        return Column(
+            Button("Go", id="go", on_click=lambda: clicks.append(1), size="content"),
+            Form([TextInputField(draft[0], id="draft", label="New", on_change=edit)], id="form", size="content"),
+        )
+
+    h = harness(App(30, 6, view=view))
+    h.click_text("Go")
+    h.find(id="form").focus()
+    h.type("hi")
+    h.press("Enter")
+    assert draft[0] == "hi"
+    assert clicks == [1]
+
+
+# --- multi-select after keyboard navigation ------------------------------------
+
+
+def _multi_list_app():
+    picked = []
+    items = [{"text": {"spans": [{"text": f"item{i}"}]}} for i in range(4)]
+    app = App(24, 6, view=lambda: List(items, id="items", on_selection=picked.append))
+    return app, harness(app), picked
+
+
+def test_a_ctrl_click_after_arrow_keys_grows_the_selection_from_the_cursor_row():
+    app, h, picked = _multi_list_app()
+    h.click_text("item0")
+    h.press("Down")
+    h.press("Down")
+    x, y = h.locate_all("item3")[0]
+    position = {"x": float(x), "y": float(y)}
+    h.dispatch({"MouseDown": {"button": "Left", "position": position, "modifiers": {"ctrl": True}}})
+    h.dispatch({"MouseUp": {"button": "Left", "position": position}})
+    assert picked[-1] == [2, 3], picked

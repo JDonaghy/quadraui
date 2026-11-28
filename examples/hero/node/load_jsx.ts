@@ -28,7 +28,7 @@ const SUBPATHS: Record<string, string> = Object.fromEntries(
   ["@quadraui/node/app", "@quadraui/node/jsx-runtime", "@quadraui/node/testing"].map((id) => [id, resolvePackage(id)]),
 );
 
-/** Requires a `.ts`/`.tsx` file through esbuild, resolving `@quadraui/node/*` to this checkout. */
+/** Requires a `.ts`/`.tsx` file through esbuild, resolving `@quadraui/node/*` to this checkout and a relative `.ts`/`.tsx` import through this same loader. */
 function load(file: string, asMain = false): any {
   const { code } = esbuild.transformSync(fs.readFileSync(file, "utf8"), {
     loader: file.endsWith(".tsx") ? "tsx" : "ts",
@@ -40,6 +40,7 @@ function load(file: string, asMain = false): any {
   const mod = { exports: {} as any };
   const req = (id: string) => {
     if (id === "@quadraui/node" || id.startsWith("@quadraui/node/")) return require(resolvePackage(id));
+    if (id.startsWith(".") && /\.tsx?$/.test(id)) return load(path.resolve(path.dirname(file), id));
     return require(id.startsWith(".") ? path.resolve(path.dirname(file), id) : id);
   };
   // What the module's own `require.main === module` check reads.

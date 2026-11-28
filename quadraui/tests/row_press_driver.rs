@@ -107,7 +107,8 @@ enum Widget {
 
 /// Paints one widget across the viewport and records every event the
 /// routing engine hands back. A `DataTable` echoes `RowSelected` /
-/// `SelectionSet` into its descriptor, the way an app keeps it controlled.
+/// `SelectionSet`, a `ListView` and a `TreeView` their `SelectionChanged`,
+/// into the descriptor, the way an app keeps it controlled.
 struct WidgetApp {
     widget: Widget,
     rect: Rect,
@@ -178,6 +179,15 @@ impl AppLogic for WidgetApp {
                 }
                 _ => {}
             }
+        }
+        match (&mut self.widget, &event) {
+            (Widget::List(l), UiEvent::List(_, ListViewEvent::SelectionChanged { idx })) => {
+                l.selected_idx = *idx;
+            }
+            (Widget::Tree(t), UiEvent::Tree(_, TreeEvent::SelectionChanged { path })) => {
+                t.selected_path = Some(path.clone());
+            }
+            _ => {}
         }
         self.events.push(event);
         Reaction::Redraw
@@ -409,6 +419,61 @@ fn tree_middle_click_reports_its_button_and_right_clicks_never_double_click() {
             ]
         ),
         "{events:?}"
+    );
+}
+
+fn last_selection_set(driver: &TuiDriver<WidgetApp>) -> Option<UiEvent> {
+    driver
+        .app()
+        .events
+        .iter()
+        .rev()
+        .find(|e| {
+            matches!(
+                e,
+                UiEvent::List(_, ListViewEvent::SelectionSet { .. })
+                    | UiEvent::Tree(_, TreeEvent::SelectionSet { .. })
+            )
+        })
+        .cloned()
+}
+
+#[test]
+fn a_ctrl_click_after_arrow_keys_grows_the_list_selection_from_the_cursor_row() {
+    let mut driver = tui(Widget::List(list()));
+    let (x, y) = at(&driver, "item0");
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::Down);
+    driver.press_named(quadraui::NamedKey::Down);
+    let (x, y) = at(&driver, "item3");
+    driver.click_with(MouseButton::Left, ctrl(), x, y);
+    assert!(
+        matches!(
+            last_selection_set(&driver),
+            Some(UiEvent::List(_, ListViewEvent::SelectionSet { ref indices })) if indices == &[2, 3]
+        ),
+        "{:?}",
+        driver.app().events
+    );
+}
+
+#[test]
+fn a_ctrl_click_after_an_arrow_key_grows_the_tree_selection_from_the_cursor_row() {
+    let mut multi = tree();
+    multi.selection_mode = SelectionMode::Multi;
+    let mut driver = tui(Widget::Tree(multi));
+    let (x, y) = at(&driver, "node0");
+    driver.click(x, y);
+    driver.press_named(quadraui::NamedKey::Down);
+    let (x, y) = at(&driver, "node2");
+    driver.click_with(MouseButton::Left, ctrl(), x, y);
+    assert!(
+        matches!(
+            last_selection_set(&driver),
+            Some(UiEvent::Tree(_, TreeEvent::SelectionSet { ref paths })) if paths == &[vec![1], vec![2]]
+        ),
+        "{:?}",
+        driver.app().events
     );
 }
 

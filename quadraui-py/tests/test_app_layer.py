@@ -124,7 +124,7 @@ def test_auto_ids_from_node_constructors_are_stable_across_rerender():
 
     def view():
         return Split(
-            Tree([], on_row_click=lambda path: None),
+            Tree([], on_click=lambda path, button: None),
             Table([], [], on_select=lambda idx: None),
         )
 
@@ -159,14 +159,14 @@ def test_tree_row_click_and_toggle_expand_dispatch_to_their_own_callback():
         return Tree(
             rows=[{"path": [0], "indent": 0, "icon": None, "text": {"spans": []}, "badge": None, "is_expanded": False}],
             id="t:tree",
-            on_row_click=lambda path: clicked.append(path),
+            on_click=lambda path, button: clicked.append((path, button)),
             on_toggle_expand=lambda path: toggled.append(path),
         )
 
     app = App(20, 5, view=view)
     app.push_event({"Tree": ["t:tree", {"RowClicked": {"path": [0], "button": "Left", "modifiers": _NO_MODS}}]})
     app.step()
-    assert clicked == [[0]]
+    assert clicked == [([0], "Left")]
     assert toggled == []
 
     app.push_event({"Tree": ["t:tree", {"RowToggleExpand": {"path": [0]}}]})

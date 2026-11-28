@@ -1044,12 +1044,49 @@ where
     let Some(node) = tree.find(&focused) else {
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     };
+    if tab_leaves_children(&key, modifiers, node, backend, app) {
+        return WidgetRouteOutcome::Bubble(Reaction::Continue);
+    }
     let routed = RoutedEvent::Key(KeyEvent {
         key,
         modifiers,
         repeat,
     });
     dispatch_widget_routed_event(focused, node, &routed, backend, app)
+}
+
+/// A plain Tab (or Shift+Tab) on a focused widget with per-child focus
+/// stops whose focused child is its last (or first) stop, while the
+/// app's tab order names the widget among other stops: the key skips the
+/// widget so the Tab focus-cycling step moves focus on to the next stop,
+/// rather than the widget wrapping round its own children.
+fn tab_leaves_children<B, A>(
+    key: &Key,
+    modifiers: Modifiers,
+    node: &FrameTreeNode,
+    backend: &B,
+    app: &A,
+) -> bool
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let forward = match key {
+        Key::Named(NamedKey::Tab) => !modifiers.shift,
+        Key::Named(NamedKey::BackTab) => false,
+        _ => return false,
+    };
+    if modifiers.ctrl || modifiers.alt || modifiers.cmd {
+        return false;
+    }
+    let Some(&(_, sub)) = backend.focus_tree().focused() else {
+        return false;
+    };
+    if !node.widget.focus().child_at_edge(sub, forward) {
+        return false;
+    }
+    let stops = all_tab_stops(app, A::AreaId::default());
+    stops.len() > 1 && stops.iter().any(|(id, _)| *id == node.id)
 }
 
 /// `MouseMoved` arm of [`route_widget_event`]: while a widget holds an

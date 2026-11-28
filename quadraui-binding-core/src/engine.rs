@@ -390,16 +390,7 @@ fn tab_past_child_stops(
     let forward = matches!(named, NamedKey::Tab) && !modifiers.shift;
     let (focused, sub) = focused?;
     let (_, widget) = dyn_widget_hit(hits, focused)?;
-    let quadraui::FocusSpec::Children(stops) = widget.focus() else {
-        return None;
-    };
-    let pos = stops.iter().position(|stop| Some(stop.sub) == sub)?;
-    let at_end = if forward {
-        pos + 1 >= stops.len()
-    } else {
-        pos == 0
-    };
-    if !at_end {
+    if !widget.focus().child_at_edge(sub, forward) {
         return None;
     }
     let next = next_stop_after(hits, focused, forward)?;
@@ -2763,6 +2754,27 @@ impl InteractionEngine {
         }
     }
 
+    /// Resets `id`'s multi-selection to the row its `List` or `Tree`
+    /// cursor moved to, as a plain arrow key does in the Rust widget: the
+    /// next Ctrl- or Shift-click then grows the selection from that row.
+    fn select_cursor_row(&self, id: WidgetId) {
+        let hits = self.hit_map.borrow();
+        let row = match tree_rows_and_viewport(&hits, id) {
+            Some((row_paths, _)) => {
+                crate::host::tree_cursor_row(&self.widget_state, id, &row_paths)
+            }
+            None => list_rows_and_viewport(&hits, id)
+                .and_then(|_| crate::host::list_cursor_row(&self.widget_state, id)),
+        };
+        if let Some(row) = row {
+            self.selections
+                .borrow_mut()
+                .entry(id)
+                .or_default()
+                .on_gesture(Some(row), row, quadraui::SelectionGesture::Replace);
+        }
+    }
+
     /// [`Self::dispatch_rows_requested_after_scroll`] for a navigation key
     /// instead of a pointer scroll: an `apply_*_nav_key` call leaves the
     /// cursor's new offset in [`Self::widget_state`] rather than on the
@@ -3452,8 +3464,15 @@ impl InteractionEngine {
         // "scroll a child only partly inside its `Scroll` fully into
         // view" side effect that bookkeeping already applies to a
         // click-driven focus change.
+        //
+        // One that names a widget other than the focused one (a test
+        // harness's `focus(id)`, an app pushing focus itself) moves
+        // keyboard focus there first, so the keys that follow reach it.
         let mut scroll_into_view_reaction = Reaction::Continue;
         if let UiEvent::FocusChanged(Some(id)) = &event {
+            if backend.focus_tree().focused_id() != Some(id) {
+                backend.set_focus(Some(*id));
+            }
             scroll_into_view_reaction = self.scroll_focused_child_into_view(*id, sink);
             if matches!(scroll_into_view_reaction, Reaction::Exit) {
                 return scroll_into_view_reaction;
@@ -3865,6 +3884,9 @@ impl InteractionEngine {
                 } else {
                     false
                 };
+                if nav_applied && !modifiers.shift {
+                    self.select_cursor_row(focused);
+                }
                 event = focus_scoped_key_event(
                     focused,
                     key,

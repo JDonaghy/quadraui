@@ -60,5 +60,5 @@ pub use node::{
 };
 #[cfg(feature = "tui")]
 pub use run::run_tui;
-pub use run::{run_native, Run};
+pub use run::{run_native, run_native_with, NativeOptions, Run};
 pub use view::{Command, View};

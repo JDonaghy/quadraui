@@ -16,10 +16,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   an async task) or from top-level code; the step that ran it, or the next
   one, returns `False`, and `run_tui()`/`run_native()`/`run_async()`
   return (#3107).
-- Default quit keys on `App`: Ctrl-C always, and `q`/Escape when no focused
-  widget consumed the key. `on_event` sees the key first and keeps the app
-  running by returning `True`; `App(quit_keys=False)` turns all three off
-  (#3107).
+- Default quit keys on `App`: Ctrl-C unless a focused text field takes it,
+  and `q`/Escape when no focused widget consumed the key. `on_event` sees
+  the key first and keeps the app running by returning `True`;
+  `App(quit_keys=False)` turns all three off (#3107).
 - `App(width, height)` is optional and defaults to 80x24; it only sizes a
   headless run (#3107).
 - `Text("...")`: one unstyled `TextDisplay` line per `\n`-separated line,
@@ -112,6 +112,17 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- **Breaking:** `Tree(on_click=f)` calls `f(path, button)`, matching `List`
+  and `Table`'s `on_click(idx, button)`, so an app can tell a middle or
+  back/forward row press from a left one; `Tree(on_row_click=f)` is gone. Migrate
+  with a callback that takes the button and ignores it, or acts only on
+  `"Left"` (#3080).
+- `h.find(id="form").focus()` in the test harness moves keyboard focus there (a pushed
+  `FocusChanged` now moves it), so typed keys reach the form's first field
+  instead of the last-clicked widget (#3080).
+- The default quit keys are documented as they behave in all three
+  languages: `q`/Escape quit unless the focused widget takes the key, and
+  Ctrl-C quits unless a focused text field takes it (#3080).
 - Mouse events changed shape (#3074, #2555). `DoubleClick` carries a
   `button` (`{"DoubleClick": {"button": "Left", "position": ...}}`; a pushed
   `DoubleClick` must now name it), and only the left button folds, so two
@@ -460,6 +471,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- A content-sized `Row`/`Column` with `padding` keeps its children: its
+  measured size now includes the padding, which was then inset from a box
+  sized without it, leaving nothing to paint (#3080).
+- A plain arrow key on a `List` or `Tree` moves the multi-selection to the
+  cursor row, so a following Ctrl-click grows the selection from there, as
+  in Rust, instead of from the row clicked before the arrow keys (#3080).
 - `Text` in a `Row` (sized to its content by default) is as wide as its
   line plus the gutter a `TextDisplay` row reserves, so each label shows
   whole instead of wrapping into an empty one-row slot (#3107).

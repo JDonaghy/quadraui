@@ -72,7 +72,7 @@ class Demo {
         {
           id: "d:tree",
           selectedPath: [0],
-          onRowClick: (path: number[]) => this.log.push(["click", path]),
+          onClick: (path: number[]) => this.log.push(["click", path]),
           onSelect: (path: number[]) => this.log.push(["select", path]),
           onActivate: (path: number[]) => this.log.push(["activate", path]),
           onToggleExpand: (path: number[]) => this.log.push(["toggle", path]),

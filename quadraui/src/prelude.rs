@@ -32,8 +32,8 @@
 #[cfg(feature = "tui")]
 pub use crate::app::run_tui;
 pub use crate::app::{
-    button, column, form, list, row, run_native, status_bar, text, text_field, widget, Command,
-    Field, Leaf, Node, Run, View,
+    button, column, form, list, row, run_native, run_native_with, status_bar, text, text_field,
+    widget, Command, Field, Leaf, NativeOptions, Node, Run, View,
 };
 
 // ── Runner (quadraui::{tui,gtk}::run) ───────────────────────────────────

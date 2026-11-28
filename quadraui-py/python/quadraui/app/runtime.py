@@ -171,7 +171,8 @@ def _key_pressed(event: Any) -> Tuple[Optional[Dict[str, Any]], bool]:
 
 
 def _is_quit_key(event: Any) -> bool:
-    """Ctrl-C in any key shape; `q` or Escape only as a bare `KeyPressed`,
+    """Ctrl-C in any key shape that reaches the app (a focused text field
+    consumes it, so it never arrives); `q` or Escape only as a bare `KeyPressed`,
     which no focused widget claimed (a focused widget's keys arrive wrapped
     in its own event, and a focused text field turns `q` into an edit)."""
     payload, bare = _key_pressed(event)
@@ -218,7 +219,7 @@ def _accepts_positional_ctx(fn: Callable[..., Any]) -> bool:
 # every typed leaf node constructor's own `on_*` keyword documents.
 _CONTAINER_EVENT_MAP: Dict[str, Dict[str, Tuple[str, Callable[[Dict[str, Any]], Tuple[Any, ...]]]]] = {
     "Tree": {
-        "RowClicked": ("on_row_click", lambda p: (p["path"],)),
+        "RowClicked": ("on_click", lambda p: (p["path"], p["button"])),
         "RowToggleExpand": ("on_toggle_expand", lambda p: (p["path"],)),
         "RowDoubleClicked": ("on_activate", lambda p: (p["path"],)),
         "SelectionChanged": ("on_select", lambda p: (p["path"],)),
@@ -292,8 +293,9 @@ class App:
     pulling a key name out of whatever shape it arrived in.
 
     `quit()` ends the run from anywhere: a node callback, `on_event`, an
-    `async` task, or top-level code. Ctrl-C always quits, and `q` or Escape
-    quit when no focused widget consumed the key; `on_event` sees those keys
+    `async` task, or top-level code. `q` or Escape quit unless the focused
+    widget takes the key, and Ctrl-C quits unless a focused text field
+    takes it (a list that reports Ctrl-C still quits); `on_event` sees those keys
     first and keeps the app running by returning `True`. Pass
     `quit_keys=False` to turn the default quit keys off.
 

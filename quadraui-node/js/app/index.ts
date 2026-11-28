@@ -36,7 +36,7 @@
 // `Tabs`/`Tree`/`Table`, which already took an array on both sides.
 //
 // **Callbacks.** `Button("Save", {onClick: self.save})`, `Tree(rows,
-// {onRowClick: self.select, onActivate: self.open})` -- each node's own
+// {onSelect: self.select, onActivate: self.open})` -- each node's own
 // constructor documents which raw `UiEvent` shape each `on*` option
 // answers (a tree row click, a double-click, …). `App` rebuilds an
 // id -> callback registry on every render and dispatches a later event by

@@ -330,3 +330,60 @@ for (const size of ["wide", "x%", 1.5, true]) {
 test("a child without size carries no layout keys", () => {
   assert.deepEqual(Object.keys(wire(Button("b", { id: "b" }))).sort(), ["button", "id"]);
 });
+
+test("a padded content-sized row keeps its children", () => {
+  const app = new App(30, 8, {
+    view: () =>
+      Column([
+        Row([Button("ok", { id: "ok", size: "content" })], { padding: 16, size: "content" }),
+        Text("below", { size: "EqualShare" }),
+      ]),
+  });
+  const screen = app.screen();
+  assert.ok(screen.includes("[ ok ]"), screen);
+  assert.ok(rowOf(screen, "[ ok ]") >= 1, screen);
+  assert.ok(rowOf(screen, "below") > rowOf(screen, "[ ok ]") + 1, screen);
+});
+
+test("Ctrl-C typed into a focused text field is the field's and does not quit", () => {
+  const { app, h } = draftFormApp();
+  h.press("c", { ctrl: true });
+  assert.equal(app.step(), true);
+});
+
+test("focusing a form sends typed keys to its field, not the last-clicked button", () => {
+  const draft = { text: "" };
+  const clicks: number[] = [];
+  const app = new App(30, 6, {
+    view: () =>
+      Column([
+        Button("Go", { id: "go", size: "content", onClick: () => clicks.push(1) }),
+        Form([TextInputField("New", draft.text, { id: "draft", onChange: (t: string) => (draft.text = t) })], {
+          id: "form",
+          size: "content",
+        }),
+      ]),
+  });
+  const h = harness(app);
+  h.clickText("Go");
+  h.find({ id: "form" }).focus();
+  h.type("hi");
+  h.press("Enter");
+  assert.equal(draft.text, "hi");
+  assert.deepEqual(clicks, [1]);
+});
+
+test("a Ctrl-click after arrow keys grows the selection from the cursor row", () => {
+  const picked: number[][] = [];
+  const items = [0, 1, 2, 3].map((i) => ({ text: { spans: [{ text: `item${i}` }] } }));
+  const app = new App(24, 6, { view: () => List(items, { id: "items", onSelection: (s: number[]) => picked.push(s) }) });
+  const h = harness(app);
+  h.clickText("item0");
+  h.press("Down");
+  h.press("Down");
+  const [x, y] = h.locateAll("item3")[0];
+  const position = { x, y };
+  h.dispatch({ MouseDown: { button: "Left", position, modifiers: { ...NO_MODS, ctrl: true } } });
+  h.dispatch({ MouseUp: { button: "Left", position } });
+  assert.deepEqual(picked[picked.length - 1], [2, 3]);
+});

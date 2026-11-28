@@ -1127,6 +1127,29 @@ pub fn apply_list_nav_key(
     moved
 }
 
+/// The row `id`'s `List` cursor is on, as the last
+/// [`apply_list_nav_key`] (or the app's own selection) left it.
+pub fn list_cursor_row(widget_state: &RefCell<WidgetStateStore>, id: WidgetId) -> Option<usize> {
+    widget_state
+        .borrow()
+        .value::<ListCursorState>(&id)
+        .and_then(|state| state.selected_idx)
+}
+
+/// The row of `row_paths` `id`'s `Tree` cursor is on, as the last
+/// [`apply_tree_nav_key`] left it.
+pub fn tree_cursor_row(
+    widget_state: &RefCell<WidgetStateStore>,
+    id: WidgetId,
+    row_paths: &[TreePath],
+) -> Option<usize> {
+    let path = widget_state
+        .borrow()
+        .value::<TreeCursorState>(&id)?
+        .selected_path?;
+    row_paths.iter().position(|row| *row == path)
+}
+
 /// Resolves `list`'s cursor + scroll for painting — the `List` counterpart
 /// of [`resolve_tree_cursor`]. `ListView::selected_idx` has no "unset"
 /// state of its own (always a valid index into a non-empty list, default

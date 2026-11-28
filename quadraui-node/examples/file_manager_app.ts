@@ -358,7 +358,8 @@ class FileManager {
     }
   }
 
-  private _onRowClick(nodePath: TreePath): void {
+  private _onRowClick(nodePath: TreePath, button: unknown): void {
+    if (button !== "Left") return;
     const [rows, nodes] = folderRows(this.root);
     for (let i = 0; i < rows.length; i++) {
       if (pathsEqual(rows[i].path, nodePath)) {
@@ -453,7 +454,7 @@ class FileManager {
       selectedPath,
       hasFocus: true,
       style: TREE_STYLE,
-      onRowClick: (p: TreePath) => this._onRowClick(p),
+      onClick: (p: TreePath, button: unknown) => this._onRowClick(p, button),
       onToggleExpand: (p: TreePath) => this._onRowToggleExpand(p),
     });
     const body = Split(tree, this._detailsPane(), { id: "fm:split", ratio: BODY_SPLIT_RATIO });

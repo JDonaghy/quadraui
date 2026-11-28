@@ -109,6 +109,27 @@ pub enum FocusSpec {
     Children(Vec<FocusStop>),
 }
 
+impl FocusSpec {
+    /// Whether `sub`, the focused child of a widget with these stops, is
+    /// its last stop (`forward`) or its first: where Tab (or Shift+Tab)
+    /// leaves the widget for the next stop in the host's tab order instead
+    /// of wrapping round the widget's own children. `false` outside
+    /// [`Self::Children`] and for a `sub` that names none of its stops.
+    pub fn child_at_edge(&self, sub: Option<SubTarget>, forward: bool) -> bool {
+        let FocusSpec::Children(stops) = self else {
+            return false;
+        };
+        let Some(pos) = stops.iter().position(|stop| Some(stop.sub) == sub) else {
+            return false;
+        };
+        if forward {
+            pos + 1 >= stops.len()
+        } else {
+            pos == 0
+        }
+    }
+}
+
 /// Where the host draws the focus ring while a widget holds keyboard
 /// focus — see [`Interactive::focus_ring`].
 ///

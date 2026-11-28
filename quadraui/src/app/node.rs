@@ -600,7 +600,7 @@ impl<M> Node<M> {
     /// This node's natural size within `avail` (its parent container's
     /// area): a leaf's own measurement, or a container's children end to
     /// end along its axis (plus the gaps between them) and its largest
-    /// child across it.
+    /// child across it, plus the container's padding and margin.
     fn natural(&self, ctx: &LayoutCtx<'_>, m: &Metrics, avail: Size) -> NaturalSize {
         match &self.kind {
             Kind::Leaf { widget, .. } => widget.measure(ctx, avail),
@@ -608,18 +608,19 @@ impl<M> Node<M> {
                 horizontal,
                 children,
                 style,
-                ..
+                spacing,
             } => {
                 let gap = if *horizontal {
                     quantise_horizontal(style.gap, m.char_width)
                 } else {
                     quantise_vertical(style.gap, m.line_height)
                 };
-                NaturalSize::stacked(
+                let content = NaturalSize::stacked(
                     children.iter().map(|child| child.natural(ctx, m, avail)),
                     *horizontal,
                     gap,
-                )
+                );
+                spacing.outset(content, m.char_width, m.line_height)
             }
         }
     }

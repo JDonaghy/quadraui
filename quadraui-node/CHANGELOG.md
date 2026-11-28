@@ -22,10 +22,10 @@ fragment step for this package (that mechanism, and
   step that ran it, or the next one, returns `false`, and a `runTui()`/
   `runNative()` loop restores the terminal or closes the window and stops
   (#3107).
-- Default quit keys on `App`: Ctrl-C always, and `q`/Escape when no focused
-  widget consumed the key. `onEvent` sees the key first and keeps the app
-  running by returning `true`; `quitKeys: false` turns all three off
-  (#3107).
+- Default quit keys on `App`: Ctrl-C unless a focused text field takes it,
+  and `q`/Escape when no focused widget consumed the key. `onEvent` sees
+  the key first and keeps the app running by returning `true`;
+  `quitKeys: false` turns all three off (#3107).
 - `new App({ view })`: the size is optional and defaults to 80x24; it only
   sizes a headless run (#3107).
 - `Text(text, options)` and the `<text>` JSX intrinsic (`<text>Count:
@@ -146,6 +146,17 @@ fragment step for this package (that mechanism, and
 
 ### Changed
 
+- **Breaking:** `Tree(rows, { onClick })` calls `onClick(path, button)`, matching `List`
+  and `Table`'s `on_click(idx, button)`, so an app can tell a middle or
+  back/forward row press from a left one; `onRowClick` is gone. Migrate
+  with a callback that takes the button and ignores it, or acts only on
+  `"Left"` (#3080).
+- `h.find({ id: "form" }).focus()` in the test harness moves keyboard focus there (a pushed
+  `FocusChanged` now moves it), so typed keys reach the form's first field
+  instead of the last-clicked widget (#3080).
+- The default quit keys are documented as they behave in all three
+  languages: `q`/Escape quit unless the focused widget takes the key, and
+  Ctrl-C quits unless a focused text field takes it (#3080).
 - `App.stopLive()` called inside a callback quits the app (as
   `App.quit()`) instead of throwing a native borrow error (#3107).
 - `AppOptions.onEvent` may return `boolean | void`; `true` keeps a default
@@ -457,6 +468,12 @@ fragment step for this package (that mechanism, and
 
 ### Fixed
 
+- A content-sized `Row`/`Column` with `padding` keeps its children: its
+  measured size now includes the padding, which was then inset from a box
+  sized without it, leaving nothing to paint (#3080).
+- A plain arrow key on a `List` or `Tree` moves the multi-selection to the
+  cursor row, so a following Ctrl-click grows the selection from there, as
+  in Rust, instead of from the row clicked before the arrow keys (#3080).
 - `Text` in a `Row` (sized to its content by default) is as wide as its
   line plus the gutter a `TextDisplay` row reserves, so each label shows
   whole instead of wrapping into an empty one-row slot (#3107).

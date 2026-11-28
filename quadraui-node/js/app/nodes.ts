@@ -430,7 +430,7 @@ export interface TreeOptions extends LayoutOptions {
   selectedPath?: TreePath;
   hasFocus?: boolean;
   style?: TreeStyle;
-  onRowClick?: (path: TreePath) => void;
+  onClick?: (path: TreePath, button: MouseButton) => void;
   onToggleExpand?: (path: TreePath) => void;
   onActivate?: (path: TreePath) => void;
   onSelect?: (path: TreePath) => void;
@@ -439,9 +439,10 @@ export interface TreeOptions extends LayoutOptions {
 }
 
 /**
- * A `TreeRowDescriptor` list. `onRowClick` fires on `RowClicked` (a row
- * body press with any button but the right one -- the event's `button`
- * tells them apart); `onToggleExpand` on `RowToggleExpand` (the chevron);
+ * A `TreeRowDescriptor` list. `onClick(path, button)` fires on
+ * `RowClicked` (a row body press with any button but the right one;
+ * `button` is `"Left"`, `"Middle"`, `"X1"`, ... as for `List` and
+ * `Table`); `onToggleExpand` on `RowToggleExpand` (the chevron);
  * `onActivate` on `RowDoubleClicked`; `onSelect` on `SelectionChanged`;
  * `onSelection(paths)` on `SelectionSet` (with `selectionMode: "Multi"`, a
  * Ctrl/Cmd or Shift click); `onContextMenu(path, position)` on
@@ -455,7 +456,7 @@ export function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node
     selectedPath,
     hasFocus = false,
     style,
-    onRowClick,
+    onClick,
     onToggleExpand,
     onActivate,
     onSelect,
@@ -476,7 +477,7 @@ export function Tree(rows: TreeRowDescriptor[], options: TreeOptions = {}): Node
   }
 
   const callbacks = callbacksFrom({
-    on_row_click: onRowClick as AnyCallback | undefined,
+    on_click: onClick as AnyCallback | undefined,
     on_toggle_expand: onToggleExpand as AnyCallback | undefined,
     on_activate: onActivate as AnyCallback | undefined,
     on_select: onSelect as AnyCallback | undefined,

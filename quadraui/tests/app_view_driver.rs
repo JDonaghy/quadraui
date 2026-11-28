@@ -357,3 +357,124 @@ fn run_native_without_a_native_backend_reports_unsupported() {
         "{err}"
     );
 }
+
+#[test]
+fn a_focused_list_keeps_q_and_escape_but_ctrl_c_still_quits() {
+    let todo = || Todo {
+        items: vec!["one".into(), "two".into()],
+        ..Todo::default()
+    };
+    for key in [Key::Char('q'), Key::Named(NamedKey::Escape)] {
+        let mut driver = TuiDriver::new(Run::new(todo()), 30, 8);
+        click(&mut driver, "two");
+        assert_ne!(driver.press(key.clone()), Reaction::Exit, "{key:?}");
+        assert!(!driver.exited(), "{key:?}");
+    }
+    let mut driver = TuiDriver::new(Run::new(todo()), 30, 8);
+    click(&mut driver, "two");
+    assert_eq!(driver.ctrl_char('c'), Reaction::Exit);
+}
+
+#[test]
+fn tab_repaints_the_focus_ring_with_no_other_event() {
+    let mut driver = TuiDriver::new(Run::new(Counter::default()), 30, 5);
+    let (x, y) = at(&driver, "[ - ]").expect("the - button on screen");
+    let (x, y) = (x as u16 + 2, y as u16);
+    let before = driver.style_at(x, y);
+    assert_eq!(driver.press(Key::Named(NamedKey::Tab)), Reaction::Redraw);
+    assert_ne!(
+        driver.style_at(x, y),
+        before,
+        "the ring is painted on the focused button:\n{}",
+        driver.screen()
+    );
+}
+
+#[derive(Default)]
+struct FormThenButton {
+    draft: String,
+    pressed: usize,
+}
+
+#[derive(Clone)]
+enum FormThenButtonMsg {
+    Edit(String),
+    Press,
+}
+
+impl View for FormThenButton {
+    type Msg = FormThenButtonMsg;
+    fn view(&self) -> Node<FormThenButtonMsg> {
+        column([
+            form([text_field("draft", &self.draft)
+                .label("New")
+                .on_change(FormThenButtonMsg::Edit)])
+            .id("form")
+            .content(),
+            button("Go")
+                .id("go")
+                .on_click(FormThenButtonMsg::Press)
+                .content(),
+        ])
+    }
+    fn update(&mut self, msg: FormThenButtonMsg) -> Command {
+        match msg {
+            FormThenButtonMsg::Edit(text) => self.draft = text,
+            FormThenButtonMsg::Press => self.pressed += 1,
+        }
+        Command::None
+    }
+}
+
+#[test]
+fn tab_at_a_forms_last_field_moves_focus_on_past_the_form() {
+    let mut driver = TuiDriver::new(Run::new(FormThenButton::default()), 30, 6);
+    let (x, y) = driver.find("New").expect("field label on screen");
+    driver.click(x + 10.0, y);
+    driver.press(Key::Char('a'));
+    assert_eq!(driver.app().draft, "a");
+    driver.press(Key::Named(NamedKey::Tab));
+    assert_eq!(
+        driver.backend().focus_tree().focused_id(),
+        Some(&WidgetId::new("go")),
+        "Tab at the form's only field leaves the form"
+    );
+    driver.press(Key::Named(NamedKey::Enter));
+    assert_eq!(driver.app().pressed, 1);
+    assert_eq!(driver.app().draft, "a");
+}
+
+struct Padded;
+
+impl View for Padded {
+    type Msg = ();
+    fn view(&self) -> Node<()> {
+        column([
+            row([button("ok").id("ok").content()])
+                .padding(16.0)
+                .content(),
+            text("below"),
+        ])
+    }
+    fn update(&mut self, _: ()) -> Command {
+        Command::None
+    }
+}
+
+#[test]
+fn a_padded_content_sized_row_keeps_its_children() {
+    let driver = TuiDriver::new(Run::new(Padded), 30, 8);
+    let (_, ok_y) =
+        at(&driver, "[ ok ]").unwrap_or_else(|| panic!("button clipped:\n{}", driver.screen()));
+    let (_, below_y) = at(&driver, "below").expect("text on screen");
+    assert!(
+        ok_y >= 1,
+        "the padding sits above the button:\n{}",
+        driver.screen()
+    );
+    assert!(
+        below_y > ok_y + 1,
+        "the padding sits below the button:\n{}",
+        driver.screen()
+    );
+}

@@ -30,12 +30,13 @@ in portable pixels, where a TUI cell is 8x16, `"30%"`, `"2fr"` or
 `"content"`) and `min=`/`max=` in the same pixels. `Text("...")` is a
 one-line label sized to its content.
 
-**Quitting.** `App.quit()` ends the run from any callback. Ctrl-C always
-quits, and `q`/Escape quit when no focused widget consumed them;
+**Quitting.** `App.quit()` ends the run from any callback. `q`/Escape
+quit unless the focused widget takes the key (a text field types `q`, a
+list keeps it), and Ctrl-C quits unless a focused text field takes it;
 `App(quit_keys=False)` turns that off.
 
 **Callbacks.** `Button("Save", on_click=self.save)`, `Tree(rows,
-on_row_click=self.select, on_activate=self.open)` -- each node's own
+on_select=self.select, on_activate=self.open)` -- each node's own
 constructor documents which raw `UiEvent` shape each `on_*` keyword
 answers (a tree row click, a double-click, …). `App` rebuilds an
 id -> callback registry on every render and dispatches a later event by

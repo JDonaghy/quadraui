@@ -90,15 +90,16 @@ Rules that follow from the model:
   position. That id changes whenever the tree's shape above it changes, and
   so does the widget state keyed by it.
 - **Callbacks receive the payload, not the event.** For example,
-  `Tree(on_row_click=f)` calls `f(path)` and `Table(on_activate=f)` calls
+  `Tree(on_click=f)` calls `f(path, button)` and `Table(on_activate=f)` calls
   `f(row_index)`. Each constructor's docstring lists its callbacks.
   Bind per-item context with a default argument, as in
   `lambda idx, folder=folder: ...`, not by parsing ids.
 - **Global input goes to `App(on_event=...)`**, the fallback for events no
   node callback claimed. Use `key_name(event)` to get a key name out of
   whatever shape the event arrived in.
-- **Quitting.** Ctrl-C always quits, and `q` or Escape quit when no
-  focused widget used the key. `app.quit()` quits from any callback;
+- **Quitting.** `q` and Escape quit unless the focused widget takes the
+  key (a text field types `q`, a list keeps it), and Ctrl-C quits unless a
+  focused text field takes it. `app.quit()` quits from any callback;
   `App(quit_keys=False)` turns the keys off, and `on_event` returning
   `True` keeps one.
 - **Layout.** `Column`/`Row` children share space equally; give a child
