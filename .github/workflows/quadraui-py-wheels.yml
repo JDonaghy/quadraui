@@ -260,12 +260,14 @@ jobs:
       # would otherwise copy them (and everything they load) into the
       # wheel; they must come from the host so they match its GTK, display
       # server and fonts. `Check the wheel's layout` fails the job if a new
-      # dependency shows up that is not listed here.
+      # dependency shows up that is not listed here. The aarch64 build also
+      # needs `libcairo-gobject.so.2` directly; excluding a library a build
+      # does not need is a no-op.
       GTK_SYSTEM_LIBS: >-
         libgtk-4.so.1 libgdk_pixbuf-2.0.so.0 libpango-1.0.so.0
         libpangocairo-1.0.so.0 libpangoft2-1.0.so.0 libcairo.so.2
-        libgobject-2.0.so.0 libglib-2.0.so.0 libgio-2.0.so.0
-        libfontconfig.so.1
+        libcairo-gobject.so.2 libgobject-2.0.so.0 libglib-2.0.so.0
+        libgio-2.0.so.0 libfontconfig.so.1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

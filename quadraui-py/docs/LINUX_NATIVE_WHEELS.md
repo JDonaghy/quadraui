@@ -101,7 +101,8 @@ architecture: natively on `ubuntu-24.04` (x86_64) and `ubuntu-24.04-arm`
    maturin leaves a prebuilt `.so` under `python-source` out of the wheel
    unless it is listed there.
 3. `auditwheel repair --plat manylinux_2_39_<arch> --exclude <lib> ...` for
-   the ten system libraries in the `DT_NEEDED` list above. With those
+   the ten system libraries in the `DT_NEEDED` list above, plus
+   `libcairo-gobject.so.2`, which the aarch64 build also needs. With those
    excluded, nothing is vendored, so the wheel has no `quadraui.libs/`
    directory, and auditwheel accepts the `manylinux_2_39` tag.
 4. A layout check fails the job if anything was vendored, if either `.so`
