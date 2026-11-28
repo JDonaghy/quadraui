@@ -387,8 +387,8 @@ impl BoardModel {
         None
     }
 
-    /// `key` is the string a backend's `key_to_binding_name`/
-    /// `key_to_focus_string` produces — [`crate::event::NamedKey::name`]'s
+    /// `key` is the string a backend's `key_to_binding_name` produces —
+    /// [`crate::event::NamedKey::name`]'s
     /// spellings (`"Down"`, `"Left"`, …), never the DOM `KeyboardEvent.key`
     /// `"Arrow*"` family no quadraui backend emits.
     pub fn handle_key(&self, key: &str, _modifiers: Modifiers) -> Option<BoardAction> {

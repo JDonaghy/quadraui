@@ -39,6 +39,11 @@
 //!
 //! # Two-axis virtualisation: `cells_window` + `CellsRequested`
 //!
+//! A list, tree, table or text display windows its rows the same way
+//! under other names — see [`crate::behaviour::row_window`] for the
+//! mapping between `loaded_row_start`/`row_count`/`CellsRequested` and
+//! `items_window`/[`crate::UiEvent::RowsRequested`].
+//!
 //! [`CellGrid::cells_window`] reports exactly what absolute block of the
 //! sheet the scrolled (non-frozen) portion of [`CellGrid::cells`]
 //! currently covers, as a [`CellsWindow`] — computed from
@@ -1102,9 +1107,8 @@ impl CellGrid {
     ///
     /// Returns `None` once the loaded window covers the visible range —
     /// a caller that already sent the right block gets no repeat
-    /// request. There is no prefetch margin (unlike
-    /// `quadraui-binding-core`'s wire-level `rows_requested_for_window`):
-    /// the returned block is exactly the viewport's own visible
+    /// request. There is no prefetch margin (unlike a row widget's
+    /// [`crate::UiEvent::RowsRequested`]): the returned block is exactly the viewport's own visible
     /// scrolled-body rows/columns, since that's the acceptance contract
     /// this method exists to satisfy.
     #[must_use]

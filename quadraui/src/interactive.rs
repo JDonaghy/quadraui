@@ -458,6 +458,12 @@ pub trait Interactive: Primitive {
     /// routed.
     const OPENS_POPUPS: bool = false;
 
+    /// Whether this widget scrolls its own rows: it paints a window of its
+    /// content from its own scroll position wherever its rect sits, and
+    /// answers [`Self::scrolled_to_row`]. A widget that sets it overrides
+    /// that method. Default: `false`.
+    const SCROLLS_OWN_ROWS: bool = false;
+
     /// The popups this widget has open, given `state` and `layout` — a
     /// dropdown list, a calendar grid, a submenu. Default: none. Only
     /// asked when [`Self::OPENS_POPUPS`] is set.
@@ -524,6 +530,20 @@ pub trait Interactive: Primitive {
     fn settle(&self, state: &mut Self::State, layout: &Self::Layout) -> bool {
         let _ = (state, layout);
         false
+    }
+
+    /// For a widget that scrolls its own rows — it paints a window of its
+    /// content starting at its own scroll position, wherever its rect
+    /// sits — this widget with its first visible row moved to `row`. A
+    /// host scroll container that holds such a widget keeps its rect on
+    /// the viewport and paints this instead of shifting the rect. Default:
+    /// `None`, for a widget that a container scrolls by moving its rect.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = row;
+        None
     }
 
     /// An event that names this widget which its host delivered on the

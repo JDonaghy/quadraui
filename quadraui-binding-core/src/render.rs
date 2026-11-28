@@ -10,8 +10,8 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataTable, ListView, Rect, ScrollAxis, ScrollView, SectionSize, Split,
-    SplitDirection, Style, TabBar, TabChrome, TextDisplay, Theme, TreeView, WidgetId,
+    Backend, Button, Rect, ScrollAxis, ScrollView, SectionSize, Split, SplitDirection, Style,
+    TabBar, TabChrome, Theme, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -610,11 +610,11 @@ fn paint_scroll(
         }
         ScrollSlots::Atomic(rect, visible) => {
             if visible {
-                // `TextDisplay`/`List`/`Tree`/`DataTable` each render their
-                // own `scroll_offset..` window into their data regardless
-                // of where their rect sits on screen (see
+                // A widget that scrolls its own rows renders its own
+                // `scroll_offset..` window into its data regardless of
+                // where its rect sits on screen (see
                 // `offset_windowed_leaf_scrolled_to_offset`'s own doc) --
-                // shifting their rect by `-offset` the way every other
+                // shifting its rect by `-offset` the way every other
                 // `Atomic` leaf kind is positioned below would just
                 // repaint from row/line `0` wherever that shifted rect
                 // landed, never the `offset`th one, on every backend.
@@ -644,21 +644,19 @@ fn paint_scroll(
     }
 }
 
-/// `content`, when it is a bare text display, list, tree or table leaf —
-/// the kinds [`is_offset_windowed_leaf`] singles out — with a clone of its
-/// widget whose `scroll_offset` is advanced to the whole row/line `offset`
-/// native units lands on (a text display also gets `auto_scroll`
-/// disabled, so it can't override that). `None` for any other leaf kind,
-/// or a non-leaf node (a `Row`/`Column` reaches [`ScrollSlots::Children`]
-/// instead, never `Atomic`).
+/// `content`, when it is a bare leaf whose widget scrolls its own rows
+/// ([`quadraui::DynWidget::scrolled_to_row`]), with a clone of that widget
+/// advanced to the whole row/line `offset` native units lands on. `None`
+/// for any other leaf, or a non-leaf node (a `Row`/`Column` reaches
+/// [`ScrollSlots::Children`] instead, never `Atomic`).
 ///
-/// Each of these kinds renders its own `scroll_offset`-relative window
-/// into its data regardless of where its own rect sits on screen — unlike
-/// every other `Atomic` leaf kind, whose rect `scroll_content_slots`
-/// positions by shifting it `-offset` along the scroll axis, repainting a
-/// clone scrolled this way is what lets [`paint_scroll`]'s own
-/// `ScrollSlots::Atomic` arm show the right row/line first. The leaf's
-/// `id` is kept, so the clone has the same hit-map id. Matches via
+/// Such a widget renders its own `scroll_offset`-relative window into its
+/// data regardless of where its own rect sits on screen — unlike every
+/// other `Atomic` leaf, whose rect `scroll_content_slots` positions by
+/// shifting it `-offset` along the scroll axis, repainting a clone
+/// scrolled this way is what lets [`paint_scroll`]'s own
+/// `ScrollSlots::Atomic` arm show the right row first. The leaf's `id` is
+/// kept, so the clone has the same hit-map id. Matches via
 /// [`LayoutNode::unstyled`], so a `Styled` leaf gets the same treatment as
 /// an unstyled one -- the returned node carries no `Styled` wrapper of its
 /// own, since [`paint_scroll`]'s own `push_styled_scope` call already has
@@ -673,29 +671,7 @@ fn offset_windowed_leaf_scrolled_to_offset(
     };
     let LeafDescriptor::Widget { kind, widget } = &leaf.descriptor;
     let row = (offset / line_height.max(1.0)).floor().max(0.0) as usize;
-    let widget: Rc<dyn DynWidget> = if let Some(td) = widget.downcast_ref::<TextDisplay>() {
-        Rc::new(TextDisplay {
-            scroll_offset: row,
-            auto_scroll: false,
-            ..td.clone()
-        })
-    } else if let Some(list) = widget.downcast_ref::<ListView>() {
-        Rc::new(ListView {
-            scroll_offset: row,
-            ..list.clone()
-        })
-    } else if let Some(tree) = widget.downcast_ref::<TreeView>() {
-        Rc::new(TreeView {
-            scroll_offset: row,
-            ..tree.clone()
-        })
-    } else {
-        let table = widget.downcast_ref::<DataTable>()?;
-        Rc::new(DataTable {
-            scroll_offset: row,
-            ..table.clone()
-        })
-    };
+    let widget = widget.scrolled_to_row(row)?;
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),
         descriptor: LeafDescriptor::Widget { kind, widget },
@@ -1053,14 +1029,14 @@ pub(crate) fn scroll_content_slots(
         ScrollSlots::Children(rects)
     } else {
         let visible = scroll.is_visible(0.0, content_len);
-        // `TextDisplay`/`List`/`Tree`/`DataTable` each render their own
-        // `scroll_offset..` window into their data regardless of where
-        // their own rect sits on screen (see
+        // A widget that scrolls its own rows renders its own
+        // `scroll_offset..` window into its data regardless of where its
+        // own rect sits on screen (see
         // `offset_windowed_leaf_scrolled_to_offset`'s own doc) — shifting
-        // their rect by `-offset` the way every other `Atomic` leaf kind
+        // its rect by `-offset` the way every other `Atomic` leaf kind
         // is positioned below would just repaint from row/line `0`
         // wherever that shifted rect landed, never the `offset`th one, on
-        // every backend. Hand them the viewport itself instead;
+        // every backend. Hand it the viewport itself instead;
         // `paint_scroll`'s own `ScrollSlots::Atomic` arm is what actually
         // advances a painted shadow clone's `scroll_offset` to match.
         if is_offset_windowed_leaf(content) {
@@ -1087,25 +1063,21 @@ pub(crate) fn scroll_content_slots(
     }
 }
 
-/// Whether `content` is a bare leaf kind that renders its own
+/// Whether `content` is a bare leaf whose widget renders its own
 /// `scroll_offset`-relative window into its data regardless of where its
-/// own rect sits on screen — a `TextDisplay`/`List`/`Tree`/`DataTable`.
-/// [`scroll_content_slots`]'s own `Atomic` branch hands these the
-/// viewport itself rather than a rect shifted `-offset` along the scroll
-/// axis (which would just repaint from the first row/line every time);
-/// [`offset_windowed_leaf_scrolled_to_offset`] is what actually advances
-/// the shadow clone `paint_scroll` paints into it to show the right one.
-/// Matches via [`LayoutNode::unstyled`] so a `"style"` key on this leaf
-/// never changes which scroll strategy it gets.
+/// own rect sits on screen ([`quadraui::DynWidget::scrolls_own_rows`]). [`scroll_content_slots`]'s own `Atomic` branch hands
+/// these the viewport itself rather than a rect shifted `-offset` along
+/// the scroll axis (which would just repaint from the first row every
+/// time); [`offset_windowed_leaf_scrolled_to_offset`] is what actually
+/// advances the shadow clone `paint_scroll` paints into it to show the
+/// right one. Matches via [`LayoutNode::unstyled`] so a `"style"` key on
+/// this leaf never changes which scroll strategy it gets.
 fn is_offset_windowed_leaf(content: &LayoutNode) -> bool {
     let LayoutNode::Leaf(leaf) = content.unstyled() else {
         return false;
     };
     let LeafDescriptor::Widget { widget, .. } = &leaf.descriptor;
-    widget.downcast_ref::<TextDisplay>().is_some()
-        || widget.downcast_ref::<ListView>().is_some()
-        || widget.downcast_ref::<TreeView>().is_some()
-        || widget.downcast_ref::<DataTable>().is_some()
+    widget.scrolls_own_rows()
 }
 
 /// Clips a scroll slot's main-axis span (`origin`, `extent`) to fit
@@ -1309,6 +1281,7 @@ mod tests {
     use super::*;
     use crate::layout::StyleOverride;
     use quadraui::layout::stack::split_rects_with_gap;
+    use quadraui::{DataTable, ListView, TextDisplay, TreeView};
     use quadraui::{Decoration, StyledSpan, TextDisplayLine};
     use quadraui::{EdgeInsets, Spacing};
 
@@ -3220,7 +3193,7 @@ mod tests {
         );
     }
 
-    // ── virtualised `items_window` decode + `rows_requested_for_window` ──
+    // ── virtualised `items_window` decode + `RowsRequested` ──
 
     /// A `"text_display"` leaf `id` holding one line per entry of `texts`.
     fn text_display_leaf(id: &str, texts: &[&str]) -> LayoutNode {

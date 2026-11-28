@@ -291,9 +291,9 @@ under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
 Node). Each has a five-minute quick start on the docs site:
 [Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
 [Node](https://jdonaghy.github.io/quadraui/quick-start/node.html).
-<!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979), check
-this paragraph against the final py/node wire surface and say which widget
-kinds the bindings can build. -->
+A render callback builds any widget kind core registers, by its snake_case
+name (`"list"`, `"tree_table"`, `"cell_grid"`, ...); a layout tree's
+`"sidebar_panel"` is a container node rather than a leaf.
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in

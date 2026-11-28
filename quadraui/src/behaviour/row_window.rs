@@ -18,6 +18,17 @@
 //! [`crate::interactive::Interactive::data_requested`] answers a
 //! [`crate::UiEvent::RowsRequested`] asking the app for the rows around
 //! it; [`RowsRequestLatch`] keeps it from asking twice for the same range.
+//! The widget asks only after input, never while painting: the app sends
+//! the rows its first viewport shows (and the rows a viewport that grows
+//! on resize shows) without being asked, or those rows paint as
+//! placeholders until the next input.
+//!
+//! [`crate::CellGrid`] windows its rows the same way under other names:
+//! its descriptor's `loaded_row_start` and `row_count` are this module's
+//! `items_window.start` and `items_window.total`, and its
+//! `CellGridEvent::CellsRequested { row_start, rows, .. }` (routed as
+//! `UiEvent::CellGrid`) is [`crate::UiEvent::RowsRequested`]'s
+//! `{ start, count }` plus a column range.
 //!
 //! [`HostLatch`] is the uncontrolled-by-default rule the four row widgets
 //! (and `TabBar`) resolve their scroll, selection and active-tab state by:

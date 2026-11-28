@@ -1,16 +1,14 @@
-"""Black-box coverage for the additive primitive mechanism: a render
-callback's flat `{"progress": ..., "spinner": ..., "image": ...}` dict
-builds a `ProgressBar`, `Spinner` and `Image` descriptor from a plain Python
-dict, each rendering alongside (not instead of) the six fixed slots, and the
-same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
+"""Black-box coverage for the generic widget leaf: a render callback's
+flat `{"progress": ..., "spinner": ..., "image": ...}` dict builds a
+`ProgressBar`, `Spinner` and `Image` descriptor from a plain Python dict,
+each rendering alongside the other kinds in that dict, and the same three
+kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
 container) behind that same render callback -- the one other path a
 descriptor can reach the screen through.
 
-These three primitives prove the generic widget leaf: registering a new
-kind costs one `widget_kinds!` line -- never an edit to the six-slot
-machinery (`LeafDescriptor`'s six-variant set) that
-`test_descriptors.py` exercises, and never a new pymethod, since a render
-callback dict already covers any registered kind by name.
+Registering a new kind costs one `widget_kinds!` line -- never a new
+pymethod, since a render callback dict already covers any registered kind
+by name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -116,8 +114,8 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
     # The container primitives (`Split`, `Panel`, ...) are plain `LayoutNode`
     # recursion, same as `row`/`column` -- this nests a `split` inside a
     # `panel`'s content, with one pane holding a `scrollbar` (an
-    # generic widget kind, not one of the six original fixed-slot
-    # leaves) alongside an ordinary `text_display` leaf in the other pane.
+    # ordinary generic widget kind) alongside a `text_display` leaf in the
+    # other pane.
     #
     # A `Scrollbar` paints from its own absolute `track` rect rather than
     # the leaf area the layout computes for it (it owns its own layout, same

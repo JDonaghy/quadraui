@@ -11088,10 +11088,9 @@ mod tests {
     /// state at all, the descriptor keeps rebuilding the exact same
     /// `selected: 0` every render — moves BOTH the strip's own active
     /// highlight AND the content pane `paint_layout`'s `LayoutNode::Tabs`
-    /// arm paints underneath it. This is the acceptance case
-    /// `resolve_tab_bar_active` alone cannot satisfy: a binding that
-    /// resolved only the strip would highlight tab 1 while this render
-    /// kept painting tab 0's own body underneath it.
+    /// arm paints underneath it. A binding that resolved only the strip
+    /// (`quadraui::TabBar::resolved_active`) would highlight tab 1 while
+    /// this render kept painting tab 0's own body underneath it.
     #[test]
     fn clicking_a_tab_in_a_layout_tabs_group_moves_both_the_strip_and_the_content_pane() {
         let logic = TabsLogic {

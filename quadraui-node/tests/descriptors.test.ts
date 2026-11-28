@@ -1,7 +1,6 @@
 // Black-box coverage for the descriptor decode adapter (`quadraui-node/src/
-// lib.rs`'s "Descriptor decode adapter" module doc section): render each of
-// the six fixed primitive slots and the three built-in additive primitives
-// from a plain JS object through a render callback's flat `{"<kind>": {...}}`
+// lib.rs`'s "Descriptor decode adapter" module doc section): render a
+// range of widget kinds from a plain JS object through a render callback's flat `{"<kind>": {...}}`
 // object, assert `screenContains()` shows it, and exercise the two
 // audit-flagged pre-checks (`Buffer`-sourced `ImageSource::Bytes`, a
 // non-finite float) via that same path. Ports the shape of `quadraui-ffi`'s

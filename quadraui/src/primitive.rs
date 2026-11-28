@@ -1332,6 +1332,19 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         let _ = (state, event);
     }
 
+    /// This widget with its first visible row moved to `row`, for a widget
+    /// that scrolls its own rows — see [`Interactive::scrolled_to_row`].
+    /// `None` for every other widget.
+    /// [`Interactive::SCROLLS_OWN_ROWS`].
+    fn scrolls_own_rows(&self) -> bool {
+        false
+    }
+
+    fn scrolled_to_row(&self, row: usize) -> Option<std::rc::Rc<dyn DynWidget>> {
+        let _ = row;
+        None
+    }
+
     /// This widget's interaction-state summary — see
     /// [`Interactive::state_summary`]. A `state` of the wrong type
     /// answers the summary of `State::default()`.
@@ -1511,6 +1524,15 @@ where
         if let Some(state) = state.downcast_mut::<W::State>() {
             Interactive::follow_event(self, state, event);
         }
+    }
+
+    fn scrolls_own_rows(&self) -> bool {
+        W::SCROLLS_OWN_ROWS
+    }
+
+    fn scrolled_to_row(&self, row: usize) -> Option<std::rc::Rc<dyn DynWidget>> {
+        Interactive::scrolled_to_row(self, row)
+            .map(|w| std::rc::Rc::new(w) as std::rc::Rc<dyn DynWidget>)
     }
 
     fn state_summary(&self, state: Option<&dyn std::any::Any>) -> crate::interactive::StateSummary {

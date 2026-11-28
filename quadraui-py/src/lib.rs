@@ -2831,8 +2831,7 @@ impl QuiAppActions {
     /// tab makes via `InteractionEngine::handle`. For a `render` callback
     /// that leaves its tabs widget uncontrolled (never pins `"selected"`/
     /// marks a tab `is_active` from frame to frame — see
-    /// [`quadraui_binding_core::resolve_tab_bar_active`]'s own doc for why
-    /// that matters), this is how an app drives which tab is active from
+    /// [`quadraui::TabBar::resolved_active`] for why that matters), this is how an app drives which tab is active from
     /// its own business logic (e.g. "open this folder as a new tab and
     /// focus it") without resorting to pinning the active index in the
     /// descriptor itself, which would make every later render controlled

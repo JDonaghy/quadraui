@@ -12,6 +12,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Added
 
+- `examples/windowed_list_demo.py` (#2977): a `list` over a
+  1,000,000-row collection that sends only the rows around its viewport
+  through `items_window` and answers each `RowsRequested`. It shows the two
+  rules a windowed app follows: every index is absolute, and the app sends
+  its first viewport's rows itself, since a windowed widget asks for rows
+  only after input.
+
 - A GTK-enabled Linux wheel (`manylinux_2_39`, glibc 2.39+: Ubuntu 24.04+,
   Fedora 40+, Debian 13+) carrying two builds of the extension,
   `_quadraui_gtk` (linking the system GTK 4, Pango, Cairo and GLib; nothing
@@ -85,20 +92,24 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
     value wins only when it changed since the widget last saw it: an app
     that resends the same `scroll_offset`/`selected_idx` every frame leaves
     the widget uncontrolled, and one that sends a new value moves it.
-    Before, any non-zero `scroll_offset` pinned the scroll.
-  - A click on a list item, tree row or table row is the widget's own
+    **Breaking:** before, any non-zero `scroll_offset` pinned the scroll.
+    To pin a scroll now, keep it in the app and send each change as a new
+    value.
+  - **Breaking:** a click on a list item, tree row or table row is the widget's own
     event (`SelectionChanged`, `RowClicked`, `RowSelected`, ...), and a
     click on a tree row selects it. The raw `MouseDown`/`DoubleClick` with
     a per-kind `"hit"` (`tree_row`, `list_item`, `data_table_row`,
     `text_display_line`, ...) is gone: a pointer event on a widget carries
     `"hit": {"kind": "widget_body"}`, and so does an event a widget emits
-    from a key.
-  - A focused tree's Up/Down/Home/End/PageUp/PageDown report `Tree
+    from a key. Match the `List`/`Tree`/`DataTable`/`TextDisplay` events
+    instead of `hit.kind`.
+  - **Breaking:** a focused tree's Up/Down/Home/End/PageUp/PageDown report `Tree
     SelectionChanged` (nothing for a windowed tree's unloaded row) instead
     of a tree-scoped `KeyPressed`; a table's Up/Down come from `DataTable`'s
     own key handling; a Ctrl/Shift click on a list reports `List
     SelectionSet`; the tree wheel reports `Tree ScrollChanged` instead of
-    `ScrollOffsetChanged`.
+    `ScrollOffsetChanged`. Handle those events where the app matched the
+    `KeyPressed` or `ScrollOffsetChanged`.
   - A focused text display claims its own PageUp/PageDown/Home/End, so an
     enclosing `scroll` container no longer pages for them.
   - `widget_state(id)` answers for a widget painted this frame under its
@@ -108,8 +119,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   - A `TabActivated`/`TabClosed`/`RowToggleExpand` the app dispatches for a
     painted tab bar or tree moves that widget's state as a click would, and
     a tree, list or table whose app moves its selection (`selected_path`,
-    `selected_idx`) scrolls the new selection into view, unless the app
-    sets a new `scroll_offset` that frame.
+    `selected_idx`) scrolls the new selection into view, windowed or not,
+    unless the app sets a new `scroll_offset` that frame. A windowed tree's
+    keyboard cursor moves to a new `selected_path` the app sends, and
+    keeps to its row's path when the app re-flattens the rows around it.
   - A tab group's content pane follows the tab its strip activated, and a
     leaf hidden in an unselected tab or scrolled out of a `scroll`
     container keeps its widget state until it shows again.

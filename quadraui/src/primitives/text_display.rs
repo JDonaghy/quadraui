@@ -69,10 +69,17 @@ pub struct TextDisplay {
     /// Index of the first visible line. `0` = top.
     #[serde(default)]
     pub scroll_offset: usize,
-    /// The loaded slice's place in the real collection — see
-    /// [`crate::behaviour::row_window`]. `None`: the payload is the whole
-    /// collection. When set, `scroll_offset`, the selection and every row
-    /// index in this widget's events are absolute.
+    /// Where the loaded lines sit in the real collection: when set, the
+    /// payload holds lines `start..` of `total`, and `scroll_offset` and
+    /// every line index in this widget's events are absolute indices into
+    /// those `total` lines.
+    ///
+    /// `None`: the payload is the whole collection. A windowed widget asks
+    /// for lines it scrolls to with [`crate::UiEvent::RowsRequested`], after
+    /// input only, so the app sends the lines its first viewport shows (and
+    /// any a larger viewport shows after a resize) without being asked;
+    /// unloaded lines paint as placeholders. See
+    /// [`crate::behaviour::row_window`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
     /// When true, backends auto-scroll to keep the latest line visible.
@@ -1949,6 +1956,8 @@ impl crate::interactive::Interactive for TextDisplay {
     type State = TextDisplayState;
     type Action = TextDisplayEvent;
 
+    const SCROLLS_OWN_ROWS: bool = true;
+
     /// One focus stop as a whole: a read-only log pane takes focus so
     /// the keyboard can scroll it, but has no focusable sub-parts.
     /// [`crate::interactive::FocusSpec::None`] for an empty buffer —
@@ -2122,6 +2131,16 @@ impl crate::interactive::Interactive for TextDisplay {
             window.scroll,
             window.viewport_rows,
         )
+    }
+
+    /// This widget scrolled so `row` is its first visible row, with
+    /// `auto_scroll` off so it cannot override that.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self> {
+        Some(Self {
+            scroll_offset: row,
+            auto_scroll: false,
+            ..self.clone()
+        })
     }
 
     fn state_summary(&self, state: &TextDisplayState) -> crate::interactive::StateSummary {

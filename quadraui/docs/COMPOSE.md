@@ -1007,10 +1007,6 @@ match tree.handle(&event, backend, rect, columns) {
 }
 ```
 
-<!-- TODO(0.12 final pass): after D2 (#2948) ports TreeTable and the collapse
-(#2977) moves `tree_table_controller` off the binding extras, recheck this
-section (lazy children and the sort override become descriptor content). -->
-
 **Example:** `quadraui-gallery/src/demos/tree_table.rs` — expand/collapse,
 a header-click sort and the lazy `remote/` branch. Its `#[cfg(test)]`
 module is the direct-use reference.

@@ -89,15 +89,25 @@ pub struct ListView {
     pub selected_idx: usize,
     #[serde(default)]
     pub scroll_offset: usize,
-    /// The loaded slice's place in the real collection — see
-    /// [`crate::behaviour::row_window`]. `None`: the payload is the whole
-    /// collection. When set, `scroll_offset`, the selection and every row
-    /// index in this widget's events are absolute.
+    /// Where the loaded rows sit in the real collection: when set, the
+    /// payload holds rows `start..` of `total`, and `scroll_offset`, the selection and
+    /// every row index in this widget's events are absolute indices into
+    /// those `total` rows.
+    ///
+    /// `None`: the payload is the whole collection. A windowed widget asks
+    /// for rows it scrolls to with [`crate::UiEvent::RowsRequested`], after
+    /// input only, so the app sends the rows its first viewport shows (and
+    /// any a larger viewport shows after a resize) without being asked;
+    /// unloaded rows paint as placeholders. See
+    /// [`crate::behaviour::row_window`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items_window: Option<crate::behaviour::row_window::ItemsWindow>,
-    /// Pixel-precise scroll position; wins over `scroll_offset` when set.
-    /// Combines with a caller's [`crate::primitive::PaintState::scroll_px`],
-    /// which wins over it.
+    /// Scroll position finer than a whole row, in the surface's native
+    /// units — pixels on GTK, macOS and Windows, rows on TUI (where 1.0 is
+    /// one row); when set it wins over `scroll_offset`.
+    ///
+    /// A caller's [`crate::primitive::PaintState::scroll_px`] wins over
+    /// this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_px: Option<f32>,
     /// Whether this list currently holds keyboard focus. Gates the
@@ -3251,6 +3261,8 @@ impl Interactive for ListView {
     type State = ListViewState;
     type Action = ListViewEvent;
 
+    const SCROLLS_OWN_ROWS: bool = true;
+
     /// One focus stop as a whole — a flat list navigates internally via
     /// arrow/`j`/`k` keys inside [`Self::handle`]'s own dispatch rather
     /// than declaring a [`FocusSpec::Children`] stop per row (which,
@@ -3406,12 +3418,12 @@ impl Interactive for ListView {
     /// the list's own keys moved does — so an app that owns the selection
     /// but leaves the scroll to the list keeps its selection visible.
     fn settle(&self, state: &mut ListViewState, layout: &ListViewPrimitiveLayout) -> bool {
-        if self.items_window.is_some() || state.followed_selection == Some(self.selected_idx) {
+        if state.followed_selection == Some(self.selected_idx) {
             return false;
         }
         state.followed_selection = Some(self.selected_idx);
         let (selected, _) = self.resolved(state);
-        if selected != self.selected_idx || selected >= self.items.len() {
+        if selected != self.selected_idx || selected >= self.row_count() {
             return false;
         }
         state
@@ -3435,6 +3447,14 @@ impl Interactive for ListView {
             window.scroll,
             window.viewport_rows,
         )
+    }
+
+    /// This widget scrolled so `row` is its first visible row.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self> {
+        Some(Self {
+            scroll_offset: row,
+            ..self.clone()
+        })
     }
 
     fn state_summary(&self, state: &ListViewState) -> crate::interactive::StateSummary {
