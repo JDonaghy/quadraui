@@ -3357,13 +3357,9 @@ impl crate::interactive::Interactive for TreeView {
         let Some(row) = live.rows.iter().position(|r| &r.path == path) else {
             return false;
         };
-        let scroll = live.scroll_offset;
-        let follow = crate::behaviour::scroll::ensure_visible(scroll, layout.viewport_rows, row);
-        if follow == scroll {
-            return false;
-        }
-        state.scroll.set(&self.scroll_offset, follow);
-        true
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, layout.viewport_rows, row)
     }
 
     /// A `RowToggleExpand` for this tree the host delivered on the app's

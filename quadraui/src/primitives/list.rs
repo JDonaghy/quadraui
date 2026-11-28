@@ -2936,6 +2936,12 @@ pub struct ListViewState {
     /// Repeat suppression for a windowed list's
     /// [`crate::UiEvent::RowsRequested`].
     pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_idx` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<usize>,
 }
 
 impl ListView {
@@ -3395,6 +3401,24 @@ impl Interactive for ListView {
         }
     }
 
+    /// A selection the app moved (a new descriptor `selected_idx`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the list's own keys moved does — so an app that owns the selection
+    /// but leaves the scroll to the list keeps its selection visible.
+    fn settle(&self, state: &mut ListViewState, layout: &ListViewPrimitiveLayout) -> bool {
+        if self.items_window.is_some() || state.followed_selection == Some(self.selected_idx) {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_idx);
+        let (selected, _) = self.resolved(state);
+        if selected != self.selected_idx || selected >= self.items.len() {
+            return false;
+        }
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, layout.viewport_rows(), selected)
+    }
+
     /// A windowed list asks for the rows around its viewport once it
     /// scrolls outside the loaded slice — see
     /// [`crate::behaviour::row_window::RowsRequestLatch`].
@@ -3539,6 +3563,28 @@ mod interactive_tests {
     fn layout_for(list: &ListView) -> ListViewPrimitiveLayout {
         let ctx = LayoutCtx::new(1.0, 1.0, false);
         Primitive::layout(list, &ctx, Rect::new(0.0, 0.0, 20.0, 10.0))
+    }
+
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection; a scroll the app pins on
+    /// its first frame stands.
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        let list = list(100, 60);
+        let mut state = ListViewState::default();
+        let layout = layout_for(&list);
+        assert!(Interactive::settle(&list, &mut state, &layout));
+        let scroll = list.live(Some(&state)).scroll_offset;
+        let rows = layout.viewport_rows();
+        assert!(scroll <= 60 && 60 < scroll + rows, "{scroll}");
+        assert!(!Interactive::settle(&list, &mut state, &layout));
+
+        let mut pinned = list.clone();
+        pinned.scroll_offset = 5;
+        let mut state = ListViewState::default();
+        let layout = layout_for(&pinned);
+        assert!(!Interactive::settle(&pinned, &mut state, &layout));
+        assert_eq!(pinned.live(Some(&state)).scroll_offset, 5);
     }
 
     fn key(named: NamedKey) -> RoutedEvent {

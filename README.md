@@ -476,7 +476,7 @@ app matches on semantic events (`AppMenuEvent::Activated`,
 widget's own input handling lives in its `Interactive` impl, not here:
 <!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
 re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
-(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
+(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays).
 readme_truth's readme_compose_table_names_every_compose_controller checks
 the table against the module list. -->
 
@@ -491,8 +491,7 @@ the table against the module list. -->
 | `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
-| `FormController` | A form's focus, editing and validation. |
-| `FormDialog` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
+| `FormDialog` | A modal dialog hosting a multi-field form (laid out as a `ScrolledForm`): field editing plus Tab from the fields onto the dialog's buttons. |
 | `DualModePalette` | A command palette that switches between modes. |
 | `Chat` | A chat overlay: transcript plus input. |
 | `FilePicker` / `FolderPicker` | In-app file and folder pickers for backends without a native dialog. |

@@ -232,6 +232,30 @@ impl<T: Clone + PartialEq> HostLatch<T> {
     }
 }
 
+impl HostLatch<usize> {
+    /// Scroll `row` — a selection the app just moved — into a viewport of
+    /// `viewport_rows`, for a scroll the widget owns. The scroll is the
+    /// app's when its descriptor value changed since the widget last saw
+    /// it, or, before the widget has seen one, when it is non-zero; that
+    /// scroll stands as sent. Returns whether the scroll moved.
+    pub fn follow_selection(&mut self, descriptor: usize, viewport_rows: usize, row: usize) -> bool {
+        let app_scrolls = match self.seen() {
+            Some(seen) => *seen != descriptor,
+            None => descriptor != 0,
+        };
+        if app_scrolls {
+            return false;
+        }
+        let scroll = self.get(&descriptor);
+        let follow = crate::behaviour::scroll::ensure_visible(scroll, viewport_rows, row);
+        if follow == scroll {
+            return false;
+        }
+        self.set(&descriptor, follow);
+        true
+    }
+}
+
 /// Per-widget repeat suppression for [`crate::UiEvent::RowsRequested`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RowsRequestLatch {
@@ -356,6 +380,23 @@ pub fn band_paint_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn follow_selection_scrolls_an_owned_scroll_and_leaves_an_app_scroll() {
+        let mut owned = HostLatch::default();
+        assert!(owned.follow_selection(0, 5, 20));
+        assert_eq!(owned.get(&0), 16);
+        assert!(!owned.follow_selection(0, 5, 18), "already visible");
+        // A first frame that pins a scroll keeps it.
+        let mut pinned = HostLatch::default();
+        assert!(!pinned.follow_selection(40, 5, 0));
+        assert_eq!(pinned.get(&40), 40);
+        // A scroll the app changed this frame wins over the selection.
+        let mut moved = HostLatch::default();
+        moved.set(&0, 3);
+        assert!(!moved.follow_selection(30, 5, 0));
+        assert_eq!(moved.get(&30), 30);
+    }
 
     #[test]
     fn row_count_widens_a_stale_total_to_cover_the_loaded_slice() {

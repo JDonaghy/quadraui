@@ -131,8 +131,9 @@ fragment step for this package (that mechanism, and
     returned keys are unchanged.
   - A `TabActivated`/`TabClosed`/`RowToggleExpand` the app dispatches for a
     painted tab bar or tree moves that widget's state as a click would, and
-    a tree whose app moves `selected_path` scrolls the new selection into
-    view.
+    a tree, list or table whose app moves its selection (`selected_path`,
+    `selected_idx`) scrolls the new selection into view, unless the app
+    sets a new `scroll_offset` that frame.
   - A tab group's content pane follows the tab its strip activated, and a
     leaf hidden in an unselected tab or scrolled out of a `scroll`
     container keeps its widget state until it shows again.

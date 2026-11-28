@@ -2947,6 +2947,12 @@ pub struct DataTableState {
     /// Repeat suppression for a windowed table's
     /// [`crate::UiEvent::RowsRequested`].
     pub rows_requested: crate::behaviour::row_window::RowsRequestLatch,
+    /// The descriptor `selected_idx` the last [`Interactive::settle`]
+    /// saw: a new one is the app moving the selection, which scrolls it
+    /// into view.
+    ///
+    /// [`Interactive::settle`]: crate::interactive::Interactive::settle
+    pub followed_selection: Option<Option<usize>>,
 }
 
 /// Narrowest width a divider drag shrinks a column to, in the table's
@@ -3413,6 +3419,27 @@ impl crate::interactive::Interactive for DataTable {
         }
     }
 
+    /// A selection the app moved (a new descriptor `selected_idx`) that
+    /// lies outside the viewport scrolls into view, the way a selection
+    /// the table's own keys moved does — so an app that owns the
+    /// selection but leaves the scroll to the table keeps its selection
+    /// visible.
+    fn settle(&self, state: &mut DataTableState, layout: &DataTablePrimitiveLayout) -> bool {
+        if self.items_window.is_some() || state.followed_selection == Some(self.selected_idx) {
+            return false;
+        }
+        state.followed_selection = Some(self.selected_idx);
+        let Some(row) = self.selected_idx else {
+            return false;
+        };
+        if state.selected.get(&self.selected_idx) != Some(row) || row >= self.rows.len() {
+            return false;
+        }
+        state
+            .scroll
+            .follow_selection(self.scroll_offset, Self::page_rows(layout), row)
+    }
+
     /// A windowed table asks for the rows around its viewport once it
     /// scrolls outside the loaded slice — see
     /// [`crate::behaviour::row_window::RowsRequestLatch`].
@@ -3441,6 +3468,30 @@ impl crate::interactive::Interactive for DataTable {
 mod tests {
     use super::*;
     use crate::types::StyledText;
+
+    /// A selection the app moves below the viewport scrolls into view
+    /// through `settle`, once per new selection.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    #[test]
+    fn settle_scrolls_a_selection_the_app_moved_into_view_once() {
+        use crate::interactive::Interactive;
+        use crate::primitive::{LayoutCtx, Primitive};
+        let mut table = make_table(2, 100);
+        table.selected_idx = Some(70);
+        let mut state = DataTableState::default();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let layout = Primitive::layout(&table, &ctx, Rect::new(0.0, 0.0, 30.0, 10.0));
+        assert!(Interactive::settle(&table, &mut state, &layout));
+        let scroll = table.live(Some(&state)).scroll_offset;
+        let rows = layout.layout.visible_rows.max(1);
+        assert!(scroll <= 70 && 70 < scroll + rows, "{scroll}");
+        assert!(!Interactive::settle(&table, &mut state, &layout));
+    }
 
     fn make_table(ncols: usize, nrows: usize) -> DataTable {
         let columns: Vec<Column> = (0..ncols)
