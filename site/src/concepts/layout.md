@@ -4,7 +4,7 @@ A view says **what** goes where in relative terms; quadraui works out the
 rectangles for the current window or terminal size, in that backend's
 units (pixels, or character cells in a terminal).
 
-## Python and Node: containers
+## Containers
 
 `Column` stacks children top to bottom, `Row` left to right. `Split` makes
 two resizable panes, `Tabs` a tabbed area, `Scroll` a scrolling viewport.
@@ -51,20 +51,35 @@ you pass to `App(width, height, ...)` (80x24 by default) is used only by a
 headless run (the test harness); a live `run_tui()` or `run_native()`
 ignores it.
 
-## Rust: three levels
+## Rust: the same containers
 
-- **`ShellApp`** gives you a VS Code-style frame (activity bar, sidebar,
-  editor area, panel, status bar) with every region already laid out. Most
-  real apps start here; see
-  [`GUIDE.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/GUIDE.md).
-- **`ScreenLayout`** takes widgets at rectangles you compute, which is what
-  the [Rust counter](../quick-start/rust.md) does.
-- The **`layout` feature** adds flexbox and grid (`quadraui::flex`, built on
-  [Taffy](https://github.com/DioxusLabs/taffy)) for computing those
-  rectangles.
+A Rust [`View`](../quick-start/rust.md) builds the same tree with
+`column([...])` and `row([...])`. A child asks for its size with a method
+instead of `size=`, in the same pixels:
 
-A declarative `Column`/`Row` tree for Rust, matching the Python and Node
-one, is proposed but not built.
+| Rust | Python / Node equivalent |
+|---|---|
+| `.fixed(32)` | `32` |
+| `.percent(0.3)` | `"30%"` |
+| `.weight(2.0)` | `"2fr"` |
+| `.content()` | `"content"` |
+| left out | an equal share of what is left |
+
+`.min(px)` and `.max(px)` clamp, and containers take `.gap(px)` and
+`.padding(px)`. `text("...")` is content-sized, as in Python and Node:
+
+<!-- sample: untested — a fragment; the sizes are tested in quadraui/tests/app_view_driver.rs -->
+```rust
+column([text("Title"), list(items).id("items"), row([...]).fixed(32)])
+```
+
+Below the app layer, `ShellApp` gives you a VS Code-style frame (activity
+bar, sidebar, editor area, panel, status bar) with every region already
+laid out; see
+[`GUIDE.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/GUIDE.md).
+`ScreenLayout` takes widgets at rectangles you compute, and the `layout`
+feature adds flexbox and grid (`quadraui::flex`, built on
+[Taffy](https://github.com/DioxusLabs/taffy)) for computing them.
 
 ## Paint and click agree
 
@@ -77,5 +92,6 @@ on every backend.
 - **CSS flexbox / React Native:** `Column` and `Row` are flex containers
   with a fixed direction. Rust's `layout` feature is real flexbox (Taffy,
   the engine behind Dioxus and Bevy UI).
-- **iced:** `column![]` and `row![]` are the same idea.
+- **iced:** `column![]` and `row![]` are the same idea; Rust's
+  `column([...])` and `row([...])` are functions rather than macros.
 - **Textual:** `Vertical` and `Horizontal` containers; there is no CSS file.

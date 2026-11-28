@@ -42,8 +42,8 @@ A Rust node maps its events to a message value you define, and one
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust,noplayground
-                button("-").id("dec").on_click(Msg::Dec).content(),
-                button("+").id("inc").on_click(Msg::Inc).content(),
+                button("-").id("dec").on_click(Msg::Dec),
+                button("+").id("inc").on_click(Msg::Inc),
 ```
 
 <!-- sample: examples/hero/rust/src/main.rs -->

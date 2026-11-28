@@ -188,8 +188,14 @@ impl View for Sizes {
                 text("CCCC").id("c").weight(3.0),
             ])
             .content(),
-            row([text("DDDD").id("d").max(32.0), text("EEEE").id("e")]),
-            row([text("FFFF").id("f").min(240.0), text("GGGG").id("g")]),
+            row([
+                text("DDDD").id("d").weight(1.0).max(32.0),
+                text("EEEE").id("e").weight(1.0),
+            ]),
+            row([
+                text("FFFF").id("f").weight(1.0).min(240.0),
+                text("GGGG").id("g").weight(1.0),
+            ]),
         ])
     }
     fn update(&mut self, _: ()) -> Command {
@@ -217,6 +223,33 @@ fn fixed_weight_min_and_max_resolve_through_the_stack_solver() {
     assert_eq!(rect("e"), (4.0, 1.0, 22.0, 1.0));
     assert_eq!(rect("f"), (0.0, 2.0, 30.0, 1.0));
     assert_eq!(rect("g"), (30.0, 2.0, 22.0, 1.0));
+}
+
+struct Label;
+
+impl View for Label {
+    type Msg = ();
+    fn view(&self) -> Node<()> {
+        column([text("Two\nlines").id("label"), button("OK").id("ok")])
+    }
+    fn update(&mut self, _: ()) -> Command {
+        Command::None
+    }
+}
+
+#[test]
+fn text_takes_its_content_height_and_leaves_the_rest_to_its_siblings() {
+    let driver = TuiDriver::new(Run::new(Label), 20, 6);
+    let tree = driver.app().frame_tree(());
+    let rect = |id: &str| {
+        let node = tree.find(&WidgetId::new(id)).expect("leaf routed");
+        (node.rect.y, node.rect.height)
+    };
+    // One row per line, as Python's `Text` and Node's `<text>` size
+    // themselves; the button takes the four rows left.
+    assert_eq!(rect("label"), (0.0, 2.0));
+    assert_eq!(rect("ok"), (2.0, 4.0));
+    assert_eq!(at(&driver, "lines"), Some((0, 1)), "{}", driver.screen());
 }
 
 #[derive(Default)]

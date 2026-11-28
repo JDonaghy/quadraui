@@ -17,9 +17,8 @@ If you know **Elm, iced, Textual or React**, you know the shape already:
 **state**, a **view** that turns state into a widget tree each frame, and
 **update** code that changes state when an event arrives. There is no data
 binding and no manual redraw. [The shape of an app](concepts/index.md) maps
-each part onto the framework you know. Python and Node build the view from
-`Column` and `Row`; Rust, for now, implements a lower-level trait and
-places each widget itself (third below).
+each part onto the framework you know. All three languages build the view
+from the same `Column` and `Row` tree.
 
 ## The same counter, three ways
 
@@ -80,10 +79,8 @@ if (require.main === module) {
 module.exports = { Counter };
 ```
 
-**Rust**: the same three parts. A node maps its events to a message, and
-one `update` applies it, as in Elm and iced. `.content()` sizes a child to
-fit and `.gap()` spaces a container; leave them out and children share the
-space equally, as in Python and Node.
+**Rust**: the same tree. A node maps its events to a message, and one
+`update` applies it, as in Elm and iced.
 
 <!-- sample: examples/hero/rust/src/main.rs -->
 ```rust,noplayground
@@ -104,15 +101,12 @@ impl View for Counter {
     type Msg = Msg;
     fn view(&self) -> Node<Msg> {
         column([
-            text(format!("Count: {}", self.count)).id("count").content(),
+            text(format!("Count: {}", self.count)).id("count"),
             row([
-                button("-").id("dec").on_click(Msg::Dec).content(),
-                button("+").id("inc").on_click(Msg::Inc).content(),
-            ])
-            .gap(8.0)
-            .content(),
+                button("-").id("dec").on_click(Msg::Dec),
+                button("+").id("inc").on_click(Msg::Inc),
+            ]),
         ])
-        .gap(16.0)
     }
     fn update(&mut self, msg: Msg) -> Command {
         match msg {

@@ -69,10 +69,14 @@ fn main() {
     let mut trace = vec![frame(&mut driver, Value::Null)];
     for step in script {
         if let Some(at) = step.get("click") {
-            driver.click(
+            // Press and release, as the Python and Node harnesses'
+            // `click_at` do: `TuiDriver::click` is the press alone.
+            let (x, y) = (
                 at[0].as_f64().unwrap() as f32,
                 at[1].as_f64().unwrap() as f32,
             );
+            driver.click(x, y);
+            driver.mouse_up(x, y);
         } else if let Some(text) = step.get("type") {
             for c in text.as_str().unwrap().chars() {
                 driver.press(Key::Char(c));

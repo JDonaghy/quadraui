@@ -36,7 +36,7 @@ use crate::primitives::list::{ListItem, ListView, ListViewEvent};
 use crate::primitives::multi_section_view::SectionSize;
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::primitives::text_display::{TextDisplay, TextDisplayLine};
-use crate::types::{StyledSpan, StyledText, WidgetId};
+use crate::types::{StyledText, WidgetId};
 
 /// A widget a [`Node`] can hold: any [`DynWidget`] that can be cloned and
 /// re-addressed. Every built-in widget with an `id` field implements it;
@@ -186,15 +186,18 @@ fn unnamed<M, W: Leaf>(widget: W) -> Node<M> {
     node
 }
 
-/// One line of plain text (a [`TextDisplay`]).
+/// Plain text (a [`TextDisplay`]): one unstyled line per `\n`-separated
+/// line of `text`. It is sized to its content, so a label in a [`column`]
+/// takes one row, as Python's `Text` and Node's `<text>` do;
+/// [`Node::weight`] gives it an equal share instead.
 pub fn text<M>(text: impl Into<String>) -> Node<M> {
     let mut display = TextDisplay::new(WidgetId::new(""));
-    display.lines.push(TextDisplayLine {
-        spans: vec![StyledSpan::plain(text)],
-        decoration: Default::default(),
-        timestamp: None,
-    });
-    unnamed(display)
+    display.lines = text
+        .into()
+        .split('\n')
+        .map(TextDisplayLine::plain)
+        .collect();
+    unnamed(display).content()
 }
 
 /// A push button labelled `label`. [`Node::on_click`] gives it a message.

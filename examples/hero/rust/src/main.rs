@@ -15,15 +15,12 @@ impl View for Counter {
     type Msg = Msg;
     fn view(&self) -> Node<Msg> {
         column([
-            text(format!("Count: {}", self.count)).id("count").content(),
+            text(format!("Count: {}", self.count)).id("count"),
             row([
-                button("-").id("dec").on_click(Msg::Dec).content(),
-                button("+").id("inc").on_click(Msg::Inc).content(),
-            ])
-            .gap(8.0)
-            .content(),
+                button("-").id("dec").on_click(Msg::Dec),
+                button("+").id("inc").on_click(Msg::Inc),
+            ]),
         ])
-        .gap(16.0)
     }
     fn update(&mut self, msg: Msg) -> Command {
         match msg {

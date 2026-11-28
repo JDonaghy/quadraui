@@ -43,15 +43,14 @@ Running each app live: `cargo run -p quadraui-parity --features tui --bin todo`,
 
 ## Known divergences
 
-Python and Node match exactly at every step. Rust does not yet, in two
-places. [`known_divergences.json`](known_divergences.json) records each one
+Python and Node match exactly at every step. Rust does not yet, in one
+place. [`known_divergences.json`](known_divergences.json) records each one
 with the steps and the cell region where it shows. The check allows a
 difference only there. If a listed step stops differing, the check fails until
 that step is removed from the file, so a fix cannot go unnoticed.
 
 | Id | What differs |
 |---|---|
-| `button-pressed-after-release` | After a click, Rust paints the button with the pressed colour; Python and Node paint the hover colour. |
 | `controlled-list-ignores-arrow-keys` | Down on a focused list whose selection the app pins moves the selection and fires `SelectionChanged` in Rust. Python and Node do nothing. |
 
 ## How the Rust version is built

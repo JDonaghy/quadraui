@@ -2,13 +2,6 @@
   "about": "Recorded places where the Rust version renders differently from Python/Node. scripts/parity_check.py allows a difference only inside an entry's region (and in the fired updates only when `events` is true), only at the listed steps, and fails if a listed step stops differing there, so a fix forces the entry to be removed. Steps count from 0 (the first paint); step N is the frame after script.json's Nth input.",
   "divergences": [
     {
-      "id": "button-pressed-after-release",
-      "lang": "rust",
-      "steps": [4, 7, 10, 11, 12],
-      "region": [0, 7, 40, 1],
-      "reason": "After a click is released over a Button, Rust paints it with Theme::button_pressed_bg (#60aaf0, blend 0.26) while Python/Node paint Theme::button_hover_bg (#58a6f0, blend 0.14). The pressed state outlives the mouse-up on the Rust path."
-    },
-    {
       "id": "controlled-list-ignores-arrow-keys",
       "lang": "rust",
       "steps": [9],
