@@ -44,6 +44,9 @@ const DELETED_SYMBOLS: &[&str] = &[
     "TreeHoverTracker",
     "ListHoverTracker",
     "ratatui_buffer",
+    "FormController",
+    "FormControllerAction",
+    "FormControllerEvent",
 ];
 
 /// Every `Backend` method the widget contract deleted: a per-widget draw,

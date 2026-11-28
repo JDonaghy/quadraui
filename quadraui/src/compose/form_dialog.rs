@@ -82,7 +82,6 @@
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 use crate::backend::Backend;
 use crate::backend::DrawsPrimitives;
-use crate::compose::form_controller::{build_scrollbar_lh, split_rect_lh};
 use crate::compose::widget_host;
 use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
@@ -95,11 +94,9 @@ use crate::primitives::dialog::{
     Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogPrimitiveLayout,
     DialogSeverity,
 };
-use crate::primitives::form::contract as form_contract;
 use crate::primitives::form::{
-    focus_order, FieldKind, Form, FormEvent, FormPrimitiveLayout, FormState,
+    focus_order, FieldKind, Form, FormEvent, FormState, ScrolledForm, ScrolledFormLayout,
 };
-use crate::primitives::scrollbar::{Scrollbar, ScrollbarLayout};
 use crate::types::{StyledText, WidgetId};
 use crate::{Key, Modifiers, NamedKey};
 
@@ -165,10 +162,10 @@ pub struct FormDialog {
 }
 
 /// [`Interactive::State`] for [`FormDialog`]: the embedded form's own
-/// state (caret, scrub position, item cursor, scroll) plus which button,
-/// if any, holds keyboard focus.
+/// state (caret, scrub position, item cursor, scroll, scrollbar drag)
+/// plus which button, if any, holds keyboard focus.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FormDialogState {
     /// The embedded form's interaction state.
     pub form: FormState,
@@ -184,14 +181,9 @@ pub struct FormDialogState {
 pub struct FormDialogLayout {
     /// The modal chrome, body and button row.
     pub dialog: DialogPrimitiveLayout,
-    /// The form, laid out in the dialog's `input_bounds` less the
-    /// scrollbar gutter.
-    pub form: Option<FormPrimitiveLayout>,
-    /// The form's vertical scrollbar track, present when the form's
-    /// fields overflow the dialog's form slot.
-    pub scrollbar: Option<Rect>,
-    /// The row pitch unit the scrollbar's geometry is resolved in.
-    pub line_height: f32,
+    /// The form and the scrollbar its fields need, laid out as a
+    /// [`ScrolledForm`] in the dialog's `input_bounds`.
+    pub form: Option<ScrolledFormLayout>,
 }
 
 impl FormDialog {
@@ -471,8 +463,9 @@ impl FormDialog {
         }
     }
 
-    /// Hand `event` to the embedded form's own [`Interactive::handle`],
-    /// with a pointer position translated into the form's local space.
+    /// Hand `event` to the embedded form — its scrollbar, then the form's
+    /// own [`Interactive::handle`] — with a pointer position translated
+    /// into the form's local space.
     fn forward_to_form(
         &self,
         state: &mut FormDialogState,
@@ -484,91 +477,17 @@ impl FormDialog {
             return Handled::Ignored;
         };
         let origin = layout.dialog.area;
-        let to_form = |local: &Point| {
-            Point::new(
-                origin.x + local.x - form_layout.area.x,
-                origin.y + local.y - form_layout.area.y,
-            )
+        let delta = Point::new(form_layout.area.x - origin.x, form_layout.area.y - origin.y);
+        let sub = match event {
+            RoutedEvent::Pointer { sub, .. } => *sub,
+            _ => None,
         };
-        let event = match event {
-            RoutedEvent::Pointer {
-                kind,
-                sub,
-                local,
-                mods,
-            } => RoutedEvent::Pointer {
-                kind: *kind,
-                sub: *sub,
-                local: to_form(local),
-                mods: *mods,
-            },
-            RoutedEvent::Wheel {
-                dx,
-                dy,
-                local,
-                mods,
-            } => RoutedEvent::Wheel {
-                dx: *dx,
-                dy: *dy,
-                local: to_form(local),
-                mods: *mods,
-            },
-            other => other.clone(),
-        };
-        match Interactive::handle(form, &mut state.form, &event, form_layout, cx) {
+        let event = widget_host::child_event(event, delta, sub);
+        match ScrolledForm::handle_live(form, &mut state.form, &event, form_layout, cx) {
             Handled::Event(e) => Handled::Event(FormDialogAction::FormAction(e)),
             Handled::Consumed => Handled::Consumed,
             Handled::Ignored => Handled::Ignored,
         }
-    }
-
-    /// The on-screen rect of the keyboard-focused item inside the focused
-    /// `ButtonRow` / `ToggleGroup` / `Toolbar` field of the painted
-    /// `form`, or `None` while the form has no focus or no item focus.
-    fn item_focus_ring(
-        &self,
-        form: &Form,
-        state: &FormDialogState,
-        form_layout: &FormPrimitiveLayout,
-    ) -> Option<Rect> {
-        if !form.has_focus {
-            return None;
-        }
-        let (focused_id, idx, items) = form_contract::current_item_focus(form, &state.form)?;
-        let (item_id, _) = items.get(idx).copied()?;
-        let vf = form_layout.layout.visible_fields.iter().find(|vf| {
-            form.fields
-                .get(vf.field_idx)
-                .is_some_and(|f| f.id == focused_id)
-        })?;
-        let (_, item) = vf.item_bounds.iter().find(|(id, _)| *id == item_id)?;
-        let area = form_layout.area;
-        Some(Rect::new(
-            area.x + item.x,
-            area.y + item.y,
-            item.width,
-            item.height,
-        ))
-    }
-
-    /// The painted `form`'s vertical scrollbar and its resolved layout,
-    /// when [`Primitive::layout`] reserved a scrollbar track.
-    fn scrollbar(
-        &self,
-        form: &Form,
-        layout: &FormDialogLayout,
-    ) -> Option<(Scrollbar, ScrollbarLayout)> {
-        let track = layout.scrollbar?;
-        let scrollbar = build_scrollbar_lh(
-            self.id.as_str(),
-            form.fields.len(),
-            form.scroll_offset,
-            false,
-            layout.line_height,
-            track,
-        );
-        let sb_layout = ScrollbarLayout::resolve(&scrollbar, track);
-        Some((scrollbar, sb_layout))
     }
 
     /// [`Interactive::handle`]'s `Key` arm — see this module's "Focus
@@ -654,26 +573,26 @@ impl Primitive for FormDialog {
     }
 
     /// The modal centres itself in `rect` through [`Dialog`]'s layout;
-    /// the form is laid out through its own in the dialog's form slot.
+    /// the form, at the live state stored for this dialog, is laid out
+    /// as a [`ScrolledForm`] in the dialog's form slot.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> FormDialogLayout {
         let dialog = Primitive::layout(&self.dialog_with(self.form.clone()), ctx, rect);
-        let line_height = match ctx.units() {
-            crate::primitive::Units::Cells => 1.0,
-            _ => ctx.editor_line_height(),
+        let stored = crate::widget_state::with_widget_state_ref(Some(&self.id), |state| {
+            state
+                .and_then(|s| s.downcast_ref::<FormDialogState>())
+                .cloned()
+        });
+        let state = stored.unwrap_or_default();
+        let form = match (self.live_form(&state), dialog.layout.input_bounds) {
+            (Some(form), Some(bounds)) => Some(ScrolledForm::layout_live(
+                &form,
+                state.form.thumb_drag.is_some(),
+                ctx,
+                bounds,
+            )),
+            _ => None,
         };
-        let (form, scrollbar) = match (&self.form, dialog.layout.input_bounds) {
-            (Some(form), Some(bounds)) => {
-                let (form_rect, scrollbar) = split_rect_lh(form.fields.len(), line_height, bounds);
-                (Some(Primitive::layout(form, ctx, form_rect)), scrollbar)
-            }
-            _ => (None, None),
-        };
-        FormDialogLayout {
-            dialog,
-            form,
-            scrollbar,
-            line_height,
-        }
+        FormDialogLayout { dialog, form }
     }
 
     /// The modal through [`Dialog`]'s painter, then the form through
@@ -694,17 +613,8 @@ impl Primitive for FormDialog {
             env,
         );
         if let (Some(form), Some(form_layout)) = (&live, &layout.form) {
-            Primitive::paint(form, form_layout, surface, env);
-            if let Some(ring) = self.item_focus_ring(form, state.unwrap_or(&default), form_layout) {
-                surface.surface_stroke_rect(
-                    ring,
-                    env.theme().accent_fg,
-                    env.style().focus_ring_width,
-                );
-            }
-            if let Some((scrollbar, sb_layout)) = self.scrollbar(form, layout) {
-                Primitive::paint(&scrollbar, &sb_layout, surface, env);
-            }
+            let state = state.unwrap_or(&default);
+            ScrolledForm::paint_live(form, &state.form, form_layout, surface, env);
         }
     }
 
@@ -720,13 +630,8 @@ impl Primitive for FormDialog {
         let live = self.live_form(state.unwrap_or(&default));
         Primitive::paint_cells(&self.dialog_with(live.clone()), &layout.dialog, cells, env);
         if let (Some(form), Some(form_layout)) = (&live, &layout.form) {
-            Primitive::paint_cells(form, form_layout, cells, env);
-            if let Some(ring) = self.item_focus_ring(form, state.unwrap_or(&default), form_layout) {
-                crate::tui::draw_focus_ring(cells, ring, env.theme());
-            }
-            if let Some((scrollbar, sb_layout)) = self.scrollbar(form, layout) {
-                Primitive::paint_cells(&scrollbar, &sb_layout, cells, env);
-            }
+            let state = state.unwrap_or(&default);
+            ScrolledForm::paint_cells_live(form, &state.form, form_layout, cells, env);
         }
     }
 }
@@ -1015,14 +920,11 @@ mod tests {
         let dialog = many_field_dialog(10);
         let layout = Primitive::layout(&dialog, &ctx, Rect::new(0.0, 0.0, 800.0, 600.0));
         let bounds = layout.dialog.layout.input_bounds.expect("form slot");
-        let track = layout.scrollbar.expect("scrollbar track");
-        let form_area = layout.form.as_ref().expect("form layout").area;
+        let form = layout.form.as_ref().expect("form layout");
+        let (scrollbar, sb_layout) = form.scrollbar.as_ref().expect("scrollbar track");
+        let track = scrollbar.track;
         assert_eq!(track.x + track.width, bounds.x + bounds.width);
-        assert_eq!(form_area.width, bounds.width - track.width);
-        let (scrollbar, sb_layout) = dialog
-            .scrollbar(dialog.form.as_ref().expect("form"), &layout)
-            .expect("scrollbar to paint");
-        assert_eq!(scrollbar.track, track);
+        assert_eq!(form.form.area.width, bounds.width - track.width);
         assert_eq!(sb_layout.track, track);
     }
 
@@ -1031,7 +933,86 @@ mod tests {
         let ctx = LayoutCtx::new(1.0, 1.0, false);
         let layout =
             Primitive::layout(&many_field_dialog(2), &ctx, Rect::new(0.0, 0.0, 80.0, 24.0));
-        assert!(layout.scrollbar.is_none());
+        assert!(layout.form.expect("form layout").scrollbar.is_none());
+    }
+
+    /// Drive `dialog` with `kind` at surface point `at`, laid out by
+    /// `ctx` over `rect` — the pixel-surface counterpart of
+    /// [`FormDialog::handle_event`], since a cell-grid dialog grows to
+    /// fit every field instead of scrolling.
+    fn drive_pointer(
+        dialog: &FormDialog,
+        state: &mut FormDialogState,
+        ctx: &LayoutCtx,
+        rect: Rect,
+        kind: PointerKind,
+        at: Point,
+    ) -> Handled<FormDialogAction> {
+        let layout = Primitive::layout(dialog, ctx, rect);
+        let event = RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point::new(at.x - rect.x, at.y - rect.y),
+            mods: Modifiers::default(),
+        };
+        widget_host::drive(dialog, dialog.id, state, &event, &layout, ctx.units()).handled
+    }
+
+    /// The form's scrollbar thumb follows a drag: a press on the thumb
+    /// starts a drag, a move down scrolls the form, and the release ends
+    /// the drag.
+    #[test]
+    fn dragging_the_form_scrollbar_thumb_scrolls_the_form() {
+        let ctx = LayoutCtx::new(20.0, 8.0, false);
+        let rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let dialog = many_field_dialog(40);
+        let mut state = FormDialogState::default();
+        let layout = Primitive::layout(&dialog, &ctx, rect);
+        let (sb, sb_layout) = layout
+            .form
+            .as_ref()
+            .and_then(|f| f.scrollbar.clone())
+            .expect("forty fields overflow the dialog's form slot");
+        let x = sb.track.x + sb.track.width / 2.0;
+        let y = sb.track.y + sb_layout.local_thumb_start() + 1.0;
+        let press = PointerKind::Down(MouseButton::Left);
+        let result = drive_pointer(&dialog, &mut state, &ctx, rect, press, Point::new(x, y));
+        assert_eq!(result, Handled::Consumed);
+        assert!(
+            state.form.thumb_drag.is_some(),
+            "the press starts a thumb drag"
+        );
+        let to = Point::new(x, y + 40.0);
+        let result = drive_pointer(&dialog, &mut state, &ctx, rect, PointerKind::Move, to);
+        assert_eq!(result, Handled::Consumed);
+        let scrolled = state.form.scroll_offset.expect("the drag scrolls the form");
+        assert!(
+            scrolled > 0,
+            "a drag down scrolls the form down, got {scrolled}"
+        );
+        let release = PointerKind::Up(MouseButton::Left);
+        let result = drive_pointer(&dialog, &mut state, &ctx, rect, release, to);
+        assert_eq!(result, Handled::Consumed);
+        assert!(state.form.thumb_drag.is_none(), "the release ends the drag");
+    }
+
+    /// A press on the bare track below the thumb pages the form down by
+    /// one viewport, clamped to the last full page.
+    #[test]
+    fn a_press_below_the_form_scrollbar_thumb_pages_down() {
+        let ctx = LayoutCtx::new(20.0, 8.0, false);
+        let rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let dialog = many_field_dialog(40);
+        let mut state = FormDialogState::default();
+        let layout = Primitive::layout(&dialog, &ctx, rect);
+        let form = layout.form.as_ref().expect("form layout");
+        let (sb, _) = form.scrollbar.clone().expect("a scrollbar");
+        let at = Point::new(sb.track.x + 1.0, sb.track.y + sb.track.height - 1.0);
+        let press = PointerKind::Down(MouseButton::Left);
+        let result = drive_pointer(&dialog, &mut state, &ctx, rect, press, at);
+        assert_eq!(result, Handled::Consumed);
+        let rows = form.viewport_rows;
+        assert_eq!(state.form.scroll_offset, Some(rows.min(40 - rows)));
     }
 
     #[test]
@@ -1367,7 +1348,7 @@ mod tests {
     }
 
     /// `focus_order` skips `Label`/`ReadOnly`/disabled fields, matching
-    /// `FormController`'s own private traversal order.
+    /// the form's own Tab traversal order.
     #[test]
     fn focus_order_skips_non_focusable_fields() {
         let mut form = name_description_form();

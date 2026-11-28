@@ -1,0 +1,348 @@
+=== initial
+| Name       [Your name…                                                                           ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [ ]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [ ]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | —                                                 Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-22 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 23-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-13 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 14-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== typed
+| Name       [Joe                                                                                  ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [ ]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [ ]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | name = "Joe"                                      Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 13-15 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 16-16 CellStyle { fg: Rgb(50, 60, 90), bg: Rgb(220, 220, 220), modifiers: NONE }; 17-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-24 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 25-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== committed
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [ ]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [ ]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | name committed: "Jo"                              Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-32 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 33-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== tabbed
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [ ]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [ ]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | focus → toggle-1                                  Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-28 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 29-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== space_toggles
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [x]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [ ]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | toggle-1 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== wheel_down
+| Setting 3  [ ]                                                                                    ░|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    █|
+| Setting 9  [ ]                                                                                    █|
+| Setting 10 [ ]                                                                                    █|
+| Setting 11 [ ]                                                                                    █|
+| Setting 12 [ ]                                                                                    ░|
+| Setting 13 [ ]                                                                                    ░|
+| Setting 14 [ ]                                                                                    ░|
+| Setting 15 [ ]                                                                                    ░|
+| scroll=3 | toggle-1 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== wheel_up
+| Setting 2  [x]                                                                                    ░|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    █|
+| Setting 9  [ ]                                                                                    █|
+| Setting 10 [ ]                                                                                    █|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| Setting 13 [ ]                                                                                    ░|
+| Setting 14 [ ]                                                                                    ░|
+| scroll=2 | toggle-1 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== click_toggle
+| Setting 2  [x]                                                                                    ░|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    █|
+| Setting 9  [x]                                                                                    █|
+| Setting 10 [ ]                                                                                    █|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| Setting 13 [ ]                                                                                    ░|
+| Setting 14 [ ]                                                                                    ░|
+| scroll=2 | toggle-8 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== thumb_dragging
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [x]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [x]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | toggle-8 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== thumb_released
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [x]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [x]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | toggle-8 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== track_page_up
+| Name       [Jo                                                                                   ]█|
+| Setting 1  [ ]                                                                                    █|
+| Setting 2  [x]                                                                                    █|
+| Setting 3  [ ]                                                                                    █|
+| Setting 4  [ ]                                                                                    █|
+| Setting 5  [ ]                                                                                    █|
+| Setting 6  [ ]                                                                                    █|
+| Setting 7  [ ]                                                                                    █|
+| Setting 8  [ ]                                                                                    ░|
+| Setting 9  [x]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| scroll=0 | toggle-8 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-12 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 13-97 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 98-98 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(50, 60, 90), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== track_page_down
+| Setting 9  [x]                                                                                    ░|
+| Setting 10 [ ]                                                                                    ░|
+| Setting 11 [ ]                                                                                    ░|
+| Setting 12 [ ]                                                                                    ░|
+| Setting 13 [ ]                                                                                    ░|
+| Setting 14 [ ]                                                                                    █|
+| Setting 15 [ ]                                                                                    █|
+| Setting 16 [ ]                                                                                    █|
+| Setting 17 [ ]                                                                                    █|
+| Setting 18 [ ]                                                                                    █|
+| Setting 19 [ ]                                                                                    █|
+| Setting 20 [ ]                                                                                    █|
+|                                                                                                   █|
+| scroll=9 | toggle-8 = true                                   Tab focus / type / Enter / scroll / q |
+0: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 12-14 CellStyle { fg: Rgb(140, 200, 240), bg: Rgb(20, 22, 30), modifiers: NONE }; 15-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+2: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+3: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+4: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(40, 44, 56), bg: Rgb(20, 22, 30), modifiers: NONE };
+5: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+6: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+7: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+8: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+9: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+10: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+11: 0-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(20, 22, 30), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+12: 0-98 CellStyle { fg: Reset, bg: Reset, modifiers: NONE }; 99-99 CellStyle { fg: Rgb(110, 115, 130), bg: Rgb(20, 22, 30), modifiers: NONE };
+13: 0-27 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 28-60 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 61-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };

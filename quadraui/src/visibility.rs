@@ -8,7 +8,7 @@
 //! [`crate::expr::Expr`]) collected per field in a [`FormVisibility`] —
 //! so declaring the dependency once is enough; [`apply_visibility`]
 //! re-evaluates it against the form's current field values on every
-//! [`crate::compose::FormController::set_form`] call, with no host
+//! call — a host runs it on each form it builds — with no host
 //! round-trip per keystroke.
 //!
 //! Like [`crate::expr`] and [`crate::validation`], this is data, not
@@ -52,7 +52,7 @@
 //!   posture [`crate::validation::validate`] takes for `validation`. A
 //!   field with no `enabled_when` declared keeps whatever `disabled` the
 //!   caller (or the imperative path) set. `enabled_when` is visual and
-//!   Tab-order only: [`crate::compose::FormController`]'s click routing
+//!   Tab-order only: the form's click routing
 //!   still emits `FormEvent::ButtonClicked` / `ToggleChanged` for a
 //!   `disabled` field exactly as it does for an imperatively disabled one
 //!   (the same posture a disabled toolbar button takes), so a host that
@@ -69,7 +69,7 @@
 //!   `FormEvent::FocusChanged` is emitted for this drop — a host that
 //!   mirrors `focused_field` in its own state (rather than reading it back
 //!   off `Form`) keeps a dangling id until the next event moves focus.
-//! - [`crate::compose::FormController`]'s own `scroll_offset` is not
+//! - A [`crate::FormState`]'s `scroll_offset` is not
 //!   re-clamped when `visible_when` shrinks the field list; it is only
 //!   re-clamped on the next scroll event. A form scrolled near the bottom
 //!   that then hides most of its fields can render blank until then.

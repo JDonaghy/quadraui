@@ -169,7 +169,7 @@ pub mod pixel {
     /// excluding the [`FORM_SLIDER_VALUE_GAP`] and the value text laid
     /// out after it. `form_field_measure` reports exactly this as the
     /// field's single item width, `native_surface_paint::paint` fills
-    /// exactly that item's rect, and `FormController`'s click routing
+    /// exactly that item's rect, and the form's click routing
     /// maps a pointer x across exactly the same rect — so the value
     /// under the cursor is the value a click produces.
     pub const FORM_SLIDER_TRACK_WIDTH: f32 = 80.0;
@@ -558,7 +558,7 @@ fn form_field_measure_inner(
         // one, purely so the control's on-screen rect is available via
         // `VisibleFormField::item_bounds` — `native_surface_paint::paint`'s
         // `FieldKind::NumberInput` arm reads it instead of re-deriving
-        // `control_start`, and `FormController`'s click routing reads the
+        // `control_start`, and the form's click routing reads the
         // same rect, so paint and click always agree.
         FieldKind::NumberInput(number) => {
             let start_x = items_start_x(&label_text(field), measure, false);
@@ -576,7 +576,7 @@ fn form_field_measure_inner(
         // track, so a pointer x mapped across the column would never
         // reach `max`. `native_surface_paint::paint`'s
         // `FieldKind::Slider` arm fills this exact rect and
-        // `FormController`'s click routing reads it, so paint and click
+        // the form's click routing reads it, so paint and click
         // always agree on where the track is.
         FieldKind::Slider { .. } => {
             let start_x = items_start_x(&label_text(field), measure, false);

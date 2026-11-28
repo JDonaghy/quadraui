@@ -1,5 +1,5 @@
-//! Backend-agnostic Form scroll demo showcasing `FormController` with
-//! built-in scrollbar support.
+//! Backend-agnostic Form scroll demo showcasing [`ScrolledForm`]'s
+//! scrollbar.
 //!
 //! Single [`AppLogic`] impl drives both the TUI runner and the GTK
 //! runner. The thin shells in `examples/{tui,gtk}_form_scroll.rs` are
@@ -7,13 +7,13 @@
 //!
 //! Shape: a settings panel with one `TextInput` field followed by 20
 //! toggle fields — enough to overflow any reasonable viewport and
-//! trigger the scrollbar. FormController owns scroll state, renders the
-//! scrollbar, handles scroll wheel / scrollbar click / thumb-drag, and
-//! keyboard focus traversal and text editing (see
-//! `compose::form_controller`'s module doc). Note that `handle` below
-//! has no key-decoding arm of its own for the `name` field:
-//! `fc.handle_cached_event` does all of it, demonstrating "no app-side key
-//! plumbing is needed to edit a field".
+//! trigger the scrollbar. The widget's [`FormState`] holds the scroll
+//! offset, the caret and the thumb drag; the widget paints the scrollbar
+//! and handles the scroll wheel, scrollbar clicks and thumb drags, and
+//! the form's own keyboard focus traversal and text editing. Note that
+//! `handle` below has no key-decoding arm of its own for the `name`
+//! field: `ScrolledForm::handle_event` does all of it, demonstrating "no
+//! app-side key plumbing is needed to edit a field".
 //!
 //! Controls:
 //! - mouse click on toggle  → flip value
@@ -27,12 +27,12 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
-    Handled, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormField, FormState, Handled, Reaction, Rect,
+    ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormScrollApp {
-    fc: FormController,
+    form_state: FormState,
     name: String,
     toggles: Vec<bool>,
     focused: Option<WidgetId>,
@@ -41,15 +41,9 @@ pub struct FormScrollApp {
 
 impl FormScrollApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("settings".into());
-        // This demo has exactly one panel, so the form always has
-        // keyboard focus — `set_has_focus` is what lets
-        // `FormController::handle_cached_event` accept `KeyPressed`/
-        // `CharTyped` at all (see `compose::form_controller`'s
-        // "Keyboard editing" doc section).
-        fc.set_has_focus(true);
+        // This demo has exactly one panel, so every key goes to the form.
         Self {
-            fc,
+            form_state: FormState::default(),
             name: String::new(),
             toggles: vec![false; 20],
             focused: Some(WidgetId::new("name")),
@@ -129,7 +123,7 @@ impl FormScrollApp {
             left_segments: vec![StatusBarSegment {
                 text: format!(
                     " scroll={} | {} ",
-                    self.fc.scroll_offset(),
+                    self.form_state.live_scroll_offset(&self.build_form()),
                     self.last_action
                 ),
                 fg,
@@ -160,7 +154,7 @@ impl AppLogic for FormScrollApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
@@ -181,11 +175,10 @@ impl AppLogic for FormScrollApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(fe)) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(fe) => {
                 match fe {
                     quadraui::FormEvent::ToggleChanged { ref id, value } => {
                         let prefix = "toggle-";
@@ -201,7 +194,7 @@ impl AppLogic for FormScrollApp {
                         }
                         self.last_action = format!("{} = {}", id.as_str(), value);
                     }
-                    // No app-side key plumbing: FormController decoded
+                    // No app-side key plumbing: the form decoded
                     // the keystroke into the new text and the cursor
                     // position it needs to keep editing — the app only
                     // persists the resulting `value` string, same as it
@@ -226,19 +219,9 @@ impl AppLogic for FormScrollApp {
                         self.last_action = format!("{:?}", fe);
                     }
                 }
-                // Re-sync `fc`'s cached form with the just-updated
-                // `self.name`/`self.toggles`/`self.focused` before the
-                // runner's next `render()` call. Without this, `render`
-                // would paint the form as it was *before* this event
-                // (`fc.set_form` above ran with the pre-event state),
-                // leaving the field one keystroke behind what the
-                // status bar already reports.
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

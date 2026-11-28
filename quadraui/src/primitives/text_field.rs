@@ -14,7 +14,7 @@
 //! [`TextField::apply_edit_op`] routes through
 //! [`crate::primitives::text_input::apply_flat_edit_op`] — the same flat
 //! `value` + byte-offset `cursor`/`selection_anchor` bridge
-//! `FormController` uses for `FieldKind::TextInput`/`TextArea`/
+//! a `Form` uses for `FieldKind::TextInput`/`TextArea`/
 //! `PasswordInput` — instead of re-deriving cursor/selection math here.
 //!
 //! ## Layout — horizontal scroll keeps the cursor visible

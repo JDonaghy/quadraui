@@ -8,7 +8,7 @@
 //! on/off shape embedded inside a form. `Switch` is additive: a
 //! standalone control for a host that wants a toggle outside a form
 //! (a settings panel, a toolbar, a status strip) without pulling in the
-//! whole `Form`/`FormController` machinery. `Form`'s own field kinds
+//! whole `Form` machinery. `Form`'s own field kinds
 //! are untouched.
 //!
 //! # Focus and activation

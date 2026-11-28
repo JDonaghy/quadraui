@@ -27,7 +27,7 @@
 //! - "Notes" (`TextInput`)  — `label_position: Inline`, tab_index 3
 //! - "Internal key" (`ReadOnly`) — `label_position: Hidden`, tab_index 4
 //!
-//! "ID" and "Internal key" are `ReadOnly`, so `FormController` skips them
+//! "ID" and "Internal key" are `ReadOnly`, so the form skips them
 //! in the focus cycle; tabbing from "Role" cycles Owner → Role → Notes →
 //! Owner, i.e. declared order "Role, Owner, Notes" but visited in
 //! `tab_index` order "Owner, Role, Notes".
@@ -41,13 +41,13 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
-    Handled, LabelAlign, LabelPosition, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Color, FieldKind, Form, FormField, FormState, Handled, LabelAlign,
+    LabelPosition, Reaction, Rect, ScrolledForm, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct FormLabelPlacementApp {
-    fc: FormController,
+    form_state: FormState,
     role: String,
     id: String,
     owner: String,
@@ -59,10 +59,8 @@ pub struct FormLabelPlacementApp {
 
 impl FormLabelPlacementApp {
     pub fn new() -> Self {
-        let mut fc = FormController::new("profile".into());
-        fc.set_has_focus(true);
-        let mut app = Self {
-            fc,
+        Self {
+            form_state: FormState::default(),
             role: "Operator".into(),
             id: "srv-042".into(),
             owner: "ops-team".into(),
@@ -70,13 +68,7 @@ impl FormLabelPlacementApp {
             internal_key: "xk-9f21".into(),
             focused: Some(WidgetId::new("id")),
             last_action: "—".into(),
-        };
-        // `FormController::render` paints its own internally cached
-        // `Form`, populated only by `set_form` — without this, the very
-        // first frame (painted before any `handle` call) would render
-        // blank.
-        app.fc.set_form(app.build_form());
-        app
+        }
     }
 
     fn text_field(
@@ -219,7 +211,7 @@ impl AppLogic for FormLabelPlacementApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        self.fc.render(backend, form_rect);
+        ScrolledForm::new(self.build_form()).draw(&self.form_state, backend, form_rect);
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
@@ -238,11 +230,10 @@ impl AppLogic for FormLabelPlacementApp {
             _ => {}
         }
 
-        self.fc.set_form(self.build_form());
-        self.fc.set_backend_info(backend.line_height());
         let rect = Self::form_rect(backend);
-        match self.fc.handle_cached_event(&event, rect) {
-            Handled::Event(FormControllerAction::FormAction(fe)) => {
+        let form = ScrolledForm::new(self.build_form());
+        match form.handle_event(&mut self.form_state, &event, backend, rect) {
+            Handled::Event(fe) => {
                 match fe {
                     quadraui::FormEvent::TextInputChanged { id, value } => {
                         match id.as_str() {
@@ -270,12 +261,9 @@ impl AppLogic for FormLabelPlacementApp {
                         self.last_action = format!("{:?}", fe);
                     }
                 }
-                self.fc.set_form(self.build_form());
                 Reaction::Redraw
             }
-            Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                Reaction::Redraw
-            }
+            Handled::Consumed => Reaction::Redraw,
             Handled::Ignored => Reaction::Continue,
         }
     }

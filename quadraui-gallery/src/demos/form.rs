@@ -5,7 +5,7 @@
 //! laid out statically, a small interactive search/replace panel
 //! (toggle group, button row, an embedded toolbar field, and
 //! [`FocusTree`]-driven Tab/Shift+Tab cycling), a 20-field settings panel
-//! long enough to need [`FormController`]'s built-in scrollbar, and a
+//! long enough to need [`ScrolledForm`]'s scrollbar, and a
 //! label-placement reference sheet exercising `label_position` /
 //! `label_align` / `label_width` (an aligned `Left` label column shared by
 //! two fields, plus `Top`, `Inline` and `Hidden` variants on the rest).
@@ -13,9 +13,9 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusTree,
-    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled, Key,
-    LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    Form, FormEvent, FormField, FormHit, FormState, Handled, Key, LabelAlign, LabelPosition,
+    MouseButton, NamedKey, Reaction, Rect, ScrolledForm, StatusBar, StatusBarSegment, Style,
+    StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -240,9 +240,9 @@ impl SearchReplaceState {
 }
 
 /// Variant 2 ("Scrolling") state: 20 toggles, enough to overflow a
-/// typical gallery viewport and exercise `FormController`'s scrollbar.
+/// typical gallery viewport and exercise [`ScrolledForm`]'s scrollbar.
 struct ScrollState {
-    fc: FormController,
+    form_state: FormState,
     toggles: Vec<bool>,
     last_action: String,
 }
@@ -285,14 +285,8 @@ fn scroll_form_from_toggles(toggles: &[bool]) -> Form {
 impl ScrollState {
     fn new() -> Self {
         let toggles = vec![false; 20];
-        let mut fc = FormController::new("gallery:form:settings".to_string());
-        // Seed the form immediately so the very first render (before any
-        // `handle()` event reaches `FormController`) isn't blank —
-        // `FormController::render` reads back whatever `set_form` last
-        // stored, it never builds from scratch.
-        fc.set_form(scroll_form_from_toggles(&toggles));
         Self {
-            fc,
+            form_state: FormState::default(),
             toggles,
             last_action: "—".into(),
         }
@@ -300,6 +294,11 @@ impl ScrollState {
 
     fn build_form(&self) -> Form {
         scroll_form_from_toggles(&self.toggles)
+    }
+
+    /// Rows the settings form is scrolled by.
+    fn scroll_offset(&self) -> usize {
+        self.form_state.live_scroll_offset(&self.build_form())
     }
 }
 
@@ -771,11 +770,15 @@ impl Demo for FormDemo {
                 let _ = backend.draw_dyn(Self::status_rect(area, backend), &bar, &());
             }
             2 => {
-                self.scroll.fc.render(backend, form_rect);
+                ScrolledForm::new(self.scroll.build_form()).draw(
+                    &self.scroll.form_state,
+                    backend,
+                    form_rect,
+                );
                 let bar = Self::status_bar(
                     &format!(
                         "scroll={} | {}",
-                        self.scroll.fc.scroll_offset(),
+                        self.scroll.scroll_offset(),
                         self.scroll.last_action
                     ),
                     "scroll / click / drag scrollbar",
@@ -821,8 +824,7 @@ impl Demo for FormDemo {
                     .layout;
                     // `FormLayout`'s hit regions are relative to
                     // `form_rect`'s own top-left corner, not the
-                    // surface origin (`compose::FormController::click_inner`
-                    // does the same subtraction) — `position` is an
+                    // surface origin — `position` is an
                     // absolute surface coordinate, which only happens to
                     // equal the local one when `form_rect` starts at
                     // `(0, 0)`, which it never does once this demo is
@@ -854,13 +856,10 @@ impl Demo for FormDemo {
             // wildcard is reached only by variant 3 ("Label placement");
             // each comment names its own variant so the two stay in sync.
             _ => {
-                self.scroll.fc.set_form(self.scroll.build_form());
-                self.scroll.fc.set_backend_info(backend.line_height());
                 let rect = Self::form_rect(area, backend);
-                match self.scroll.fc.handle_cached_event(event, rect) {
-                    Handled::Event(FormControllerAction::FormAction(
-                        FormEvent::ToggleChanged { id, value },
-                    )) => {
+                let form = ScrolledForm::new(self.scroll.build_form());
+                match form.handle_event(&mut self.scroll.form_state, event, backend, rect) {
+                    Handled::Event(FormEvent::ToggleChanged { id, value }) => {
                         if let Ok(idx) = id
                             .as_str()
                             .strip_prefix("toggle-")
@@ -874,13 +873,11 @@ impl Demo for FormDemo {
                         self.scroll.last_action = format!("{} = {value}", id.as_str());
                         Reaction::Redraw
                     }
-                    Handled::Event(FormControllerAction::FormAction(other)) => {
+                    Handled::Event(other) => {
                         self.scroll.last_action = format!("{other:?}");
                         Reaction::Redraw
                     }
-                    Handled::Event(FormControllerAction::ScrollChanged) | Handled::Consumed => {
-                        Reaction::Redraw
-                    }
+                    Handled::Consumed => Reaction::Redraw,
                     Handled::Ignored => Reaction::Continue,
                 }
             }
@@ -899,7 +896,7 @@ impl Demo for FormDemo {
                 "last_action": self.search_replace.last_action,
             }),
             2 => serde_json::json!({
-                "scroll_offset": self.scroll.fc.scroll_offset(),
+                "scroll_offset": self.scroll.scroll_offset(),
                 "toggles_on": self.scroll.toggles.iter().filter(|&&v| v).count(),
                 "last_action": self.scroll.last_action,
             }),
