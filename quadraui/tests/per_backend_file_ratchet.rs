@@ -33,29 +33,12 @@ use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
 use syn::{Item, ItemEnum};
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{collect_rs_files, is_cfg_test, parse_rust_file};
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn parse_rust_file(path: &Path) -> syn::File {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()))
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// The platform modules each backend directory holds, by file stem. A
@@ -192,49 +175,21 @@ struct BackendBaseline {
 const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "tui",
-        non_test_lines: 10650,
+        non_test_lines: 10639,
     },
     BackendBaseline {
         dir: "gtk",
-        non_test_lines: 11174,
+        non_test_lines: 11158,
     },
     BackendBaseline {
         dir: "macos",
-        non_test_lines: 11539,
+        non_test_lines: 11505,
     },
     BackendBaseline {
         dir: "win",
         non_test_lines: 15808,
     },
 ];
-
-/// Whether an attribute is `#[cfg(test)]` or `#[cfg(all(test, …))]` — the
-/// shapes a backend file's embedded unit-test module(s) use (`CLAUDE.md`'s
-/// "Tests in `#[cfg(test)] mod tests` at file bottom" convention, plus the
-/// extra `target_os = "windows"` conjunct the `win/` modules that compile
-/// everywhere need). Deliberately does **not** recurse into `not(…)` or
-/// `any(…)` — `cfg(not(test))` is active in non-test builds, and
-/// `cfg(any(test, …))` can be true without `test`, so neither is a
-/// test-only item. Only a direct `test` conjunct inside `all(…)` counts.
-fn is_cfg_test(attr: &syn::Attribute) -> bool {
-    if !attr.path().is_ident("cfg") {
-        return false;
-    }
-    match attr.parse_args::<syn::Meta>() {
-        Ok(syn::Meta::Path(p)) => p.is_ident("test"),
-        Ok(syn::Meta::List(list)) if list.path.is_ident("all") => list
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| {
-                metas
-                    .iter()
-                    .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
-            })
-            .unwrap_or(false),
-        _ => false,
-    }
-}
 
 /// A top-level item's own attributes, for the handful of `Item` variants
 /// that can plausibly carry `#[cfg(test)]` in this codebase (always

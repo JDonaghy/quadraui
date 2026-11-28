@@ -28,6 +28,10 @@ use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{collect_rs_files, is_cfg_test, parse_rust_file};
+
 /// Symbols the contract replaced. Every one of them is absent today; a
 /// symbol joins this list only once it is gone, so the test never
 /// grandfathers a live use.
@@ -245,49 +249,6 @@ fn workspace_root() -> PathBuf {
         .parent()
         .expect("quadraui sits inside the workspace")
         .to_path_buf()
-}
-
-fn parse_rust_file(path: &Path) -> syn::File {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()))
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.map(|e| e.unwrap().path()).collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// Whether an attribute is `#[cfg(test)]` or `#[cfg(all(test, …))]`. A
-/// `not(…)` or `any(…)` can be true without `test`, so neither counts.
-fn is_cfg_test(attr: &syn::Attribute) -> bool {
-    if !attr.path().is_ident("cfg") {
-        return false;
-    }
-    match attr.parse_args::<syn::Meta>() {
-        Ok(syn::Meta::Path(p)) => p.is_ident("test"),
-        Ok(syn::Meta::List(list)) if list.path.is_ident("all") => list
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| {
-                metas
-                    .iter()
-                    .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
-            })
-            .unwrap_or(false),
-        _ => false,
-    }
 }
 
 /// Collects the line spans of every test-only item in a file, and the

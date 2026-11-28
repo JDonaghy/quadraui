@@ -89,6 +89,10 @@ use syn::{
     ItemImpl, ItemMod, Local, Macro, Meta, StmtMacro,
 };
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{collect_rs_files, parse_rust_file};
+
 /// `(source subdirectory, this backend's native `target_os`)`. `None` means
 /// the backend has no OS split to reason about (gtk/tui ship cross-platform
 /// today) — a `cfg(target_os = "…")`/`cfg(not(target_os = "…"))` found
@@ -524,9 +528,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn scan_file(path: &Path, native_os: Option<&str>) -> Vec<Finding> {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let file = syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()));
+    let file = parse_rust_file(path);
     let mut walker = Walker {
         file: path,
         native_os,
@@ -536,24 +538,6 @@ fn scan_file(path: &Path, native_os: Option<&str>) -> Vec<Finding> {
     };
     walker.visit_file(&file);
     walker.findings
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    if !dir.exists() {
-        return;
-    }
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// Scan every `.rs` file under each entry of [`BACKENDS`] and return

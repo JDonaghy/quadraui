@@ -22,36 +22,12 @@ use std::path::{Path, PathBuf};
 use syn::parse::{Parse, ParseStream};
 use syn::{Item, Type};
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{is_cfg_test, parse_rust_file};
+
 fn src_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
-}
-
-fn parse_rust_file(path: &Path) -> syn::File {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()))
-}
-
-/// Whether an attribute is `#[cfg(test)]` or `#[cfg(all(test, …))]`. A
-/// `not(…)` or `any(…)` can be true without `test`, so neither counts.
-fn is_cfg_test(attr: &syn::Attribute) -> bool {
-    if !attr.path().is_ident("cfg") {
-        return false;
-    }
-    match attr.parse_args::<syn::Meta>() {
-        Ok(syn::Meta::Path(p)) => p.is_ident("test"),
-        Ok(syn::Meta::List(list)) if list.path.is_ident("all") => list
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| {
-                metas
-                    .iter()
-                    .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
-            })
-            .unwrap_or(false),
-        _ => false,
-    }
 }
 
 /// The last path segment of a type: `ListView` for `crate::ListView`,

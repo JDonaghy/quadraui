@@ -24,18 +24,16 @@
 //!    half of the same claim.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use syn::{Item, ItemImpl, ItemTrait, TraitItem, Type};
 
+#[path = "common/syn_source.rs"]
+mod syn_source;
+use syn_source::{collect_rs_files, parse_rust_file};
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn parse_rust_file(path: &Path) -> syn::File {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    syn::parse_file(&src)
-        .unwrap_or_else(|e| panic!("{}: failed to parse as Rust: {e}", path.display()))
 }
 
 /// Find a top-level `trait <name> { ... }` item in a parsed file.
@@ -300,21 +298,6 @@ fn find_bespoke_violations<'a>(
         }
     }
     violations
-}
-
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|e| e.unwrap().path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 #[test]
