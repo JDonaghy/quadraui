@@ -2,7 +2,7 @@
 //! `FieldKind::Slider` on the TUI form rasteriser: the track `draw_form`
 //! paints between the `[`/`]` brackets occupies exactly the cells
 //! `tui_form_layout` reports as the field's single `item_bounds` entry,
-//! which is the rect `FormController`'s click routing maps a pointer x
+//! which is the rect the form's click routing maps a pointer x
 //! across.
 
 use quadraui::primitives::form::cell_layout::tui_form_layout;
@@ -60,7 +60,7 @@ fn make_slider_form(label_text: &str, value: f32) -> Form {
 
 /// The track `draw_field_slider` paints must occupy exactly the cells
 /// the layout reports as the field's single `item_bounds` entry —
-/// that rect is what `FormController`'s click routing maps a pointer
+/// that rect is what the form's click routing maps a pointer
 /// x across, so a drift between the two would hand a user a value
 /// that doesn't match the fill under their cursor. Asserted for a
 /// *labeled* field, whose track sits past the label column: mapping

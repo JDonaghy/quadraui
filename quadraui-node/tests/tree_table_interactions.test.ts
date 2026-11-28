@@ -1,8 +1,7 @@
 // Black-box coverage for `TreeTable`, wired through `quadraui-binding-core`
-// as an additive primitive (`"tree_table" => TreeTable` in `extra_paint.rs`'s
-// `extra_primitives!` table): a plain JS object decodes into a real
+// as the `"tree_table"` widget kind: a plain JS object decodes into a real
 // `TreeTable` (a `DataTable` plus per-row tree metadata), renders its branch
-// row's chevron and both rows' labels, and coexists with a fixed-slot leaf
+// row's chevron and both rows' labels, and coexists with another leaf
 // inside a `row` container -- no new napi method needed, since
 // the generic widget leaf's registration already covers it. Ports
 // `quadraui-py/tests/test_tree_table_interactions.py`.
@@ -59,7 +58,7 @@ test("tree_table renders the branch chevron and both labels", () => {
   assert.ok(app.screenContains("main.rs"));
 });
 
-test("tree_table as a row leaf coexists with a fixed slot", () => {
+test("tree_table as a row leaf coexists with a button leaf", () => {
   const app = new QuiApp(40, 10);
   app.setRender(() => ({
     row: [

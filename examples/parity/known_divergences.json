@@ -1,13 +1,4 @@
 {
   "about": "Recorded places where the Rust version renders differently from Python/Node. scripts/parity_check.py allows a difference only inside an entry's region (and in the fired updates only when `events` is true), only at the listed steps, and fails if a listed step stops differing there, so a fix forces the entry to be removed. Steps count from 0 (the first paint); step N is the frame after script.json's Nth input.",
-  "divergences": [
-    {
-      "id": "controlled-list-ignores-arrow-keys",
-      "lang": "rust",
-      "steps": [19],
-      "region": [0, 8, 40, 1],
-      "events": true,
-      "reason": "Down on a focused List whose selection the app pins (selected != 0) moves the selection and fires SelectionChanged in Rust. In Python/Node the pinned selection latches as controlled, the key is not routed to on_select/onSelect, and nothing changes."
-    }
-  ]
+  "divergences": []
 }

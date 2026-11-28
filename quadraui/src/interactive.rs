@@ -549,6 +549,12 @@ pub trait Interactive: Primitive {
     /// routed.
     const OPENS_POPUPS: bool = false;
 
+    /// Whether this widget scrolls its own rows: it paints a window of its
+    /// content from its own scroll position wherever its rect sits, and
+    /// answers [`Self::scrolled_to_row`]. A widget that sets it overrides
+    /// that method. Default: `false`.
+    const SCROLLS_OWN_ROWS: bool = false;
+
     /// The popups this widget has open, given `state` and `layout` — a
     /// dropdown list, a calendar grid, a submenu. Default: none. Only
     /// asked when [`Self::OPENS_POPUPS`] is set.
@@ -591,6 +597,123 @@ pub trait Interactive: Primitive {
     fn popups(&self, state: &Self::State, layout: &Self::Layout) -> Vec<crate::popup::Popup> {
         let _ = (state, layout);
         Vec::new()
+    }
+
+    /// Content this widget needs loaded before `layout` can paint fully —
+    /// a windowed collection's [`UiEvent::RowsRequested`], a sheet's
+    /// `CellGridEvent::CellsRequested`.
+    ///
+    /// A host calls it after every input the widget handled (any outcome
+    /// but a bare [`Handled::Ignored`]), against a layout taken from the
+    /// state [`Self::handle`] just wrote, and delivers the answer like any
+    /// other event. `None` when everything visible is loaded, or when this
+    /// exact request was already made. Default: `None`.
+    fn data_requested(&self, state: &mut Self::State, layout: &Self::Layout) -> Option<UiEvent> {
+        let _ = (state, layout);
+        None
+    }
+
+    /// Record what laying the widget out just resolved into its own state,
+    /// before it paints — a selection the app moved scrolled into view.
+    /// The host calls it for every frame it paints the widget, after
+    /// `layout`, and lays the widget out again when it answers `true`
+    /// (it changed `state`). Default: nothing to record.
+    fn settle(&self, state: &mut Self::State, layout: &Self::Layout) -> bool {
+        let _ = (state, layout);
+        false
+    }
+
+    /// For a widget that scrolls its own rows — it paints a window of its
+    /// content starting at its own scroll position, wherever its rect
+    /// sits — this widget with its first visible row moved to `row`. A
+    /// host scroll container that holds such a widget keeps its rect on
+    /// the viewport and paints this instead of shifting the rect. Default:
+    /// `None`, for a widget that a container scrolls by moving its rect.
+    fn scrolled_to_row(&self, row: usize) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let _ = row;
+        None
+    }
+
+    /// An event that names this widget which its host delivered on the
+    /// app's behalf rather than this widget emitting it — an app or a test
+    /// harness dispatching a `TabActivated` for a tab bar, say. A widget
+    /// whose state is uncontrolled by default follows it as if it had
+    /// produced the event itself, so the next frame shows the activated
+    /// tab without the app echoing it onto the descriptor. A host calls
+    /// this for every painted widget; each ignores an event that does not
+    /// name it. Default: ignore it.
+    fn follow_event(&self, state: &mut Self::State, event: &UiEvent) {
+        let _ = (state, event);
+    }
+
+    /// A host-facing summary of the interaction state this widget keeps —
+    /// the selection, scroll position, active tab or expanded rows it
+    /// resolves for the next frame — for a binding that reports a widget's
+    /// state back to its app. Default: an empty summary.
+    fn state_summary(&self, state: &Self::State) -> StateSummary {
+        let _ = state;
+        StateSummary::default()
+    }
+}
+
+/// What [`Interactive::state_summary`] reports: each field is `Some` only
+/// for a widget that keeps that kind of state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[non_exhaustive]
+pub struct StateSummary {
+    /// A tree's resolved selected row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_path: Option<crate::types::TreePath>,
+    /// A list's or table's resolved selected row (absolute when
+    /// windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_idx: Option<usize>,
+    /// The resolved scroll row (absolute when windowed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll_offset: Option<usize>,
+    /// A tab bar's resolved active tab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tab: Option<usize>,
+    /// A tree's expanded branches, when it resolves expansion itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<Vec<crate::types::TreePath>>,
+}
+
+impl StateSummary {
+    /// A summary with only `scroll_offset` set.
+    pub fn scroll(scroll_offset: usize) -> Self {
+        Self {
+            scroll_offset: Some(scroll_offset),
+            ..Self::default()
+        }
+    }
+
+    /// This summary with `selected_idx` set.
+    pub fn with_selected_idx(mut self, idx: Option<usize>) -> Self {
+        self.selected_idx = idx;
+        self
+    }
+
+    /// This summary with `selected_path` set.
+    pub fn with_selected_path(mut self, path: Option<crate::types::TreePath>) -> Self {
+        self.selected_path = path;
+        self
+    }
+
+    /// This summary with `active_tab` set.
+    pub fn with_active_tab(mut self, active: Option<usize>) -> Self {
+        self.active_tab = active;
+        self
+    }
+
+    /// This summary with `expanded` set.
+    pub fn with_expanded(mut self, expanded: Option<Vec<crate::types::TreePath>>) -> Self {
+        self.expanded = expanded;
+        self
     }
 }
 

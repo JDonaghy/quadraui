@@ -401,6 +401,8 @@ fn tree(show_scrollbar: bool) -> TreeView {
         selection_mode: SelectionMode::Single,
         selected_path: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         style: TreeStyle {
             show_scrollbar,
             ..TreeStyle::default()
@@ -485,6 +487,8 @@ fn overlong_list_row(style: Style) -> String {
         }],
         selected_idx: 0,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         has_focus: false,
         bordered: false,
         h_scroll: 0,

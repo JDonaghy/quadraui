@@ -11,8 +11,8 @@
 //!
 //! Never a direct call into `Interactive::handle`/`Primitive::layout`
 //! that would skip the routing engine, and never a call into
-//! `compose::FormController` — this is the contract path, not the
-//! composed-controller one.
+//! `ScrolledForm::handle_event` — this is the routing-engine
+//! path, not the raw-event-host one.
 
 use quadraui::{
     AppLogic, Backend, FieldKind, Form, FormEvent, FormField, FrameTree, Key, Modifiers, NamedKey,

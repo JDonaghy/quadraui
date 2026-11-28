@@ -61,6 +61,8 @@ impl ListApp {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             title: None,
             bordered: false,

@@ -188,6 +188,8 @@ impl AppLogic for McpDemo {
                     .collect(),
                 selected_idx: self.selected,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: true,
                 bordered: true,
                 h_scroll: 0,

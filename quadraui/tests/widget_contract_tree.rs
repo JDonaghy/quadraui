@@ -143,6 +143,8 @@ impl TreeApp {
             selection_mode: SelectionMode::Single,
             selected_path: self.selected.clone(),
             scroll_offset: self.scroll_offset,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle {
                 vim_keys: self.vim_keys,
                 ..TreeStyle::default()

@@ -40,7 +40,7 @@ impl NumberApp {
         input.value = 42.0;
         // The field tracks its own keyboard-focus flag, which the host
         // owns — the same way every `NumberInput` host (GTK's and Win's
-        // own driver tests, `FormController`) sets it.
+        // own driver tests, `Form`'s embedded field) sets it.
         input.focused = true;
         Self {
             input,

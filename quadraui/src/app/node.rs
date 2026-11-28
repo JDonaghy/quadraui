@@ -221,6 +221,8 @@ pub fn list<M>(items: impl IntoIterator<Item = impl Into<String>>) -> Node<M> {
         items: items.collect(),
         selected_idx: 0,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         has_focus: false,
         bordered: false,
         h_scroll: 0,

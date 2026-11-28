@@ -106,6 +106,8 @@ impl FocusDemo {
                 .collect(),
             selected_idx: 0,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             // Deliberately `false` on both lists. Keyboard focus is
             // the runner's `FocusTree`, not a per-primitive bool — the
             // ring is what shows which one has it.

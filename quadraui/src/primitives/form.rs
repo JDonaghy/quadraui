@@ -13,14 +13,12 @@
 //! frames. (Scroll offset, if added later, follows the same
 //! primitive-owned-via-WidgetId pattern as `TreeView`.)
 //!
-//! This module is paint/layout/hit-test only — it has no `UiEvent`
-//! handling of its own (there is no `Form::handle`). Keyboard editing
-//! and Tab/Shift-Tab focus traversal are implemented one layer up, in
-//! [`crate::compose::form_controller::FormController`]:
-//! route every event through `FormController::handle`/`handle_cached`
-//! and both "just work" with no app-side key decoding. The *shape* of
-//! what gets emitted — described below — is still owned by this module,
-//! since `FormEvent` lives here.
+//! Keyboard editing, click routing and Tab/Shift-Tab focus traversal
+//! are the widget's [`crate::interactive::Interactive`] impl (in
+//! `contract`): a form on the runtime's routing engine, or one a
+//! raw-event host resolves through
+//! [`crate::ScrolledForm::handle_event`], edits with no app-side
+//! key decoding. The *shape* of what gets emitted is described below.
 //!
 //! # Backend contract
 //!
@@ -30,19 +28,19 @@
 //! - `Toggle` — checkbox / switch UI; click flips value, emit
 //!   `FormEvent::ToggleChanged`.
 //! - `TextInput` — render text + cursor + selection; a consumer going
-//!   through `FormController` gets keystroke routing for free (see this
-//!   module's doc above); emits `FormEvent::TextInputChanged` per
+//!   gets keystroke routing from the widget's own `Interactive` (see
+//!   this module's doc above); emits `FormEvent::TextInputChanged` per
 //!   keystroke and `TextInputCommitted` on Enter.
 //! - `Button` — render label, click emits `FormEvent::ButtonClicked`.
 //! - `Label` — non-interactive header / divider.
 //! - `DatePicker` — render the focused/selected date as a compact
 //!   single-line summary (the row stays one `row_h` tall like every
-//!   other field); a consumer going through `FormController` gets
+//!   other field); the widget's `Interactive` gives it
 //!   arrow/page-key day/month navigation and Enter-to-confirm for free,
 //!   emitting `FormEvent::DateChanged` on confirm.
 //! - `ComboBox` — render the live `text` buffer plus a chevron as a
 //!   compact single-line field (the row stays one `row_h` tall); a
-//!   consumer going through `FormController` gets type-to-filter and
+//!   the widget's `Interactive` gives it type-to-filter and
 //!   Enter-to-commit for free, emitting `FormEvent::ComboBoxTextChanged`
 //!   per keystroke and `ComboBoxCommitted` on confirm. The *app* is
 //!   responsible for painting the open dropdown overlay itself, mirroring
@@ -51,7 +49,7 @@
 //! - `NumberInput` — unlike `DatePicker`/`ComboBox` above, render the
 //!   embedded control's own real layout (bordered text area plus stepper
 //!   buttons) through its existing standalone rasteriser, not a compact
-//!   summary; a consumer going through `FormController` gets Up/Down
+//!   summary; the widget's `Interactive` gives it Up/Down
 //!   stepping, typed-digit drafting, and Enter-to-commit (clamped/rounded
 //!   to `[min, max]`/`precision`) for free, emitting
 //!   `FormEvent::NumberChanged`/`NumberDraftChanged`/`NumberCommitted`/
@@ -60,14 +58,14 @@
 //!   option rather than staying a single `row_h` (see
 //!   `crate::primitives::layout_metrics::form_field_measure`'s doc),
 //!   rendered through the embedded group's own existing standalone
-//!   rasteriser; a consumer going through `FormController` gets Up/Down/
+//!   rasteriser; the widget's `Interactive` gives it Up/Down/
 //!   Left/Right cursor movement (wrapping, skipping disabled options) for
 //!   free, emitting `FormEvent::RadioChanged`.
 //!
 //! Tab / Shift-Tab move `focused_field` forward/backward through
 //! interactive fields (skip `Label`, skip disabled fields); emit
 //! `FormEvent::FocusChanged { id }`. The *app* updates `focused_field`
-//! on the next frame — `FormController` computes `id`, it does not
+//! on the next frame — the widget computes `id`, it does not
 //! mutate `Form.focused_field` itself (the description stays app-owned,
 //! per this module's first paragraph). A `quadraui-py`/`quadraui-node`
 //! render callback can instead leave `focused_field` unset every frame
@@ -78,11 +76,10 @@
 //! item under a single field id. Tab/Shift-Tab still only move
 //! `focused_field` between *fields*, never into one of these items —
 //! item-level keyboard focus (Left/Right move it, Enter/Space activate
-//! it) is a `FormController`-owned index, not a property of this
-//! declarative `Form`/`FormField` shape; see
-//! [`crate::compose::form_controller::FormController`]'s "Item-level
-//! keyboard focus" doc section. [`focusable_items`] enumerates each of
-//! the three kinds' navigable items for that controller logic.
+//! it) is an index in the widget's [`FormState`], not a property of
+//! this declarative `Form`/`FormField` shape; see `contract`'s
+//! "Item-level keyboard focus" doc section. [`focusable_items`]
+//! enumerates each of the three kinds' navigable items for it.
 //!
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
@@ -106,10 +103,15 @@ pub mod cell_paint;
 // The widget contract: `Primitive`, `Interactive`, and the one
 // implementation of this widget's keyboard, focus and click behaviour.
 //
-// `pub(crate)` on the module (with its API re-exported below) so
-// `crate::compose::FormController` drives the same behaviour functions
-// a `Surface::Widget` form does, rather than carrying a second copy.
+// `pub(crate)` on the module (with its API re-exported below) so the
+// composites that host a form (`crate::ScrolledForm`,
+// `crate::compose::FormDialog`) reach the same behaviour functions a
+// `Surface::Widget` form does, rather than carrying a second copy.
 pub(crate) mod contract;
+// [`ScrolledForm`]: a form with the vertical scrollbar its fields need
+// when they overflow, for a host that scrolls a form on its own.
+mod scrolled;
+pub use scrolled::{ScrolledForm, ScrolledFormLayout};
 
 #[cfg(all(test, feature = "macos", target_os = "macos"))]
 mod macos_paint_tests;
@@ -190,11 +192,8 @@ pub struct Form {
     /// assign back and an uncontrolled one can observe it without being
     /// required to.
     ///
-    /// A direct (non-binding) `FormController` consumer still owns this
-    /// field itself (see [`crate::compose::form_controller::FormController`]'s
-    /// own "Keyboard editing" doc) — the engine-owned mode above is a
-    /// `quadraui-py`/`quadraui-node` host behaviour, not a change to
-    /// `FormController`'s own contract.
+    /// A Rust host that sets this field keeps control of it: the widget's
+    /// [`FormState`] adopts focus moves only while it is unset.
     #[serde(default)]
     pub focused_field: Option<WidgetId>,
     /// How many rows have been scrolled past. App-owned for now; a
@@ -472,9 +471,8 @@ pub struct FormField {
     /// Explicit position in the Tab/Shift-Tab focus cycle. Fields are
     /// visited in ascending `tab_index` order, ties and `None` broken
     /// by `fields` order (so the Vec order is still the default when no
-    /// field sets this). Consulted by
-    /// [`crate::compose::form_controller::FormController`]'s focus
-    /// traversal; the plain `Form` primitive does not use it itself.
+    /// field sets this). Consulted by the widget's own focus traversal
+    /// ([`focus_order`]).
     #[serde(default)]
     pub tab_index: Option<i32>,
     /// Overrides the form-wide [`Form::control_width`] for this field
@@ -513,14 +511,11 @@ pub enum FieldKind {
     ///
     /// `cursor` is a byte offset into `value`. When `Some(n)`, backends
     /// render a cursor at that position; when `None`, the field is
-    /// displayed read-only (no cursor). This primitive itself does no
-    /// input handling — it just paints whatever `cursor` says — but a
-    /// consumer going through
-    /// [`crate::compose::form_controller::FormController`] does not need
-    /// to compute `cursor` by hand: the controller tracks it internally
-    /// across keystrokes and overlays it when rendering.
-    /// A consumer driving `Form` directly (bypassing `FormController`)
-    /// is still responsible for updating `cursor` itself.
+    /// displayed read-only (no cursor). The painters show whatever
+    /// `cursor` says — but a host routing input through
+    /// the widget's `Interactive` does not need to compute `cursor` by
+    /// hand: the widget's [`FormState`] tracks it across keystrokes and
+    /// overlays it when painting.
     ///
     /// `selection_anchor` is a byte offset into `value`. When `Some(n)`
     /// and `n != cursor`, backends render the range between `anchor` and
@@ -642,10 +637,8 @@ pub enum FieldKind {
     /// the picker's locale) renders in the value column, not the full
     /// month grid.
     ///
-    /// A consumer going through
-    /// [`crate::compose::form_controller::FormController`] gets arrow-key
-    /// day/week navigation, Page Up/Down month navigation, and Enter-to-
-    /// confirm for free: the controller calls the embedded picker's own
+    /// The widget's `Interactive` gives it arrow-key day/week navigation,
+    /// Page Up/Down month navigation, and Enter-to-confirm: it calls the embedded picker's own
     /// [`crate::primitives::date_picker::DatePicker::navigate`] and emits
     /// `FormEvent::DateChanged` on confirmation. Clicking the field's row
     /// only moves focus to it (`FormEvent::FocusChanged`) — day-cell
@@ -660,10 +653,9 @@ pub enum FieldKind {
     /// buffer plus a chevron render in the value column; the open dropdown
     /// list is not part of this compact row.
     ///
-    /// A consumer going through
-    /// [`crate::compose::form_controller::FormController`] gets keystroke
-    /// routing (typing filters, arrows move the highlight, Enter commits,
-    /// Escape cancels) for free: the controller calls the embedded combo
+    /// The widget's `Interactive` gives it keystroke routing (typing
+    /// filters, arrows move the highlight, Enter commits, Escape
+    /// cancels): it calls the embedded combo
     /// box's own [`crate::primitives::combo_box::ComboBox::handle_key`] and
     /// translates the result into `FormEvent::ComboBoxTextChanged`,
     /// `ComboBoxHighlightChanged`, `ComboBoxCommitted`, or
@@ -688,10 +680,8 @@ pub enum FieldKind {
     /// mechanism [`FieldKind::ToggleGroup`]/[`FieldKind::ButtonRow`] use for
     /// their own items) avoids a second, form-only paint path.
     ///
-    /// A consumer going through
-    /// [`crate::compose::form_controller::FormController`] gets Up/Down
-    /// stepping, typed-digit drafting, and Enter-to-commit for free: the
-    /// controller calls the embedded input's own
+    /// The widget's `Interactive` gives it Up/Down stepping, typed-digit
+    /// drafting, and Enter-to-commit: it calls the embedded input's own
     /// [`crate::primitives::number_input::NumberInput::handle_key`] and
     /// [`crate::primitives::number_input::NumberInput::click`], translating
     /// the result into `FormEvent::NumberChanged`, `NumberDraftChanged`,
@@ -711,10 +701,8 @@ pub enum FieldKind {
     /// the same mechanism [`FieldKind::ToggleGroup`] uses for its own
     /// items), so a click resolves straight to the clicked option.
     ///
-    /// A consumer going through
-    /// [`crate::compose::form_controller::FormController`] gets Up/Down/
-    /// Left/Right cursor movement (wrapping, skipping disabled options)
-    /// for free: the controller calls the embedded group's own
+    /// The widget's `Interactive` gives it Up/Down/Left/Right cursor
+    /// movement (wrapping, skipping disabled options): it calls the embedded group's own
     /// [`crate::primitives::radio_group::RadioGroup::handle_key`]/
     /// [`crate::primitives::radio_group::RadioGroup::select`] and
     /// translates the result into `FormEvent::RadioChanged`.
@@ -782,10 +770,10 @@ impl ButtonRowItem {
 /// every one of its entries is always enabled). `None` for every other
 /// `FieldKind`, or for an item-bearing kind whose item list is empty.
 ///
-/// Shared by [`crate::compose::form_controller::FormController`]'s
-/// item-level keyboard focus (Left/Right move it, skipping disabled
-/// items with no wrap; Enter/Space activate it) — see that module's
-/// "Item-level keyboard focus" doc section — so the three kinds' items
+/// Shared by the widget's item-level keyboard focus (Left/Right move it,
+/// skipping disabled items with no wrap; Enter/Space activate it) — see
+/// `contract`'s "Item-level keyboard focus" doc section — so the three
+/// kinds' items
 /// are enumerated in one place instead of three near-duplicate matches.
 pub(crate) fn focusable_items(kind: &FieldKind) -> Option<Vec<(WidgetId, bool)>> {
     let items: Vec<(WidgetId, bool)> = match kind {
@@ -825,8 +813,8 @@ fn field_is_focusable(field: &FormField) -> bool {
 /// and [`field_is_focusable`] filters out `Label`/`ReadOnly`/disabled
 /// fields.
 ///
-/// Shared by [`crate::compose::form_controller::FormController`] (which
-/// wraps within the form) and
+/// Shared by the widget's own Tab traversal (which wraps within the
+/// form) and
 /// [`crate::compose::form_dialog::FormDialog`] (which needs to
 /// detect stepping off either end *before* forwarding a Tab/Shift-Tab
 /// keypress into the form, so it can hand focus to its own button row
@@ -1338,9 +1326,8 @@ impl Form {
             // actually populates it — only
             // `layout_metrics::form_field_measure` does (every pixel
             // backend). A caller that measures in a different unit
-            // system instead (`compose::form_controller`'s and
-            // `compose::sidebar`'s own backend-free TUI-cell
-            // fallback `form_field_measure`s, both hand-rolled, neither
+            // system instead (`compose::sidebar`'s own backend-free
+            // TUI-cell fallback `form_field_measure`, hand-rolled and not
             // setting this field) leaves it at `FormFieldMeasure::
             // with_items`'s `0.0` default, so this never fires for
             // them — their own `items_start_x` (already unit-correct
@@ -2158,7 +2145,7 @@ mod native_surface_paint {
                         value, min, max, ..
                     } => {
                         // `vf.item_bounds`' single entry is the track rect
-                        // `FormController`'s click routing maps across.
+                        // the form's click routing maps across.
                         let track = vf.item_bounds.first().map(|(_, r)| translate(r, origin));
                         paint_slider(surface, &cc, track, *value, *min, *max)
                     }
@@ -2293,9 +2280,9 @@ mod native_surface_paint {
                     }
                     FieldKind::DatePicker(picker) => {
                         // While this row is focused, `focused` is the live
-                        // scrub position `FormController` overlays per
-                        // keystroke (see `compose::form_controller`'s "Date
-                        // picker fields" doc section) — showing `selected`
+                        // scrub position the widget's `FormState` overlays
+                        // per keystroke (see `contract`'s "Date picker
+                        // fields" doc section) — showing `selected`
                         // instead would make every scrub past the first
                         // confirmation invisible. Once focus moves on,
                         // `selected` (falling back to `focused` pre-first-
@@ -2354,7 +2341,7 @@ mod native_surface_paint {
                         // pixel-measurer twin in `layout_metrics.rs`) is the
                         // control's on-screen rect; reuse it rather than
                         // re-deriving `control_start` here, so paint and
-                        // click (`FormController`'s click routing reads the
+                        // click (the form's click routing reads the
                         // same `item_bounds`) always agree.
                         if let Some((_, item_rect)) = vf.item_bounds.first() {
                             let r = translate(item_rect, origin);
@@ -2763,7 +2750,7 @@ mod native_surface_paint {
         // `FieldKind::Slider` arm) *is* the track rect —
         // fill it rather than re-deriving the track's x
         // and width here, so paint and click
-        // (`FormController`'s click routing maps a
+        // (the form's click routing maps a
         // pointer x across the same `item_bounds` entry)
         // always agree on where the track is. The
         // fallback keeps a measure closure that reports
@@ -3231,7 +3218,7 @@ mod native_surface_paint {
 
         /// The groove a `FieldKind::Slider` field paints must be exactly
         /// its single `item_bounds` entry — that rect is what
-        /// `FormController`'s click routing maps a pointer x across, so
+        /// the form's click routing maps a pointer x across, so
         /// a drift between the two would hand a user a value that
         /// doesn't match the fill under their cursor. Asserted for a
         /// *labeled* field, the form-wide `LabelPosition::Left` default:
@@ -4420,7 +4407,7 @@ mod native_surface_paint {
             );
         }
 
-        /// A required-field marker span (as [`crate::compose::form_controller`]
+        /// A required-field marker span (as [`crate::validation::mark_required`]
         /// appends to `label.spans`) paints as its own text run, in its own
         /// colour, laid out right after the label's own span — not merged
         /// into one plain-coloured string, and not overlapping the label or
@@ -5089,8 +5076,8 @@ pub enum FormEvent {
     /// the widget's own id for a standalone picker reached through
     /// [`crate::frame::Surface::Widget`], the **`FormField`'s** id for
     /// one embedded in a `Form`. Only the standalone path reports it;
-    /// `FormController` keeps an embedded picker's scrub position in its
-    /// own cache (`date_edit`) and surfaces only
+    /// the form keeps an embedded picker's scrub position in its
+    /// [`FormState`] (`date_edit`) and surfaces only
     /// [`Self::DateChanged`].
     DateFocusMoved {
         id: WidgetId,
@@ -5125,7 +5112,7 @@ pub enum FormEvent {
     /// id)`. Applying this event must also set `open = true` on the
     /// `ComboBox`, per [`crate::primitives::combo_box::ComboBox`]'s
     /// apply contract: the host owns opening the dropdown on the first
-    /// keystroke, `FormController` does not do it for you.
+    /// keystroke, the form does not do it for you.
     ComboBoxTextChanged { id: WidgetId, value: String },
     /// A `ComboBox` field's highlighted dropdown item changed (arrow-key
     /// navigation while the dropdown is open). `id` is the `FormField`'s
@@ -5138,7 +5125,7 @@ pub enum FormEvent {
     /// `TextInputCommitted`'s "fires once, on confirm" shape rather than
     /// `ComboBoxTextChanged`'s "fires every keystroke" shape. `id` is
     /// the `FormField`'s id, as with [`Self::ComboBoxTextChanged`].
-    /// `Form`/`FormController` route this only from a key press
+    /// `Form` routes this only from a key press
     /// (`form_click_event` has no `ComboBox` arm); an app that wants a
     /// click on a dropdown item to also commit must call
     /// [`crate::primitives::combo_box::ComboBox::pick`] itself and

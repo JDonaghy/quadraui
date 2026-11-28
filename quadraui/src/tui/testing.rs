@@ -2216,6 +2216,7 @@ mod tests {
                     timestamp: None,
                 }],
                 scroll_offset: 0,
+                items_window: None,
                 auto_scroll: true,
                 max_lines: 0,
                 has_focus: false,

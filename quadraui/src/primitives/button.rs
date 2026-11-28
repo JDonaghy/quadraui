@@ -11,7 +11,7 @@
 //! embedded inside a form. `Button` is additive: a standalone control
 //! for a host that wants a button outside a form (a toolbar action, a
 //! dialog's own footer, a palette entry) without pulling in the whole
-//! `Form`/`FormController` machinery. `Form`'s own field kinds are
+//! `Form` machinery. `Form`'s own field kinds are
 //! untouched.
 //!
 //! # Focus and activation

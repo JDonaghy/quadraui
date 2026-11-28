@@ -68,8 +68,8 @@
 //! decode medium a given entry point needs:
 //! - [`decode_direct`] hands napi's own `Env::from_js_value` (gated behind
 //!   this crate's `serde-json` feature on the `napi` dependency) straight to
-//!   a derived `Deserialize` type -- the six fixed primitive slots and every
-//!   overlay's own descriptor shape, none of which carries a byte-string/
+//!   a derived `Deserialize` type -- every overlay's own descriptor shape,
+//!   none of which carries a byte-string/
 //!   float field at risk of the two pre-checks below, or a nested
 //!   newtype-struct identifier (see [`decode_via_json`]).
 //! - [`decode_via_core`] first materializes the JS value into one
@@ -311,17 +311,17 @@ use quadraui_binding_core::{
     color_depth_name, decode_overlay, decode_render_output_with_styles, decode_shell_config,
     decode_style_overrides, draw_bands, end_power_save_block, font_role, guarded as core_guarded,
     install_crash_handler, is_default_protocol_client, key_pressed_event, login_item_enabled,
-    menu_for_surface, merge_overrides, overlay_anchor_from_value, paint_layout_windowed,
-    pointer_shape, record_pending_error, remove_as_default_protocol_client, render_overlays,
-    resolve_app_path, resolve_layout_node_windowed, resolve_render_refs, set_app_identifier,
-    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
-    take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
-    update_apply_on_quit, update_check_for_update, update_download_and_stage,
-    validate_style_set_name, widget_state_snapshot, window_close_reaction, with_tray, with_window,
-    BindingHost, DecodeError, ErasedShellDriver, EventSink, GuardedFailure, HitDetail,
-    InteractionEngine, OverrideError, RenderOutput, RowsRequestedEvent, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedInputEvent, ScriptedPaint, ScriptedPrimitive, ScriptedProps,
-    ScriptedSize, ScriptedState, ServiceError, StyleContext, UpdateInfoWire, WindowCloseHandling,
+    menu_for_surface, merge_overrides, overlay_anchor_from_value, paint_layout, pointer_shape,
+    record_pending_error, remove_as_default_protocol_client, render_overlays, resolve_app_path,
+    resolve_layout_node, set_app_identifier, set_as_default_protocol_client, set_dock_menu,
+    set_jump_list, set_login_item, step_driver, take_pending_error as core_take_pending_error,
+    text_display_from_lines, theme_color_value, update_apply_on_quit, update_check_for_update,
+    update_download_and_stage, validate_style_set_name, widget_state_snapshot,
+    window_close_reaction, with_tray, with_window, BindingHost, DecodeError, ErasedShellDriver,
+    EventSink, GuardedFailure, HitDetail, InteractionEngine, OverrideError, RenderOutput,
+    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedPaint,
+    ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ServiceError, StyleContext,
+    UpdateInfoWire, WindowCloseHandling,
 };
 #[cfg(test)]
 use quadraui_binding_core::{decode_layout_node, decode_render_output, LayoutNode};
@@ -606,8 +606,8 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
-/// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
-/// the backend-settings replay store -- see that type's own doc), the
+/// [`BindingHost`] (its per-kind widget map and the backend-settings replay
+/// store -- see that type's own doc), the
 /// [`InteractionEngine`] every binding's `AppLogic` holds alongside it, and
 /// the registered-callback bridge below -- the napi-rs analog of
 /// `quadraui-py`'s `PyAppLogic`.
@@ -1002,14 +1002,14 @@ impl Drop for RenderCtxScope {
 // back either.
 //
 // **Env liveness.** [`ScriptWidget`]'s methods take no `Env` -- they are
-// called from deep inside [`paint_layout_windowed`]/[`InteractionEngine::handle`],
+// called from deep inside [`paint_layout`]/[`InteractionEngine::handle`],
 // well after the render/handle callback that registered this frame's
 // widget has already returned. [`ScriptEnvScope`] (mirroring
 // [`RenderCtxScope`] just above) stashes the live `Env` plus this app's
 // `pending_error` cell in [`CURRENT_SCRIPT_ENV`] for the whole span of
 // [`NodeAppLogic::render`]/[`NodeAppLogic::handle`] -- not just the
 // callback's own call, the way [`RenderCtxScope`] is scoped -- since
-// `paint_layout_windowed`'s own script-widget calls happen after the callback
+// `paint_layout`'s own script-widget calls happen after the callback
 // returns but still within the same `render`.
 
 thread_local! {
@@ -1312,9 +1312,9 @@ impl AppLogic for NodeAppLogic {
         self.captured_waker.set(Some(backend.waker()));
     }
 
-    /// With no render callback registered, [`Self::host`]'s [`BindingHost::
-    /// render_refs`] is always empty -- `QuiApp` has no way to populate it
-    /// -- so [`draw_bands`] paints nothing this frame; only the anchored
+    /// With no render callback registered, [`Self::host`]'s
+    /// [`BindingHost::widgets`] is always empty -- `QuiApp` has no way to
+    /// populate it -- so [`draw_bands`] paints nothing this frame; only the anchored
     /// overlay pass every binding's `render` runs still fires -- see
     /// [`render_overlays`]'s own doc. With a render callback registered,
     /// invokes it via [`render_output_from_callback`] and resolves+paints
@@ -1323,10 +1323,8 @@ impl AppLogic for NodeAppLogic {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let Some(callback) = self.render_callback.as_ref() else {
-            let resolved =
-                resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
             self.engine
-                .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
+                .paint_with_widget_state(|| draw_bands(backend, &self.host.widgets, &mut hits));
             // No render callback: nothing painted through `paint_layout`
             // this frame, so there is no layout-tree leaf tooltip to
             // resolve -- clears out anything a previously registered
@@ -1352,7 +1350,7 @@ impl AppLogic for NodeAppLogic {
         let styles = StyleContext::new(&self.host.style_sets, &theme);
         // Installs `env`/`pending_error` into `CURRENT_SCRIPT_ENV` for the
         // whole rest of this render, not just the callback call below --
-        // `paint_layout_windowed` below calls back into any `defineWidget` this
+        // `paint_layout` below calls back into any `defineWidget` this
         // callback registered, well after it has already returned. See
         // the "Script widgets" module section's own doc.
         let _script_scope = ScriptEnvScope::enter(env, self.pending_error.clone());
@@ -1375,35 +1373,18 @@ impl AppLogic for NodeAppLogic {
         drop(ctx_scope);
         match render_result {
             Some(RenderOutput::Flat(frame)) => {
-                let resolved =
-                    resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                // Every generic leaf paints from the state its own input
-                // handling walked (a text input's caret, say).
+                // Every widget paints from the state its own input
+                // handling walked (a list's cursor, a text input's caret).
                 self.engine
-                    .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
+                    .paint_with_widget_state(|| draw_bands(backend, &frame.widgets, &mut hits));
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                // The same `items_window` side table both calls below
-                // read: a windowed leaf's cursor/scroll resolve has to
-                // agree with the band that actually paints it.
-                let windows = self.host.wire_diagnostics.items_windows();
-                resolve_layout_node_windowed(
-                    self.engine.widget_state(),
-                    backend,
-                    area,
-                    &mut node,
-                    &windows,
-                );
-                // `_windowed`, not plain `paint_layout` — a leaf whose
-                // render callback never sends an `"items_window"` key
-                // paints identically either way (see
-                // `paint_layout_windowed`'s own doc).
-                self.engine.paint_with_widget_state(|| {
-                    paint_layout_windowed(backend, area, &node, &mut hits, &windows)
-                });
+                resolve_layout_node(&self.engine, backend, area, &mut node);
+                self.engine
+                    .paint_with_widget_state(|| paint_layout(backend, area, &node, &mut hits));
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see
@@ -1687,51 +1668,6 @@ impl EventSink for NodeEventSink<'_> {
             Ok(result) if matches!(event, UiEvent::WindowClose) => {
                 window_close_reaction(bool_from_return(result), self.render_callback_present)
             }
-            Ok(result) => {
-                callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
-            }
-            Err(err) => {
-                record_error(self.pending_error, err);
-                Reaction::Exit
-            }
-        }
-    }
-
-    /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
-    /// leaf's [`RowsRequestedEvent`] to the same registered JS handler
-    /// [`EventSink::dispatch`] calls, as
-    /// `{"RowsRequested": {id, start, count}}` -- the synthesized-event
-    /// shape `docs/bindings-wire-format.md`'s own `RowsRequestedEvent`
-    /// entry describes.
-    ///
-    /// The app answers by re-rendering that leaf with
-    /// `items_window: {start, total}` and the `count` rows from `start`;
-    /// the engine never re-asks for the same rows until the loaded slice
-    /// actually moves, so an app that ignores this isn't called again
-    /// every frame.
-    fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> Reaction {
-        let wrapped = serde_json::json!({
-            "RowsRequested": {
-                "id": event.id.as_str(),
-                "start": event.start,
-                "count": event.count,
-            }
-        });
-        let js_payload: Unknown<'static> = match self.env.to_js_value(&wrapped) {
-            Ok(value) => value,
-            Err(err) => {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-        };
-        let func = match self.handler.borrow_back(&self.env) {
-            Ok(func) => func,
-            Err(err) => {
-                record_error(self.pending_error, err);
-                return Reaction::Exit;
-            }
-        };
-        match func.call(js_payload) {
             Ok(result) => {
                 callback_reaction_for_render(bool_from_return(result), self.render_callback_present)
             }
@@ -2092,8 +2028,8 @@ fn panic_error(detail: impl std::fmt::Display) -> Error {
 /// `Env::from_js_value` -- the napi-rs analog of `quadraui-py`'s
 /// `pythonize::depythonize`, for any descriptor type that derives
 /// `Deserialize` with no byte-string/non-finite-float field, and no
-/// newtype-struct-identifier field (see [`decode_via_json`]), at risk (the
-/// six fixed primitive slots, every overlay's own descriptor shape).
+/// newtype-struct-identifier field (see [`decode_via_json`]), at risk
+/// (every overlay's own descriptor shape).
 fn decode_direct<T: DeserializeOwned>(env: Env, what: &str, descriptor: Unknown) -> Result<T> {
     env.from_js_value(descriptor)
         .map_err(|err| invalid_descriptor_error(format!("{what}: {err}")))
@@ -2109,7 +2045,7 @@ fn decode_direct<T: DeserializeOwned>(env: Env, what: &str, descriptor: Unknown)
 /// then discards it, returning the un-tagged inner value instead --
 /// verified empirically (a multi-field tuple variant or any struct variant,
 /// e.g. [`UiEvent::CompletionItemActivated`] or
-/// `quadraui_binding_core::HitDetail::TreeRow`, reaches a registered
+/// `quadraui_binding_core::HitDetail::SplitTreeDivider`, reaches a registered
 /// handler with its own tag missing entirely). [`serde_json::Value`]'s own
 /// `Serialize` impl never calls those two `Serializer` methods -- by the
 /// time `value` has been folded into a `Value` tree, there is no more
@@ -2130,7 +2066,7 @@ fn encode_via_json<T: Serialize>(env: Env, what: &str, value: &T) -> Result<Unkn
 /// The camelCase JS shape `QuiApp::widget_state` encodes
 /// [`quadraui_binding_core::WidgetStateSnapshot`] into -- every other
 /// field this crate hands to JS already reaches it camelCase (`scrollPx`,
-/// `scrollOffset` on the six fixed descriptors themselves), so this
+/// `scrollOffset` on the row descriptors themselves), so this
 /// mirrors that rather than exposing the snapshot's own Rust
 /// `snake_case` field names verbatim.
 #[derive(Serialize)]
@@ -2151,12 +2087,12 @@ struct WidgetStateJs {
 impl From<quadraui_binding_core::WidgetStateSnapshot> for WidgetStateJs {
     fn from(snapshot: quadraui_binding_core::WidgetStateSnapshot) -> Self {
         Self {
-            selected_path: snapshot.selected_path,
-            selected_index: snapshot.selected_idx,
-            scroll_offset: snapshot.scroll_offset,
+            selected_path: snapshot.summary.selected_path,
+            selected_index: snapshot.summary.selected_idx,
+            scroll_offset: snapshot.summary.scroll_offset,
             split_ratio: snapshot.ratio,
-            active_tab: snapshot.active_tab,
-            expanded: snapshot.expanded,
+            active_tab: snapshot.summary.active_tab,
+            expanded: snapshot.summary.expanded,
         }
     }
 }
@@ -3085,23 +3021,19 @@ impl QuiApp {
         })
     }
 
-    /// Reads back `id`'s current resolved widget state from the store --
-    /// a `Tree`/`List`/`DataTable`'s cursor + scroll, a `Split`'s ratio, a
-    /// `TabBar`'s active tab index, or a `Tree`'s expanded row paths,
-    /// whichever apply -- the shape
-    /// [`quadraui_binding_core::widget_state_snapshot`] resolves, camelCased
-    /// via [`WidgetStateJs`]. `id` names exactly one widget kind in
-    /// practice, so the returned object only ever has one group of fields
-    /// populated. Returns `null` when `id` has never been resolved through
-    /// this app's own `render` (the no-callback fixed-slot path via
-    /// [`resolve_render_refs`], or a render-callback's decoded tree via
-    /// [`resolve_layout_node_windowed`]) -- `id` names a widget that hasn't
-    /// rendered, or hasn't rendered yet this session.
+    /// Reads back `id`'s current widget state -- a `Tree`/`List`/
+    /// `DataTable`'s cursor + scroll, a `Split`'s ratio, a `TabBar`'s
+    /// active tab index, or a `Tree`'s expanded row paths, whichever apply
+    /// -- the shape [`quadraui_binding_core::widget_state_snapshot`]
+    /// resolves, camelCased via [`WidgetStateJs`]. `id` names exactly one
+    /// widget kind in practice, so the returned object only ever has one
+    /// group of fields populated. Returns `null` when no widget painted
+    /// this frame keeps state under `id` and no split ratio is stored for
+    /// it.
     #[napi(js_name = "widgetState")]
     pub fn widget_state(&self, env: Env, id: String) -> Result<Unknown<'static>> {
-        let snapshot =
-            widget_state_snapshot(self.driver.app().engine.widget_state(), WidgetId::new(id))
-                .map(WidgetStateJs::from);
+        let snapshot = widget_state_snapshot(&self.driver.app().engine, WidgetId::new(id))
+            .map(WidgetStateJs::from);
         encode_via_json(env, "widgetState", &snapshot)
     }
 

@@ -327,6 +327,17 @@ pub(crate) trait PreprocessBackend {
 ///    (a hover repaint, an [`crate::interactive::EventHost::emit`]ted
 ///    event's own `Reaction`) is still merged into whatever the step
 ///    that finally answers the event returns.
+///
+///    Then a Tab / Shift+Tab (`NamedKey::BackTab`, or `NamedKey::Tab` with
+///    Shift held) the focused widget left unclaimed walks that widget's
+///    own [`crate::interactive::FocusSpec::Children`] stops: when focus is
+///    on one of its children and another child follows (or precedes) it
+///    in the order the widget declared, focus moves there, the ring turns
+///    focus-visible, and the widget receives
+///    [`crate::interactive::RoutedEvent::FocusIn`] for the new child —
+///    see [`step_widget_child_focus`]. At either end the key falls
+///    through unchanged, so Tab can leave the widget. Ctrl/Alt/Cmd held
+///    is left alone, as in step 4.
 /// 3. `KeyPressed` while an `ActivityBar` declared
 ///    `is_keyboard_focused = true`: redirect to
 ///    `UiEvent::ActivityBar(id, KeyPressed { .. })` instead of the app's
@@ -424,6 +435,15 @@ where
         WidgetRouteOutcome::Claimed(outcome) => return pointer_reaction.merge(outcome),
         WidgetRouteOutcome::Bubble(side_effect) => pointer_reaction.merge(side_effect),
     };
+
+    // ── 2b. Tab / Shift+Tab through a widget's own child stops ──────────
+    if let UiEvent::KeyPressed { key, modifiers, .. } = &event {
+        if let Some(delta) = crate::focus::tab_step(key, modifiers) {
+            if let Some(outcome) = step_widget_child_focus(backend, app, delta) {
+                return widget_side_reaction.merge(outcome);
+            }
+        }
+    }
 
     // ── 3. ActivityBar keyboard focus intercept ─────────────────────
     if let UiEvent::KeyPressed {
@@ -1055,6 +1075,41 @@ where
     dispatch_widget_routed_event(focused, node, &routed, backend, app)
 }
 
+/// [`preprocess_event`]'s step 2b: move keyboard focus `delta` stops
+/// through the focused widget's own
+/// [`crate::interactive::FocusSpec::Children`] stops
+/// ([`crate::focus::step_child_stop`]) and deliver
+/// [`RoutedEvent::FocusIn`] for the child it lands on. `None` — the key
+/// carries on to the later steps — when widget routing is off, a modal
+/// is open, focus names no child of a widget in this frame's tree, or
+/// that child is the widget's first/last stop in the `delta` direction.
+fn step_widget_child_focus<B, A>(backend: &mut B, app: &mut A, delta: isize) -> Option<EventOutcome>
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    backend.widget_routing_mut()?;
+    if !backend.modal_stack_handle().borrow().is_empty() {
+        return None;
+    }
+    let &(id, Some(sub)) = backend.focus_tree().focused()? else {
+        return None;
+    };
+    let tree = app.frame_tree(A::AreaId::default());
+    let node = tree.find(&id)?;
+    let next = crate::focus::step_child_stop(&node.widget.focus(), sub, delta)?;
+    let tree_focus = backend.focus_tree_mut();
+    tree_focus.set_focus(Some((id, Some(next))));
+    tree_focus.set_focus_visible(true);
+    let routed = RoutedEvent::FocusIn(Some(next));
+    Some(
+        match dispatch_widget_routed_event(id, node, &routed, backend, app) {
+            WidgetRouteOutcome::Claimed(outcome) => outcome,
+            WidgetRouteOutcome::Bubble(reaction) => reaction.merge(EventOutcome::Redraw),
+        },
+    )
+}
+
 /// A plain Tab (or Shift+Tab) on a focused widget with per-child focus
 /// stops whose focused child is its last (or first) stop, while the
 /// app's tab order names the widget among other stops: the key skips the
@@ -1415,6 +1470,18 @@ where
     // via `WidgetRouteOutcome::Bubble` — the same channel a hover
     // Enter/Leave repaint already travels back on — so the original,
     // un-routed event still reaches every later step and `app.handle`.
+    // The content the input just brought into view
+    // (`Interactive::data_requested`), asked against a layout of the state
+    // `handle` wrote and delivered after the widget's own event.
+    let requested = if matches!(outcome, Handled::Ignored) {
+        None
+    } else {
+        let after = crate::backend::layout_like_paint(&*backend, node.widget.as_ref(), node.rect);
+        crate::widget_state::with_widget_states(|states| {
+            let state = states.state_for(id, node.widget.as_ref());
+            node.widget.data_requested(state, &*after)
+        })
+    };
     let result = match outcome {
         Handled::Event(ui_event) => {
             WidgetRouteOutcome::Claimed(extra_reaction.merge(app.handle(ui_event, backend)))
@@ -1423,6 +1490,12 @@ where
             WidgetRouteOutcome::Claimed(extra_reaction.merge(EventOutcome::Redraw))
         }
         Handled::Ignored => WidgetRouteOutcome::Bubble(extra_reaction),
+    };
+    let result = match (result, requested) {
+        (WidgetRouteOutcome::Claimed(outcome), Some(requested)) => {
+            WidgetRouteOutcome::Claimed(outcome.merge(app.handle(requested, backend)))
+        }
+        (result, _) => result,
     };
 
     // `EventHost::request_redraw` is a request made *during* `handle`,

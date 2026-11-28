@@ -1,0 +1,294 @@
+=== initial
+| Fruit  ▾                                                                                           |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit= | —                                                      type / up / down / Enter / Esc / q |
+0: 0-7 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 8-8 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 9-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-11 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 12-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== typed_open
+|a──────────────────────────────────────────────────────────────────────────────────────────────────┐|
+|│ Apple                                                                                            │|
+|│ Apricot                                                                                          │|
+|│ Banana                                                                                           │|
+|│ Cranberry                                                                                        │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit= | typing "a"                                             type / up / down / Enter / Esc / q |
+0: 0-0 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(48, 52, 64), modifiers: NONE }; 1-99 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+4: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-20 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 21-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== highlight
+|a──────────────────────────────────────────────────────────────────────────────────────────────────┐|
+|│ Apple                                                                                            │|
+|│ Apricot                                                                                          │|
+|│ Banana                                                                                           │|
+|│ Cranberry                                                                                        │|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit= | highlight 0                                            type / up / down / Enter / Esc / q |
+0: 0-0 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(48, 52, 64), modifiers: NONE }; 1-99 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+2: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+3: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+4: 0-0 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE }; 1-98 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(36, 40, 52), modifiers: NONE }; 99-99 CellStyle { fg: Rgb(120, 140, 175), bg: Rgb(36, 40, 52), modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-21 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 22-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== committed
+| Fruit Apple ▾                                                                                      |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit=Apple | committed "Apple"                                 type / up / down / Enter / Esc / q |
+0: 0-12 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 13-13 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 14-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-32 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 33-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== retyped
+|Applec─────────────────────────────────────────────────────────────────────────────────────────────┐|
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit=Apple | typing "Applec"                                   type / up / down / Enter / Esc / q |
+0: 0-5 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(48, 52, 64), modifiers: NONE }; 6-99 CellStyle { fg: Rgb(120, 160, 200), bg: Rgb(20, 22, 30), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-30 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 31-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== cancelled
+| Fruit Apple ▾                                                                                      |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| fruit=Apple | cancelled                                         type / up / down / Enter / Esc / q |
+0: 0-12 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE }; 13-13 CellStyle { fg: Rgb(120, 122, 135), bg: Rgb(50, 60, 90), modifiers: NONE }; 14-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-24 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 25-63 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 64-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };

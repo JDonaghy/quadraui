@@ -427,6 +427,8 @@ impl Demo for SidebarDemo {
                     selection_mode: quadraui::SelectionMode::Single,
                     selected_path: None,
                     scroll_offset: self.body_scroll,
+                    items_window: None,
+                    scroll_px: None,
                     style: TreeStyle {
                         show_scrollbar: false,
                         ..TreeStyle::default()

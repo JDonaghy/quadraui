@@ -114,6 +114,8 @@ mod tests {
                     rows: vec![],
                     selected_idx: None,
                     scroll_offset: 0,
+                    items_window: None,
+                    scroll_px: None,
                     sort: None,
                     has_focus: false,
                     show_scrollbar: false,

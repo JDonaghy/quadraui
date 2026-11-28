@@ -24,6 +24,8 @@ const H: u16 = 10;
 fn table(mode: SelectionMode) -> DataTable {
     DataTable {
         id: WidgetId::new("table"),
+        items_window: None,
+        scroll_px: None,
         columns: vec![Column {
             title: "Name".to_string(),
             width: Default::default(),
@@ -55,6 +57,8 @@ fn table(mode: SelectionMode) -> DataTable {
 fn list() -> ListView {
     ListView {
         id: WidgetId::new("list"),
+        items_window: None,
+        scroll_px: None,
         title: None,
         items: (0..4)
             .map(|i| ListItem {
@@ -78,6 +82,8 @@ fn list() -> ListView {
 fn tree() -> TreeView {
     TreeView {
         id: WidgetId::new("tree"),
+        items_window: None,
+        scroll_px: None,
         rows: (0..3u16)
             .map(|i| TreeRow {
                 path: vec![i],

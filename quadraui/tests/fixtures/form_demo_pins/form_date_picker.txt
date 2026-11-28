@@ -1,0 +1,196 @@
+=== initial
+| Due date 2024-03-15                                                                                |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| confirmed=none | —                                          arrows / PageUp / PageDown / Enter / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-19 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 20-59 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 60-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== scrubbed
+| Due date 2024-03-23                                                                                |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| confirmed=none | —                                          arrows / PageUp / PageDown / Enter / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-19 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 20-59 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 60-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== next_month
+| Due date 2024-04-23                                                                                |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| confirmed=none | —                                          arrows / PageUp / PageDown / Enter / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-19 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 20-59 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 60-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };
+=== confirmed
+| Due date 2024-04-23                                                                                |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+| confirmed=2024-04-23 | confirmed 2024-04-23                 arrows / PageUp / PageDown / Enter / q |
+0: 0-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(50, 60, 90), modifiers: NONE };
+1: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+2: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+3: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+4: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+5: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+6: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+7: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+8: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+9: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+10: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+11: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+12: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+13: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+14: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+15: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+16: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+17: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+18: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+19: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+20: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+21: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+22: 0-99 CellStyle { fg: Reset, bg: Reset, modifiers: NONE };
+23: 0-44 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE }; 45-59 CellStyle { fg: Rgb(40, 40, 60), bg: Rgb(40, 40, 60), modifiers: NONE }; 60-99 CellStyle { fg: Rgb(220, 220, 220), bg: Rgb(40, 40, 60), modifiers: NONE };

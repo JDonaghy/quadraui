@@ -133,6 +133,8 @@ impl FrameDemo {
             // list and the vertical-scrollbar thumb visibly tracks position.
             // The primitive clamps this in `layout()`.
             scroll_offset: self.selected,
+            items_window: None,
+            scroll_px: None,
             has_focus: true,
             bordered: false,
             h_scroll: self.h_scroll,

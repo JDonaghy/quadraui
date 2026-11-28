@@ -452,6 +452,9 @@ widget_kinds! {
     // Ungated, like `impl Primitive for TabBar`/`impl Interactive for
     // TabBar` — `TabBar` is a `DynWidget` on every feature set.
     "tab_bar" => crate::TabBar,
+    // Ungated for the same reason: `impl Primitive`/`impl Interactive for
+    // TextDisplay` carry no feature gate.
+    "text_display" => crate::TextDisplay,
     // Group A's small widgets, all three ungated for the same reason
     // `TabBar` is: their `Primitive`/`Interactive` impls carry no
     // feature gate, so each is a `DynWidget` on every feature set. The
@@ -724,6 +727,8 @@ mod tests {
                 rows: Vec::new(),
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,
@@ -738,6 +743,20 @@ mod tests {
             let payload = serde_json::to_value(table).expect("data_table serializes");
             let widget = decode_widget("data_table", payload).expect("data_table decodes");
             assert_eq!(widget.id().map(|id| id.as_str()), Some("table"));
+
+            let mut display = crate::TextDisplay::new("log".into());
+            display.items_window = Some(crate::ItemsWindow::new(10, 1_000));
+            let payload = serde_json::to_value(&display).expect("text_display serializes");
+            assert_eq!(payload["items_window"]["total"], 1_000);
+            let widget = decode_widget("text_display", payload).expect("text_display decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("log"));
+            let decoded = widget
+                .downcast_ref::<crate::TextDisplay>()
+                .expect("a TextDisplay");
+            assert_eq!(
+                decoded.items_window,
+                Some(crate::ItemsWindow::new(10, 1_000))
+            );
 
             let view = crate::MultiSectionView {
                 id: "panel".into(),
@@ -1236,6 +1255,8 @@ mod tests {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: TreeStyle::default(),
                 has_focus: false,
             }
@@ -1257,6 +1278,8 @@ mod tests {
                 }],
                 selected_idx: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 sort: None,
                 has_focus: false,
                 show_scrollbar: false,

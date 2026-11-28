@@ -44,6 +44,8 @@ fn make_table() -> DataTable {
         ],
         selected_idx: Some(0),
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: Some((0, SortDirection::Ascending)),
         has_focus: true,
         show_scrollbar: false,

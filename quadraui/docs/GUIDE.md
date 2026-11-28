@@ -127,6 +127,8 @@ impl TwoPane {
             selection_mode: quadraui::SelectionMode::Single,
             selected_path: Some(vec![self.selected as u16]),
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: Default::default(),
             has_focus: true,
         }
@@ -145,6 +147,7 @@ impl TwoPane {
                 })
                 .collect(),
             scroll_offset: 0,
+            items_window: None,
             auto_scroll: false,
             max_lines: 0,
             has_focus: false,

@@ -684,6 +684,8 @@ fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32
         }],
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: false,
         show_scrollbar: false,

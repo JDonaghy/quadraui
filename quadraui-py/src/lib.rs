@@ -134,12 +134,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use pyo3::types::{PyDict, PyList};
 
-#[cfg(test)]
-use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
-#[cfg(test)]
-use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::AcceleratorScope;
 use quadraui::DrawsPrimitives;
@@ -155,8 +151,6 @@ use quadraui::MouseButton;
 use quadraui::NamedKey;
 #[cfg(test)]
 use quadraui::Point;
-#[cfg(test)]
-use quadraui::Scrollbar;
 use quadraui::{
     A11yChild, A11yInfo, Accelerator, AcceleratorId, AppLogic, Backend, BackendCaps,
     BottomPanelEvent, ContextMenu, ContextMenuItem, FileDialogOptions, GlobalShortcutId,
@@ -172,8 +166,6 @@ use quadraui::{CanvasRegion, DrawOp};
 // bare names (rather than a `qbc::` path prefix) so this file's own call
 // sites, most of which predate the crate split, need no further change.
 use quadraui_binding_core::decode_style_overrides;
-#[cfg(test)]
-use quadraui_binding_core::tree_scroll_state;
 use quadraui_binding_core::validate_style_set_name;
 #[cfg(any(feature = "gtk", feature = "macos", feature = "win"))]
 use quadraui_binding_core::NativeExitPolicy;
@@ -182,16 +174,15 @@ use quadraui_binding_core::{
     clear_recent_documents, click_down_up_events, collect_leaf_tooltips, color_depth_name,
     draw_bands, end_power_save_block, font_role, guarded as core_guarded,
     is_default_protocol_client, key_pressed_event, login_item_enabled, menu_for_surface,
-    merge_overrides, paint_layout_windowed, pointer_shape, record_pending_error,
-    remove_as_default_protocol_client, render_overlays, resolve_app_path,
-    resolve_layout_node_windowed, resolve_render_refs, set_as_default_protocol_client,
-    set_dock_menu, set_jump_list, set_login_item, step_driver,
+    merge_overrides, paint_layout, pointer_shape, record_pending_error,
+    remove_as_default_protocol_client, render_overlays, resolve_app_path, resolve_layout_node,
+    set_as_default_protocol_client, set_dock_menu, set_jump_list, set_login_item, step_driver,
     take_pending_error as core_take_pending_error, text_display_from_lines, theme_color_value,
     update_apply_on_quit, update_check_for_update, update_download_and_stage,
     widget_state_snapshot, window_close_reaction, with_tray, with_window, BindingHost, DecodeError,
     ErasedShellDriver, EventSink, GuardedFailure, HitDetail, InteractionEngine, LayoutLeaf,
-    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, RowsRequestedEvent, ServiceError,
-    StyleContext, UpdateInfoWire, WindowCloseHandling,
+    LayoutNode, LeafDescriptor, OverrideError, RenderOutput, ServiceError, StyleContext,
+    UpdateInfoWire, WindowCloseHandling,
 };
 use quadraui_binding_core::{apply_deferred_action, decode_overlay, DeferredAction, DeferredError};
 use quadraui_binding_core::{
@@ -480,10 +471,10 @@ create_exception!(
 );
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin PyO3 leaf around
-/// [`BindingHost`] (the six fixed primitive slots, any additive slots, and
-/// the backend-settings replay store — see that type's own doc) plus the
-/// Python-specific callback fields below. `render_callback`, when
-/// registered, overrides [`BindingHost`]'s static slots for every render —
+/// [`BindingHost`] (its per-kind widget map and the backend-settings replay
+/// store — see that type's own doc) plus the Python-specific callback
+/// fields below. `render_callback`, when registered, overrides
+/// [`BindingHost`]'s static widgets for every render —
 /// each frame asks it for a fresh set of descriptors instead.
 #[derive(Default)]
 struct PyAppLogic {
@@ -1011,9 +1002,8 @@ impl AppLogic for PyAppLogic {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let Some(callback) = self.render_callback.as_ref() else {
-            self.engine.paint_with_widget_state(|| {
-                draw_bands(backend, self.host.render_refs(), &mut hits)
-            });
+            self.engine
+                .paint_with_widget_state(|| draw_bands(backend, &self.host.widgets, &mut hits));
             // No render callback: nothing painted through `paint_layout`
             // this frame, so there is no layout-tree leaf tooltip to
             // resolve -- clears out anything a previously registered
@@ -1052,43 +1042,18 @@ impl AppLogic for PyAppLogic {
         drop(ctx_scope);
         match render_result {
             Some(RenderOutput::Flat(frame)) => {
-                // Merges the engine's own stored cursor/scroll/active-tab
-                // into whatever the callback's `tree`/`list`/`data_table`/
-                // `tab_bar` slot left uncontrolled, so an arrow key or a
-                // click a prior `handle` call already applied to
-                // `InteractionEngine::widget_state` is what actually
-                // paints this frame.
-                let resolved =
-                    resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                // Every generic leaf paints from the state its own input
-                // handling walked (a text input's caret, say).
+                // Every widget paints from the state its own input
+                // handling walked (a list's cursor, a text input's caret).
                 self.engine
-                    .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
+                    .paint_with_widget_state(|| draw_bands(backend, &frame.widgets, &mut hits));
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
-                // The same `items_window` side table `paint_layout_windowed`
-                // below honours: a windowed leaf's cursor/scroll resolve
-                // has to agree with the band that actually paints.
-                let windows = self.host.wire_diagnostics.items_windows();
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                resolve_layout_node_windowed(
-                    self.engine.widget_state(),
-                    backend,
-                    area,
-                    &mut node,
-                    &windows,
-                );
-                // `_windowed`, not the plain `paint_layout`: a leaf whose
-                // render callback never sends an `"items_window"` key
-                // paints identically either way (see
-                // `paint_layout_windowed`'s own doc), while one that does
-                // gets its real scrollbar extent and a band-painted
-                // payload instead of its `items_window` going unread.
-                self.engine.paint_with_widget_state(|| {
-                    paint_layout_windowed(backend, area, &node, &mut hits, &windows)
-                });
+                resolve_layout_node(&self.engine, backend, area, &mut node);
+                self.engine
+                    .paint_with_widget_state(|| paint_layout(backend, area, &node, &mut hits));
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see
@@ -1283,47 +1248,6 @@ impl EventSink for PyEventSink<'_> {
                 Ok(result) if matches!(event, UiEvent::WindowClose) => {
                     reaction_from_window_close_return(result.bind(py), self.render_callback_present)
                 }
-                Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
-                Err(err) => {
-                    record_error(self.pending_error, err);
-                    Reaction::Exit
-                }
-            }
-        })
-    }
-
-    /// Delivers a windowed `list`/`tree`/`data_table`/`text_display`
-    /// leaf's [`RowsRequestedEvent`] to the same registered Python handler
-    /// [`Self::dispatch`] calls, as `{"RowsRequested": {"id": ..., "start":
-    /// ..., "count": ...}}` — the synthesized-event shape
-    /// `docs/bindings-wire-format.md`'s own `RowsRequestedEvent` entry
-    /// describes.
-    ///
-    /// The app answers by re-rendering that leaf with
-    /// `items_window = {"start": start, "total": <unchanged>}` and the
-    /// `count` rows from `start`; the engine never re-asks for the same
-    /// rows until the loaded slice actually moves (see
-    /// `InteractionEngine::rows_requested_for`), so an app that ignores
-    /// this isn't called again every frame.
-    fn dispatch_rows_requested(&mut self, event: RowsRequestedEvent) -> Reaction {
-        Python::attach(|py| {
-            let built = (|| {
-                let request = PyDict::new(py);
-                request.set_item("id", event.id.as_str())?;
-                request.set_item("start", event.start)?;
-                request.set_item("count", event.count)?;
-                let dict = PyDict::new(py);
-                dict.set_item("RowsRequested", request)?;
-                Ok::<_, PyErr>(dict)
-            })();
-            let dict = match built {
-                Ok(dict) => dict,
-                Err(err) => {
-                    record_error(self.pending_error, err);
-                    return Reaction::Exit;
-                }
-            };
-            match self.handler.call1(py, (dict,)) {
                 Ok(result) => reaction_for_callback(result.bind(py), self.render_callback_present),
                 Err(err) => {
                     record_error(self.pending_error, err);
@@ -1946,9 +1870,9 @@ fn take_pending_script_widgets(py: Python<'_>) -> HashMap<String, PendingScriptW
 
 /// Drains the pending `Widget` registrations and splices each one into
 /// `output` in place. A no-op (the `Canvas` placeholder is left as-is)
-/// for `RenderOutput::Flat` -- the flat six-slot shape's own `extra` is
-/// keyed by kind name, one per frame (see `RenderFrame::extra`'s own
-/// doc), with no per-id addressing a `Widget` could use, so only
+/// for `RenderOutput::Flat` -- the flat shape's `widgets` is keyed by
+/// kind name, one per frame (see `RenderFrame::widgets`'s own doc), with
+/// no per-id addressing a `Widget` could use, so only
 /// `RenderOutput::Tree` (every `App`-layer render, since `Column`/`Row`/
 /// any node tree always produces one) is walked.
 fn apply_pending_script_widgets(
@@ -2907,8 +2831,7 @@ impl QuiAppActions {
     /// tab makes via `InteractionEngine::handle`. For a `render` callback
     /// that leaves its tabs widget uncontrolled (never pins `"selected"`/
     /// marks a tab `is_active` from frame to frame — see
-    /// [`quadraui_binding_core::resolve_tab_bar_active`]'s own doc for why
-    /// that matters), this is how an app drives which tab is active from
+    /// [`quadraui::TabBar::resolved_active`] for why that matters), this is how an app drives which tab is active from
     /// its own business logic (e.g. "open this folder as a new tab and
     /// focus it") without resorting to pinning the active index in the
     /// descriptor itself, which would make every later render controlled
@@ -4423,10 +4346,9 @@ impl QuiApp {
     /// `active_tab`, `expanded`), or `None` if `id` isn't being tracked
     /// under any of those shapes at all.
     ///
-    /// Reads back what the render callback's own `render` resolves every
-    /// frame (see `resolve_render_refs`/`resolve_layout_node_windowed`)
-    /// merged with whatever a key press or click already applied via
-    /// `InteractionEngine::handle` -- an app that leaves a tree's
+    /// Reads back the state each widget keeps for itself (see
+    /// `widget_state_snapshot`) -- what a key press or click already
+    /// applied via `InteractionEngine::handle` -- so an app that leaves a tree's
     /// `selected_path`/`scroll_offset` uncontrolled calls this after an
     /// event to read back where the cursor landed, instead of tracking it
     /// by hand. Renders first (like `screen`/`screen_contains`), so this
@@ -4436,8 +4358,7 @@ impl QuiApp {
         self.guarded(|app| {
             app.driver.render();
             take_pending_error(app.driver.app_mut())?;
-            let snapshot =
-                widget_state_snapshot(app.driver.app().engine.widget_state(), WidgetId::new(id));
+            let snapshot = widget_state_snapshot(&app.driver.app().engine, WidgetId::new(id));
             snapshot
                 .map(|snapshot| {
                     pythonize::pythonize(py, &snapshot)
@@ -6099,7 +6020,6 @@ fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quadraui::{ButtonMask, ScrollDelta};
 
     /// Unwrap one pythonized `UiEvent::ButtonActivated { widget }` payload
     /// -- `{"ButtonActivated": {"widget": id}}` on the wire -- down to the
@@ -7717,7 +7637,7 @@ def handle(event):
 
     /// A wheel `Scroll` landing on an uncontrolled `{"scroll": {...}}`
     /// container's own body/scrollbar moves its stored offset in
-    /// `InteractionEngine::widget_state` — `resolve_layout_node_windowed`'s
+    /// `InteractionEngine::widget_state` — `resolve_layout_node`'s
     /// own `LayoutNode::Scroll` arm must read that back and resolve
     /// `scroll_node.offset` to it before the next `paint_layout`, or an
     /// uncontrolled scroll
@@ -7803,7 +7723,7 @@ def handle(event):
     /// A **controlled** `Scroll` (`offset` set on every render) must
     /// paint pinned on the very first frame, before `scroll_view_at`
     /// has any previous `PaintedHit::Scroll` to measure a real
-    /// `max_offset` from. `resolve_layout_node_windowed`'s `Scroll` arm
+    /// `max_offset` from. `resolve_layout_node`'s `Scroll` arm
     /// falls back to `f32::INFINITY` (not `0.0`) for that no-hit case,
     /// deferring the clamp to `paint_scroll`'s own measured-this-frame
     /// clamp instead of pre-emptively clamping a controlled 15.0 down
@@ -8505,179 +8425,6 @@ def handle(event):
         });
     }
 
-    /// A `tree` leaf nested in a `Split`'s `second` pane paints at a
-    /// non-zero origin, so its `PaintedHit::Tree` entry's `area` is offset
-    /// from `(0, 0)` and `hit_test_painted` must translate the click into
-    /// the tree's own LOCAL frame (`point - area.origin`) before consulting
-    /// `TreeViewLayout::hit_test`. A `MouseDown` landing on a non-first row
-    /// must be replaced outright by the semantic `UiEvent::Tree(RowClicked)`
-    /// it stands for, carrying that row's own `TreePath` — not row 0's, and
-    /// not left as a raw `MouseDown` with a `"hit"` dict.
-    #[test]
-    fn mouse_down_over_a_tree_row_nested_in_a_split_pane_emits_a_semantic_row_clicked_event() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            py.run(
-                c"
-received = []
-
-def render():
-    return {'split': {
-        'id': 'main-split',
-        'orientation': 'horizontal',
-        'ratio': 0.3,
-        'first': {'id': 'text:left', 'text_display': {
-            'id': 'text:left',
-            'lines': [{'spans': [{'text': 'LEFT', 'fg': None, 'bg': None}]}],
-        }},
-        'second': {'id': 'tree:main', 'tree': {
-            'id': 'tree:main',
-            'rows': [
-                {
-                    'path': [0],
-                    'indent': 0,
-                    'icon': None,
-                    'text': {'spans': [{'text': 'AlphaRow', 'fg': None, 'bg': None}]},
-                    'badge': None,
-                    'is_expanded': None,
-                },
-                {
-                    'path': [1],
-                    'indent': 0,
-                    'icon': None,
-                    'text': {'spans': [{'text': 'BetaRow', 'fg': None, 'bg': None}]},
-                    'badge': None,
-                    'is_expanded': None,
-                },
-            ],
-            'selection_mode': 'Single',
-            'selected_path': [0],
-            'scroll_offset': 0,
-            'has_focus': True,
-            'style': {
-                'indent': 2,
-                'show_chevrons': True,
-                'chevron_expanded': '▾',
-                'chevron_collapsed': '▸',
-                'row_height': 22,
-            },
-        }},
-    }}
-
-def handle(event):
-    received.append(event)
-",
-                Some(&locals),
-                Some(&locals),
-            )
-            .expect("python source must execute");
-            let render: Py<PyAny> = locals
-                .get_item("render")
-                .expect("dict lookup")
-                .expect("render must be defined")
-                .unbind();
-            let handle: Py<PyAny> = locals
-                .get_item("handle")
-                .expect("dict lookup")
-                .expect("handle must be defined")
-                .unbind();
-
-            let mut app = QuiApp::new(60, 20, Some(handle), Some(render), false, None)
-                .expect("valid dimensions");
-            assert!(
-                app.screen_contains("BetaRow")
-                    .expect("render must not raise"),
-                "the second row must be painted"
-            );
-            let bounds = app
-                .driver
-                .find_bounds("BetaRow")
-                .expect("second row's label must be on screen");
-            assert!(
-                bounds.x > 0.0,
-                "the tree pane must be offset from the screen origin (nested in a split's \
-                 second pane): bounds={bounds:?}"
-            );
-
-            let click = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
-                modifiers: Modifiers::default(),
-            };
-            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
-            let click_dict = click_any
-                .cast::<PyDict>()
-                .expect("MouseDown must pythonize to a dict");
-            app.push_event(click_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined");
-            let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                2,
-                "the click must emit both a FocusChanged (nothing was focused yet) and the \
-                 semantic Tree event"
-            );
-            let focus_dict = received_list
-                .get_item(0)
-                .expect("first item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let focused: String = focus_dict
-                .get_item("FocusChanged")
-                .expect("dict lookup")
-                .expect("the click must focus the tree before the click event itself")
-                .extract()
-                .expect("FocusChanged must carry the newly focused widget's id as a string");
-            assert_eq!(focused, "tree:main", "the clicked tree must receive focus");
-            let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let tree_payload = event_dict
-                .get_item("Tree")
-                .expect("dict lookup")
-                .expect("a row click must dispatch a Tree key, not a raw MouseDown")
-                .cast_into::<PyTuple>()
-                .expect("Tree must pythonize to a (id, event) tuple");
-            assert_eq!(tree_payload.len(), 2, "Tree must carry (id, event)");
-            let widget: String = tree_payload
-                .get_item(0)
-                .expect("first element")
-                .extract()
-                .expect("the tree's own id must be a string");
-            assert_eq!(widget, "tree:main", "the widget id must be the tree's own");
-            let inner = tree_payload
-                .get_item(1)
-                .expect("second element")
-                .cast_into::<PyDict>()
-                .expect("the inner TreeEvent must pythonize to a dict");
-            let row_clicked = inner
-                .get_item("RowClicked")
-                .expect("dict lookup")
-                .expect("a row click must carry a RowClicked key")
-                .cast_into::<PyDict>()
-                .expect("RowClicked payload must be a dict");
-            let path: Vec<u16> = row_clicked
-                .get_item("path")
-                .expect("dict lookup")
-                .expect("path key must be present")
-                .extract()
-                .expect("path must be a list of ints");
-            assert_eq!(
-                path,
-                vec![1],
-                "the clicked row's own path (the second row) must be reported, not row 0's"
-            );
-        });
-    }
-
     /// A `tabs` leaf nested in a `Split`'s `second` pane paints its strip at
     /// a non-zero origin, exercising the strip's own widget-local
     /// translation the way the tree test above exercises the tree's.
@@ -9278,201 +9025,6 @@ def render():
         });
     }
 
-    /// Two `tree` leaves side by side in a `Row`: `Tab` cycles focus between
-    /// them (via core's shared `preprocess_event`/`FocusTree` pipeline,
-    /// driven by `PyAppLogic::extra_tab_stops`), and a plain key then routes to
-    /// whichever leaf is focused as that leaf's own semantic
-    /// `Tree(KeyPressed)` event, not a raw global `KeyPressed`.
-    #[test]
-    fn tab_cycles_focus_between_two_leaves_and_a_key_routes_to_the_focused_one() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            py.run(
-                c"
-received = []
-
-def render():
-    def leaf(id, label):
-        return {'id': id, 'tree': {
-            'id': id,
-            'rows': [{
-                'path': [0], 'indent': 0, 'icon': None,
-                'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]},
-                'badge': None, 'is_expanded': None,
-            }],
-            'selection_mode': 'Single', 'selected_path': None,
-            'style': {
-                'indent': 2, 'show_chevrons': True,
-                'chevron_expanded': 'v', 'chevron_collapsed': '>',
-            },
-        }}
-    return {'row': [leaf('tree:1', 'Alpha'), leaf('tree:2', 'Beta')]}
-
-def handle(event):
-    received.append(event)
-",
-                Some(&locals),
-                Some(&locals),
-            )
-            .expect("python source must execute");
-            let render: Py<PyAny> = locals
-                .get_item("render")
-                .expect("dict lookup")
-                .expect("render must be defined")
-                .unbind();
-            let handle: Py<PyAny> = locals
-                .get_item("handle")
-                .expect("dict lookup")
-                .expect("handle must be defined")
-                .unbind();
-
-            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
-                .expect("valid dimensions");
-            // Force the first render so `hit_map`/`tab_stops` are populated
-            // before any key is dispatched.
-            let screen = app.screen().expect("render must not raise");
-            assert!(screen.contains("Alpha"), "first leaf must be painted");
-            assert!(screen.contains("Beta"), "second leaf must be painted");
-
-            fn extract_received<'py>(locals: &Bound<'py, PyDict>) -> Bound<'py, PyList> {
-                locals
-                    .get_item("received")
-                    .expect("dict lookup")
-                    .expect("received must be defined")
-                    .cast_into::<PyList>()
-                    .expect("received must be a list")
-            }
-
-            fn focused_id(event_dict: &Bound<'_, PyDict>) -> Option<String> {
-                event_dict
-                    .get_item("FocusChanged")
-                    .expect("dict lookup")
-                    .and_then(|value| value.extract::<String>().ok())
-            }
-
-            fn tree_key_event(event_dict: &Bound<'_, PyDict>) -> (String, String) {
-                let payload = event_dict
-                    .get_item("Tree")
-                    .expect("dict lookup")
-                    .expect("a focused key must dispatch a Tree event, not a raw KeyPressed")
-                    .cast_into::<PyTuple>()
-                    .expect("Tree must pythonize to a (id, event) tuple");
-                let widget: String = payload
-                    .get_item(0)
-                    .expect("first element")
-                    .extract()
-                    .expect("the tree's own id must be a string");
-                let inner = payload
-                    .get_item(1)
-                    .expect("second element")
-                    .cast_into::<PyDict>()
-                    .expect("the inner TreeEvent must pythonize to a dict");
-                let key_payload = inner
-                    .get_item("KeyPressed")
-                    .expect("dict lookup")
-                    .expect("a key on a focused tree must carry a KeyPressed key")
-                    .cast_into::<PyDict>()
-                    .expect("KeyPressed payload must be a dict");
-                let key: String = key_payload
-                    .get_item("key")
-                    .expect("dict lookup")
-                    .expect("key field must be present")
-                    .extract()
-                    .expect("key must be a string");
-                (widget, key)
-            }
-
-            // First Tab: nothing focused yet, so focus lands on the first
-            // tab stop in paint order -- "tree:1".
-            app.driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Tab),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-            let received_list = extract_received(&locals);
-            assert_eq!(received_list.len(), 1, "Tab must emit exactly one event");
-            let event_dict = received_list
-                .get_item(0)
-                .expect("first item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert_eq!(
-                focused_id(&event_dict),
-                Some("tree:1".to_string()),
-                "the first Tab must focus the first leaf in paint order"
-            );
-
-            // A plain key now routes to "tree:1", the focused leaf.
-            app.driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Char('j'),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-            let received_list = extract_received(&locals);
-            assert_eq!(
-                received_list.len(),
-                2,
-                "the focus-scoped key must emit exactly one more event"
-            );
-            let event_dict = received_list
-                .get_item(1)
-                .expect("second item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert_eq!(
-                tree_key_event(&event_dict),
-                ("tree:1".to_string(), "j".to_string()),
-                "the key must dispatch as the focused leaf's own semantic Tree(KeyPressed)"
-            );
-
-            // Second Tab: focus advances to the other leaf, "tree:2".
-            app.driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Tab),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-            let received_list = extract_received(&locals);
-            assert_eq!(
-                received_list.len(),
-                3,
-                "the second Tab must emit one more event"
-            );
-            let event_dict = received_list
-                .get_item(2)
-                .expect("third item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert_eq!(
-                focused_id(&event_dict),
-                Some("tree:2".to_string()),
-                "the second Tab must move focus to the other leaf"
-            );
-
-            // A plain key now routes to "tree:2", the newly focused leaf.
-            app.driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Char('k'),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-            let received_list = extract_received(&locals);
-            assert_eq!(
-                received_list.len(),
-                4,
-                "the focus-scoped key must emit exactly one more event"
-            );
-            let event_dict = received_list
-                .get_item(3)
-                .expect("fourth item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert_eq!(
-                tree_key_event(&event_dict),
-                ("tree:2".to_string(), "k".to_string()),
-                "the key must dispatch as the newly focused leaf's own semantic Tree(KeyPressed)"
-            );
-        });
-    }
-
     /// A branch row's chevron is a distinct hit region from the row body
     /// (`TreeViewLayout::hit_test` carves `[area.x, area.x + chevron_w)` off
     /// as `TreeViewHit::Chevron`, `chevron_w` wide, before the row text
@@ -9949,201 +9501,6 @@ def handle(event):
         });
     }
 
-    /// Clicking an item in a `list` leaf must both focus that leaf (emitting
-    /// `FocusChanged`, via `PyAppLogic::handle`'s click-to-focus step) and
-    /// dispatch the semantic `List(SelectionChanged)` the click stands for.
-    /// A plain key dispatched afterwards must then route to that same,
-    /// now-focused leaf as its own `List(KeyPressed)` -- proving
-    /// click-to-focus actually redirects subsequent key routing, not just
-    /// that a `FocusChanged` event fired once.
-    #[test]
-    fn mouse_down_over_a_list_item_focuses_it_and_a_later_key_routes_to_it() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            py.run(
-                c"
-received = []
-
-def render():
-    def leaf(id, labels):
-        return {'id': id, 'list': {
-            'id': id,
-            'items': [
-                {'text': {'spans': [{'text': label, 'fg': None, 'bg': None}]}}
-                for label in labels
-            ],
-            'selected_idx': 0,
-        }}
-    return {'row': [leaf('list:1', ['Alpha1', 'Alpha2']), leaf('list:2', ['Beta1', 'Beta2'])]}
-
-def handle(event):
-    received.append(event)
-",
-                Some(&locals),
-                Some(&locals),
-            )
-            .expect("python source must execute");
-            let render: Py<PyAny> = locals
-                .get_item("render")
-                .expect("dict lookup")
-                .expect("render must be defined")
-                .unbind();
-            let handle: Py<PyAny> = locals
-                .get_item("handle")
-                .expect("dict lookup")
-                .expect("handle must be defined")
-                .unbind();
-
-            let mut app = QuiApp::new(40, 20, Some(handle), Some(render), false, None)
-                .expect("valid dimensions");
-            assert!(
-                app.screen_contains("Beta1").expect("render must not raise"),
-                "the second leaf's first item must be painted"
-            );
-            let bounds = app
-                .driver
-                .find_bounds("Beta1")
-                .expect("second leaf's first item must be on screen");
-
-            let click = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
-                modifiers: Modifiers::default(),
-            };
-            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
-            let click_dict = click_any
-                .cast::<PyDict>()
-                .expect("MouseDown must pythonize to a dict");
-            app.push_event(click_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined");
-            let received_list = received.cast::<PyList>().expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                2,
-                "the click must emit both a FocusChanged and the semantic List event"
-            );
-
-            let focus_dict = received_list
-                .get_item(0)
-                .expect("first item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let focused: String = focus_dict
-                .get_item("FocusChanged")
-                .expect("dict lookup")
-                .expect("the click must focus the clicked leaf before the click event itself")
-                .extract()
-                .expect("FocusChanged must carry the newly focused widget's id as a string");
-            assert_eq!(
-                focused, "list:2",
-                "the clicked leaf, not the other one, must receive focus"
-            );
-
-            let click_event_dict = received_list
-                .get_item(1)
-                .expect("second item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let list_payload = click_event_dict
-                .get_item("List")
-                .expect("dict lookup")
-                .expect("an item click must dispatch a List key, not a raw MouseDown")
-                .cast_into::<PyTuple>()
-                .expect("List must pythonize to a (id, event) tuple");
-            let widget: String = list_payload
-                .get_item(0)
-                .expect("first element")
-                .extract()
-                .expect("the list's own id must be a string");
-            assert_eq!(
-                widget, "list:2",
-                "the widget id must be the clicked leaf's own"
-            );
-            let inner = list_payload
-                .get_item(1)
-                .expect("second element")
-                .cast_into::<PyDict>()
-                .expect("the inner ListViewEvent must pythonize to a dict");
-            let changed = inner
-                .get_item("SelectionChanged")
-                .expect("dict lookup")
-                .expect("an item click must carry a SelectionChanged key")
-                .cast_into::<PyDict>()
-                .expect("SelectionChanged payload must be a dict");
-            let idx: usize = changed
-                .get_item("idx")
-                .expect("dict lookup")
-                .expect("idx key must be present")
-                .extract()
-                .expect("idx must be an int");
-            assert_eq!(idx, 0, "the clicked item's own index must be reported");
-
-            // A plain key now routes to "list:2" -- the leaf the click just
-            // focused -- as that leaf's own semantic List(KeyPressed), not
-            // "list:1" and not a raw global KeyPressed.
-            app.driver.dispatch(UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                modifiers: Modifiers::default(),
-                repeat: false,
-            });
-            let received_list = received
-                .cast::<PyList>()
-                .expect("received must still be a list");
-            assert_eq!(
-                received_list.len(),
-                3,
-                "the focus-scoped key must emit exactly one more event"
-            );
-            let key_event_dict = received_list
-                .get_item(2)
-                .expect("third item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            let key_payload = key_event_dict
-                .get_item("List")
-                .expect("dict lookup")
-                .expect("the key must dispatch as the focused leaf's own semantic List key")
-                .cast_into::<PyTuple>()
-                .expect("List must pythonize to a (id, event) tuple");
-            let key_widget: String = key_payload
-                .get_item(0)
-                .expect("first element")
-                .extract()
-                .expect("the list's own id must be a string");
-            assert_eq!(
-                key_widget, "list:2",
-                "the key must route to the leaf the click focused, not the other leaf"
-            );
-            let key_inner = key_payload
-                .get_item(1)
-                .expect("second element")
-                .cast_into::<PyDict>()
-                .expect("the inner ListViewEvent must pythonize to a dict");
-            let key_pressed = key_inner
-                .get_item("KeyPressed")
-                .expect("dict lookup")
-                .expect("the key must carry a KeyPressed key")
-                .cast_into::<PyDict>()
-                .expect("KeyPressed payload must be a dict");
-            let key: String = key_pressed
-                .get_item("key")
-                .expect("dict lookup")
-                .expect("key field must be present")
-                .extract()
-                .expect("key must be a string");
-            assert_eq!(
-                key, "Down",
-                "the raw key must be mapped to its focus-string name"
-            );
-        });
-    }
-
     /// Double-clicking a list item must emit the distinct
     /// `ListViewEvent::ItemDoubleClicked`, not `SelectionChanged` -- the
     /// "open" event an app should listen for instead of treating every
@@ -10455,7 +9812,7 @@ def handle(event):
             assert_eq!(
                 received_list.len(),
                 2,
-                "the click must still emit a FocusChanged ahead of the raw MouseDown"
+                "the click must still emit a FocusChanged ahead of the List event"
             );
 
             let event = received_list.get_item(1).expect("second item");
@@ -10485,476 +9842,6 @@ def handle(event):
                 .extract()
                 .expect("indices must be a list of ints");
             assert_eq!(indices, vec![0, 1], "Ctrl adds Beta to the selected Alpha");
-        });
-    }
-
-    /// Builds a 30-row tree (`QuiApp::new(40, 10, ...)` can't fit all of
-    /// them in its viewport, so a scrollbar is always painted) whose
-    /// `handle` tracks the live `scroll_offset` in a Python global so a
-    /// later `render()` reflects whatever `ScrollOffsetChanged` the drag
-    /// produced. Returns `(app, received-list accessor via `locals`)`.
-    fn tree_with_scrollbar_app(py: Python<'_>, locals: &Bound<'_, PyDict>) -> QuiApp {
-        py.run(
-            c"
-received = []
-scroll = 0
-
-def render():
-    rows = []
-    for i in range(30):
-        rows.append({
-            'path': [i], 'indent': 0, 'icon': None,
-            'text': {'spans': [{'text': 'Row%02d' % i, 'fg': None, 'bg': None}]},
-            'badge': None, 'is_expanded': None,
-        })
-    return {'tree': {
-        'id': 'tree:main',
-        'rows': rows,
-        'selection_mode': 'Single', 'selected_path': [0],
-        'scroll_offset': scroll, 'has_focus': True,
-        'style': {
-            'indent': 2, 'show_chevrons': True,
-            'chevron_expanded': '▾', 'chevron_collapsed': '▸',
-            'row_height': 22,
-        },
-    }}
-
-def handle(event):
-    global scroll
-    received.append(event)
-    if isinstance(event, dict) and 'ScrollOffsetChanged' in event:
-        scroll = event['ScrollOffsetChanged']['new_offset']
-",
-            Some(locals),
-            Some(locals),
-        )
-        .expect("python source must execute");
-        let render: Py<PyAny> = locals
-            .get_item("render")
-            .expect("dict lookup")
-            .expect("render must be defined")
-            .unbind();
-        let handle: Py<PyAny> = locals
-            .get_item("handle")
-            .expect("dict lookup")
-            .expect("handle must be defined")
-            .unbind();
-        QuiApp::new(40, 10, Some(handle), Some(render), false, None).expect("valid dimensions")
-    }
-
-    /// Reads back the real painted `(Scrollbar, total_rows, viewport_rows,
-    /// scroll_offset)` for `tree:main`, forcing the first render first
-    /// (`QuiApp::new` leaves `hit_map` empty until something actually
-    /// paints) and asserting that 30 rows in a 10-row viewport really did
-    /// paint a scrollbar.
-    fn painted_tree_scrollbar_state(app: &mut QuiApp) -> (Scrollbar, usize, usize, usize) {
-        assert!(
-            app.screen_contains("Row00").expect("render must not raise"),
-            "the top row must be painted before any scroll"
-        );
-        let hit_map = app.driver.app().engine.hit_map();
-        tree_scroll_state(&hit_map, WidgetId::new("tree:main"))
-            .expect("a 30-row tree in a 10-row viewport must paint a scrollbar")
-    }
-
-    /// Dragging a tree's scrollbar thumb must move the painted window by
-    /// translating the drag's absolute motion through
-    /// [`ThumbDrag::offset_at`] into a semantic `ScrollOffsetChanged`,
-    /// mirroring `TreeNavCore`'s own thumb-drag handling. The
-    /// initial press only arms the drag — the raw `MouseDown` still
-    /// reaches Python (the thumb-press arm never replaces `event`, it only
-    /// strips the `"hit"` payload) — and the window only actually moves
-    /// once the drag-translated `MouseMoved` lands.
-    #[test]
-    fn dragging_a_tree_scrollbar_thumb_moves_the_painted_window() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            let mut app = tree_with_scrollbar_app(py, &locals);
-            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
-                painted_tree_scrollbar_state(&mut app);
-            assert_eq!(total_rows, 30);
-            assert_eq!(scroll_offset, 0);
-            let max_offset = total_rows.saturating_sub(viewport_rows);
-            assert!(
-                max_offset > 0,
-                "the tree must actually overflow its viewport"
-            );
-
-            let track = scrollbar.track;
-            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
-            let press_x = track.x + track.width / 2.0;
-
-            let press = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(press_x, thumb_center_y),
-                modifiers: Modifiers::default(),
-            };
-            let press_any = pythonize::pythonize(py, &press).expect("UiEvent must pythonize");
-            let press_dict = press_any
-                .cast::<PyDict>()
-                .expect("MouseDown must pythonize to a dict");
-            app.push_event(press_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received_list = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined")
-                .cast_into::<PyList>()
-                .expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                2,
-                "the first click must emit FocusChanged plus the raw MouseDown — the \
-                 thumb-press arm only arms the drag, it never replaces the event"
-            );
-            let raw_down = received_list
-                .get_item(1)
-                .expect("second item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert!(
-                raw_down
-                    .get_item("MouseDown")
-                    .expect("dict lookup")
-                    .is_some(),
-                "a thumb press must still dispatch the raw MouseDown, not a semantic substitute"
-            );
-            assert!(
-                raw_down.get_item("hit").expect("dict lookup").is_none(),
-                "the thumb-press arm strips the hit payload even though it keeps the raw event"
-            );
-
-            let travel = scrollbar.travel();
-            let target_y = thumb_center_y + travel;
-            let drag = ThumbDrag::begin(
-                thumb_center_y,
-                scroll_offset as f32,
-                travel,
-                max_offset as f32,
-            );
-            let expected_offset = drag
-                .offset_at(target_y)
-                .expect("travel and max_offset are both positive")
-                .round() as usize;
-            assert_eq!(
-                expected_offset, max_offset,
-                "dragging the full travel distance must reach the last valid offset"
-            );
-
-            let drag_move = UiEvent::MouseMoved {
-                position: Point::new(press_x, target_y),
-                buttons: ButtonMask::default(),
-            };
-            let move_any = pythonize::pythonize(py, &drag_move).expect("UiEvent must pythonize");
-            let move_dict = move_any
-                .cast::<PyDict>()
-                .expect("MouseMoved must pythonize to a dict");
-            app.push_event(move_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received_list = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined")
-                .cast_into::<PyList>()
-                .expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                3,
-                "the drag-translated MouseMoved must emit exactly one new event"
-            );
-            let scroll_event = received_list
-                .get_item(2)
-                .expect("third item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert!(
-                scroll_event.get_item("hit").expect("dict lookup").is_none(),
-                "a drag-translated ScrollOffsetChanged never carries a hit payload"
-            );
-            let payload = scroll_event
-                .get_item("ScrollOffsetChanged")
-                .expect("dict lookup")
-                .expect(
-                    "the drag-translated MouseMoved must dispatch a semantic ScrollOffsetChanged",
-                )
-                .cast_into::<PyDict>()
-                .expect("ScrollOffsetChanged payload must be a dict");
-            let new_offset: usize = payload
-                .get_item("new_offset")
-                .expect("dict lookup")
-                .expect("new_offset key must be present")
-                .extract()
-                .expect("new_offset must be an int");
-            assert_eq!(
-                new_offset, expected_offset,
-                "the reported offset must match ThumbDrag's own math"
-            );
-
-            assert!(
-                !app.screen_contains("Row00").expect("render must not raise"),
-                "the drag must have scrolled the top row out of view"
-            );
-            // The drag's own MouseDown focuses the tree, so the focus ring
-            // now overlays the band's top and bottom rows with border
-            // glyphs; check a row strictly inside the new window instead of
-            // `new_offset` itself.
-            let expected_row = format!("Row{:02}", new_offset + 1);
-            assert!(
-                app.screen_contains(&expected_row)
-                    .expect("render must not raise"),
-                "a row from the new scroll offset's window must be painted"
-            );
-        });
-    }
-
-    /// Clicking the scrollbar track below the thumb must page the tree
-    /// forward by one viewport — `click_scrollbar`'s `PressZone::After` arm
-    /// — replacing the raw `MouseDown` outright with a semantic
-    /// `ScrollOffsetChanged` (never dispatching the raw click, never
-    /// attaching a `"hit"` payload), so the painted window actually moves.
-    #[test]
-    fn clicking_the_tree_scrollbar_track_pages_the_painted_window() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            let mut app = tree_with_scrollbar_app(py, &locals);
-            let (scrollbar, total_rows, viewport_rows, scroll_offset) =
-                painted_tree_scrollbar_state(&mut app);
-            assert_eq!(scroll_offset, 0);
-            let max_offset = total_rows.saturating_sub(viewport_rows);
-            assert!(
-                max_offset > 0,
-                "the tree must actually overflow its viewport"
-            );
-
-            let track = scrollbar.track;
-            // Just past the thumb's own bottom edge, strictly inside the
-            // track so `Rect::contains`'s half-open bound doesn't miss it.
-            let after_y = (track.y + scrollbar.thumb_start + scrollbar.thumb_len + 0.5)
-                .min(track.y + track.height - 0.5);
-            let press_x = track.x + track.width / 2.0;
-
-            let click = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(press_x, after_y),
-                modifiers: Modifiers::default(),
-            };
-            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
-            let click_dict = click_any
-                .cast::<PyDict>()
-                .expect("MouseDown must pythonize to a dict");
-            app.push_event(click_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received_list = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined")
-                .cast_into::<PyList>()
-                .expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                2,
-                "a track click must emit FocusChanged plus the semantic ScrollOffsetChanged, \
-                 never the raw MouseDown"
-            );
-            let scroll_event = received_list
-                .get_item(1)
-                .expect("second item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert!(
-                scroll_event
-                    .get_item("MouseDown")
-                    .expect("dict lookup")
-                    .is_none(),
-                "a track click must never dispatch the raw MouseDown"
-            );
-            assert!(
-                scroll_event.get_item("hit").expect("dict lookup").is_none(),
-                "a track-click ScrollOffsetChanged never carries a hit payload"
-            );
-            let payload = scroll_event
-                .get_item("ScrollOffsetChanged")
-                .expect("dict lookup")
-                .expect("a track click must dispatch a semantic ScrollOffsetChanged")
-                .cast_into::<PyDict>()
-                .expect("ScrollOffsetChanged payload must be a dict");
-            let new_offset: usize = payload
-                .get_item("new_offset")
-                .expect("dict lookup")
-                .expect("new_offset key must be present")
-                .extract()
-                .expect("new_offset must be an int");
-            let expected_offset = scroll_by_clamped(0, viewport_rows as isize, max_offset);
-            assert_eq!(
-                new_offset, expected_offset,
-                "a track-after click must page forward by exactly one viewport"
-            );
-            assert!(
-                expected_offset > 0,
-                "paging forward must actually move the offset"
-            );
-
-            // The click's own MouseDown focuses the tree, so the focus ring
-            // now overlays the band's top and bottom rows with border
-            // glyphs; check a row strictly inside the new window instead of
-            // `new_offset` itself.
-            let expected_row = format!("Row{:02}", new_offset + 1);
-            assert!(
-                app.screen_contains(&expected_row)
-                    .expect("render must not raise"),
-                "a row from the page-click's new scroll offset window must be painted"
-            );
-        });
-    }
-
-    /// A wheel notch landing anywhere over the tree — rows, chevrons, or
-    /// the scrollbar itself — must translate straight into a semantic
-    /// `ScrollOffsetChanged` via `wheel_row_delta` + `scroll_by_clamped`,
-    /// replacing the raw `Scroll` outright rather than dispatching both.
-    #[test]
-    fn wheel_over_the_tree_scrolls_the_painted_window() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            let mut app = tree_with_scrollbar_app(py, &locals);
-            let (_, total_rows, viewport_rows, scroll_offset) =
-                painted_tree_scrollbar_state(&mut app);
-            assert_eq!(scroll_offset, 0);
-            let max_offset = total_rows.saturating_sub(viewport_rows);
-            assert!(
-                max_offset > 0,
-                "the tree must actually overflow its viewport"
-            );
-
-            let bounds = app
-                .driver
-                .find_bounds("Row00")
-                .expect("the top row's label must be on screen");
-            let wheel = UiEvent::Scroll {
-                widget: None,
-                delta: ScrollDelta::new(0.0, -3.0),
-                position: Point::new(bounds.x + 0.5, bounds.y + 0.5),
-            };
-            let wheel_any = pythonize::pythonize(py, &wheel).expect("UiEvent must pythonize");
-            let wheel_dict = wheel_any
-                .cast::<PyDict>()
-                .expect("Scroll must pythonize to a dict");
-            app.push_event(wheel_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received_list = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined")
-                .cast_into::<PyList>()
-                .expect("received must be a list");
-            assert_eq!(
-                received_list.len(),
-                1,
-                "a wheel notch over the tree must dispatch exactly one event — no FocusChanged \
-                 (a wheel notch doesn't move focus) and no raw Scroll alongside it"
-            );
-            let scroll_event = received_list
-                .get_item(0)
-                .expect("first item")
-                .cast_into::<PyDict>()
-                .expect("event payload must be a dict");
-            assert!(
-                scroll_event
-                    .get_item("Scroll")
-                    .expect("dict lookup")
-                    .is_none(),
-                "the raw Scroll must never reach Python once it's translated"
-            );
-            let payload = scroll_event
-                .get_item("ScrollOffsetChanged")
-                .expect("dict lookup")
-                .expect("a wheel notch over the tree must dispatch a semantic ScrollOffsetChanged")
-                .cast_into::<PyDict>()
-                .expect("ScrollOffsetChanged payload must be a dict");
-            let new_offset: usize = payload
-                .get_item("new_offset")
-                .expect("dict lookup")
-                .expect("new_offset key must be present")
-                .extract()
-                .expect("new_offset must be an int");
-            let rows = wheel_row_delta(-3.0, 1.0);
-            let expected_offset = scroll_by_clamped(0, rows, max_offset);
-            assert_eq!(
-                new_offset, expected_offset,
-                "the reported offset must match wheel_row_delta + scroll_by_clamped"
-            );
-            assert!(
-                expected_offset > 0,
-                "the wheel notch must actually move the offset"
-            );
-
-            let expected_row = format!("Row{:02}", new_offset);
-            assert!(
-                app.screen_contains(&expected_row)
-                    .expect("render must not raise"),
-                "the wheel notch must scroll the row now at the new offset into view"
-            );
-        });
-    }
-
-    /// A click landing in the scrollbar's own gutter — track or thumb —
-    /// must never fall through to tree-row selection: `hit_test_painted`
-    /// resolves a scrollbar hit to a `TreeScrollbarThumb`/
-    /// `TreeScrollbarTrackBefore`/`TreeScrollbarTrackAfter` detail, and
-    /// `handle` never routes any of those through `semantic_event_for_hit`
-    /// (the row-selection path), so no `Tree` event is ever dispatched for
-    /// a gutter click.
-    #[test]
-    fn a_click_in_the_tree_scrollbar_gutter_does_not_select_a_row() {
-        Python::attach(|py| {
-            let locals = PyDict::new(py);
-            let mut app = tree_with_scrollbar_app(py, &locals);
-            let (scrollbar, total_rows, viewport_rows, _) = painted_tree_scrollbar_state(&mut app);
-            let max_offset = total_rows.saturating_sub(viewport_rows);
-            assert!(
-                max_offset > 0,
-                "the tree must actually overflow its viewport"
-            );
-
-            let track = scrollbar.track;
-            let thumb_center_y = track.y + scrollbar.thumb_start + scrollbar.thumb_len / 2.0;
-            let press_x = track.x + track.width / 2.0;
-
-            let click = UiEvent::MouseDown {
-                widget: None,
-                button: MouseButton::Left,
-                position: Point::new(press_x, thumb_center_y),
-                modifiers: Modifiers::default(),
-            };
-            let click_any = pythonize::pythonize(py, &click).expect("UiEvent must pythonize");
-            let click_dict = click_any
-                .cast::<PyDict>()
-                .expect("MouseDown must pythonize to a dict");
-            app.push_event(click_dict).expect("valid event shape");
-            app.step().expect("no handler/render error");
-
-            let received_list = locals
-                .get_item("received")
-                .expect("dict lookup")
-                .expect("received must be defined")
-                .cast_into::<PyList>()
-                .expect("received must be a list");
-            for i in 0..received_list.len() {
-                let event_dict = received_list
-                    .get_item(i)
-                    .expect("item must exist")
-                    .cast_into::<PyDict>()
-                    .expect("event payload must be a dict");
-                assert!(
-                    event_dict.get_item("Tree").expect("dict lookup").is_none(),
-                    "a gutter click must never dispatch a Tree (row-selection) event"
-                );
-            }
         });
     }
 

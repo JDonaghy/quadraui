@@ -68,6 +68,8 @@ fn tree_table() -> TreeTable {
             rows,
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: true,

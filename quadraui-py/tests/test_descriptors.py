@@ -61,8 +61,7 @@ def test_text_display_leaf_wheel_scroll_emits_scrolled():
     # `set_render` itself never repaints -- the explicit `screen()` below
     # forces the render that populates the hit map, so the display is
     # hit-testable before the wheel event. Five lines into a 3-line
-    # viewport (the fixed-slot band height every `QuiApp` default render
-    # reserves) leaves two lines of scroll room; a wheel notch forward
+    # viewport (the band a flat render dict gives a text display) leaves two lines of scroll room; a wheel notch forward
     # (`delta.y < 0`, per `wheel_row_delta`'s convention) must move
     # `scroll_offset` from 0 to 1, landing on `TextDisplayEvent::Scrolled`
     # rather than a raw `Scroll` with `widget: None`.

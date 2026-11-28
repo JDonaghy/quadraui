@@ -16,6 +16,8 @@
 //!   navigation intent.
 //! - [`typeahead`] — buffered, debounced "type letters to jump to a
 //!   matching item" behaviour.
+//! - [`row_window`] — a windowed row collection's band, its rows-requested
+//!   check and the [`row_window::HostLatch`] uncontrolled-state rule.
 //! - [`text_edit`] — the one text-editing core (caret, selection, word
 //!   motion, buffer mutation) every editable text widget shares.
 //!
@@ -26,6 +28,7 @@
 //! backend.
 
 pub mod nav;
+pub mod row_window;
 pub mod scroll;
 pub mod text_edit;
 pub mod typeahead;

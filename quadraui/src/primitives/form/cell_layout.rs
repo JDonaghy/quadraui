@@ -300,8 +300,8 @@ pub(crate) fn tui_form_layout_with_label_width(
             // cells, not 1. The whole control is a single item (carrying
             // the *field's* own id, not a synthetic one) purely so its
             // on-screen rect is available via `VisibleFormField::item_bounds`
-            // for click routing, mirroring how `FormController` resolves
-            // every other item-bearing kind's clicks.
+            // for click routing, mirroring how the form resolves every
+            // other item-bearing kind's clicks.
             FieldKind::NumberInput(number) => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
                 let width = (number_input_display_text(number).chars().count() + 2 + 3) as f32;
@@ -313,7 +313,7 @@ pub(crate) fn tui_form_layout_with_label_width(
                     .with_items_start_y(extra_row)
             }
             // One item, the track alone (no brackets/value text): both
-            // `draw_field_slider` and `FormController` click routing use it.
+            // `draw_field_slider` and the form's click routing use it.
             FieldKind::Slider { value, .. } => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
                 let content_w = (area.width as f32 - form.spacing.padding.max(0.0) * 2.0).max(0.0);

@@ -138,6 +138,8 @@ impl AppLogic for CodiconTreeDemo {
             selection_mode: SelectionMode::Single,
             selected_path: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             style: TreeStyle::default(),
             has_focus: true,
         };

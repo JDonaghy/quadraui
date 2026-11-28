@@ -43,10 +43,10 @@
 //! Every key and every character routes to the field named by
 //! `Form.focused_field`. Deciding that this form is the active panel at
 //! all happens one level up — the routing engine only delivers a
-//! [`RoutedEvent::Key`] to a focused widget, and
-//! [`crate::compose::FormController`] gates on its own
-//! [`crate::compose::FormController::has_focus`] — so there is no such
-//! gate here.
+//! [`RoutedEvent::Key`] to a focused widget, and a host resolving raw
+//! events through [`crate::ScrolledForm::handle_event`] forwards
+//! keys only while the form's panel is active — so there is no such gate
+//! here.
 //!
 //! - `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
 //!   non-`Label`, non-`ReadOnly`, non-disabled field, scroll it into
@@ -701,14 +701,15 @@ pub(crate) type ItemFocusLookup = (WidgetId, usize, Vec<(WidgetId, bool)>);
 /// values back on the next frame. What lives here is the position
 /// within a value that a keystroke moves but no event names — the text
 /// caret, the calendar scrub cursor, the item cursor inside a
-/// multi-item row — plus the scroll offset and the in-flight slider
-/// drag, so a form scrolls and scrubs without a host round-trip.
+/// multi-item row — plus the scroll offset and the in-flight slider and
+/// scrollbar-thumb drags, so a form scrolls and scrubs without a host
+/// round-trip.
 ///
 /// `#[non_exhaustive]`: a future field add here stays additive for a
 /// host that only ever reaches this through
 /// [`crate::widget_state::WidgetStateStore`].
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FormState {
     /// Rows scrolled off the top. `None` means "follow the
     /// descriptor's own [`Form::scroll_offset`]" — set the moment a
@@ -716,14 +717,8 @@ pub struct FormState {
     /// host that drives scrolling itself keeps control until something
     /// here scrolls.
     ///
-    /// Reaching a *painter* goes through [`overlay_state`], since
-    /// [`Primitive::paint`]/[`Primitive::paint_cells`] take the
-    /// descriptor alone and have no live-state channel of their own —
-    /// the same limitation every ported widget's `PaintState` has. A
-    /// host that paints through [`crate::compose::FormController`] gets
-    /// that overlay for free; one painting a `Surface::Widget` form
-    /// applies this offset onto its own descriptor, the same way it
-    /// applies a [`FormEvent`].
+    /// The painters read it through [`Form::live`], which overlays it
+    /// onto the descriptor before layout and paint.
     pub scroll_offset: Option<usize>,
     /// Caret and selection anchor within the focused text field.
     pub text_edit: Option<TextCursor>,
@@ -735,6 +730,10 @@ pub struct FormState {
     /// read by every following pointer move so the value keeps tracking
     /// the cursor, and cleared on release.
     pub slider_drag: Option<WidgetId>,
+    /// The scrollbar-thumb drag a press on a
+    /// [`crate::ScrolledForm`]'s thumb started, read by every
+    /// following pointer move and cleared on release.
+    pub thumb_drag: Option<crate::primitives::scrollbar::ThumbDrag>,
     /// The field focus last moved to, for a descriptor that leaves
     /// [`Form::focused_field`] unset: Tab, Up/Down and clicks still move
     /// field focus, and the form paints and edits that field, with no
@@ -776,10 +775,8 @@ impl FormState {
 
 // ── Behaviour: keyboard, focus traversal and click routing ──────────
 //
-// The one implementation of this widget's behaviour. `Interactive` below
-// drives it from a `RoutedEvent`; `crate::compose::FormController` drives
-// the same functions from a `UiEvent`, so the two paths resolve every key
-// and click identically by construction.
+// The one implementation of this widget's behaviour, driven from a
+// `RoutedEvent` by `Interactive` below.
 
 pub(crate) fn handle_key(
     form: &Form,
@@ -1610,8 +1607,7 @@ pub(crate) fn handle_text_event(
 
 /// Determine the `FormEvent` for a click on a form field.
 ///
-/// Used by [`click_field`] and by `compose::sidebar`'s own
-/// click dispatch, which reaches it through `compose::form_controller`.
+/// Used by [`click_field`] and by the a11y `Click` action.
 pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
     for field in &form.fields {
         if &field.id == clicked_id {
@@ -1721,14 +1717,6 @@ fn number_input_click_event(
         value,
     })
 }
-
-/// Cells of track [`crate::primitives::layout_metrics::form_field_measure`]'s backend-free fallback gives a
-/// [`FieldKind::Slider`] field — `tui::form`'s own natural track width,
-/// which is what `ControlWidth::Content` resolves to there. This
-/// fallback has no row width to resolve `ControlWidth::Fill` against, so
-/// it reports the natural track for every mode; a host with a live
-/// [`crate::Backend`] gets that backend's own resolved track instead.
-pub(crate) const SLIDER_TRACK_CELLS: f32 = 12.0;
 
 /// The on-screen rect of a non-disabled `FieldKind::Slider` field's
 /// painted track, in the same form-local space as

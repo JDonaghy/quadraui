@@ -9,7 +9,6 @@
 //!
 //! - [`AppMenu`] — MenuBar + ContextMenu dropdown cascade.
 //! - [`Sidebar`] — a stack of collapsible tree and form sections.
-//! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeTableController`] — hierarchical model (lazy children,
 //!   sibling-scoped sort) flattened into a `TreeTable`, over
 //!   [`crate::behaviour::nav::TreeNavCore`].
@@ -53,7 +52,7 @@
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
-//! itself. [`FormController`] and [`Chat`] keep their own
+//! itself. [`crate::ScrolledForm`] and [`Chat`] keep their own
 //! row-indexed scroll state unchanged; a future controller
 //! for scrolling arbitrary child content (a help panel, a form section)
 //! composes [`crate::ScrollView`] the same way these compose their own
@@ -67,7 +66,6 @@ pub mod context_menu_controller;
 pub mod dual_mode_palette;
 pub mod file_picker;
 pub mod folder_picker;
-pub mod form_controller;
 pub mod form_dialog;
 mod handled;
 pub mod help_layer;
@@ -98,6 +96,7 @@ pub(crate) mod widget_host;
 pub use widget_host::{drive_ui_event, routed_event, Driven};
 pub mod workspace;
 
+pub use app_menu::{AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef};
 pub use app_shell::{
     BottomBand, PanelDefinition, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
     ShellView, ShellViewLayout, ShellViewState,
@@ -111,13 +110,6 @@ pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
 pub use dual_mode_palette::{DualModePalette, DualModePaletteAction, DualModePaletteState};
 pub use file_picker::{FileKind, FilePicker, FilePickerMode};
 pub use folder_picker::{FolderKind, FolderPicker};
-pub use form_controller::{FormController, FormControllerAction};
-// `FormControllerEvent` is `#[deprecated]` (use `FormController::handle_event`/
-// `handle_cached_event`'s `Handled<FormControllerAction>` instead). Allow it
-// here since `pub use` of a deprecated item is itself a use site.
-pub use app_menu::{AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef};
-#[allow(deprecated)]
-pub use form_controller::FormControllerEvent;
 pub use form_dialog::{FormDialog, FormDialogAction, FormDialogLayout, FormDialogState};
 pub use handled::Handled;
 pub use help_layer::{

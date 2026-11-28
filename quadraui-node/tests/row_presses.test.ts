@@ -105,7 +105,9 @@ test("a Multi table grows a selection from clicks and keys", () => {
   const sets = payloads(received)
     .filter((p) => p.SelectionSet)
     .map((p) => p.SelectionSet.indices);
-  assert.deepEqual(sets, [[0, 1, 2], [0, 2], [0, 1, 2, 3, 4], [1, 2, 3, 4]]);
+  // Ctrl+Space toggles the cursor row, which the Ctrl-click moved to row 1,
+  // as the Rust widget does.
+  assert.deepEqual(sets, [[0, 1, 2], [0, 2], [0, 1, 2, 3, 4], [0, 2, 3, 4]]);
 });
 
 test("two quick clicks on a Button call onClick twice", () => {

@@ -2,7 +2,7 @@
 //! (or, in the pixel variant, a target pixel span) inside a viewport.
 //!
 //! Every controller that keeps a selected/focused item visible —
-//! `TreeNavCore`, `FormController`, `PathPicker`, `DualModePalette`,
+//! `TreeNavCore`, `FormState`, `PathPicker`, `DualModePalette`,
 //! `Palette`, `IconGrid`, `CellGrid`, `TextInput` — calls into
 //! [`ensure_visible`]/[`ensure_visible_px`] instead of re-deriving this
 //! arithmetic, so the "scroll the minimum amount to bring the target back

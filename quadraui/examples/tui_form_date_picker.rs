@@ -1,7 +1,7 @@
 //! `cargo run --example tui_form_date_picker --features tui`
 //!
-//! `FieldKind::DatePicker` embedded in a `Form`, routed through
-//! `FormController`, on the TUI runner. The full `AppLogic` impl lives
+//! `FieldKind::DatePicker` embedded in a `Form`, hosted in a
+//! `ScrolledForm`, on the TUI runner. The full `AppLogic` impl lives
 //! in `examples/common/form_date_picker.rs` — TUI-only for now, no GTK
 //! twin yet.
 //!

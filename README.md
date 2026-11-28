@@ -262,9 +262,9 @@ under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
 Node). Each has a five-minute quick start on the docs site:
 [Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
 [Node](https://jdonaghy.github.io/quadraui/quick-start/node.html).
-<!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979), check
-this paragraph against the final py/node wire surface and say which widget
-kinds the bindings can build. -->
+A render callback builds any widget kind core registers, by its snake_case
+name (`"list"`, `"tree_table"`, `"cell_grid"`, ...); a layout tree's
+`"sidebar_panel"` is a container node rather than a leaf.
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in
@@ -450,7 +450,7 @@ app matches on semantic events (`AppMenuEvent::Activated`,
 widget's own input handling lives in its `Interactive` impl, not here:
 <!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
 re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
-(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
+(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays).
 readme_truth's readme_compose_table_names_every_compose_controller checks
 the table against the module list. -->
 
@@ -465,8 +465,7 @@ the table against the module list. -->
 | `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
-| `FormController` | A form's focus, editing and validation. |
-| `FormDialog` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
+| `FormDialog` | A modal dialog hosting a multi-field form (laid out as a `ScrolledForm`): field editing plus Tab from the fields onto the dialog's buttons. |
 | `DualModePalette` | A command palette that switches between modes. |
 | `Chat` | A chat overlay: transcript plus input. |
 | `FilePicker` / `FolderPicker` | In-app file and folder pickers for backends without a native dialog. |

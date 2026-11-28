@@ -125,9 +125,9 @@ impl FormDialogApp {
     }
 
     /// Push the current `name`/`description`/`focused_field` into the
-    /// dialog — call after every mutation, the same "rebuild the
-    /// `Form` from the app's own canonical state" contract
-    /// `FormController::set_form` documents.
+    /// dialog — call after every mutation, the "rebuild the `Form` from
+    /// the app's own canonical state" contract `Form`'s own module doc
+    /// states.
     fn sync_form(&mut self) {
         let form = self.build_form();
         self.dialog.form = Some(form);

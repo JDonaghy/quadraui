@@ -1291,10 +1291,10 @@ fn submenu_menu_bar_dropdown_opens_two_nested_levels() {
 // ─── FormScrollApp: keyboard editing of Form text fields (GTK) ────────────
 //
 // GUI-reference leg of `tests/tui_example_driver.rs`'s "FormScrollApp"
-// block: same `AppLogic`, same `FormController::handle_cached` doing all
+// block: same `AppLogic`, same `ScrolledForm::handle_event` doing all
 // the key decoding, this time painted by the GTK rasteriser via
 // `primitives/form.rs::paint_bracketed_text`. Proves the keyboard-editing
-// wiring in `compose::form_controller` is backend-agnostic rather than an
+// wiring in `primitives::form::contract` is backend-agnostic rather than an
 // artifact of how TUI happens to render a `TextInput`.
 
 const FORM_SCROLL_W: i32 = 900;

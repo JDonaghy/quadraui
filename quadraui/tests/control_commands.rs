@@ -108,6 +108,8 @@ impl quadraui::AppLogic for SelectCountApp {
                     .collect(),
                 selected_idx: self.selected,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: true,
                 bordered: false,
                 h_scroll: 0,

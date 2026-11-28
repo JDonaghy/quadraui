@@ -1454,6 +1454,8 @@ pub(crate) mod native_surface_paint {
                 selection_mode: crate::types::SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: Default::default(),
                 has_focus: false,
             };

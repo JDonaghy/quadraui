@@ -1,6 +1,6 @@
 //! `cargo run --example gtk_form_scroll --features gtk`
 //!
-//! Form with FormController scroll support on the GTK runner. The full
+//! A scrolling `ScrolledForm` on the GTK runner. The full
 //! `AppLogic` impl lives in `examples/common/form_scroll.rs` —
 //! identical app code drives this example AND its TUI twin
 //! (`tui_form_scroll.rs`).

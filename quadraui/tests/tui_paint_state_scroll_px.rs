@@ -57,6 +57,8 @@ impl ListApp {
                     .collect(),
                 selected_idx: 0,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 has_focus: true,
                 title: None,
                 bordered: false,
@@ -153,6 +155,8 @@ impl TreeApp {
                 selection_mode: SelectionMode::Single,
                 selected_path: None,
                 scroll_offset: 0,
+                items_window: None,
+                scroll_px: None,
                 style: TreeStyle {
                     show_scrollbar: false,
                     ..TreeStyle::default()
@@ -236,6 +240,8 @@ fn data_table(n: usize) -> DataTable {
             .collect(),
         selected_idx: None,
         scroll_offset: 0,
+        items_window: None,
+        scroll_px: None,
         sort: None,
         has_focus: false,
         show_scrollbar: false,

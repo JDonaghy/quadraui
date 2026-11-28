@@ -431,6 +431,8 @@ impl TreeTableController {
                 rows: table_rows,
                 selected_idx,
                 scroll_offset: self.state.nav.scroll_offset(),
+                items_window: None,
+                scroll_px: None,
                 sort: self.sort.map(|(col, ascending)| {
                     (
                         col,

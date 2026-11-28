@@ -50,6 +50,7 @@ impl DisplayApp {
                 id: display_id(),
                 lines: (0..count).map(|i| line(&format!("L{i:02}"))).collect(),
                 scroll_offset: 0,
+                items_window: None,
                 auto_scroll: false,
                 max_lines: 0,
                 has_focus: true,

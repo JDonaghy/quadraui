@@ -1,16 +1,14 @@
-"""Black-box coverage for the additive primitive mechanism: a render
-callback's flat `{"progress": ..., "spinner": ..., "image": ...}` dict
-builds a `ProgressBar`, `Spinner` and `Image` descriptor from a plain Python
-dict, each rendering alongside (not instead of) the six fixed slots, and the
-same three kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
+"""Black-box coverage for the generic widget leaf: a render callback's
+flat `{"progress": ..., "spinner": ..., "image": ...}` dict builds a
+`ProgressBar`, `Spinner` and `Image` descriptor from a plain Python dict,
+each rendering alongside the other kinds in that dict, and the same three
+kinds also work as a layout-tree leaf (in a `"row"` or `"column"`
 container) behind that same render callback -- the one other path a
 descriptor can reach the screen through.
 
-These three primitives prove the generic widget leaf: registering a new
-kind costs one `widget_kinds!` line -- never an edit to the six-slot
-machinery (`LeafDescriptor`'s six-variant set) that
-`test_descriptors.py` exercises, and never a new pymethod, since a render
-callback dict already covers any registered kind by name.
+Registering a new kind costs one `widget_kinds!` line -- never a new
+pymethod, since a render callback dict already covers any registered kind
+by name.
 
 Run against a built wheel/extension, e.g.:
 
@@ -116,8 +114,8 @@ def test_render_callback_tree_split_and_panel_nest_an_extra_primitive():
     # The container primitives (`Split`, `Panel`, ...) are plain `LayoutNode`
     # recursion, same as `row`/`column` -- this nests a `split` inside a
     # `panel`'s content, with one pane holding a `scrollbar` (an
-    # generic widget kind, not one of the six original fixed-slot
-    # leaves) alongside an ordinary `text_display` leaf in the other pane.
+    # ordinary generic widget kind) alongside a `text_display` leaf in the
+    # other pane.
     #
     # A `Scrollbar` paints from its own absolute `track` rect rather than
     # the leaf area the layout computes for it (it owns its own layout, same
@@ -912,7 +910,7 @@ def test_form_leaf_control_width_min_control_width_prevents_clipping():
     assert app.screen_contains("exactwidth")
 
 
-def test_form_toggle_click_routes_through_form_controller():
+def test_form_toggle_click_routes_through_the_form_widget():
     # A click on a `Toggle` field resolves through the form's own
     # `Interactive::handle` to `FormEvent::ToggleChanged`.
     app = QuiApp(40, 20)
@@ -978,8 +976,8 @@ def test_form_button_click_emits_button_clicked():
 
 def test_form_toggle_space_and_enter_activate_via_keyboard():
     # A focused plain `Toggle` field (not a `ToggleGroup`) flips on both
-    # Space and Enter, not just a mouse click -- `FormController`'s own
-    # key dispatch now has an arm for it, mirroring the item-row
+    # Space and Enter, not just a mouse click -- the form's own key
+    # dispatch has an arm for it, mirroring the item-row
     # activation `ButtonRow`/`ToggleGroup`/`Toolbar` already had. Two Tabs
     # (an uncontrolled form, mirroring
     # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`)
@@ -1033,10 +1031,8 @@ def test_form_toggle_space_and_enter_activate_via_keyboard():
     assert form_event == {"ToggleChanged": {"id": "wrap", "value": True}}
 
     # A space delivered as a raw `CharTyped` (rather than a `KeyPressed`
-    # with `key: {"Char": " "}`) must activate the toggle too --
-    # `FormController::handle_inner`'s `CharTyped` arm used to go
-    # straight to inserting a literal character, bypassing every
-    # activation path entirely.
+    # with `key: {"Char": " "}`) must activate the toggle too, not
+    # insert a literal character.
     received.clear()
     app.push_event({"CharTyped": " "})
     app.run(1)
@@ -1111,10 +1107,10 @@ def test_form_button_row_enter_and_space_activate_via_keyboard():
     assert form_event == {"ButtonClicked": {"id": "b"}}
 
 
-def test_form_text_field_click_then_typing_routes_through_form_controller():
+def test_form_text_field_click_then_typing_routes_through_the_form_widget():
     # Clicking a `TextInput` field focuses it inside the form
     # (`FormEvent::FocusChanged`, which the host echoes back onto
-    # `Form.focused_field` the same way `FormController`'s own module doc
+    # `Form.focused_field` the same way `Form`'s own module doc
     # describes); typing afterwards must then resolve against THAT
     # field, not fall through as a raw `KeyPressed`.
     app = QuiApp(40, 20)
@@ -1198,8 +1194,8 @@ def test_form_descriptor_has_focus_seeds_the_controller_highlight():
 
 
 def test_form_descriptor_scroll_offset_seeds_the_controller_view():
-    # Same silent-overwrite risk as `has_focus` above, for
-    # `FormController`'s own `scroll_offset` -- a descriptor-set
+    # Same silent-overwrite risk as `has_focus` above, for the form
+    # state's own `scroll_offset` -- a descriptor-set
     # `scroll_offset` must still skip straight to the right field with no
     # click/scroll of any kind. The 3-line band fits exactly 3 rows, so
     # `scroll_offset: 2` over 5 one-row `Label` fields should show
@@ -1296,10 +1292,8 @@ def test_form_focus_highlight_tracks_engine_focus_in_both_directions():
 
 def test_form_wheel_scroll_advances_the_controller_scroll_offset():
     # `InteractionEngine::handle` routes a wheel `Scroll` landing inside a
-    # `"form"` extra's own rect directly through its cached
-    # `FormController`, rather than leaving it a dead raw event the way it
-    # was before the `MouseUp`/`MouseMoved`/`Scroll` routing this test
-    # covers. `FormController`'s own `scroll_offset` is internal state
+    # `"form"` leaf's own rect through the form widget itself. The
+    # form state's own `scroll_offset` is internal state
     # (same as a text cursor) with no `FormEvent` of its own, so this
     # resolves silently -- the assertion is on what's painted, not on a
     # dispatched event.
@@ -1342,7 +1336,7 @@ def test_form_wheel_scroll_advances_the_controller_scroll_offset():
 def test_form_gaining_engine_focus_keeps_its_first_field_visible():
     # The generic engine-focus ring the TUI runner paints over whatever
     # tab stop currently holds engine focus must not apply to a `"form"`
-    # extra at all -- `FormController` owns its own per-field focus
+    # leaf at all -- the form paints its own per-field focus
     # visuals. The very first Tab (an uncontrolled form, same shape as
     # `test_uncontrolled_form_tab_then_type_focuses_and_types_the_first_field`
     # below) lands engine focus on the form as a whole, before any field

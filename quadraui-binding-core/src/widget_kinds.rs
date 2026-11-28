@@ -6,16 +6,20 @@ use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
 
-/// The [`quadraui::widget_kinds!`] kinds this crate decodes into a generic
+/// The [`quadraui::widget_kinds!`] kinds this crate decodes into a
 /// [`crate::layout::LeafDescriptor::Widget`]: every static kind except the
-/// ones a layout leaf still carries in a fixed [`crate::layout::LeafDescriptor`]
-/// slot (`"text_display"`, `"list"`, `"tree"`, `"data_table"`) or as a
-/// container node (`"sidebar_panel"`). [`decode_widget_leaf`] decodes each
-/// through [`quadraui::decode_widget`], and each is painted, hit-tested and
-/// routed through the widget's own `Primitive`/`Interactive` contract, its
-/// `Interactive::State` kept across frames by
-/// [`crate::engine::InteractionEngine`].
-pub const WIDGET_KINDS: [&str; 43] = [
+/// one a layout tree carries as a container node (`"sidebar_panel"`), in
+/// the order a flat render dict's bands paint ([`crate::render::draw_bands`]).
+/// [`decode_widget_leaf`] decodes each through [`quadraui::decode_widget`],
+/// and each is painted, hit-tested and routed through the widget's own
+/// `Primitive`/`Interactive` contract, its `Interactive::State` kept
+/// across frames by [`crate::engine::InteractionEngine`].
+pub const WIDGET_KINDS: [&str; 48] = [
+    "text_display",
+    "list",
+    "tree",
+    "data_table",
+    "tab_bar",
     "form",
     "menu_bar",
     "tree_table",
@@ -141,6 +145,21 @@ mod tests {
     use quadraui::{Backend, Point, Rect, WidgetId};
     use std::cell::RefCell;
 
+    /// [`WIDGET_KINDS`] names exactly core's static `widget_kinds!` table
+    /// minus the one kind a layout tree carries as a container node, so
+    /// the band order it fixes never leaves a static kind undecodable.
+    #[test]
+    fn widget_kinds_is_the_static_table_less_the_container_kind() {
+        let mut ours: Vec<&str> = WIDGET_KINDS.to_vec();
+        ours.sort_unstable();
+        let mut core: Vec<&str> = quadraui::widget_kinds::static_widget_kinds()
+            .into_iter()
+            .filter(|kind| !crate::wire::is_reserved_node_key(kind))
+            .collect();
+        core.sort_unstable();
+        assert_eq!(ours, core);
+    }
+
     /// Records every event an [`EventSink`] receives, in order, for a
     /// chrome-leaf test to assert against without any host-language
     /// callback in scope.
@@ -193,7 +212,6 @@ mod tests {
                             kind: "switch",
                             widget: Rc::new(Switch::new(WidgetId::new("sw:1"))),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -291,7 +309,6 @@ mod tests {
                             kind: "toolbar",
                             widget: Rc::new(toolbar),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -400,7 +417,6 @@ mod tests {
                             kind: "toolbar",
                             widget: Rc::new(toolbar),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -530,7 +546,6 @@ mod tests {
                             kind: "icon_grid",
                             widget: Rc::new(grid),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -624,7 +639,6 @@ mod tests {
                             kind: "markdown",
                             widget: Rc::new(markdown),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -772,7 +786,6 @@ mod tests {
                             kind: "markdown",
                             widget: Rc::new(markdown),
                         },
-                        scroll_px: None,
                     })],
                     Spacing::default(),
                 ));
@@ -843,7 +856,6 @@ mod tests {
                 vec![LayoutNode::Leaf(LayoutLeaf {
                     id: self.id.as_str().to_string(),
                     descriptor: (self.leaf)(),
-                    scroll_px: None,
                 })],
                 Spacing::default(),
             ));
@@ -1006,8 +1018,8 @@ mod tests {
     }
 
     /// An unrecognised key inside a `"slider"` descriptor body -- a
-    /// generic-widget leaf, reached through [`decode_widget_leaf`] rather
-    /// than the six fixed leaf kinds -- is a hard [`crate::DecodeError::UnknownKey`] under
+    /// generic-widget leaf, reached through [`decode_widget_leaf`] -- is a
+    /// hard [`crate::DecodeError::UnknownKey`] under
     /// `strict`, naming the key, the dict it was found on, and the keys
     /// `Slider` actually accepts, the same policy a layout-tree node's own
     /// sibling keys already get.
@@ -1318,6 +1330,8 @@ mod tests {
             ],
             selected_idx: None,
             scroll_offset: 0,
+            items_window: None,
+            scroll_px: None,
             sort: None,
             has_focus: true,
             show_scrollbar: false,

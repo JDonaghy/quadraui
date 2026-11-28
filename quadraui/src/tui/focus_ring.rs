@@ -12,7 +12,7 @@
 //! its first row to the border.
 //!
 //! A one-row-tall `rect` (a button's `[ Label ]`, or a `Form`
-//! `ButtonRow`/`ToggleGroup` item — see `compose::form_controller`'s
+//! `ButtonRow`/`ToggleGroup` item — see `primitives::form::contract`'s
 //! "Item-level keyboard focus" doc section) has no padding row above or
 //! below it, so [`draw_focus_ring`] underlines that row instead,
 //! decorating its existing glyphs rather than replacing them.

@@ -21,7 +21,7 @@ use quadraui::{
 };
 
 use crate::engine::{DialogContentSize, InteractionEngine};
-use crate::host::{apply_tab_activated, menu_for_surface, with_tray, with_window, BindingHost};
+use crate::host::{menu_for_surface, with_tray, with_window, BindingHost};
 use crate::layout::StyleOverride;
 use crate::services::{
     add_recent_document, begin_drag_out, clear_recent_documents, end_power_save_block,
@@ -500,7 +500,7 @@ pub fn apply_deferred_action(
             service_call("set_jump_list", set_jump_list(backend.services(), items))?
         }
         DeferredAction::ActivateTab(id, index) => {
-            apply_tab_activated(engine.widget_state(), id, index);
+            engine.activate_tab(id, index);
         }
         DeferredAction::DefineStyle(name, overrides) => {
             host.style_sets.define(name, *overrides);

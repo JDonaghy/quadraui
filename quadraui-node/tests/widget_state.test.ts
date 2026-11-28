@@ -5,7 +5,7 @@
 // `quadraui-py`'s own `widget_state` test is held to: a 500-row tree with
 // no `scroll_offset`/`selected_path` fields scrolls to keep an
 // arrow-key-moved cursor visible, a split ratio persists after a divider
-// drag, and supplying `scroll_offset` explicitly pins the scroll.
+// drag, and sending a new `scroll_offset` moves the scroll.
 //
 // Run against a built addon, e.g.:
 //
@@ -94,8 +94,9 @@ test("a 500-row tree with no scroll/selection fields scrolls to keep the cursor 
   assert.ok(!app.screenContains("row 0"), "row 0 must have scrolled out of view");
 });
 
-test("supplying scroll_offset explicitly pins the tree's scroll", () => {
+test("sending a new scroll_offset moves the tree's scroll past its own navigation", () => {
   const app = new QuiApp(24, 8);
+  const pinned = { scrollOffset: 0 };
   app.setHandler(() => {});
   app.setRender(() => ({
     tree: {
@@ -103,7 +104,7 @@ test("supplying scroll_offset explicitly pins the tree's scroll", () => {
       rows: treeRows(500),
       selection_mode: "Single",
       selected_path: null,
-      scroll_offset: 50,
+      scroll_offset: pinned.scrollOffset,
       style: TREE_STYLE,
     },
   }));
@@ -121,14 +122,19 @@ test("supplying scroll_offset explicitly pins the tree's scroll", () => {
   }
   app.run(10);
 
+  // Resending the same `scroll_offset` leaves the tree's own scroll alone:
+  // its navigation scrolled the cursor into view.
+  const moved = app.widgetState("fm:tree");
+  assert.ok(moved, "the tree must have resolved widget state");
+  assert.ok(moved.scrollOffset! > 0, `navigation must have scrolled: ${JSON.stringify(moved)}`);
+
+  // A new value is the app moving the scroll, and wins.
+  pinned.scrollOffset = 50;
+  app.screen();
   const state = app.widgetState("fm:tree");
-  assert.ok(state, "the tree must have resolved widget state");
-  assert.equal(
-    state.scrollOffset,
-    50,
-    "a controlled scroll_offset must stay pinned at the descriptor's own value, unmoved by navigation",
-  );
-  assert.ok(app.screenContains("row 50"), "the pinned scroll window must start at row 50");
+  assert.ok(state, "the tree must still have resolved widget state");
+  assert.equal(state.scrollOffset, 50, "a changed scroll_offset must win over the tree's own scroll");
+  assert.ok(app.screenContains("row 50"), "the scroll window must start at row 50");
 });
 
 test("a split ratio persists after a drag and widgetState reports the dragged value", () => {
@@ -205,11 +211,10 @@ test("a split ratio persists after a drag and widgetState reports the dragged va
 // `DataTable`/`TabBar` leaf's own descriptor a different `id` than the
 // `LayoutLeaf` tree-address `id` wrapping it -- `quadraui-node/tests/
 // callbacks.test.ts` already does exactly this for a `text_display` leaf
-// (`{ id: "left", text_display: { id: "text:left", ... } }`). Navigation
-// and `widgetState` must both key off the outer (`LayoutLeaf`) id, the
-// same id `paint_leaf`'s own `PaintedHit` and the engine's nav hooks use
-// -- not the descriptor's own embedded id, which this test deliberately
-// sets to something else.
+// (`{ id: "left", text_display: { id: "text:left", ... } }`). `widgetState`
+// answers to the outer (`LayoutLeaf`) id, the id `paint_leaf`'s own
+// `PaintedHit` uses, as well as the descriptor's own embedded id, which
+// this test deliberately sets to something else.
 test("a tree leaf whose outer id differs from its own descriptor id still resolves navigation under the outer id", () => {
   const app = new QuiApp(24, 8);
   app.setHandler(() => {});
@@ -251,6 +256,7 @@ test("a tree leaf whose outer id differs from its own descriptor id still resolv
     state,
     "the leaf's own tree-address id must have resolved widget state after navigation",
   );
+  // The click selected row 0, so 40 Downs land on row index 40.
   assert.deepEqual(state.selectedPath, [40]);
   assert.ok(
     state.scrollOffset! > 0,
@@ -259,10 +265,10 @@ test("a tree leaf whose outer id differs from its own descriptor id still resolv
   assert.ok(app.screenContains("row 40"), "row 40 (the moved cursor) must be visible on screen");
   assert.ok(!app.screenContains("row 0"), "row 0 must have scrolled out of view");
 
-  assert.equal(
+  assert.deepEqual(
     app.widgetState("fm:tree-inner"),
-    null,
-    "the descriptor's own embedded id must never accumulate widget state of its own",
+    state,
+    "the descriptor's own embedded id answers with the same widget state",
   );
 
   // One more nav key, and one more render, past the block above -- proves
