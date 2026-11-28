@@ -36,8 +36,6 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 #[cfg(feature = "tui-images")]
 use ratatui::layout::Rect as RRect;
 
-#[cfg(feature = "tui-images")]
-use super::qc;
 use super::{char_cell_width, ratatui_color, set_cell_styled, set_cell_wide_styled};
 use crate::backend::ColorDepth;
 use crate::cell_surface::{BorderSet, CellModifier, CellStyle, CellSurface, CursorShape};
@@ -655,7 +653,7 @@ pub(crate) fn draw_image_kitty(
         crate::tui::kitty_graphics::IdLookup::Live(id) => id,
     };
 
-    let fg = qc(crate::tui::kitty_graphics::placeholder_fg_color(id));
+    let fg = ratatui_color(crate::tui::kitty_graphics::placeholder_fg_color(id));
     for row in 0..rows {
         for col in 0..cols {
             let Some(text) = crate::tui::kitty_graphics::placeholder_cell_text(row, col) else {
@@ -777,8 +775,8 @@ pub(crate) fn draw_image_halfblock(
             let y = y0 + row as u16;
             let cell = &mut buf[(x, y)];
             cell.set_symbol("▀");
-            cell.set_fg(qc(top));
-            cell.set_bg(qc(bottom));
+            cell.set_fg(ratatui_color(top));
+            cell.set_bg(ratatui_color(bottom));
         }
     }
     true
@@ -1463,12 +1461,12 @@ mod halfblock_tests {
             );
             assert_eq!(
                 cell.fg,
-                qc(Color::rgb(rgb.0, rgb.1, rgb.2)),
+                ratatui_color(Color::rgb(rgb.0, rgb.1, rgb.2)),
                 "cell ({x},{y}) fg"
             );
             assert_eq!(
                 cell.bg,
-                qc(Color::rgb(rgb.0, rgb.1, rgb.2)),
+                ratatui_color(Color::rgb(rgb.0, rgb.1, rgb.2)),
                 "cell ({x},{y}) bg"
             );
         };
