@@ -673,6 +673,7 @@ mod tests {
             ],
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
     }
 

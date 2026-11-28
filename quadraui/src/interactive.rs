@@ -109,6 +109,41 @@ pub enum FocusSpec {
     Children(Vec<FocusStop>),
 }
 
+/// Where the host draws the focus ring while a widget holds keyboard
+/// focus — see [`Interactive::focus_ring`].
+///
+/// The ring marks the control, not the layout cell it sits in: a button
+/// laid out in a wide cell paints `[ Add ]` at its natural size, and the
+/// ring follows those glyphs rather than the cell's empty remainder.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FocusIndicator {
+    /// Around the whole rect the widget was painted in.
+    Bounds,
+    /// Around this rect, in the widget's own local space (the same space
+    /// [`Interactive::sub_regions`] answers in).
+    At(crate::Rect),
+    /// No host ring: the widget shows its own focus (a form's focused-row
+    /// highlight), so a ring on top would only cover content.
+    Own,
+}
+
+impl FocusIndicator {
+    /// The absolute rect this ring traces for a widget painted at
+    /// `rect`, or `None` for [`Self::Own`].
+    pub fn resolve(self, rect: crate::Rect) -> Option<crate::Rect> {
+        match self {
+            FocusIndicator::Bounds => Some(rect),
+            FocusIndicator::At(r) => Some(crate::Rect::new(
+                r.x + rect.x,
+                r.y + rect.y,
+                r.width,
+                r.height,
+            )),
+            FocusIndicator::Own => None,
+        }
+    }
+}
+
 /// One focusable stop inside a [`FocusSpec::Children`] list.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FocusStop {
@@ -430,6 +465,17 @@ pub trait Interactive: Primitive {
     fn sub_regions(&self, layout: &Self::Layout) -> Vec<(crate::Rect, SubTarget)> {
         let _ = layout;
         Vec::new()
+    }
+
+    /// Where the host's focus ring goes while this widget holds keyboard
+    /// focus, resolved against `layout` — see [`FocusIndicator`]. The runners
+    /// read it from the frame's painted record, so the ring tracks the
+    /// geometry that is on screen.
+    ///
+    /// Default: [`FocusIndicator::Bounds`].
+    fn focus_ring(&self, layout: &Self::Layout) -> FocusIndicator {
+        let _ = layout;
+        FocusIndicator::Bounds
     }
 
     /// The name [`crate::DrawsPrimitives::draw_dyn`] publishes sub-part

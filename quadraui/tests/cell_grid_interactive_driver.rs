@@ -238,3 +238,60 @@ fn escape_cancels_an_edit_without_moving_the_cursor_or_changing_the_text() {
     assert_eq!(driver.app().grid.cells[0][0].text, "A1");
     assert_eq!(driver.app().grid.cursor, (0, 0));
 }
+
+/// A wheel notch over the grid scrolls its body a row through the real
+/// routing engine, leaving the cursor where it was.
+#[test]
+fn the_wheel_scrolls_the_body_without_moving_the_cursor() {
+    let mut driver = TuiDriver::new(CellGridDriverApp::new(), 60, 15);
+    let (x, y) = driver.find("B2").expect("cell B2 visible");
+    let wheel = |dy: f32| UiEvent::Scroll {
+        widget: None,
+        delta: quadraui::ScrollDelta::new(0.0, dy),
+        position: quadraui::Point::new(x, y),
+    };
+
+    driver.dispatch(wheel(-1.0));
+    driver.dispatch(wheel(-1.0));
+    assert_eq!(driver.app().grid.row_scroll, 2);
+    assert_eq!(driver.app().grid.cursor, (0, 0));
+
+    driver.dispatch(wheel(1.0));
+    assert_eq!(driver.app().grid.row_scroll, 1);
+
+    // Scrolling up past the top stops at the first row.
+    driver.dispatch(wheel(5.0));
+    assert_eq!(driver.app().grid.row_scroll, 0);
+}
+
+/// While a cell is being edited, a click on its text places the caret
+/// there, and a drag across the text selects it.
+#[test]
+fn a_click_and_a_drag_in_the_inline_editor_place_the_caret_and_select() {
+    let mut driver = TuiDriver::new(CellGridDriverApp::new(), 60, 15);
+    // The clicks below land on one spot in quick succession; each is a
+    // separate press, not a double-click.
+    driver.set_double_click_folding(false);
+    let (x, y) = driver.find("A1").expect("cell A1 visible");
+    driver.click(x, y);
+    driver.press_named(NamedKey::F(2));
+    driver.render();
+    let edit = |driver: &TuiDriver<CellGridDriverApp>| {
+        let edit = driver.app().grid.editing.clone().expect("editing");
+        (edit.cursor, edit.selection_anchor)
+    };
+    assert_eq!(edit(&driver), (2, None), "F2 seeds the caret at the end");
+
+    let (tx, ty) = driver.find("A1").expect("the editor paints the text");
+    driver.click(tx, ty);
+    assert_eq!(edit(&driver), (0, None), "the click puts the caret at A");
+    assert_eq!(
+        driver.app().grid.cursor,
+        (0, 0),
+        "the cursor cell stays put"
+    );
+
+    driver.drag(tx, ty, tx + 1.0, ty);
+    assert_eq!(edit(&driver), (1, Some(0)), "the drag selects A");
+    assert!(driver.app().grid.editing.is_some(), "still editing");
+}

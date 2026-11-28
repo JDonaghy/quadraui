@@ -301,16 +301,22 @@ impl LayoutContent {
 /// different `hits` slice. `Split`/`SplitTree` are chrome around other
 /// content, not focusable leaves themselves, so they are skipped; a
 /// `SidebarPanel`'s header is a [`PaintedHit::Widget`] whose
-/// `FocusSpec::None` keeps it out too; `TextDisplay` is always one
-/// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
-/// every other variant yields its id and bounding `Rect`.
+/// `FocusSpec::None` keeps it out too; a `TextDisplay` is one only when
+/// its own `Interactive::focus` says so (a pane with a scrollbar, which
+/// the keyboard scrolls); every other variant yields its id and bounding
+/// `Rect`.
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
     hits.iter()
         .filter_map(|hit| match hit {
             PaintedHit::Tree { id, area, .. }
             | PaintedHit::List { id, area, .. }
-            | PaintedHit::DataTable { id, area, .. }
-            | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
+            | PaintedHit::DataTable { id, area, .. } => Some((*id, *area)),
+            PaintedHit::TextDisplay {
+                id,
+                area,
+                focusable,
+                ..
+            } => focusable.then_some((*id, *area)),
             PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
             // A `Scroll` is chrome around its own content, like
             // `Split` above -- its content's own
@@ -2237,8 +2243,8 @@ impl InteractionEngine {
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
     /// `Split`/`SplitTree` are chrome around other content, not focusable
     /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
-    /// pointer-only header contributes none; `TextDisplay` is always one (scroll/copy need
-    /// keyboard focus the same way a `Tree`/`List` does); every other
+    /// pointer-only header contributes none; a `TextDisplay` is one only
+    /// when it shows a scrollbar for the keyboard to drive; every other
     /// variant yields its id and bounding `Rect`.
     ///
     /// Returns empty while a form dialog is open, regardless of what the
@@ -3561,19 +3567,14 @@ impl InteractionEngine {
             }
         }
 
-        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf no longer
-        // needs a bespoke claim loop here: it now decodes as a
-        // `crate::layout::LeafDescriptor::Widget`, so it hits
+        // A `MouseDown`/click-to-focus on a `"cell_grid"` leaf decodes
+        // as a `crate::layout::LeafDescriptor::Widget`, so it hits
         // `HitDetail::WidgetBody` through the generic hit-test pipeline
         // below, the same as every other `WIDGET_KINDS` member —
         // [`Self::dispatch_dyn_widget_click`] (and, through it,
         // [`Self::dyn_widget_dispatch`]'s own focus-request handling)
-        // covers click-to-focus generically. No `UiEvent::Scroll` arm
-        // either: [`CellGrid::handle`][quadraui::interactive::Interactive::handle]
-        // has no `RoutedEvent::Wheel` arm of its own yet (always
-        // `Handled::Ignored`), same gap the deleted
-        // [`CellGridController`]-based wheel block already documented as
-        // a no-op.
+        // covers click-to-focus generically, and its wheel scrolling
+        // arrives through the generic widget wheel dispatch above.
         //
         // A move with the left button held continues whichever
         // [`crate::widget_kinds::WIDGET_KINDS`] leaf's own in-progress

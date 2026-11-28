@@ -2206,6 +2206,7 @@ The inline find/replace overlay displayed at the top-right of the active editor 
 | `cursor` | `number` | no | Cursor position within the focused field (char offset). |
 | `focus` | `number` | no | Which field has focus: 0 = find, 1 = replace. |
 | `group_bounds` | `Rect` | yes | Bounding rect of the active editor group, in the surface's own units. |
+| `hidden_toggles` | `FindReplaceToggle[]` | no | Toggles this panel does not offer — say regex and preserve-case for a host whose search engine has neither. |
 | `hit_regions` | `[FrHitRegion, FindReplaceClickTarget][]` | no | Hit regions for click handling, in char-cell units relative to the panel content corner (inside borders). |
 | `id` | `WidgetId` | no | This overlay's id — the one its `FindReplaceEvent`s are reported under. |
 | `in_selection` | `boolean` | no | Find in selection mode. |
@@ -3176,6 +3177,7 @@ Declarative description of a `Palette` widget.
 | `query_cursor` | `number` | no | Cursor byte offset in `query`. |
 | `scroll_offset` | `number` | no | How many rows have been scrolled past. |
 | `selected_idx` | `number` | yes | Index into `items` of the currently highlighted row. |
+| `show_mode_badge` | `boolean` | no | Paint the `[L]`/`[I]` mode badge at the right of the title row. |
 | `show_query` | `boolean` | no | When `false`, the query input row and separator are hidden — producing a popup-style list (tab switcher, branch picker). |
 | `title` | `string` | yes | Header text shown above the query input, e.g. |
 | `total_count` | `number` | no | Total number of items in the underlying source (before filtering). |

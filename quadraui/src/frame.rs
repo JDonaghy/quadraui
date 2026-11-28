@@ -431,11 +431,7 @@ impl ScreenLayout {
         for (idx, surface) in self.surfaces.iter().enumerate() {
             match surface {
                 Surface::Widget { rect, widget } => {
-                    // A widget the platform presents itself (a native menu
-                    // bar) is not painted in the window.
-                    if !widget.native_presentation(backend, *rect) {
-                        backend.draw_dyn(*rect, widget.as_ref(), &());
-                    }
+                    draw_widget(backend, *rect, widget.as_ref());
                 }
                 Surface::Opaque { .. } => {}
             }
@@ -1388,6 +1384,34 @@ pub fn check_frame_order<R: FrameRung>(visited: &[R]) -> Result<(), FrameOrderVi
     Ok(())
 }
 
+/// Paint one widget the way a [`Surface::Widget`] paints: through
+/// [`crate::backend::DrawsPrimitives::draw_dyn`], telling it whether it
+/// holds the host's keyboard focus
+/// ([`crate::primitive::PaintState::focus_ring_visible`], read from
+/// [`Backend::focus_tree`]), so a widget whose look follows focus (a form's
+/// focused-row highlight) shows it without the app echoing focus onto its
+/// descriptor. A widget the platform presents itself (a native menu bar)
+/// is not painted in the window. Returns whether it painted.
+pub fn draw_widget(backend: &mut dyn Backend, rect: Rect, widget: &dyn DynWidget) -> bool {
+    if widget.native_presentation(backend, rect) {
+        return false;
+    }
+    let focused = widget
+        .id()
+        .is_some_and(|id| backend.focus_tree().focused_id() == Some(id));
+    backend.draw_dyn(rect, widget, &HostFocus(focused));
+    true
+}
+
+/// [`draw_widget`]'s paint state: whether the widget holds keyboard focus.
+struct HostFocus(bool);
+
+impl crate::primitive::PaintState for HostFocus {
+    fn focus_ring_visible(&self) -> bool {
+        self.0
+    }
+}
+
 #[cfg(test)]
 #[allow(deprecated)] // exercises `FrameHitMap`/`FrameZone` directly; see their own `#[deprecated]` notes.
 mod tests {
@@ -1507,6 +1531,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         };
 
         let mut layout = ScreenLayout::new();
@@ -1663,6 +1688,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         };
         let split = crate::primitives::split::Split {
             id: "split".into(),
@@ -2705,6 +2731,7 @@ mod tests {
             create_label: None,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+            show_mode_badge: true,
         };
 
         let mut layout = ScreenLayout::new();

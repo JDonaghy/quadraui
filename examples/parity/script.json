@@ -8,5 +8,7 @@
   {"click": [3, 7]},
   {"click": [6, 4]},
   {"key": "Down"},
-  {"click": [24, 7]}
+  {"click": [24, 7]},
+  {"key": "Tab"},
+  {"key": "Tab"}
 ]

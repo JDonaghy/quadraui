@@ -99,11 +99,10 @@ binding-only ones.
    when `update` returns `Command::Exit`.
 6. **`App(width, height)` is optional (#3107)** in Python and Node
    (80x24); the size only sizes a headless run.
-7. **The TUI focus ring covers the focused button's label** in Python and
-   Node: `[ + ]` renders as `│ + ]`. The Rust `AppLogic` version shows no
-   focus ring at all. So a cross-language parity test that compares frames
-   cell for cell (#3077) would fail on focus styling before it gets to
-   anything else.
+7. **Focus renders the same in all three languages.** A focused `[ + ]`
+   keeps both brackets: they turn the accent colour and the ring
+   underlines the button at its natural width. The parity check (#3077)
+   compares focus states cell for cell.
 8. **Per-child sizes (#3106, #3107).** Every app-layer node takes a
    size and `min`/`max` in all three languages (Rust: `.content()`,
    `.fixed(px)`, `.weight(w)`, ...; Python and Node: `size=`/`min=`/`max=`),

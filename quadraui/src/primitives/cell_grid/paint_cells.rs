@@ -99,6 +99,24 @@ fn span_bounds(area_len: u16, area_origin: u16, span: &ResolvedSpan) -> Option<(
 }
 
 /// An opaque cell style with `fg` on `bg`.
+/// The smallest luminance gap ([`Color::luminance`]) between the cursor
+/// fill and the cell's own fill at which the cursor still reads as a
+/// separate block.
+const CURSOR_MIN_LUMINANCE_GAP: f64 = 32.0;
+
+/// The cursor cell's `(fg, bg)`: `cursor_bg` behind the cell's text,
+/// unless the cell's own fill (`base_bg` — an explicit `CellStyle::bg`,
+/// a zebra stripe or the sheet background) is so close to it that the
+/// cursor would vanish; then the cell paints inverse, its text colour as
+/// the fill and its fill as the text, which always contrasts.
+fn cursor_colors(cursor_bg: Color, base_bg: Color, text_fg: Color) -> (Color, Color) {
+    if (cursor_bg.luminance() - base_bg.luminance()).abs() < CURSOR_MIN_LUMINANCE_GAP {
+        (base_bg, text_fg)
+    } else {
+        (text_fg, cursor_bg)
+    }
+}
+
 fn solid(fg: Color, bg: Color) -> CellStyle {
     crate::cell_surface::solid_style(fg, bg)
 }
@@ -284,14 +302,14 @@ pub(crate) fn paint(
                 .and_then(|s| s.bg)
                 .or_else(|| grid.row_stripe_bg(layout, ri, row.index, theme))
                 .unwrap_or(bg);
-            let cell_bg = if is_cursor {
-                cursor_bg
+            let text_fg = style.and_then(|s| s.fg).unwrap_or(fg);
+            let (cell_fg, cell_bg) = if is_cursor {
+                cursor_colors(cursor_bg, base_bg, text_fg)
             } else if in_selection {
-                selection_bg
+                (text_fg, selection_bg)
             } else {
-                base_bg
+                (text_fg, base_bg)
             };
-            let cell_fg = style.and_then(|s| s.fg).unwrap_or(fg);
 
             fill_band(cells, cx, ry, cw, rh, solid(cell_fg, cell_bg));
 
@@ -536,6 +554,38 @@ mod tests {
 
         // The top-left corner, where both header strips meet.
         assert_eq!(layout.hit_test(0.0, 0.0), CellGridHit::Corner);
+    }
+
+    /// A cursor on a cell filled close to the cursor colour paints inverse
+    /// — the cell's text colour as its fill — so it never vanishes.
+    #[test]
+    fn the_cursor_stays_visible_on_a_cell_filled_near_its_colour() {
+        let theme = Theme::default();
+        let mut grid = grid();
+        grid.frozen_rows = 0;
+        grid.frozen_cols = 0;
+        grid.cursor = (1, 1);
+        let fg = Color::rgb(240, 240, 240);
+        let near = theme.selection_bg.blend(Color::rgb(255, 255, 255), 0.05);
+        grid.cells[1][1].style = CellStyle {
+            fg: Some(fg),
+            bg: Some(near),
+            ..Default::default()
+        };
+        grid.cells[2][2].style = grid.cells[1][1].style;
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let layout = draw_cell_grid(&mut buf, area, &grid, &theme);
+        let at = |r: usize, c: usize| {
+            let row = layout.rows.iter().find(|s| s.index == r).unwrap();
+            let col = layout.cols.iter().find(|s| s.index == c).unwrap();
+            &buf[(col.start.round() as u16, row.start.round() as u16)]
+        };
+
+        assert_eq!(at(1, 1).bg, ratatui_color(fg), "the cursor paints inverse");
+        assert_eq!(at(1, 1).fg, ratatui_color(near));
+        // The same fill off the cursor keeps its own colours.
+        assert_eq!(at(2, 2).bg, ratatui_color(near));
     }
 
     #[test]

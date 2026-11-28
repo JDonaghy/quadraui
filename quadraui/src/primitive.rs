@@ -1256,6 +1256,11 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         layout: &dyn PrimitiveLayout,
     ) -> Vec<(Rect, crate::interactive::SubTarget)>;
 
+    /// Where the host's focus ring goes for `layout` — see
+    /// [`Interactive::focus_ring`]. [`crate::interactive::FocusIndicator::Bounds`]
+    /// when `layout` isn't this widget's own layout type.
+    fn focus_ring(&self, layout: &dyn PrimitiveLayout) -> crate::interactive::FocusIndicator;
+
     /// [`Interactive::HOVER_ON_SUB_REGIONS_ONLY`].
     fn hover_on_sub_regions_only(&self) -> bool;
 
@@ -1391,6 +1396,13 @@ where
         match layout.downcast_ref::<W::Layout>() {
             Some(layout) => Interactive::sub_regions(self, layout),
             None => Vec::new(),
+        }
+    }
+
+    fn focus_ring(&self, layout: &dyn PrimitiveLayout) -> crate::interactive::FocusIndicator {
+        match layout.downcast_ref::<W::Layout>() {
+            Some(layout) => Interactive::focus_ring(self, layout),
+            None => crate::interactive::FocusIndicator::Bounds,
         }
     }
 
@@ -1608,6 +1620,10 @@ where
         self.widget.sub_regions(layout)
     }
 
+    fn focus_ring(&self, layout: &W::Layout) -> crate::interactive::FocusIndicator {
+        self.widget.focus_ring(layout)
+    }
+
     fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str> {
         self.widget.sub_region_name(sub)
     }
@@ -1664,6 +1680,10 @@ pub struct PaintedWidget {
     /// The paint state the widget painted with, which its layout was
     /// resolved against.
     pub paint_state: PaintStateSnapshot,
+    /// The absolute rect the host's focus ring traces while this widget
+    /// holds focus ([`Interactive::focus_ring`] resolved against
+    /// [`Self::rect`]), or `None` when the widget shows its own focus.
+    pub focus_ring: Option<Rect>,
 }
 
 /// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
@@ -1731,6 +1751,18 @@ impl PaintedWidgets {
             .rev()
             .find(|e| &e.id == id)
             .map(|e| (e.rect, e.layout.as_ref()))
+    }
+
+    /// The focus ring `id` recorded this frame: `None` when it didn't
+    /// paint, `Some(None)` when it shows its own focus, `Some(Some(rect))`
+    /// for the absolute rect a host ring traces. Same last-entry-wins rule
+    /// as [`Self::painted_layout`].
+    pub fn painted_focus_ring(&self, id: &WidgetId) -> Option<Option<Rect>> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)
+            .map(|e| e.focus_ring)
     }
 
     /// The paint state `id` painted with this frame, or `None` if it
@@ -1877,6 +1909,12 @@ pub fn painted_state(id: &WidgetId) -> PaintStateSnapshot {
         .unwrap_or_default()
 }
 
+/// The focus ring `id` recorded this frame —
+/// [`PaintedWidgets::painted_focus_ring`] against the live record.
+pub fn painted_focus_ring(id: &WidgetId) -> Option<Option<Rect>> {
+    with_painted_widgets(|p| p.painted_focus_ring(id))
+}
+
 /// The absolute center of `id`'s `sub` sub-part this frame —
 /// [`PaintedWidgets::painted_sub_center`] against the live record.
 pub fn painted_sub_center(id: &WidgetId, sub: crate::interactive::SubTarget) -> Option<(f32, f32)> {
@@ -1949,6 +1987,7 @@ mod tests {
                 paint_state: PaintStateSnapshot::of(
                     &crate::primitives::list::ListPaintState::default().with_scroll_px(scroll_px),
                 ),
+                focus_ring: None,
             });
         }
         assert_eq!(
@@ -2283,6 +2322,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
         painted.record(PaintedWidget {
             id: over,
@@ -2291,6 +2331,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
@@ -2317,6 +2358,7 @@ mod tests {
             ],
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
@@ -2346,6 +2388,7 @@ mod tests {
             sub_regions: Vec::new(),
             hover_targets: None,
             paint_state: Default::default(),
+            focus_ring: None,
         });
 
         assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));

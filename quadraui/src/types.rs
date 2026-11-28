@@ -158,6 +158,13 @@ impl Color {
             mix(self.b, over.b),
         )
     }
+
+    /// Perceptual luminance (ITU-R BT.601), `0.0` (black) to `255.0`
+    /// (white), ignoring alpha — enough to tell whether two colours read
+    /// apart, without a colour-science dependency.
+    pub fn luminance(self) -> f64 {
+        0.299 * self.r as f64 + 0.587 * self.g as f64 + 0.114 * self.b as f64
+    }
 }
 
 /// A contiguous run of text sharing a single style.

@@ -55,6 +55,13 @@ fragment step for this package (that mechanism, and
   selectedIndices, onSelection, onContextMenu, onClick })`,
   `List(items, { onSelection, onContextMenu, onClick })` and
   `Tree(rows, { onSelection, onContextMenu })`.
+- `TextDisplay(lines, { showScrollbar: true })` paints a scrollbar and makes
+  the pane a Tab stop the keyboard can scroll (#3108). Wire descriptors
+  gain `Palette.show_mode_badge` (default true; false hides the `[L]`/`[I]`
+  badge) and `FindReplacePanel.hidden_toggles` (toggles the panel does not
+  offer: no paint, no click, no Alt shortcut) (#3082). A `cell_grid` leaf
+  scrolls under the mouse wheel, and while a cell is being edited a click
+  on it places the caret and a drag selects (#3082).
 
 - `QuiAppActions.showOverlay(kind, descriptor, anchor)`/
   `.dismissOverlay(id)` -- the same nine `kind`s and anchor semantics as
@@ -166,6 +173,12 @@ fragment step for this package (that mechanism, and
   `DataTable.RowClicked`/`List.ItemClicked{idx, button, modifiers}`;
   `Tree.RowClicked` gains `button`. A header or chevron reacts to the left
   button only.
+- Focus renders the same as in Rust (#3108): a `TextDisplay` is not a Tab
+  stop unless it shows a scrollbar; the TUI focus ring never covers a
+  control's glyphs (a focused button keeps both brackets, underlined at its
+  natural width, with accent-coloured brackets; a list's ring steps around
+  its rows' text); and a `cell_grid` cursor on a cell filled close to the
+  cursor colour paints inverse so it stays visible (#3082).
 
 - A tab bar (the `"tab_bar"` leaf and slot, and a `"tabs"` node's strip)
   is a generic widget routed through the core `TabBar`'s own input

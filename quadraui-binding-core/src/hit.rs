@@ -181,6 +181,9 @@ pub enum PaintedHit {
         /// doc. `layout.resolved_scroll_offset` is ABSOLUTE either way (an
         /// index into `total_lines`).
         loaded_rows: Option<LoadedRows>,
+        /// Whether the display takes keyboard focus — its own
+        /// [`quadraui::Interactive::focus`], read at paint.
+        focusable: bool,
     },
     /// `Split`'s layout is already in the ABSOLUTE frame, and its own
     /// `WidgetId` only matters once a hit is found — carried by
@@ -926,6 +929,7 @@ mod tests {
             total_lines: 100,
             viewport_lines: viewport.height as usize,
             loaded_rows: None,
+            focusable: false,
         }
     }
 

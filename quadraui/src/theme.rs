@@ -1530,13 +1530,6 @@ mod tests {
 
     // ── Light default palette ───────────────────────────────────────────
 
-    /// Perceptual luminance (ITU-R BT.601), `0.0` (black) .. `255.0`
-    /// (white). Test-only — good enough to distinguish "reads as light"
-    /// from "reads as dark" without pulling in a colour-science crate.
-    fn luminance(c: Color) -> f64 {
-        0.299 * c.r as f64 + 0.587 * c.g as f64 + 0.114 * c.b as f64
-    }
-
     /// Every background-type field on [`Theme::light_default`] must read
     /// as light. This is the failure mode a dark `Theme::default()` leak
     /// produces: an app spreads `..Theme::default()` over a
@@ -1572,7 +1565,7 @@ mod tests {
             ("card_hint_bg", t.card_hint_bg),
         ];
         for (name, c) in backgrounds {
-            let l = luminance(c);
+            let l = c.luminance();
             assert!(
                 l > 180.0,
                 "{name} = {c:?} reads as dark (luminance {l:.1}) in the light palette"
@@ -1600,7 +1593,7 @@ mod tests {
             ("cursor", t.cursor),
         ];
         for (name, c) in foregrounds {
-            let l = luminance(c);
+            let l = c.luminance();
             assert!(
                 l < 140.0,
                 "{name} = {c:?} reads as light (luminance {l:.1}) — too low \
@@ -1620,12 +1613,12 @@ mod tests {
             ..Theme::light_default()
         };
         assert!(
-            luminance(light.inactive_selected_bg) > 180.0,
+            light.inactive_selected_bg.luminance() > 180.0,
             "inactive_selected_bg leaked a dark default: {:?}",
             light.inactive_selected_bg
         );
         assert!(
-            luminance(light.selected_bg) > 180.0,
+            light.selected_bg.luminance() > 180.0,
             "selected_bg leaked a dark default: {:?}",
             light.selected_bg
         );
@@ -1640,7 +1633,7 @@ mod tests {
             ..Theme::default()
         };
         assert!(
-            luminance(dark_leak.inactive_selected_bg) < 180.0,
+            dark_leak.inactive_selected_bg.luminance() < 180.0,
             "negative control: Theme::default()'s inactive_selected_bg should \
              still be dark ({:?}) — if this fails, the fixture changed",
             dark_leak.inactive_selected_bg

@@ -988,14 +988,26 @@ def StatusBar(
     return _sized(Node("status_bar", id, callbacks, {}, build), size, min, max)
 
 
-def TextDisplay(lines: list["TextDisplayLineDescriptor"], *, id: Optional[str] = None, size: "SizeSpec" = None, min: Optional[float] = None, max: Optional[float] = None) -> Node:
-    """A `TextDisplay` leaf -- plain read-only text."""
+def TextDisplay(
+    lines: list["TextDisplayLineDescriptor"],
+    *,
+    id: Optional[str] = None,
+    show_scrollbar: bool = False,
+    size: "SizeSpec" = None,
+    min: Optional[float] = None,
+    max: Optional[float] = None,
+) -> Node:
+    """A `TextDisplay` leaf -- plain read-only text. It is not a Tab stop;
+    `show_scrollbar=True` paints a scrollbar and makes the pane a Tab stop
+    the keyboard can scroll, as in Rust."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
-        return {"id": node_id, "text_display": {"id": node_id, "lines": lines}}
+        payload: Dict[str, Any] = {"id": node_id, "lines": lines}
+        if show_scrollbar:
+            payload["show_scrollbar"] = True
+        return {"id": node_id, "text_display": payload}
 
     return _sized(Node("text_display", id, {}, {}, build), size, min, max)
-
 
 
 def Text(
