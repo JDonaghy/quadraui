@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Guards `site/src/introduction.md`'s hello-world sample against drifting
+"""Guards `site/src/introduction.md`'s first Rust sample against drifting
 from `README.md`'s.
 
-`site/src/introduction.md` was written by hand-copying `README.md`'s own
-hello-world walkthrough (the landing page's pitch, per issue #1349's own
-brief: "the README's hello world"). Nothing keeps the two in sync after
-that copy, so this test fails loudly the moment one changes without the
+`site/src/introduction.md` repeats `README.md`'s first screen, including
+the hero counter's Rust sample (`examples/hero/rust/src/main.rs`). Nothing
+keeps the two in sync after that copy, so this test fails loudly the moment one changes without the
 other, instead of the drift going unnoticed until a reader spots a stale
 sample on the site.
 
@@ -22,7 +21,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-FENCE_RE = re.compile(r"```rust\n(.*?)\n```", re.DOTALL)
+# `rust` with or without mdBook attributes: the site marks its samples
+# `rust,noplayground`, since the playground cannot build against quadraui.
+FENCE_RE = re.compile(r"```rust(?:,[\w,-]+)?\n(.*?)\n```", re.DOTALL)
 
 
 def first_rust_block(text: str) -> str:

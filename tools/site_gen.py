@@ -25,10 +25,17 @@ leg's manifest both get merged here, keyed by
 `path` over a `status`-only row from another run.
 
 Writes `<out>/gallery/index.md`, `<out>/gallery/<slug>.md` per demo,
-copies every referenced image into `<out>/gallery/images/`, and
-(re)writes `<out>/SUMMARY.md` in full — the generated half of the site;
-`<out>/introduction.md` and `<out>/getting-started.md` are
-hand-maintained chapters this script only *links to*, never edits.
+`<out>/gallery/group-<slug>.md` per group (every demo's first variant,
+one column per backend), copies every referenced image into
+`<out>/gallery/images/`, and (re)writes `<out>/SUMMARY.md` in full.
+
+With `--summary-template` (the site's `site/SUMMARY.template.md`), the
+SUMMARY is that hand-maintained navigation with the line holding
+`<!-- site_gen:gallery -->` replaced by the generated gallery entries,
+indented to that line's own depth. Without it, the SUMMARY is the
+generated gallery behind links to `introduction.md` and
+`getting-started.md`. Either way the hand-written chapters are only
+*linked to*, never edited.
 
 Run from anywhere; paths are resolved relative to the current working
 directory (all arguments are plain paths, no repo-root assumption).
@@ -259,15 +266,100 @@ def render_gallery_index(entries: list[dict[str, Any]]) -> str:
     for entry in entries:
         by_group.setdefault(entry["group"], []).append(entry)
 
-    lines = ["# Gallery", "", "Every quadraui primitive demo, generated from the gallery's own", "registry — see `tools/site_gen.py`.", ""]
+    lines = [
+        "# Widget gallery",
+        "",
+        "Every widget demo in `quadraui-gallery`, captured on each backend by",
+        "the backends' own headless drivers. Nothing here is hand-made:",
+        "`scripts/site_gallery.sh` regenerates every page and image, and the",
+        "site's deploy job runs the same steps. A group page shows each",
+        "widget on every backend side by side; a widget page has its code and",
+        "every variant.",
+        "",
+        "Run it yourself: `cargo run -p quadraui-gallery --features tui`",
+        "(or `--features gtk`, `macos`, `win` for a native window).",
+        "",
+    ]
     for group in sorted(by_group, key=group_sort_key):
-        lines.append(f"## {group}")
+        lines.append(f"## [{group}]({group_slug(group)}.md)")
         lines.append("")
         for entry in sorted(by_group[group], key=lambda e: e["demo"]):
             demo_slug = slug(entry["demo"])
             lines.append(f"- [{entry['demo']}]({demo_slug}.md)")
         lines.append("")
     return "\n".join(lines)
+
+
+def first_variant_cell(
+    entry: dict[str, Any],
+    merged: dict[tuple[str, str, str, str], dict[str, Any]],
+    backend: str,
+) -> str:
+    variant = entry["variants"][0] if entry["variants"] else "default"
+    row = merged.get((entry["demo"], entry["group"], variant, backend))
+    cell = cell_markdown(row, backend)
+    if row is not None and row.get("path"):
+        # A thumbnail in a five-column table is small; link it to the full image.
+        cell = f"[{cell}](images/{Path(row['path']).name})"
+    return cell
+
+
+def group_slug(group: str) -> str:
+    return f"group-{slug(group)}"
+
+
+def render_group_page(
+    group: str,
+    entries: list[dict[str, Any]],
+    merged: dict[tuple[str, str, str, str], dict[str, Any]],
+) -> str:
+    header = ["Widget"] + [BACKEND_LABELS[b] for b in BACKENDS]
+    lines = [
+        f"# {group}",
+        "",
+        "Each widget's first variant on every backend, captured by the",
+        "gallery's own headless drivers. Open a widget for its code and every",
+        "variant.",
+        "",
+        "| " + " | ".join(header) + " |",
+        "|" + "|".join(["---"] * len(header)) + "|",
+    ]
+    for entry in sorted(entries, key=lambda e: e["demo"]):
+        cells = [f"[{entry['demo']}]({slug(entry['demo'])}.md)"]
+        cells += [first_variant_cell(entry, merged, b) for b in BACKENDS]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return "\n".join(lines)
+
+
+GALLERY_MARKER = "<!-- site_gen:gallery -->"
+
+
+def render_gallery_nav(entries: list[dict[str, Any]], indent: str) -> list[str]:
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_group.setdefault(entry["group"], []).append(entry)
+    lines = [f"{indent}- [Widget gallery](gallery/index.md)"]
+    for group in sorted(by_group, key=group_sort_key):
+        lines.append(f"{indent}    - [{group}](gallery/{group_slug(group)}.md)")
+        for entry in sorted(by_group[group], key=lambda e: e["demo"]):
+            lines.append(f"{indent}        - [{entry['demo']}](gallery/{slug(entry['demo'])}.md)")
+    return lines
+
+
+def render_summary_from_template(template: str, entries: list[dict[str, Any]]) -> str:
+    out: list[str] = []
+    found = False
+    for line in template.splitlines():
+        if line.strip() == GALLERY_MARKER:
+            indent = line[: len(line) - len(line.lstrip())]
+            out.extend(render_gallery_nav(entries, indent))
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        raise ValueError(f"summary template has no {GALLERY_MARKER!r} line")
+    return "\n".join(out) + "\n"
 
 
 def render_summary(entries: list[dict[str, Any]]) -> str:
@@ -293,7 +385,12 @@ def render_summary(entries: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def generate(registry_path: Path, capture_dirs: list[Path], out_dir: Path) -> None:
+def generate(
+    registry_path: Path,
+    capture_dirs: list[Path],
+    out_dir: Path,
+    summary_template: Path | None = None,
+) -> None:
     entries = load_registry(registry_path)
     merged = merge_manifests(capture_dirs)
 
@@ -320,8 +417,19 @@ def generate(registry_path: Path, capture_dirs: list[Path], out_dir: Path) -> No
         page = render_demo_page(entry, merged)
         (gallery_dir / f"{slug(entry['demo'])}.md").write_text(page)
 
+    by_group: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_group.setdefault(entry["group"], []).append(entry)
+    for group, group_entries in by_group.items():
+        page = render_group_page(group, group_entries, merged)
+        (gallery_dir / f"{group_slug(group)}.md").write_text(page)
+
     (gallery_dir / "index.md").write_text(render_gallery_index(entries))
-    (out_dir / "SUMMARY.md").write_text(render_summary(entries))
+    if summary_template is None:
+        summary = render_summary(entries)
+    else:
+        summary = render_summary_from_template(summary_template.read_text(), entries)
+    (out_dir / "SUMMARY.md").write_text(summary)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -336,12 +444,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="a capture directory containing manifest.json (repeatable)",
     )
     parser.add_argument("--out", required=True, type=Path, help="mdBook src directory to write gallery/ and SUMMARY.md into")
+    parser.add_argument(
+        "--summary-template",
+        type=Path,
+        default=None,
+        help=f"hand-maintained SUMMARY.md whose {GALLERY_MARKER} line receives the gallery entries",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    generate(args.registry, args.capture_dirs, args.out)
+    generate(args.registry, args.capture_dirs, args.out, args.summary_template)
     print(f"site_gen: wrote gallery pages + SUMMARY.md into {args.out}")
     return 0
 

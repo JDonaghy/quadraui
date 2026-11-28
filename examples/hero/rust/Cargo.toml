@@ -1,0 +1,55 @@
+[package]
+name = "quadraui-hero"
+version = "0.0.0"
+edition.workspace = true
+description = "The README hero app (a counter) in Rust -- the same shape as examples/hero/python and examples/hero/node"
+license.workspace = true
+repository.workspace = true
+publish = false
+autobins = false
+
+[[bin]]
+name = "counter"
+path = "src/main.rs"
+required-features = ["tui"]
+
+[[bin]]
+name = "counter-native"
+path = "src/bin/native.rs"
+# `tui` too: this reuses `src/main.rs` wholesale, whose `main` calls the TUI
+# runner.
+required-features = ["tui"]
+
+[[bin]]
+name = "hero-capture"
+path = "src/bin/capture.rs"
+# `tui` for the same reason as `counter-native`; `capture` for the PNG
+# encoder. Add `gtk`, `macos` or `win` for that backend's image.
+required-features = ["tui", "capture"]
+
+[features]
+# No default backend, matching quadraui's own feature policy. Each feature
+# forwards to the identically-named one on quadraui. The hero program
+# (`src/main.rs`) needs `tui`; `src/bin/native.rs` reads the native ones.
+tui = ["quadraui/tui"]
+gtk = ["quadraui/gtk"]
+macos = ["quadraui/macos"]
+win = ["quadraui/win"]
+# The screenshot tool (`src/bin/capture.rs`, run by scripts/capture_hero.sh).
+capture = ["dep:image"]
+
+[dependencies]
+quadraui = { path = "../../../quadraui" }
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+] }
+
+[[test]]
+name = "headless"
+path = "tests/headless.rs"
+required-features = ["tui"]
+
+[[test]]
+name = "headless_macos"
+path = "tests/headless_macos.rs"
+required-features = ["tui", "macos"]

@@ -1,0 +1,80 @@
+# Cross-language parity: one app, three languages, identical frames
+
+quadraui says its Python and Node bindings work the same way as Rust. This
+directory turns that into a test. It holds one small app, a todo list,
+written once in each language:
+
+| | App | Tracer |
+|---|---|---|
+| Rust | [`rust/src/main.rs`](rust/src/main.rs) | [`rust/src/bin/trace.rs`](rust/src/bin/trace.rs) |
+| Python | [`python/todo.py`](python/todo.py) | [`python/trace.py`](python/trace.py) |
+| Node (TSX) | [`node/todo.tsx`](node/todo.tsx) | [`node/trace.ts`](node/trace.ts) |
+
+The app is a `New` text field, a list of todos, `Add` and `Clear` buttons and
+a status bar. Typing edits the draft, and Enter or `Add` appends it.
+Clicking a row selects it, and `Clear` empties the list. Every update also
+appends a line such as `edit Bu`, `add Tea` or `select 1` to the app's `log`,
+the same vocabulary in every language.
+
+Each tracer runs its app headless on the TUI backend at 40x12 cells and drives
+it with [`script.json`](script.json): clicks at cell coordinates, typed text and
+named keys. After the first paint and after every step it records the glyph,
+foreground and background of every cell, plus the log lines that step added.
+[`scripts/parity_check.py`](../../scripts/parity_check.py) runs all three and
+fails on the first step where Rust or Node differs from Python. It prints both
+frames side by side and lists every differing cell.
+
+## Running it
+
+```sh
+scripts/parity_ci.sh                      # build the extension, the addon and the tracer, then check
+scripts/parity_check.py --rust-bin PATH   # check only, with everything already built
+scripts/parity_check.py --keep-going      # report every differing step, not just the first
+```
+
+CI runs `scripts/parity_ci.sh` in the `parity` job of
+`.github/workflows/ci.yml` on Linux and uploads the three traces.
+
+Running each app live: `cargo run -p quadraui-parity --features tui --bin todo`,
+`python examples/parity/python/todo.py`, or load `node/todo.tsx` through
+`examples/hero/node/load_jsx.ts` the way `node/trace.ts` does. Esc quits.
+
+## Known divergences
+
+Python and Node match exactly at every step. Rust does not yet, in three
+places. [`known_divergences.json`](known_divergences.json) records each one
+with the steps and the cell region where it shows. The check allows a
+difference only there. If a listed step stops differing, the check fails until
+that step is removed from the file, so a fix cannot go unnoticed.
+
+| Id | What differs |
+|---|---|
+| `form-focus-ring` | A focused `Form` gets the runner's focus ring around its whole rect in Rust. The ring covers the field, so typed text is hidden. Python and Node draw no ring on a form. |
+| `button-pressed-after-release` | After a click, Rust paints the button with the pressed colour; Python and Node paint the hover colour. |
+| `controlled-list-ignores-arrow-keys` | Down on a focused list whose selection the app pins moves the selection and fires `SelectionChanged` in Rust. Python and Node do nothing. |
+
+## API gaps the Rust version shows
+
+- Rust has no layout tree. Python and Node write `Column(...)`/`Row(...)`,
+  while Rust places rects by hand with a `shares` helper that copies the
+  bindings' equal-share split.
+- `Form`, `FormField`, `ListView` and `ListItem` have no `Default` or
+  builder, so the Rust view spells out every field. The bindings get those
+  defaults from their wire decoder.
+- In Rust the form's focused field is app state. The app sets it from
+  `FormEvent::FocusChanged` and clears it by reading `Backend::focus_tree()`,
+  since nothing reports that focus left the form. In Python and Node the
+  engine owns it.
+- `AppLogic::frame_tree` and `extra_tab_stops` get no `Backend`, so the Rust
+  app builds its view at a fixed 40x12 for routing.
+
+## Limits of the comparison
+
+- The bindings' `cell_colors` returns black for a terminal-default colour, so
+  the Rust tracer maps those to black too. A default-vs-black difference
+  would not show.
+- Only glyph, fg and bg are compared. Bold, italic and underline are not,
+  because the bindings do not expose them.
+- Two clicks within 1.5 cells and 400ms fold into a double-click, measured on
+  the wall clock. Python and Node cannot turn folding off, so `script.json`
+  never puts two clicks that close in a row.
